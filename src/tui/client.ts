@@ -6,7 +6,8 @@
  *
  * Answers can arrive out of order. The newest snapshot (highest `revision`) wins; a snapshot
  * from another server (a new `serverId`: OpenCode restarted it) always wins, as its revisions
- * start over. What a snapshot says about one session comes from the latest call about it.
+ * start over, and from then on the old server's answers are ignored. What a snapshot says
+ * about one session comes from the latest call about it.
  */
 import { createSignal } from "solid-js";
 import type { QuotaSnapshot } from "../core/types.js";
@@ -148,6 +149,8 @@ export function createQuotaClient(
   /** Numbers every call; a session's part is kept only from a later call than the last one. */
   let calls = 0;
   const sessionCalls = new Map<string, number>();
+  /** Servers this client moved away from; their answers are ignored. */
+  const retiredServers = new Set<string>();
   /** Bumped when the TUI stops: answers to calls made before then are dropped. */
   let mount = 0;
   /** Snapshot calls on their way, by session ("" for none), with their call numbers. */
@@ -160,8 +163,10 @@ export function createQuotaClient(
   /** `call` numbers the request a session's part came from. */
   function apply(snapshot: QuotaSnapshot, session?: { id: string; call: number }): void {
     const { currentModelProviderIds, currentModelRowPrefixes, sessionTokens, ...shared } = snapshot;
+    if (retiredServers.has(shared.serverId)) return;
     // An answer that left before a newer snapshot arrived must not undo it.
     const current = latest();
+    if (current && current.serverId !== shared.serverId) retiredServers.add(current.serverId);
     if (!current || current.serverId !== shared.serverId || current.revision < shared.revision) {
       setLatest(shared);
     }
