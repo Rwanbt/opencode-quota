@@ -165,15 +165,4 @@ describe("google-token-cache", () => {
     });
     await expect(access(CACHE_PATH)).rejects.toMatchObject({ code: "ENOENT" });
   });
-
-  it("clears process memory and retries legacy cleanup", async () => {
-    const cache = await import("../src/lib/google-token-cache.js");
-    await cache.setCachedAccessToken({ key: "account", entry: entry("token") });
-    await mkdir(dirname(CACHE_PATH), { recursive: true });
-    await writeFile(CACHE_PATH, "legacy-pii", "utf8");
-    await cache.clearGoogleTokenCache();
-
-    await expect(cache.getCachedAccessToken({ key: "account", skewMs: 0 })).resolves.toBeNull();
-    await expect(access(CACHE_PATH)).rejects.toMatchObject({ code: "ENOENT" });
-  });
 });

@@ -17,12 +17,13 @@ const mocks = vi.hoisted(() => ({
   resolveOpenCodeConsoleAuth: vi.fn(),
 }));
 
-vi.mock("../src/lib/opencode-go-auth.js", () => ({
-  DEFAULT_OPENCODE_GO_AUTH_CACHE_MAX_AGE_MS: 5_000,
-  OPENCODE_GO_CREDENTIAL_INTEGRATION_IDS: ["opencode-go", "opencode"],
-  resolveOpenCodeGoAuthCached: mocks.resolveOpenCodeGoAuthCached,
-  getOpenCodeGoAuthDiagnostics: mocks.getOpenCodeGoAuthDiagnostics,
-  resolveOpenCodeGoAuth: mocks.resolveOpenCodeGoAuth,
+vi.mock("../src/lib/api-key-resolver.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/lib/api-key-resolver.js")>()),
+  resolveApiKeyLogin: (_spec: unknown, params: unknown) =>
+    mocks.resolveOpenCodeGoAuthCached(params),
+  getApiKeyLoginDiagnostics: (_spec: unknown, params: unknown) =>
+    mocks.getOpenCodeGoAuthDiagnostics(params),
+  parseApiKeyLogin: (_spec: unknown, auth: unknown) => mocks.resolveOpenCodeGoAuth(auth),
 }));
 
 vi.mock("../src/lib/opencode-go.js", async (importOriginal) => {

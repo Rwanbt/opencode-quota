@@ -1,5 +1,12 @@
 import { createHash } from "node:crypto";
 
+import {
+  API_KEY_LOGIN_VENDORS,
+  type ApiKeyLoginDiagnostics,
+  getApiKeyLoginDiagnostics,
+  parseApiKeyLogin,
+  resolveApiKeyLogin,
+} from "../lib/api-key-resolver.js";
 import type {
   QuotaProvider,
   QuotaProviderContext,
@@ -7,25 +14,12 @@ import type {
   QuotaProviderStatusDetail,
   QuotaToastEntry,
 } from "../lib/entries.js";
-import {
-  credentialRowAuthEntry,
-  formatCredentialDisplayNames,
-  readCredentialRows,
-  scrubCredentialErrorText,
-  selectConnectionCredentialRows,
-} from "../lib/opencode-auth.js";
+import { scrubCredentialErrorText, selectConnectionCredentialRows } from "../lib/opencode-auth.js";
 import { consoleBaseUrl, resolveOpenCodeConsoleAuth } from "../lib/opencode-console-auth.js";
 import { queryOpenCodeGoConsoleStatus, queryOpenCodeGoQuota } from "../lib/opencode-go.js";
-import {
-  DEFAULT_OPENCODE_GO_AUTH_CACHE_MAX_AGE_MS,
-  getOpenCodeGoAuthDiagnostics,
-  OPENCODE_GO_CREDENTIAL_INTEGRATION_IDS,
-  type OpenCodeGoAuthDiagnostics,
-  resolveOpenCodeGoAuth,
-  resolveOpenCodeGoAuthCached,
-} from "../lib/opencode-go-auth.js";
 import { normalizeQuotaProviderId } from "../lib/provider-metadata.js";
 import type { OpenCodeGoResult, OpenCodeGoWindowKey } from "../lib/types.js";
+import { readKeyLoginRows } from "./key-login-rows.js";
 import {
   attemptedErrorResult,
   attemptedResult,
@@ -35,6 +29,7 @@ import {
 } from "./result-helpers.js";
 
 const OPENCODE_GO_PROVIDER_LABEL = "OpenCode Go";
+const OPENCODE_GO_AUTH = API_KEY_LOGIN_VENDORS["opencode-go"];
 const CONSOLE_LOGIN_HINT = "Run `opencode auth login opencode`.";
 const OPENCODE_GO_WINDOW_ORDER: OpenCodeGoWindowKey[] = ["rolling", "weekly", "monthly"];
 const OPENCODE_GO_WINDOW_LABELS: Record<OpenCodeGoWindowKey, { name: string; label: string }> = {
@@ -59,7 +54,7 @@ function retainCurrentCredentialFingerprints(current: ReadonlySet<string>): void
   }
 }
 
-function authStatusDetails(diagnostics: OpenCodeGoAuthDiagnostics): QuotaProviderStatusDetail[] {
+function authStatusDetails(diagnostics: ApiKeyLoginDiagnostics): QuotaProviderStatusDetail[] {
   return statusDetailsFromRecord({
     auth_state: diagnostics.state,
     auth_source: diagnostics.source ?? "(none)",
@@ -115,9 +110,7 @@ export const opencodeGoProvider: QuotaProvider = {
     ) {
       return true;
     }
-    const auth = await resolveOpenCodeGoAuthCached({
-      maxAgeMs: DEFAULT_OPENCODE_GO_AUTH_CACHE_MAX_AGE_MS,
-    });
+    const auth = await resolveApiKeyLogin(OPENCODE_GO_AUTH);
     if (auth.state !== "configured") {
       notSubscribedCredentialFingerprints.clear();
       return false;
@@ -169,9 +162,7 @@ export const opencodeGoProvider: QuotaProvider = {
       // Console request failed; fall back to the legacy API-key path below
       // and surface the console error in diagnostics. Without an API key Go
       // stays quiet: the sign-in works, only this request failed.
-      const diagnostics = await getOpenCodeGoAuthDiagnostics({
-        maxAgeMs: DEFAULT_OPENCODE_GO_AUTH_CACHE_MAX_AGE_MS,
-      });
+      const diagnostics = await getApiKeyLoginDiagnostics(OPENCODE_GO_AUTH);
       const legacyStatusDetails = [
         ...authStatusDetails(diagnostics),
         { key: "console_auth_state", value: "configured" },
@@ -185,9 +176,7 @@ export const opencodeGoProvider: QuotaProvider = {
     if (consoleAuth.state === "expired") {
       // OpenCode refreshes the console token when it is read, so this is rare;
       // fall back to the legacy path, which also still accepts workspace API keys.
-      const diagnostics = await getOpenCodeGoAuthDiagnostics({
-        maxAgeMs: DEFAULT_OPENCODE_GO_AUTH_CACHE_MAX_AGE_MS,
-      });
+      const diagnostics = await getApiKeyLoginDiagnostics(OPENCODE_GO_AUTH);
       return await fetchOpenCodeGoLegacy(ctx, diagnostics, [
         { key: "console_auth_state", value: "expired" },
         { key: "go_source", value: "legacy_key" },
@@ -198,9 +187,7 @@ export const opencodeGoProvider: QuotaProvider = {
       // OpenCode could not return the console sign-in (for example its refresh
       // failed); fall back to the legacy API-key path and surface the console
       // error in diagnostics.
-      const diagnostics = await getOpenCodeGoAuthDiagnostics({
-        maxAgeMs: DEFAULT_OPENCODE_GO_AUTH_CACHE_MAX_AGE_MS,
-      });
+      const diagnostics = await getApiKeyLoginDiagnostics(OPENCODE_GO_AUTH);
       const consoleError = scrubCredentialErrorText(consoleAuth.error);
       return await fetchOpenCodeGoLegacy(
         ctx,
@@ -216,9 +203,7 @@ export const opencodeGoProvider: QuotaProvider = {
       );
     }
 
-    const diagnostics = await getOpenCodeGoAuthDiagnostics({
-      maxAgeMs: DEFAULT_OPENCODE_GO_AUTH_CACHE_MAX_AGE_MS,
-    });
+    const diagnostics = await getApiKeyLoginDiagnostics(OPENCODE_GO_AUTH);
     return await fetchOpenCodeGoLegacy(ctx, diagnostics, [
       ...authStatusDetails(diagnostics),
       { key: "selected_windows", value: windows.join(",") },
@@ -232,15 +217,13 @@ export const opencodeGoProvider: QuotaProvider = {
  */
 async function fetchOpenCodeGoLegacy(
   ctx: QuotaProviderContext,
-  diagnostics: OpenCodeGoAuthDiagnostics,
+  diagnostics: ApiKeyLoginDiagnostics,
   statusDetails?: QuotaProviderResult["statusDetails"],
   consoleSignInFailure?: string,
 ): Promise<QuotaProviderResult> {
   const windows = ctx.config.opencodeGoWindows ?? OPENCODE_GO_WINDOW_ORDER;
   const baseStatusDetails = statusDetails ?? [];
-  const auth = await resolveOpenCodeGoAuthCached({
-    maxAgeMs: DEFAULT_OPENCODE_GO_AUTH_CACHE_MAX_AGE_MS,
-  });
+  const auth = await resolveApiKeyLogin(OPENCODE_GO_AUTH);
 
   if (auth.state === "none") {
     notSubscribedCredentialFingerprints.clear();
@@ -255,33 +238,19 @@ async function fetchOpenCodeGoLegacy(
 
   if (diagnostics.source === "opencode.db") {
     // `opencode` is a legacy alias of the `opencode-go` integration in the
-    // credential database (see resolveOpenCodeGoAuth). Alias rows must not
+    // credential database (see API_KEY_LOGIN_VENDORS). Alias rows must not
     // become additional connections: prefer native rows and collapse rows
     // holding the same credential (e.g. Zen + Go sharing a workspace key).
     // Console OAuth credentials cannot authorize this API and are skipped.
-    const credentialRows = selectConnectionCredentialRows(
-      (await readCredentialRows(OPENCODE_GO_CREDENTIAL_INTEGRATION_IDS, { methods: ["key"] }))
-        .filter((row) => OPENCODE_GO_CREDENTIAL_INTEGRATION_IDS.includes(row.integrationId))
-        .filter((row) => row.value.type !== "oauth"),
-      "opencode-go",
-    );
-    const rowNames = formatCredentialDisplayNames(
-      OPENCODE_GO_PROVIDER_LABEL,
-      credentialRows.map((row) => ({ row, fallbackName: OPENCODE_GO_PROVIDER_LABEL })),
-    );
-    const displayNamesByRowId = new Map(
-      credentialRows.map((row, index) => [row.id, rowNames[index] ?? OPENCODE_GO_PROVIDER_LABEL]),
-    );
-    const invalidErrors: QuotaProviderResult["errors"] = [];
-    const credentials = credentialRows.flatMap((row) => {
-      const rowAuth = resolveOpenCodeGoAuth({ [row.integrationId]: credentialRowAuthEntry(row) });
-      if (rowAuth.state === "invalid") {
-        invalidErrors.push({
-          label: displayNamesByRowId.get(row.id) ?? OPENCODE_GO_PROVIDER_LABEL,
-          message: rowAuth.error,
-        });
-      }
-      return rowAuth.state === "configured" ? [{ row, auth: rowAuth }] : [];
+    const { credentials, invalidErrors } = await readKeyLoginRows({
+      integrationIds: OPENCODE_GO_AUTH.authKeys,
+      label: OPENCODE_GO_PROVIDER_LABEL,
+      parseAuth: (auth) => parseApiKeyLogin(OPENCODE_GO_AUTH, auth),
+      selectRows: (rows) =>
+        selectConnectionCredentialRows(
+          rows.filter((row) => row.value.type !== "oauth"),
+          "opencode-go",
+        ),
     });
     if (credentials.length > 0 || invalidErrors.length > 0) {
       const credentialFingerprints = new Set(
@@ -289,26 +258,25 @@ async function fetchOpenCodeGoLegacy(
       );
       retainCurrentCredentialFingerprints(credentialFingerprints);
       const results = await Promise.all(
-        credentials.map(async ({ row, auth: rowAuth }) => {
+        credentials.map(async ({ row, displayName, auth: rowAuth }) => {
           const fingerprint = fingerprintCredential(rowAuth.apiKey);
           if (notSubscribedCredentialFingerprints.has(fingerprint)) {
-            return { row, result: null };
+            return { row, group: displayName, result: null };
           }
           const result = await queryOpenCodeGoQuota(rowAuth.apiKey, {
             requestTimeoutMs: ctx.config.requestTimeoutMs,
           });
           if (!result.success && result.notSubscribed === true) {
             notSubscribedCredentialFingerprints.add(fingerprint);
-            return { row, result: null };
+            return { row, group: displayName, result: null };
           }
-          return { row, result };
+          return { row, group: displayName, result };
         }),
       );
       const entries: QuotaToastEntry[] = [];
       const errors: QuotaProviderResult["errors"] = [...invalidErrors];
-      for (const { row, result } of results) {
+      for (const { row, group, result } of results) {
         if (!result) continue;
-        const group = displayNamesByRowId.get(row.id) ?? OPENCODE_GO_PROVIDER_LABEL;
         if (result.success) entries.push(...buildOpenCodeGoEntries(result, windows, group, row.id));
         else errors.push({ label: group, message: result.error, retryable: result.retryable });
       }

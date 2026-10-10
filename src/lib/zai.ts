@@ -1,5 +1,5 @@
+import { API_KEY_LOGIN_VENDORS } from "./api-key-resolver.js";
 import { queryGlmCodingPlanQuota } from "./glm-coding-plan.js";
-import { resolveZaiAuthCached } from "./zai-auth.js";
 
 const ZAI_QUOTA = {
   label: "Z.ai",
@@ -7,7 +7,7 @@ const ZAI_QUOTA = {
   httpErrorPrefix: "Z.ai API error",
   apiErrorPrefix: "Z.ai API error",
   envelope: "zai",
-  resolveAuth: resolveZaiAuthCached,
+  auth: API_KEY_LOGIN_VENDORS.zai,
 } as const;
 
 export function queryZaiQuota(options: { requestTimeoutMs?: number; apiKey?: string } = {}) {

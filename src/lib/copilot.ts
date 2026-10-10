@@ -10,6 +10,7 @@ import { existsSync, readFileSync } from "fs";
 import { join } from "path";
 import { sanitizeDisplaySnippet, sanitizeDisplayText } from "./display-sanitize.js";
 import { fetchWithTimeout } from "./http.js";
+import { finiteNumber } from "./json-guards.js";
 import { readAuthFile } from "./opencode-auth.js";
 import { getOpencodeRuntimeDirs } from "./opencode-runtime-paths.js";
 import { deriveResolvedAuthIdentity, type ResolvedAuthIdentity } from "./resolved-auth-identity.js";
@@ -856,10 +857,6 @@ function getUsageItems(response: BillingUsageResponse): BillingUsageItem[] {
   throw new Error("GitHub billing response did not include a usageItems array");
 }
 
-function readFiniteNumber(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
-}
-
 function quantitiesDiffer(left: number, right: number): boolean {
   return (
     Math.abs(left - right) > Number.EPSILON * 16 * Math.max(1, Math.abs(left), Math.abs(right))
@@ -899,9 +896,9 @@ function parseAiCreditTotals(response: BillingUsageResponse): AiCreditTotals {
   let authority: AiCreditTotals["authority"] = "provider_reported";
 
   for (const item of matches) {
-    const gross = readFiniteNumber(item.grossQuantity ?? item.gross_quantity);
-    const discount = readFiniteNumber(item.discountQuantity ?? item.discount_quantity);
-    const net = readFiniteNumber(item.netQuantity ?? item.net_quantity);
+    const gross = finiteNumber(item.grossQuantity ?? item.gross_quantity);
+    const discount = finiteNumber(item.discountQuantity ?? item.discount_quantity);
+    const net = finiteNumber(item.netQuantity ?? item.net_quantity);
     const quantities = [gross, discount, net].filter(
       (value): value is number => value !== undefined,
     );
@@ -947,7 +944,7 @@ function parseAiCreditTotals(response: BillingUsageResponse): AiCreditTotals {
       authority = "locally_derived";
     }
 
-    const netAmount = readFiniteNumber(item.netAmount ?? item.net_amount);
+    const netAmount = finiteNumber(item.netAmount ?? item.net_amount);
     if (netAmount !== undefined) {
       if (netAmount < 0) {
         throw new Error("GitHub Copilot AI Credit usage item contained a negative net amount");
@@ -974,8 +971,8 @@ function parseLegacyPremiumRequestUsage(response: BillingUsageResponse): number 
   }
 
   return matches.reduce((sum, item) => {
-    const gross = readFiniteNumber(item.grossQuantity ?? item.gross_quantity);
-    const net = readFiniteNumber(item.netQuantity ?? item.net_quantity);
+    const gross = finiteNumber(item.grossQuantity ?? item.gross_quantity);
+    const net = finiteNumber(item.netQuantity ?? item.net_quantity);
     if (gross === undefined && net === undefined) {
       throw new Error("GitHub premium-request usage item did not include quantity fields");
     }
@@ -1230,9 +1227,9 @@ function parseCopilotInternalUser(
     response.quota_reset_date_utc ?? response.quota_reset_date,
   );
   const snapshot = response.quota_snapshots?.premium_interactions;
-  const entitlement = readFiniteNumber(snapshot?.entitlement);
-  const remaining = readFiniteNumber(snapshot?.quota_remaining ?? snapshot?.remaining);
-  const reportedPercentRemaining = readFiniteNumber(snapshot?.percent_remaining);
+  const entitlement = finiteNumber(snapshot?.entitlement);
+  const remaining = finiteNumber(snapshot?.quota_remaining ?? snapshot?.remaining);
+  const reportedPercentRemaining = finiteNumber(snapshot?.percent_remaining);
   const hasPercentRemaining = snapshot?.percent_remaining !== undefined;
   const hasReportedPercent =
     reportedPercentRemaining !== undefined &&
@@ -1293,7 +1290,7 @@ function parseCopilotInternalUser(
   }
   // Token-based billing reports a negative remaining once usage goes over the
   // entitlement, alongside a provider-reported clamp in [0, 100].
-  const creditsUsed = readFiniteNumber(snapshot?.credits_used);
+  const creditsUsed = finiteNumber(snapshot?.credits_used);
   const hasValidCreditsUsed = creditsUsed !== undefined && creditsUsed >= 0;
   if (
     tokenBasedBilling &&
@@ -1475,29 +1472,4 @@ export async function hasCopilotQuotaRuntimeAvailable(): Promise<boolean> {
     await readAuthFile({ integrationIds: COPILOT_AUTH_KEYS }),
   );
   return diagnostics.billingApiAccessLikely;
-}
-
-export function formatCopilotQuota(result: CopilotResult): string | null {
-  if (!result || !result.success) return null;
-
-  if (result.mode === "user_plan") {
-    return result.plan ? `Copilot Plan ${result.plan}` : "Copilot Plan available";
-  }
-  const unit =
-    result.unit === "ai_credits"
-      ? "AI Credits"
-      : result.unit === "premium_interactions"
-        ? "Premium Interactions"
-        : "Premium Requests";
-  if (result.mode === "organization_usage") {
-    return `Copilot Org (${result.organization}) ${result.used} ${unit} | ${formatBillingPeriod(result.period)}`;
-  }
-  if (result.mode === "enterprise_usage") {
-    return `Copilot Enterprise (${result.enterprise}) ${result.used} ${unit} | ${formatBillingPeriod(result.period)}`;
-  }
-  if (result.unlimited) return `Copilot ${unit} Unlimited`;
-  if (result.total !== undefined) {
-    return `Copilot ${unit} ${result.used}/${result.total}`;
-  }
-  return `Copilot ${unit} ${result.used} used`;
 }

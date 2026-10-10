@@ -1,4 +1,4 @@
-import type { InvalidAwareAuthResult } from "./api-key-resolver.js";
+import { type ApiKeyLoginSpec, resolveApiKeyLogin } from "./api-key-resolver.js";
 import { sanitizeDisplaySnippet, sanitizeDisplayText } from "./display-sanitize.js";
 import { clampPercent } from "./format-utils.js";
 import { fetchWithTimeout } from "./http.js";
@@ -16,7 +16,7 @@ type GlmCodingPlanDescriptor = {
   label: string;
   endpoint: string;
   httpErrorPrefix: string;
-  resolveAuth: () => Promise<InvalidAwareAuthResult>;
+  auth: ApiKeyLoginSpec;
 } & ({ envelope: "zai"; apiErrorPrefix: string } | { envelope: "zhipu" });
 
 export async function queryGlmCodingPlanQuota(
@@ -25,7 +25,7 @@ export async function queryGlmCodingPlanQuota(
 ): Promise<ZaiResult> {
   const auth = options.apiKey
     ? { state: "configured" as const, apiKey: options.apiKey }
-    : await descriptor.resolveAuth();
+    : await resolveApiKeyLogin(descriptor.auth);
   if (auth.state === "none") return null;
   if (auth.state === "invalid") return { success: false, error: auth.error };
 

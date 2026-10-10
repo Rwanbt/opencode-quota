@@ -9,8 +9,12 @@ import {
 
 vi.mock("../src/lib/chutes.js", () => ({
   queryChutesQuota: vi.fn(),
-  hasChutesApiKeyConfigured: vi.fn(),
-  getChutesKeyDiagnostics: vi.fn(async () => ({
+}));
+
+vi.mock("../src/lib/api-key-resolver.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/lib/api-key-resolver.js")>()),
+  hasApiKey: vi.fn(),
+  getApiKeyDiagnostics: vi.fn(async () => ({
     configured: false,
     source: null,
     checkedPaths: [],
@@ -69,9 +73,9 @@ describe("chutes provider", () => {
 
   it("falls back to trusted API key presence when provider ids are absent", async () => {
     const { isCanonicalProviderAvailable } = await import("../src/lib/provider-availability.js");
-    const { hasChutesApiKeyConfigured } = await import("../src/lib/chutes.js");
+    const { hasApiKey } = await import("../src/lib/api-key-resolver.js");
     (isCanonicalProviderAvailable as any).mockResolvedValueOnce(false);
-    (hasChutesApiKeyConfigured as any).mockResolvedValueOnce(true);
+    (hasApiKey as any).mockResolvedValueOnce(true);
 
     await expect(chutesProvider.isAvailable({} as any)).resolves.toBe(true);
   });

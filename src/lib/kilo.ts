@@ -6,9 +6,10 @@
  * without an active Kilo Pass.
  */
 
+import { API_KEY_VENDORS, resolveApiKey } from "./api-key-resolver.js";
 import { sanitizeSingleLineDisplayText } from "./display-sanitize.js";
 import { fetchWithTimeout } from "./http.js";
-import { resolveKiloApiKey } from "./kilo-config.js";
+import { isRecord } from "./json-guards.js";
 import type { QuotaError } from "./types.js";
 
 const KILO_PASS_STATE_ENDPOINT = "https://app.kilo.ai/api/trpc/kiloPass.getState";
@@ -25,23 +26,16 @@ type KiloPassStateSuccess = {
   resetTimeIso?: string;
 };
 
-export type KiloPassStateResult = KiloPassStateSuccess | QuotaError | null;
-
 export type KiloQuotaResult =
   | (KiloPassStateSuccess & { mode: "kilo_pass" })
   | { success: true; mode: "gateway_balance"; balanceUsd: number }
   | QuotaError
   | null;
 
-type JsonRecord = Record<string, unknown>;
 type NoActiveKiloPassResult = QuotaError & { reason: "no_active_subscription" };
 type ParsedKiloPassState = KiloPassStateSuccess | QuotaError | NoActiveKiloPassResult;
 type KiloBalanceResult = { success: true; balanceUsd: number } | QuotaError;
 type KiloRequestOptions = { requestTimeoutMs?: number };
-
-function isRecord(value: unknown): value is JsonRecord {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
 
 function sanitizeMessage(text: string, secret?: string, maxLength = 200): string {
   const redacted = secret ? text.split(secret).join("[redacted]") : text;
@@ -296,21 +290,8 @@ async function requestKiloBalance(
   }
 }
 
-export async function queryKiloPassState(
-  options: KiloRequestOptions = {},
-): Promise<KiloPassStateResult> {
-  const resolved = await resolveKiloApiKey();
-  if (!resolved) return null;
-
-  const result = await requestKiloPassState(resolved.key, options);
-  if (isNoActiveKiloPassResult(result)) {
-    return { success: false, error: result.error };
-  }
-  return result;
-}
-
 export async function queryKiloQuota(options: KiloRequestOptions = {}): Promise<KiloQuotaResult> {
-  const resolved = await resolveKiloApiKey();
+  const resolved = await resolveApiKey(API_KEY_VENDORS.kilo);
   if (!resolved) return null;
 
   const passResult = await requestKiloPassState(resolved.key, options);

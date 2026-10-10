@@ -8,6 +8,7 @@ import {
   resolveEditableConfigPath,
   resolveExistingConfigPath,
 } from "./config-file-utils.js";
+import { isRecord } from "./json-guards.js";
 import {
   applyConfigDocumentEdit,
   ConfigDocumentError,
@@ -43,10 +44,6 @@ export interface ReconcileDetectedProviderConfigResult {
   format: ConfigFileFormat | null;
   addedProviderIds: string[];
   changed: boolean;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 function getCandidates(configRootDir: string): OpenCodeConfigCandidate[] {

@@ -73,13 +73,6 @@ export async function setCachedAccessToken(params: {
   });
 }
 
-export async function clearGoogleTokenCache(): Promise<void> {
-  return enqueue(async () => {
-    memoryTokens.clear();
-    await removeLegacyCache();
-  });
-}
-
 export function __resetGoogleTokenCacheForTests(): void {
   memoryTokens.clear();
   operationQueue = Promise.resolve();

@@ -1,22 +1,14 @@
 /** Z.ai provider wrapper. */
+
+import { API_KEY_LOGIN_VENDORS } from "../lib/api-key-resolver.js";
 import { queryZaiQuota } from "../lib/zai.js";
-import {
-  DEFAULT_ZAI_AUTH_CACHE_MAX_AGE_MS,
-  getZaiAuthDiagnostics,
-  resolveZaiAuth,
-  resolveZaiAuthCached,
-} from "../lib/zai-auth.js";
 import { createGlmCodingPlanProvider } from "./glm-coding-plan-provider.js";
 
 export const zaiProvider = createGlmCodingPlanProvider({
   id: "zai",
   providerId: "zai",
   errorLabel: "Z.ai",
-  authCacheMaxAgeMs: DEFAULT_ZAI_AUTH_CACHE_MAX_AGE_MS,
-  resolveAuth: resolveZaiAuthCached,
-  resolveCredentialAuth: resolveZaiAuth,
-  credentialIntegrationIds: ["zai-coding-plan"],
-  getAuthDiagnostics: getZaiAuthDiagnostics,
+  auth: API_KEY_LOGIN_VENDORS.zai,
   queryQuota: queryZaiQuota,
   matchesCurrentModel(model) {
     const lower = model.toLowerCase();

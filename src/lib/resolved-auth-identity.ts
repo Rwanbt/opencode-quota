@@ -219,13 +219,6 @@ export async function composeResolvedAuthIdentities(params: {
   ]);
 }
 
-export function isResolvedAuthIdentity(value: unknown): value is ResolvedAuthIdentity {
-  return (
-    typeof value === "string" &&
-    new RegExp(`^${RESOLVED_AUTH_IDENTITY_PREFIX}[A-Za-z0-9_-]{43}$`, "u").test(value)
-  );
-}
-
 export function __resetResolvedAuthIdentityForTests(): void {
   identityKeyPromise = null;
 }

@@ -2,6 +2,7 @@ import { readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { writeJsonAtomic } from "./atomic-json.js";
 import type { QuotaToastEntry } from "./entries.js";
+import { asRecord } from "./json-guards.js";
 import { lookupCost } from "./modelsdev-pricing.js";
 import type { OpencodeRuntimeDirs } from "./opencode-runtime-paths.js";
 import { getOpencodeRuntimeDirs } from "./opencode-runtime-paths.js";
@@ -69,12 +70,6 @@ interface LocalStateDependencies {
 function hasOnlyKeys(value: Record<string, unknown>, allowed: readonly string[]): boolean {
   const allowedSet = new Set(allowed);
   return Object.keys(value).every((key) => allowedSet.has(key));
-}
-
-function asRecord(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : null;
 }
 
 function isTokenBuckets(value: unknown): value is TokenBuckets {

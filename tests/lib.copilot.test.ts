@@ -429,7 +429,7 @@ describe("GitHub Copilot AI Credit accounting", () => {
       ) as any,
     );
 
-    const { queryCopilotQuota, formatCopilotQuota } = await import("../src/lib/copilot.js");
+    const { queryCopilotQuota } = await import("../src/lib/copilot.js");
     const result = await queryCopilotQuota();
     expect(result).toEqual({
       success: true,
@@ -442,9 +442,6 @@ describe("GitHub Copilot AI Credit accounting", () => {
       plan: "business",
       resetTimeIso: "2026-02-01T00:00:00.000Z",
     });
-    expect(result && result.success ? formatCopilotQuota(result) : null).toBe(
-      "Copilot AI Credits 3739/3000",
-    );
   });
 
   it.each([

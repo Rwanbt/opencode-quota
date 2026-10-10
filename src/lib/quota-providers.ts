@@ -1,6 +1,7 @@
 import { isIP } from "node:net";
 
 import type { AccountingResultType } from "./entries.js";
+import { isRecord } from "./json-guards.js";
 import { lookupCost } from "./modelsdev-pricing.js";
 import { getQuotaProviderShape } from "./provider-metadata.js";
 import { resolvePricingKey } from "./quota-stats.js";
@@ -274,10 +275,6 @@ const JSON_V1_RESULT_TYPES = new Set<AccountingResultType>([
 ]);
 const JSON_V1_MIN_TIMESTAMP_MS = 0;
 const JSON_V1_MAX_TIMESTAMP_MS = 253_402_300_799_999;
-
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 function hasOwnKey(value: Record<string, unknown>, key: string): boolean {
   return Object.hasOwn(value, key);
@@ -579,7 +576,7 @@ function validateJsonV1NumberSource(
   key: string,
   issues: QuotaProviderValidationIssue[],
 ): JsonV1NumberSource | undefined {
-  if (!isPlainObject(value)) {
+  if (!isRecord(value)) {
     adapterIssue(issues, key, "expected a path or literal number source object");
     return undefined;
   }
@@ -635,7 +632,7 @@ function validateJsonV1TextSource(
   key: string,
   issues: QuotaProviderValidationIssue[],
 ): JsonV1TextSource | undefined {
-  if (!isPlainObject(value)) {
+  if (!isRecord(value)) {
     adapterIssue(issues, key, "expected a path or literal text source object");
     return undefined;
   }
@@ -667,7 +664,7 @@ function validateJsonV1TimestampSource(
   key: string,
   issues: QuotaProviderValidationIssue[],
 ): JsonV1TimestampSource | undefined {
-  if (!isPlainObject(value)) {
+  if (!isRecord(value)) {
     adapterIssue(issues, key, "expected a timestamp source object");
     return undefined;
   }
@@ -736,7 +733,7 @@ function validateJsonV1Metric(
   key: string,
   issues: QuotaProviderValidationIssue[],
 ): JsonV1Metric | undefined {
-  if (!isPlainObject(value)) {
+  if (!isRecord(value)) {
     adapterIssue(issues, key, "expected a tagged metric object");
     return undefined;
   }
@@ -901,7 +898,7 @@ function validateJsonV1Mapping(
   providerLabel: string,
   issues: QuotaProviderValidationIssue[],
 ): JsonV1Mapping | undefined {
-  if (!isPlainObject(value)) {
+  if (!isRecord(value)) {
     adapterIssue(issues, key, "expected an object");
     return undefined;
   }
@@ -1012,7 +1009,7 @@ function validateJsonV1Adapter(
   providerLabel: string,
   issues: QuotaProviderValidationIssue[],
 ): JsonV1Adapter | undefined {
-  if (!isPlainObject(value)) {
+  if (!isRecord(value)) {
     adapterIssue(issues, key, "expected an object");
     return undefined;
   }
@@ -1134,7 +1131,7 @@ function validateWindows(
   for (let index = 0; index < raw.length; index += 1) {
     const item = raw[index];
     const windowKey = `${providerKey}.windows[${index}]`;
-    if (!isPlainObject(item)) {
+    if (!isRecord(item)) {
       issues.push({ key: windowKey, message: "expected an object" });
       continue;
     }
@@ -1286,7 +1283,7 @@ function validatePricingModelMap(
   issues: QuotaProviderValidationIssue[],
 ): Record<string, string> | undefined {
   if (raw === undefined) return undefined;
-  if (!isPlainObject(raw) || Object.keys(raw).length === 0) {
+  if (!isRecord(raw) || Object.keys(raw).length === 0) {
     issues.push({
       key: `${providerKey}.pricingModelMap`,
       message:
@@ -1351,7 +1348,7 @@ export function validateQuotaProviders(value: unknown): QuotaProvidersValidation
   for (let index = 0; index < value.length; index += 1) {
     const raw = value[index];
     const providerKey = `quotaProviders[${index}]`;
-    if (!isPlainObject(raw)) {
+    if (!isRecord(raw)) {
       issues.push({ key: providerKey, message: "expected an object" });
       continue;
     }

@@ -6,9 +6,10 @@
  */
 
 import { isCanonicalAccountingDecimal } from "./accounting-format.js";
-import { resolveDeepSeekApiKey } from "./deepseek-auth.js";
+import { API_KEY_VENDORS, resolveApiKey } from "./api-key-resolver.js";
 import { sanitizeDisplaySnippet, sanitizeDisplayText } from "./display-sanitize.js";
 import { fetchWithTimeout } from "./http.js";
+import { isRecord, nonEmptyString } from "./json-guards.js";
 import type { QuotaError } from "./types.js";
 
 export type DeepSeekCurrency = "CNY" | "USD";
@@ -46,14 +47,6 @@ const DEEPSEEK_BALANCE_URL = "https://api.deepseek.com/user/balance";
 const USER_AGENT = "OpenCode-Quota-Toast/1.0";
 const MAX_PARSE_ISSUES = 6;
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-function getNonEmptyString(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
-}
-
 function parseDeepSeekBalanceDecimal(value: unknown): string | undefined {
   return typeof value === "string" && isCanonicalAccountingDecimal(value) ? value : undefined;
 }
@@ -72,7 +65,7 @@ function parseDeepSeekBalance(payload: unknown): DeepSeekBalanceResult {
     for (const info of rawInfos) {
       if (!isRecord(info)) continue;
 
-      const rawCurrency = getNonEmptyString(info.currency);
+      const rawCurrency = nonEmptyString(info.currency);
       if (!rawCurrency || !["CNY", "USD"].includes(rawCurrency.toUpperCase())) continue;
       const currency = rawCurrency.toUpperCase() as DeepSeekCurrency;
       const parsed: DeepSeekBalanceInfo = { currency };
@@ -150,7 +143,7 @@ async function fetchDeepSeekBalance(
 export async function queryDeepSeekBalance(
   options: { requestTimeoutMs?: number } = {},
 ): Promise<DeepSeekResult> {
-  const resolved = await resolveDeepSeekApiKey();
+  const resolved = await resolveApiKey(API_KEY_VENDORS.deepseek);
   if (!resolved) return null;
 
   const result = await fetchDeepSeekBalance(resolved.key, options.requestTimeoutMs);
@@ -166,9 +159,3 @@ export async function queryDeepSeekBalance(
     parseIssues: result.data.parseIssues,
   };
 }
-
-export {
-  type DeepSeekKeySource,
-  getDeepSeekKeyDiagnostics,
-  hasDeepSeekApiKey as hasDeepSeekApiKeyConfigured,
-} from "./deepseek-auth.js";

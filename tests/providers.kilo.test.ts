@@ -10,14 +10,15 @@ import {
 } from "./helpers/provider-assertions.js";
 
 const mocks = vi.hoisted(() => ({
-  getKiloKeyDiagnostics: vi.fn(),
-  hasKiloApiKey: vi.fn(),
+  getApiKeyDiagnostics: vi.fn(),
+  hasApiKey: vi.fn(),
   queryKiloQuota: vi.fn(),
 }));
 
-vi.mock("../src/lib/kilo-config.js", () => ({
-  getKiloKeyDiagnostics: mocks.getKiloKeyDiagnostics,
-  hasKiloApiKey: mocks.hasKiloApiKey,
+vi.mock("../src/lib/api-key-resolver.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/lib/api-key-resolver.js")>()),
+  getApiKeyDiagnostics: mocks.getApiKeyDiagnostics,
+  hasApiKey: mocks.hasApiKey,
 }));
 
 vi.mock("../src/lib/kilo.js", () => ({
@@ -29,7 +30,7 @@ import { kiloProvider } from "../src/providers/kilo.js";
 describe("Kilo Gateway provider", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mocks.getKiloKeyDiagnostics.mockResolvedValue({
+    mocks.getApiKeyDiagnostics.mockResolvedValue({
       configured: true,
       source: "env:KILO_API_KEY",
       checkedPaths: ["env:KILO_API_KEY"],
@@ -45,7 +46,7 @@ describe("Kilo Gateway provider", () => {
   });
 
   it("is available only when a trusted Kilo API key exists", async () => {
-    mocks.hasKiloApiKey.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+    mocks.hasApiKey.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
 
     await expect(kiloProvider.isAvailable({} as any)).resolves.toBe(true);
     await expect(kiloProvider.isAvailable({} as any)).resolves.toBe(false);

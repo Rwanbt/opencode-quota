@@ -5,12 +5,7 @@
  * https://api.chutes.ai/users/me/quota_usage/me
  */
 
-import {
-  type ChutesKeySource,
-  getChutesKeyDiagnostics,
-  hasChutesApiKey,
-  resolveChutesApiKey,
-} from "./chutes-config.js";
+import { API_KEY_VENDORS, resolveApiKey } from "./api-key-resolver.js";
 import { sanitizeDisplaySnippet, sanitizeDisplayText } from "./display-sanitize.js";
 import { clampPercent } from "./format-utils.js";
 import { fetchWithTimeout } from "./http.js";
@@ -31,16 +26,10 @@ function getNextDailyResetUtc(): string {
 
 const CHUTES_QUOTA_URL = "https://api.chutes.ai/users/me/quota_usage/me";
 
-export {
-  type ChutesKeySource,
-  getChutesKeyDiagnostics,
-  hasChutesApiKey as hasChutesApiKeyConfigured,
-} from "./chutes-config.js";
-
 export async function queryChutesQuota(
   options: { requestTimeoutMs?: number } = {},
 ): Promise<ChutesResult> {
-  const resolved = await resolveChutesApiKey();
+  const resolved = await resolveApiKey(API_KEY_VENDORS.chutes);
   if (!resolved) return null;
 
   try {

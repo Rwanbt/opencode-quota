@@ -1,5 +1,6 @@
 import { sanitizeSingleLineDisplaySnippet } from "./display-sanitize.js";
 import { fetchWithTimeout } from "./http.js";
+import { isRecord } from "./json-guards.js";
 
 const MIMO_USAGE_URL = "https://platform.xiaomimimo.com/api/v1/tokenPlan/usage";
 const MIMO_DETAIL_URL = "https://platform.xiaomimimo.com/api/v1/tokenPlan/detail";
@@ -35,10 +36,6 @@ export interface MimoDashboardResult {
   usage: MimoEndpointResult<MimoMonthlyQuota>;
   detail: MimoEndpointResult<MimoPlanDetail>;
   balance: MimoEndpointResult<MimoBalance>;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 function parseEnvelope(json: unknown): Record<string, unknown> {

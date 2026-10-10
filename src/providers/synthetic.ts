@@ -2,6 +2,7 @@
  * Synthetic provider wrapper.
  */
 
+import { API_KEY_VENDORS, getApiKeyDiagnostics, hasApiKey } from "../lib/api-key-resolver.js";
 import type {
   QuotaProvider,
   QuotaProviderContext,
@@ -10,11 +11,7 @@ import type {
 } from "../lib/entries.js";
 import { isCanonicalProviderAvailable } from "../lib/provider-availability.js";
 import { modelProviderIncludesAny } from "../lib/provider-model-matching.js";
-import {
-  getSyntheticKeyDiagnostics,
-  hasSyntheticApiKeyConfigured,
-  querySyntheticQuota,
-} from "../lib/synthetic.js";
+import { querySyntheticQuota } from "../lib/synthetic.js";
 import type { SyntheticQuotaWindow } from "../lib/types.js";
 import { attemptedResult, mapNullableProviderResult, withStatusDetails } from "./result-helpers.js";
 
@@ -64,7 +61,7 @@ export const syntheticProvider: QuotaProvider = {
     });
     if (providerAvailable) return true;
 
-    return await hasSyntheticApiKeyConfigured();
+    return await hasApiKey(API_KEY_VENDORS.synthetic);
   },
 
   matchesCurrentModel(model: string): boolean {
@@ -72,7 +69,7 @@ export const syntheticProvider: QuotaProvider = {
   },
 
   async fetch(ctx: QuotaProviderContext): Promise<QuotaProviderResult> {
-    const diagnostics = await getSyntheticKeyDiagnostics().catch(() => ({
+    const diagnostics = await getApiKeyDiagnostics(API_KEY_VENDORS.synthetic).catch(() => ({
       configured: false,
       source: null,
       checkedPaths: [],

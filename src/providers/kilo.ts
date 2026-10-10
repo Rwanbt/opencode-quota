@@ -2,6 +2,7 @@
  * Kilo Gateway provider wrapper.
  */
 
+import { API_KEY_VENDORS, getApiKeyDiagnostics, hasApiKey } from "../lib/api-key-resolver.js";
 import type {
   AccountingMetadata,
   QuotaProvider,
@@ -11,7 +12,6 @@ import type {
 } from "../lib/entries.js";
 import { fmtUsdAmount } from "../lib/format-utils.js";
 import { type KiloQuotaResult, queryKiloQuota } from "../lib/kilo.js";
-import { getKiloKeyDiagnostics, hasKiloApiKey } from "../lib/kilo-config.js";
 import { modelProviderMatchesRuntimeId } from "../lib/provider-model-matching.js";
 import { accountingDecimalFromNumber } from "./accounting-decimal.js";
 import {
@@ -146,7 +146,7 @@ export const kiloProvider: QuotaProvider = {
   id: "kilo",
 
   async isAvailable(_ctx: QuotaProviderContext): Promise<boolean> {
-    return await hasKiloApiKey();
+    return await hasApiKey(API_KEY_VENDORS.kilo);
   },
 
   matchesCurrentModel(model: string): boolean {
@@ -154,7 +154,7 @@ export const kiloProvider: QuotaProvider = {
   },
 
   async fetch(ctx: QuotaProviderContext): Promise<QuotaProviderResult> {
-    const diagnostics = await getKiloKeyDiagnostics().catch(() => ({
+    const diagnostics = await getApiKeyDiagnostics(API_KEY_VENDORS.kilo).catch(() => ({
       configured: false,
       source: null,
       checkedPaths: [],

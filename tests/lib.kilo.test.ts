@@ -4,7 +4,7 @@ const mocks = vi.hoisted(() => {
   const fetchResponse = vi.fn();
   return {
     fetchResponse,
-    resolveKiloApiKey: vi.fn(),
+    resolveApiKey: vi.fn(),
     fetchWithTimeout: vi.fn(
       async (
         _url: string,
@@ -23,11 +23,12 @@ vi.mock("../src/lib/http.js", () => ({
   fetchWithTimeout: mocks.fetchWithTimeout,
 }));
 
-vi.mock("../src/lib/kilo-config.js", () => ({
-  resolveKiloApiKey: mocks.resolveKiloApiKey,
+vi.mock("../src/lib/api-key-resolver.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/lib/api-key-resolver.js")>()),
+  resolveApiKey: mocks.resolveApiKey,
 }));
 
-import { queryKiloPassState, queryKiloQuota } from "../src/lib/kilo.js";
+import { queryKiloQuota } from "../src/lib/kilo.js";
 
 function mockResponse(params: { ok: boolean; status: number; json?: unknown; text?: string }) {
   const response = new Response(params.text ?? JSON.stringify(params.json), {
@@ -64,14 +65,14 @@ function noSubscriptionPayload() {
 describe("Kilo Gateway API client", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mocks.resolveKiloApiKey.mockResolvedValue({
+    mocks.resolveApiKey.mockResolvedValue({
       key: "kilo-secret-key",
       source: "env:KILO_API_KEY",
     });
   });
 
   it("returns null without a configured API key", async () => {
-    mocks.resolveKiloApiKey.mockResolvedValueOnce(null);
+    mocks.resolveApiKey.mockResolvedValueOnce(null);
 
     await expect(queryKiloQuota()).resolves.toBeNull();
     expect(mocks.fetchWithTimeout).not.toHaveBeenCalled();
@@ -80,7 +81,7 @@ describe("Kilo Gateway API client", () => {
   it("sends the batched tRPC state request with Bearer auth", async () => {
     mockResponse({ ok: true, status: 200, json: statePayload() });
 
-    await queryKiloPassState({ requestTimeoutMs: 1234 });
+    await queryKiloQuota({ requestTimeoutMs: 1234 });
 
     expect(mocks.fetchWithTimeout).toHaveBeenCalledWith(
       "https://app.kilo.ai/api/trpc/kiloPass.getState?batch=1&input=%7B%220%22%3Anull%7D",
@@ -103,8 +104,9 @@ describe("Kilo Gateway API client", () => {
   it("parses the batched tRPC json envelope and derives remaining credits", async () => {
     mockResponse({ ok: true, status: 200, json: statePayload() });
 
-    await expect(queryKiloPassState()).resolves.toEqual({
+    await expect(queryKiloQuota()).resolves.toEqual({
       success: true,
+      mode: "kilo_pass",
       baseCreditsUsd: 19,
       usageUsd: 2.76,
       bonusCreditsUsd: 9.5,
@@ -125,8 +127,9 @@ describe("Kilo Gateway API client", () => {
       }),
     });
 
-    await expect(queryKiloPassState()).resolves.toEqual({
+    await expect(queryKiloQuota()).resolves.toEqual({
       success: true,
+      mode: "kilo_pass",
       baseCreditsUsd: 0,
       usageUsd: 0,
       bonusCreditsUsd: 0,
@@ -153,8 +156,9 @@ describe("Kilo Gateway API client", () => {
       },
     });
 
-    await expect(queryKiloPassState()).resolves.toEqual({
+    await expect(queryKiloQuota()).resolves.toEqual({
       success: true,
+      mode: "kilo_pass",
       baseCreditsUsd: 5,
       usageUsd: 1,
       bonusCreditsUsd: 0,
@@ -177,8 +181,9 @@ describe("Kilo Gateway API client", () => {
       }),
     });
 
-    await expect(queryKiloPassState()).resolves.toEqual({
+    await expect(queryKiloQuota()).resolves.toEqual({
       success: true,
+      mode: "kilo_pass",
       baseCreditsUsd: 10,
       usageUsd: 12,
       bonusCreditsUsd: 0,
@@ -195,7 +200,7 @@ describe("Kilo Gateway API client", () => {
       json: statePayload({ nextBillingAt: "2099-02-01" }),
     });
 
-    await expect(queryKiloPassState()).resolves.toMatchObject({
+    await expect(queryKiloQuota()).resolves.toMatchObject({
       success: true,
       resetTimeIso: "2099-02-01T00:00:00.000Z",
     });
@@ -208,17 +213,7 @@ describe("Kilo Gateway API client", () => {
   ])("rejects an invalid %s field", async (field, value) => {
     mockResponse({ ok: true, status: 200, json: statePayload({ [field]: value }) });
 
-    await expect(queryKiloPassState()).resolves.toMatchObject({ success: false });
-  });
-
-  it("keeps direct Kilo Pass queries isolated from the balance fallback", async () => {
-    mockResponse({ ok: true, status: 200, json: noSubscriptionPayload() });
-
-    await expect(queryKiloPassState()).resolves.toEqual({
-      success: false,
-      error: "Kilo Gateway state API returned no active Kilo Pass subscription",
-    });
-    expect(mocks.fetchWithTimeout).toHaveBeenCalledTimes(1);
+    await expect(queryKiloQuota()).resolves.toMatchObject({ success: false });
   });
 
   it("returns tagged Kilo Pass data without calling the balance endpoint", async () => {
@@ -230,7 +225,7 @@ describe("Kilo Gateway API client", () => {
       remainingUsd: 25.74,
       overageUsd: 0,
     });
-    expect(mocks.resolveKiloApiKey).toHaveBeenCalledTimes(1);
+    expect(mocks.resolveApiKey).toHaveBeenCalledTimes(1);
     expect(mocks.fetchWithTimeout).toHaveBeenCalledTimes(1);
   });
 
@@ -243,7 +238,7 @@ describe("Kilo Gateway API client", () => {
       mode: "gateway_balance",
       balanceUsd: 12.5,
     });
-    expect(mocks.resolveKiloApiKey).toHaveBeenCalledTimes(1);
+    expect(mocks.resolveApiKey).toHaveBeenCalledTimes(1);
     expect(mocks.fetchWithTimeout).toHaveBeenNthCalledWith(
       2,
       "https://api.kilo.ai/api/profile/balance",
@@ -274,7 +269,7 @@ describe("Kilo Gateway API client", () => {
     expect(mocks.fetchWithTimeout).toHaveBeenCalledTimes(1);
 
     vi.clearAllMocks();
-    mocks.resolveKiloApiKey.mockResolvedValue({ key: "kilo-secret-key" });
+    mocks.resolveApiKey.mockResolvedValue({ key: "kilo-secret-key" });
     mockResponse({
       ok: true,
       status: 200,
@@ -284,7 +279,7 @@ describe("Kilo Gateway API client", () => {
     expect(mocks.fetchWithTimeout).toHaveBeenCalledTimes(1);
 
     vi.clearAllMocks();
-    mocks.resolveKiloApiKey.mockResolvedValue({ key: "kilo-secret-key" });
+    mocks.resolveApiKey.mockResolvedValue({ key: "kilo-secret-key" });
     mockResponse({
       ok: true,
       status: 200,
@@ -347,7 +342,7 @@ describe("Kilo Gateway API client", () => {
     });
     mocks.fetchResponse.mockResolvedValueOnce({ ok: true, status: 200, body });
 
-    const out = await queryKiloPassState();
+    const out = await queryKiloQuota();
     expect(out && !out.success ? out.error : "").toBe(
       "Kilo Gateway state API response exceeded 65536 bytes",
     );
@@ -358,12 +353,12 @@ describe("Kilo Gateway API client", () => {
   it("sanitizes parse and transport errors without leaking the key", async () => {
     mockResponse({ ok: true, status: 200, text: "not json kilo-secret-key\nnext" });
 
-    const malformed = await queryKiloPassState();
+    const malformed = await queryKiloQuota();
     expect(malformed && !malformed.success ? malformed.error : "").toContain("Unexpected token");
     expect(JSON.stringify(malformed)).not.toContain("kilo-secret-key");
 
     mocks.fetchWithTimeout.mockRejectedValueOnce(new Error("timeout kilo-secret-key\nnext"));
-    const timedOut = await queryKiloPassState();
+    const timedOut = await queryKiloQuota();
     expect(timedOut && !timedOut.success ? timedOut.error : "").toBe("timeout [redacted] next");
   });
 });

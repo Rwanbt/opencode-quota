@@ -1,5 +1,6 @@
 import { sanitizeDisplayText } from "./display-sanitize.js";
 import { fetchWithTimeout } from "./http.js";
+import { asRecord } from "./json-guards.js";
 import {
   consoleBaseUrl,
   consoleHeaders,
@@ -54,12 +55,6 @@ type ConsoleRoute =
   | "usage/cost-by-day";
 
 type ConsoleRouteResult<T> = { success: true; data: T } | { success: false; error: string };
-
-function asRecord(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : null;
-}
 
 /** Console micro-cent amounts arrive as decimal strings; numbers are accepted too. */
 function parseMicroCents(value: unknown): number | null {

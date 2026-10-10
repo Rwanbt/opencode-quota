@@ -1,22 +1,14 @@
 /** Zhipu provider wrapper. */
+
+import { API_KEY_LOGIN_VENDORS } from "../lib/api-key-resolver.js";
 import { queryZhipuQuota } from "../lib/zhipu.js";
-import {
-  DEFAULT_ZHIPU_AUTH_CACHE_MAX_AGE_MS,
-  getZhipuAuthDiagnostics,
-  resolveZhipuAuth,
-  resolveZhipuAuthCached,
-} from "../lib/zhipu-auth.js";
 import { createGlmCodingPlanProvider } from "./glm-coding-plan-provider.js";
 
 export const zhipuProvider = createGlmCodingPlanProvider({
   id: "zhipu",
   providerId: "zhipu",
   errorLabel: "Zhipu",
-  authCacheMaxAgeMs: DEFAULT_ZHIPU_AUTH_CACHE_MAX_AGE_MS,
-  resolveAuth: resolveZhipuAuthCached,
-  resolveCredentialAuth: resolveZhipuAuth,
-  credentialIntegrationIds: ["zhipu-coding-plan", "zhipuai-coding-plan"],
-  getAuthDiagnostics: getZhipuAuthDiagnostics,
+  auth: API_KEY_LOGIN_VENDORS.zhipu,
   queryQuota: queryZhipuQuota,
   matchesCurrentModel(model) {
     const lower = model.toLowerCase();

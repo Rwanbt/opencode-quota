@@ -10,8 +10,9 @@ vi.mock("../src/lib/example-provider.js", () => ({
   queryExampleProviderQuota: vi.fn(),
 }));
 
-vi.mock("../src/lib/example-provider-config.js", () => ({
-  hasExampleProviderApiKey: vi.fn(),
+vi.mock("../src/lib/api-key-resolver.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/lib/api-key-resolver.js")>()),
+  hasApiKey: vi.fn(),
 }));
 
 vi.mock("../src/lib/provider-availability.js", () => ({
@@ -72,9 +73,9 @@ describe("example provider", () => {
 
   it("falls back to trusted API key presence when provider metadata is absent", async () => {
     const { isCanonicalProviderAvailable } = await import("../src/lib/provider-availability.js");
-    const { hasExampleProviderApiKey } = await import("../src/lib/example-provider-config.js");
+    const { hasApiKey } = await import("../src/lib/api-key-resolver.js");
     (isCanonicalProviderAvailable as any).mockResolvedValueOnce(false);
-    (hasExampleProviderApiKey as any).mockResolvedValueOnce(true);
+    (hasApiKey as any).mockResolvedValueOnce(true);
 
     await expect(exampleProviderProvider.isAvailable({} as any)).resolves.toBe(true);
   });

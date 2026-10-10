@@ -19,31 +19,23 @@ const mocks = vi.hoisted(() => ({
   queryZhipuQuota: vi.fn(),
   resolveZaiAuthCached: vi.fn(),
   resolveZhipuAuthCached: vi.fn(),
+  getApiKeyLoginDiagnostics: vi.fn(async () => ({
+    state: "none",
+    source: null,
+    checkedPaths: [],
+    credentialDatabasePaths: [],
+  })),
 }));
 
 vi.mock("../src/lib/zai.js", () => ({ queryZaiQuota: mocks.queryZaiQuota }));
 vi.mock("../src/lib/zhipu.js", () => ({ queryZhipuQuota: mocks.queryZhipuQuota }));
-vi.mock("../src/lib/zai-auth.js", () => ({
-  DEFAULT_ZAI_AUTH_CACHE_MAX_AGE_MS: 5_000,
-  resolveZaiAuthCached: mocks.resolveZaiAuthCached,
-  resolveZaiAuth: vi.fn(),
-  getZaiAuthDiagnostics: vi.fn(async () => ({
-    state: "none",
-    source: null,
-    checkedPaths: [],
-    credentialDatabasePaths: [],
-  })),
-}));
-vi.mock("../src/lib/zhipu-auth.js", () => ({
-  DEFAULT_ZHIPU_AUTH_CACHE_MAX_AGE_MS: 5_000,
-  resolveZhipuAuthCached: mocks.resolveZhipuAuthCached,
-  resolveZhipuAuth: vi.fn(),
-  getZhipuAuthDiagnostics: vi.fn(async () => ({
-    state: "none",
-    source: null,
-    checkedPaths: [],
-    credentialDatabasePaths: [],
-  })),
+vi.mock("../src/lib/api-key-resolver.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/lib/api-key-resolver.js")>()),
+  resolveApiKeyLogin: (spec: { displayName: string }, params: unknown) =>
+    spec.displayName === "Z.ai"
+      ? mocks.resolveZaiAuthCached(params)
+      : mocks.resolveZhipuAuthCached(params),
+  getApiKeyLoginDiagnostics: mocks.getApiKeyLoginDiagnostics,
 }));
 
 vi.mock("../src/lib/opencode-auth.js", async (importOriginal) => ({
@@ -52,7 +44,6 @@ vi.mock("../src/lib/opencode-auth.js", async (importOriginal) => ({
 }));
 
 import { readCredentialRows } from "../src/lib/opencode-auth.js";
-import { getZaiAuthDiagnostics, resolveZaiAuth } from "../src/lib/zai-auth.js";
 import { zaiProvider } from "../src/providers/zai.js";
 import { zhipuProvider } from "../src/providers/zhipu.js";
 
@@ -200,10 +191,7 @@ describe("GLM database credential rows", () => {
   });
 
   it("shows a login OpenCode could not return as its own error row next to working rows", async () => {
-    const actual =
-      await vi.importActual<typeof import("../src/lib/zai-auth.js")>("../src/lib/zai-auth.js");
-    vi.mocked(resolveZaiAuth).mockImplementation(actual.resolveZaiAuth);
-    vi.mocked(getZaiAuthDiagnostics).mockResolvedValueOnce({
+    mocks.getApiKeyLoginDiagnostics.mockResolvedValueOnce({
       state: "invalid",
       source: "opencode.db",
       checkedPaths: [],

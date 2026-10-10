@@ -7,10 +7,11 @@
  */
 
 import { isCanonicalAccountingDecimal } from "./accounting-format.js";
+import { API_KEY_VENDORS, resolveApiKey } from "./api-key-resolver.js";
 import { sanitizeDisplaySnippet, sanitizeDisplayText } from "./display-sanitize.js";
 import { clampPercent } from "./format-utils.js";
 import { fetchWithTimeout } from "./http.js";
-import { resolveNanoGptApiKey } from "./nanogpt-config.js";
+import { finiteNumber, nonEmptyString } from "./json-guards.js";
 import type { QuotaError } from "./types.js";
 
 type NanoGptRecord = Record<string, unknown>;
@@ -98,21 +99,13 @@ function isRecord(value: unknown): value is NanoGptRecord {
   return Boolean(value) && typeof value === "object";
 }
 
-function getFiniteNumber(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
-}
-
 function getFinitePositiveNumber(value: unknown): number | undefined {
-  const n = getFiniteNumber(value);
+  const n = finiteNumber(value);
   return n !== undefined && n > 0 ? n : undefined;
 }
 
-function getNonEmptyString(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
-}
-
 function getIsoString(value: unknown): string | undefined {
-  const raw = getNonEmptyString(value);
+  const raw = nonEmptyString(value);
   if (!raw) return undefined;
   const ms = Date.parse(raw);
   if (!Number.isFinite(ms)) return undefined;
@@ -132,10 +125,10 @@ function normalizeUsageWindow(
 ): NanoGptUsageWindow | undefined {
   if (!isRecord(value)) return undefined;
 
-  const used = getFiniteNumber(value.used);
-  const remainingRaw = getFiniteNumber(value.remaining);
+  const used = finiteNumber(value.used);
+  const remainingRaw = finiteNumber(value.remaining);
   const limitFromResponse = getFinitePositiveNumber(limitValue);
-  const percentUsed = getFiniteNumber(value.percentUsed);
+  const percentUsed = finiteNumber(value.percentUsed);
 
   const derivedLimit =
     limitFromResponse ??
@@ -177,7 +170,7 @@ function parseNanoGptUsage(payload: unknown): NanoGptSubscription {
   const hasSubscriptionShape =
     typeof data.active === "boolean" ||
     typeof data.enforceDailyLimit === "boolean" ||
-    Boolean(getNonEmptyString(data.state)) ||
+    Boolean(nonEmptyString(data.state)) ||
     daily !== undefined ||
     monthly !== undefined;
 
@@ -187,7 +180,7 @@ function parseNanoGptUsage(payload: unknown): NanoGptSubscription {
 
   return {
     active: typeof data.active === "boolean" ? data.active : false,
-    state: getNonEmptyString(data.state) ?? (data.active ? "active" : "unknown"),
+    state: nonEmptyString(data.state) ?? (data.active ? "active" : "unknown"),
     enforceDailyLimit: typeof data.enforceDailyLimit === "boolean" ? data.enforceDailyLimit : false,
     daily,
     monthly,
@@ -322,16 +315,10 @@ async function fetchNanoGptBalance(
   }
 }
 
-export {
-  getNanoGptKeyDiagnostics,
-  hasNanoGptApiKey as hasNanoGptApiKeyConfigured,
-  type NanoGptKeySource,
-} from "./nanogpt-config.js";
-
 export async function queryNanoGptQuota(
   options: { requestTimeoutMs?: number } = {},
 ): Promise<NanoGptResult> {
-  const resolved = await resolveNanoGptApiKey();
+  const resolved = await resolveApiKey(API_KEY_VENDORS.nanogpt);
   if (!resolved) return null;
 
   const headers = {

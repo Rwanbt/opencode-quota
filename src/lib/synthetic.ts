@@ -5,25 +5,14 @@
  * https://api.synthetic.new/v2/quotas
  */
 
+import { API_KEY_VENDORS, resolveApiKey } from "./api-key-resolver.js";
 import { sanitizeDisplaySnippet, sanitizeDisplayText } from "./display-sanitize.js";
 import { clampPercent } from "./format-utils.js";
 import { fetchWithTimeout } from "./http.js";
-import {
-  getSyntheticKeyDiagnostics,
-  hasSyntheticApiKey,
-  resolveSyntheticApiKey,
-  type SyntheticKeySource,
-} from "./synthetic-config.js";
 import type { QuotaError, SyntheticQuotaWindow, SyntheticResult } from "./types.js";
 
 const SYNTHETIC_QUOTA_URL = "https://api.synthetic.new/v2/quotas";
 const SYNTHETIC_CREDIT_AMOUNT_PATTERN = /^\$(\d+)(?:\.(\d{1,2}))?$/;
-
-export {
-  getSyntheticKeyDiagnostics,
-  hasSyntheticApiKey as hasSyntheticApiKeyConfigured,
-  type SyntheticKeySource,
-} from "./synthetic-config.js";
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" ? (value as Record<string, unknown>) : null;
@@ -169,7 +158,7 @@ function buildWeeklyTokenWindow(
 export async function querySyntheticQuota(
   options: { requestTimeoutMs?: number } = {},
 ): Promise<SyntheticResult> {
-  const resolved = await resolveSyntheticApiKey();
+  const resolved = await resolveApiKey(API_KEY_VENDORS.synthetic);
   if (!resolved) return null;
 
   try {

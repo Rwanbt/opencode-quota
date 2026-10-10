@@ -9,8 +9,12 @@ import {
 
 vi.mock("../src/lib/deepseek.js", () => ({
   queryDeepSeekBalance: vi.fn(),
-  hasDeepSeekApiKeyConfigured: vi.fn(),
-  getDeepSeekKeyDiagnostics: vi.fn(async () => ({
+}));
+
+vi.mock("../src/lib/api-key-resolver.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/lib/api-key-resolver.js")>()),
+  hasApiKey: vi.fn(),
+  getApiKeyDiagnostics: vi.fn(async () => ({
     configured: false,
     source: null,
     checkedPaths: [],
@@ -258,18 +262,18 @@ describe("deepseek provider", () => {
 
   it("falls back to trusted API key presence when provider ids are absent", async () => {
     const { isCanonicalProviderAvailable } = await import("../src/lib/provider-availability.js");
-    const { hasDeepSeekApiKeyConfigured } = await import("../src/lib/deepseek.js");
+    const { hasApiKey } = await import("../src/lib/api-key-resolver.js");
     (isCanonicalProviderAvailable as any).mockResolvedValueOnce(false);
-    (hasDeepSeekApiKeyConfigured as any).mockResolvedValueOnce(true);
+    (hasApiKey as any).mockResolvedValueOnce(true);
 
     await expect(deepseekProvider.isAvailable({} as any)).resolves.toBe(true);
   });
 
   it("is not available when provider ids are absent and no trusted API key exists", async () => {
     const { isCanonicalProviderAvailable } = await import("../src/lib/provider-availability.js");
-    const { hasDeepSeekApiKeyConfigured } = await import("../src/lib/deepseek.js");
+    const { hasApiKey } = await import("../src/lib/api-key-resolver.js");
     (isCanonicalProviderAvailable as any).mockResolvedValueOnce(false);
-    (hasDeepSeekApiKeyConfigured as any).mockResolvedValueOnce(false);
+    (hasApiKey as any).mockResolvedValueOnce(false);
 
     await expect(deepseekProvider.isAvailable({} as any)).resolves.toBe(false);
   });

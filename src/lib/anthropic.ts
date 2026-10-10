@@ -18,6 +18,7 @@ import { join } from "path";
 import { resolveAnthropicOAuthCached } from "./anthropic-auth.js";
 import { sanitizeDisplaySnippet, sanitizeDisplayText } from "./display-sanitize.js";
 import { fetchWithTimeout } from "./http.js";
+import { asRecord } from "./json-guards.js";
 import {
   composeResolvedAuthIdentities,
   deriveResolvedAuthIdentity,
@@ -39,32 +40,6 @@ const CLAUDE_NO_LOCAL_QUOTA_MESSAGE =
   "Claude CLI auth detected, but local quota windows were not exposed.";
 const ANTHROPIC_NO_QUOTA_MESSAGE =
   "Claude CLI auth detected, but quota was unavailable from the local CLI and OAuth credential sources.";
-
-export interface AnthropicQuotaWindow {
-  utilization?: number;
-  used_percentage?: number;
-  usedPercentage?: number;
-  used_percent?: number;
-  usedPercent?: number;
-  percent_used?: number;
-  percentUsed?: number;
-  resets_at?: string;
-  resetsAt?: string;
-  reset_at?: string;
-  resetAt?: string;
-}
-
-export interface AnthropicExtraUsage {
-  is_enabled?: boolean;
-  utilization?: number;
-}
-
-export interface AnthropicUsageResponse {
-  five_hour: AnthropicQuotaWindow;
-  seven_day: AnthropicQuotaWindow;
-  extra_usage?: AnthropicExtraUsage;
-  limits?: unknown[];
-}
 
 export interface AnthropicQuotaResult {
   success: true;
@@ -274,12 +249,6 @@ export function buildClaudeCommandInvocation(
     args: [...args],
     display,
   };
-}
-
-function asRecord(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : null;
 }
 
 function normalizeResetTimeIso(value: unknown): string | undefined {

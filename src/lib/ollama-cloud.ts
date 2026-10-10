@@ -5,19 +5,14 @@
  * Ollama Cloud usage endpoint.
  */
 
+import { API_KEY_VENDORS, resolveApiKey } from "./api-key-resolver.js";
 import { sanitizeSingleLineDisplayText } from "./display-sanitize.js";
 import { fetchWithTimeout } from "./http.js";
-import { resolveOllamaCloudApiKey } from "./ollama-cloud-config.js";
+import { isRecord } from "./json-guards.js";
 import type { OllamaCloudResult, OllamaCloudWindow } from "./types.js";
 
 const OLLAMA_CLOUD_USAGE_URL = "https://ollama.com/api/usage";
 const MAX_RESPONSE_BYTES = 256 * 1024;
-
-type JsonRecord = Record<string, unknown>;
-
-function isRecord(value: unknown): value is JsonRecord {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
 
 function sanitizeRemoteSingleLineText(text: string): string {
   return sanitizeSingleLineDisplayText(text).replace(/\p{Cf}/gu, "");
@@ -126,7 +121,7 @@ function parseOllamaCloudUsage(payload: unknown): OllamaCloudResult {
 export async function queryOllamaCloudQuota(
   options: { requestTimeoutMs?: number } = {},
 ): Promise<OllamaCloudResult> {
-  const resolved = await resolveOllamaCloudApiKey();
+  const resolved = await resolveApiKey(API_KEY_VENDORS["ollama-cloud"]);
   if (!resolved) return null;
 
   try {

@@ -17,14 +17,10 @@ import {
   resolveKimiGlobalAuthWithDiagnosticsCached,
 } from "../lib/kimi-auth.js";
 import { getKimiQuotaEndpoint, type KimiQuotaEndpointId } from "../lib/kimi-endpoints.js";
-import {
-  credentialRowAuthEntry,
-  formatCredentialDisplayNames,
-  readCredentialRows,
-} from "../lib/opencode-auth.js";
 import { isCanonicalProviderAvailable } from "../lib/provider-availability.js";
 import { normalizeQuotaProviderId } from "../lib/provider-metadata.js";
 import type { AuthData } from "../lib/types.js";
+import { readKeyLoginRows } from "./key-login-rows.js";
 import {
   apiKeyStatusDetails,
   attemptedErrorResult,
@@ -98,33 +94,16 @@ function createKimiProvider(spec: KimiProviderSpec): QuotaProvider {
       }
 
       if (diagnostics.source === "opencode.db") {
-        const credentialRows = (
-          await readCredentialRows(spec.integrationIds, { methods: ["key"] })
-        ).filter((row) => spec.integrationIds.includes(row.integrationId));
-        const rowNames = formatCredentialDisplayNames(
-          spec.label,
-          credentialRows.map((row) => ({ row, fallbackName: spec.label })),
-        );
-        const displayNamesByRowId = new Map(
-          credentialRows.map((row, index) => [row.id, rowNames[index] ?? spec.label]),
-        );
-        const invalidErrors: QuotaProviderResult["errors"] = [];
-        const credentials = credentialRows.flatMap((row) => {
-          const rowAuth = spec.parseAuth({
-            [row.integrationId]: credentialRowAuthEntry(row),
-          } as AuthData);
-          if (rowAuth.state === "invalid") {
-            invalidErrors.push({
-              label: displayNamesByRowId.get(row.id) ?? spec.label,
-              message: rowAuth.error,
-            });
-          }
-          return rowAuth.state === "configured" ? [{ row, auth: rowAuth }] : [];
+        const { credentials, invalidErrors } = await readKeyLoginRows({
+          integrationIds: spec.integrationIds,
+          label: spec.label,
+          parseAuth: spec.parseAuth,
         });
         if (credentials.length > 0 || invalidErrors.length > 0) {
           const results = await Promise.all(
-            credentials.map(async ({ row, auth: rowAuth }) => ({
+            credentials.map(async ({ row, displayName, auth: rowAuth }) => ({
               row,
+              group: displayName,
               result: await queryKimiQuota({
                 apiKey: rowAuth.apiKey,
                 endpoint: rowAuth.endpoint,
@@ -135,8 +114,7 @@ function createKimiProvider(spec: KimiProviderSpec): QuotaProvider {
           );
           const entries: QuotaToastEntry[] = [];
           const errors: QuotaProviderResult["errors"] = [...invalidErrors];
-          for (const { row, result } of results) {
-            const group = displayNamesByRowId.get(row.id) ?? spec.label;
+          for (const { row, group, result } of results) {
             if (!result.success) {
               errors.push({ label: group, message: result.error });
               continue;

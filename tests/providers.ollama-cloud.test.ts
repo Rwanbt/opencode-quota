@@ -8,14 +8,15 @@ import {
 } from "./helpers/provider-assertions.js";
 
 const mocks = vi.hoisted(() => ({
-  getOllamaCloudKeyDiagnostics: vi.fn(),
-  hasOllamaCloudApiKey: vi.fn(),
+  getApiKeyDiagnostics: vi.fn(),
+  hasApiKey: vi.fn(),
   queryOllamaCloudQuota: vi.fn(),
 }));
 
-vi.mock("../src/lib/ollama-cloud-config.js", () => ({
-  getOllamaCloudKeyDiagnostics: mocks.getOllamaCloudKeyDiagnostics,
-  hasOllamaCloudApiKey: mocks.hasOllamaCloudApiKey,
+vi.mock("../src/lib/api-key-resolver.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/lib/api-key-resolver.js")>()),
+  getApiKeyDiagnostics: mocks.getApiKeyDiagnostics,
+  hasApiKey: mocks.hasApiKey,
 }));
 
 vi.mock("../src/lib/ollama-cloud.js", () => ({
@@ -31,7 +32,7 @@ async function runProviderFetch(config: Record<string, unknown> = {}) {
 describe("ollama-cloud provider", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mocks.getOllamaCloudKeyDiagnostics.mockResolvedValue({
+    mocks.getApiKeyDiagnostics.mockResolvedValue({
       configured: true,
       source: "env:OLLAMA_API_KEY",
       checkedPaths: ["env:OLLAMA_API_KEY"],
@@ -206,7 +207,7 @@ describe("ollama-cloud isAvailable", () => {
     [true, true],
     [false, false],
   ])("returns %s when API key availability is %s", async (configured, expected) => {
-    mocks.hasOllamaCloudApiKey.mockResolvedValueOnce(configured);
+    mocks.hasApiKey.mockResolvedValueOnce(configured);
 
     await expect(ollamaCloudProvider.isAvailable({} as any)).resolves.toBe(expected);
   });

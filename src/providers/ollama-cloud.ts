@@ -4,6 +4,7 @@
  * Queries the Ollama Cloud usage API and reports session/weekly/monthly quota.
  */
 
+import { API_KEY_VENDORS, getApiKeyDiagnostics, hasApiKey } from "../lib/api-key-resolver.js";
 import type {
   QuotaProvider,
   QuotaProviderContext,
@@ -11,7 +12,6 @@ import type {
   QuotaToastEntry,
 } from "../lib/entries.js";
 import { queryOllamaCloudQuota } from "../lib/ollama-cloud.js";
-import { getOllamaCloudKeyDiagnostics, hasOllamaCloudApiKey } from "../lib/ollama-cloud-config.js";
 import { modelProviderMatchesRuntimeId } from "../lib/provider-model-matching.js";
 import type { OllamaCloudResult } from "../lib/types.js";
 import {
@@ -101,7 +101,7 @@ export const ollamaCloudProvider: QuotaProvider = {
   id: "ollama-cloud",
 
   async isAvailable(_ctx: QuotaProviderContext): Promise<boolean> {
-    return await hasOllamaCloudApiKey();
+    return await hasApiKey(API_KEY_VENDORS["ollama-cloud"]);
   },
 
   matchesCurrentModel(model: string): boolean {
@@ -109,7 +109,7 @@ export const ollamaCloudProvider: QuotaProvider = {
   },
 
   async fetch(ctx: QuotaProviderContext): Promise<QuotaProviderResult> {
-    const diagnostics = await getOllamaCloudKeyDiagnostics().catch(() => ({
+    const diagnostics = await getApiKeyDiagnostics(API_KEY_VENDORS["ollama-cloud"]).catch(() => ({
       configured: false,
       source: null,
       checkedPaths: [],

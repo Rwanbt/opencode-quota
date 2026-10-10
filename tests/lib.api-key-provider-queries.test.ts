@@ -6,7 +6,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { queryChutesQuota } from "../src/lib/chutes.js";
 import { queryDeepSeekBalance } from "../src/lib/deepseek.js";
 import { queryNanoGptQuota } from "../src/lib/nanogpt.js";
-import { resolveNanoGptApiKey } from "../src/lib/nanogpt-config.js";
 import { querySyntheticQuota } from "../src/lib/synthetic.js";
 
 vi.mock("../src/lib/opencode-auth.js", () => ({
@@ -14,11 +13,19 @@ vi.mock("../src/lib/opencode-auth.js", () => ({
   getCredentialDatabasePaths: vi.fn(() => []),
 }));
 
-vi.mock("../src/lib/nanogpt-config.js", () => ({
-  resolveNanoGptApiKey: vi.fn(),
-  hasNanoGptApiKey: vi.fn(),
-  getNanoGptKeyDiagnostics: vi.fn(),
-}));
+const mocks = vi.hoisted(() => ({ resolveNanoGptApiKey: vi.fn() }));
+
+// Only the NanoGPT key is faked; every other vendor uses the real resolver.
+vi.mock("../src/lib/api-key-resolver.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/lib/api-key-resolver.js")>();
+  return {
+    ...actual,
+    resolveApiKey: (spec: Parameters<typeof actual.resolveApiKey>[0]) =>
+      spec === actual.API_KEY_VENDORS.nanogpt
+        ? mocks.resolveNanoGptApiKey()
+        : actual.resolveApiKey(spec),
+  };
+});
 
 const jsonResponse = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status });
@@ -31,7 +38,7 @@ function stubJsonFetch(body: unknown): void {
 }
 
 function useNanoGptApiKey(): void {
-  vi.mocked(resolveNanoGptApiKey).mockResolvedValueOnce({
+  mocks.resolveNanoGptApiKey.mockResolvedValueOnce({
     key: "nano-key",
     source: "env:NANOGPT_API_KEY",
   });
@@ -70,7 +77,7 @@ describe("simple API-key provider queries", () => {
     for (const name of ["CHUTES_API_KEY", "SYNTHETIC_API_KEY", "DEEPSEEK_API_KEY"]) {
       delete process.env[name];
     }
-    vi.mocked(resolveNanoGptApiKey).mockReset().mockResolvedValue(null);
+    mocks.resolveNanoGptApiKey.mockReset().mockResolvedValue(null);
     vi.unstubAllGlobals();
   });
 

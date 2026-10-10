@@ -2,9 +2,11 @@
  * Template target: src/providers/<provider>.ts
  *
  * Purpose: wire provider availability, current-model matching, and quota-result
- * mapping into the quota provider registry.
+ * mapping into the quota provider registry. The API key comes from the provider's
+ * entry in `API_KEY_VENDORS` (`src/lib/api-key-resolver.ts`).
  */
 
+import { API_KEY_VENDORS, hasApiKey } from "../lib/api-key-resolver.js";
 import type {
   AccountingMetadata,
   QuotaProvider,
@@ -12,7 +14,6 @@ import type {
   QuotaProviderResult,
 } from "../lib/entries.js";
 import { queryExampleProviderQuota } from "../lib/example-provider.js";
-import { hasExampleProviderApiKey } from "../lib/example-provider-config.js";
 import { isCanonicalProviderAvailable } from "../lib/provider-availability.js";
 import { modelProviderIncludesAny } from "../lib/provider-model-matching.js";
 import { attemptedErrorResult, attemptedResult, notAttemptedResult } from "./result-helpers.js";
@@ -35,7 +36,7 @@ export const exampleProviderProvider: QuotaProvider = {
     });
     if (providerAvailable) return true;
 
-    return await hasExampleProviderApiKey();
+    return await hasApiKey(API_KEY_VENDORS["example-provider"]);
   },
 
   matchesCurrentModel(model: string): boolean {

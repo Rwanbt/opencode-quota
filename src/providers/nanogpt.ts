@@ -2,6 +2,7 @@
  * NanoGPT provider wrapper.
  */
 
+import { API_KEY_VENDORS, getApiKeyDiagnostics, hasApiKey } from "../lib/api-key-resolver.js";
 import type {
   AccountingPercentageBasis,
   AccountingWindow,
@@ -10,11 +11,7 @@ import type {
   QuotaProviderResult,
   QuotaToastEntry,
 } from "../lib/entries.js";
-import {
-  getNanoGptKeyDiagnostics,
-  hasNanoGptApiKeyConfigured,
-  queryNanoGptQuota,
-} from "../lib/nanogpt.js";
+import { queryNanoGptQuota } from "../lib/nanogpt.js";
 import { modelProviderMatchesRuntimeId } from "../lib/provider-model-matching.js";
 import {
   attemptedResult,
@@ -175,7 +172,7 @@ export const nanoGptProvider: QuotaProvider = {
   id: "nanogpt",
 
   async isAvailable(_ctx: QuotaProviderContext): Promise<boolean> {
-    return await hasNanoGptApiKeyConfigured();
+    return await hasApiKey(API_KEY_VENDORS.nanogpt);
   },
 
   matchesCurrentModel(model: string): boolean {
@@ -183,7 +180,7 @@ export const nanoGptProvider: QuotaProvider = {
   },
 
   async fetch(ctx: QuotaProviderContext): Promise<QuotaProviderResult> {
-    const diagnostics = await getNanoGptKeyDiagnostics().catch(() => ({
+    const diagnostics = await getApiKeyDiagnostics(API_KEY_VENDORS.nanogpt).catch(() => ({
       configured: false,
       source: null,
       checkedPaths: [],

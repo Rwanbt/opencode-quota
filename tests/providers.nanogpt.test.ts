@@ -9,8 +9,12 @@ import {
 
 vi.mock("../src/lib/nanogpt.js", () => ({
   queryNanoGptQuota: vi.fn(),
-  hasNanoGptApiKeyConfigured: vi.fn(),
-  getNanoGptKeyDiagnostics: vi.fn(async () => ({
+}));
+
+vi.mock("../src/lib/api-key-resolver.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/lib/api-key-resolver.js")>()),
+  hasApiKey: vi.fn(),
+  getApiKeyDiagnostics: vi.fn(async () => ({
     configured: false,
     source: null,
     checkedPaths: [],
@@ -289,8 +293,8 @@ describe("nanogpt provider", () => {
   });
 
   it("is available when a trusted API key is configured", async () => {
-    const { hasNanoGptApiKeyConfigured } = await import("../src/lib/nanogpt.js");
-    (hasNanoGptApiKeyConfigured as any).mockResolvedValue(true);
+    const { hasApiKey } = await import("../src/lib/api-key-resolver.js");
+    (hasApiKey as any).mockResolvedValue(true);
 
     const withProvider = {
       client: {
@@ -315,8 +319,8 @@ describe("nanogpt provider", () => {
   });
 
   it("is not available when the provider id exists but no trusted API key is configured", async () => {
-    const { hasNanoGptApiKeyConfigured } = await import("../src/lib/nanogpt.js");
-    (hasNanoGptApiKeyConfigured as any).mockResolvedValue(false);
+    const { hasApiKey } = await import("../src/lib/api-key-resolver.js");
+    (hasApiKey as any).mockResolvedValue(false);
 
     const withProvider = {
       client: {
@@ -331,8 +335,8 @@ describe("nanogpt provider", () => {
   });
 
   it("is not available when provider ids are absent and no API key exists", async () => {
-    const { hasNanoGptApiKeyConfigured } = await import("../src/lib/nanogpt.js");
-    (hasNanoGptApiKeyConfigured as any).mockResolvedValue(false);
+    const { hasApiKey } = await import("../src/lib/api-key-resolver.js");
+    (hasApiKey as any).mockResolvedValue(false);
 
     const ctx = {
       client: {

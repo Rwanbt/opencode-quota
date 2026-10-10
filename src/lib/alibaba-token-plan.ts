@@ -12,7 +12,7 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { lstat, realpath } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
-
+import { asRecord } from "./json-guards.js";
 import { REQUEST_TIMEOUT_MS } from "./types.js";
 
 export const ALIBABA_TOKEN_PLAN_COMMAND = "bl";
@@ -327,12 +327,6 @@ export async function resolveAlibabaTokenPlanExecutable(params: {
     return executableResolutionError("shell_launcher_rejected");
   }
   return executableResolutionError("executable_not_found");
-}
-
-function asRecord(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : null;
 }
 
 function hasOwn(record: Record<string, unknown>, key: string): boolean {

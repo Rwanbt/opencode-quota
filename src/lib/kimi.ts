@@ -1,6 +1,7 @@
 import { sanitizeDisplaySnippet, sanitizeDisplayText } from "./display-sanitize.js";
 import { clampPercent } from "./format-utils.js";
 import { fetchWithTimeout } from "./http.js";
+import { nonEmptyString } from "./json-guards.js";
 import { getKimiQuotaEndpoint, type KimiQuotaEndpointId } from "./kimi-endpoints.js";
 import type { KimiQuotaWindow, KimiResult } from "./types.js";
 
@@ -17,10 +18,6 @@ function getFiniteNumber(value: unknown): number | undefined {
     }
   }
   return undefined;
-}
-
-function getNonEmptyString(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
 }
 
 function parseResetTimeIso(data: Record<string, unknown>): string | undefined {
@@ -60,7 +57,7 @@ function buildLimitLabel(
   index: number,
 ): string {
   for (const key of ["name", "title", "scope"]) {
-    const val = getNonEmptyString(item[key] ?? detail[key]);
+    const val = nonEmptyString(item[key] ?? detail[key]);
     if (val) return val;
   }
 
@@ -116,7 +113,7 @@ function toUsageRow(
     safeLimit > 0 ? clampPercent(((safeLimit - safeUsed) / safeLimit) * 100) : 0;
 
   return {
-    label: getNonEmptyString(data.name ?? data.title) ?? defaultLabel,
+    label: nonEmptyString(data.name ?? data.title) ?? defaultLabel,
     used: safeUsed,
     limit: safeLimit,
     percentRemaining,

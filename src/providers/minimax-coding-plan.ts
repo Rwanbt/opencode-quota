@@ -33,17 +33,13 @@ import {
 } from "../lib/minimax-auth.js";
 import { getMiniMaxQuotaEndpoint, type MiniMaxQuotaEndpointId } from "../lib/minimax-endpoints.js";
 import {
-  credentialRowAuthEntry,
-  formatCredentialDisplayNames,
-  readCredentialRows,
-} from "../lib/opencode-auth.js";
-import {
   isAnyProviderIdAvailable,
   isCanonicalProviderAvailable,
 } from "../lib/provider-availability.js";
 import { normalizeQuotaProviderId } from "../lib/provider-metadata.js";
 import type { AuthData } from "../lib/types.js";
 import { accountingDecimalFromNumber } from "./accounting-decimal.js";
+import { readKeyLoginRows } from "./key-login-rows.js";
 import {
   apiKeyStatusDetails,
   attemptedErrorResult,
@@ -464,33 +460,16 @@ function createMiniMaxProvider(spec: MiniMaxProviderSpec): QuotaProvider {
       }
 
       if (diagnostics.source === "opencode.db") {
-        const credentialRows = (
-          await readCredentialRows(spec.credentialIntegrationIds, { methods: ["key"] })
-        ).filter((row) => spec.credentialIntegrationIds.includes(row.integrationId));
-        const rowNames = formatCredentialDisplayNames(
-          spec.label,
-          credentialRows.map((row) => ({ row, fallbackName: spec.label })),
-        );
-        const displayNamesByRowId = new Map(
-          credentialRows.map((row, index) => [row.id, rowNames[index] ?? spec.label]),
-        );
-        const invalidErrors: QuotaProviderResult["errors"] = [];
-        const credentials = credentialRows.flatMap((row) => {
-          const rowAuth = spec.resolveCredentialAuth({
-            [row.integrationId]: credentialRowAuthEntry(row),
-          } as AuthData);
-          if (rowAuth.state === "invalid") {
-            invalidErrors.push({
-              label: displayNamesByRowId.get(row.id) ?? spec.label,
-              message: rowAuth.error,
-            });
-          }
-          return rowAuth.state === "configured" ? [{ row, auth: rowAuth }] : [];
+        const { credentials, invalidErrors } = await readKeyLoginRows({
+          integrationIds: spec.credentialIntegrationIds,
+          label: spec.label,
+          parseAuth: spec.resolveCredentialAuth,
         });
         if (credentials.length > 0 || invalidErrors.length > 0) {
           const results = await Promise.all(
-            credentials.map(async ({ row, auth }) => ({
+            credentials.map(async ({ row, displayName, auth }) => ({
               row,
+              group: displayName,
               result: await queryMiniMaxQuota(auth.apiKey, {
                 endpoint: spec.endpoint,
                 label: spec.label,
@@ -500,8 +479,7 @@ function createMiniMaxProvider(spec: MiniMaxProviderSpec): QuotaProvider {
           );
           const entries: QuotaProviderResult["entries"] = [];
           const errors: QuotaProviderResult["errors"] = [...invalidErrors];
-          for (const { row, result } of results) {
-            const group = displayNamesByRowId.get(row.id) ?? spec.label;
+          for (const { row, group, result } of results) {
             if (result.errors.length > 0) {
               errors.push(...result.errors.map((error) => ({ ...error, label: group })));
               continue;

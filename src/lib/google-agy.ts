@@ -12,6 +12,7 @@ import {
   setCachedAccessToken,
 } from "./google-token-cache.js";
 import { fetchWithTimeout } from "./http.js";
+import { nonEmptyString } from "./json-guards.js";
 import { mapWithConcurrency } from "./map-with-concurrency.js";
 import { readAuthFileCached } from "./opencode-auth.js";
 import {
@@ -86,20 +87,12 @@ export type AgyAuthPresence =
       error: string;
     };
 
-function normalizeString(value: unknown): string | undefined {
-  if (typeof value !== "string") {
-    return undefined;
-  }
-  const trimmed = value.trim();
-  return trimmed || undefined;
-}
-
 export function parseAgyRefreshParts(refresh: string | undefined): RefreshParts {
   const [refreshToken = "", projectId = "", managedProjectId = ""] = (refresh ?? "").split("|");
   return {
     refreshToken: refreshToken.trim(),
-    ...(normalizeString(projectId) ? { projectId: projectId.trim() } : {}),
-    ...(normalizeString(managedProjectId) ? { managedProjectId: managedProjectId.trim() } : {}),
+    ...(nonEmptyString(projectId) ? { projectId: projectId.trim() } : {}),
+    ...(nonEmptyString(managedProjectId) ? { managedProjectId: managedProjectId.trim() } : {}),
   };
 }
 
@@ -126,22 +119,22 @@ export function resolveAgyAccounts(
     }
 
     const projectId =
-      normalizeString(entry.managedProjectId) ??
-      normalizeString(entry.quotaProjectId) ??
+      nonEmptyString(entry.managedProjectId) ??
+      nonEmptyString(entry.quotaProjectId) ??
       parts.managedProjectId ??
-      normalizeString(entry.projectId) ??
-      normalizeString(entry.projectID) ??
+      nonEmptyString(entry.projectId) ??
+      nonEmptyString(entry.projectID) ??
       parts.projectId ??
-      normalizeString(configuredProjectId);
+      nonEmptyString(configuredProjectId);
 
     if (!projectId) {
       continue;
     }
 
     const email =
-      normalizeString(entry.email) ??
-      normalizeString(entry.accountEmail) ??
-      normalizeString(entry.login);
+      nonEmptyString(entry.email) ??
+      nonEmptyString(entry.accountEmail) ??
+      nonEmptyString(entry.login);
 
     const key = `${parts.refreshToken}\n${projectId}`;
     if (seen.has(key)) {
@@ -154,7 +147,7 @@ export function resolveAgyAccounts(
       refreshToken: parts.refreshToken,
       projectId,
       ...(email ? { email } : {}),
-      ...(normalizeString(entry.access) ? { accessToken: entry.access!.trim() } : {}),
+      ...(nonEmptyString(entry.access) ? { accessToken: entry.access!.trim() } : {}),
       ...(typeof entry.expires === "number" ? { expiresAt: entry.expires } : {}),
     });
   }
@@ -163,7 +156,7 @@ export function resolveAgyAccounts(
 }
 
 export async function resolveAgyConfiguredProjectId(): Promise<string | undefined> {
-  const explicitEnvProjectId = normalizeString(process.env.OPENCODE_AGY_PROJECT_ID);
+  const explicitEnvProjectId = nonEmptyString(process.env.OPENCODE_AGY_PROJECT_ID);
   if (explicitEnvProjectId) {
     return explicitEnvProjectId;
   }
@@ -174,8 +167,8 @@ export async function resolveAgyConfiguredProjectId(): Promise<string | undefine
   }
 
   return (
-    normalizeString(process.env.GOOGLE_CLOUD_PROJECT) ??
-    normalizeString(process.env.GOOGLE_CLOUD_PROJECT_ID)
+    nonEmptyString(process.env.GOOGLE_CLOUD_PROJECT) ??
+    nonEmptyString(process.env.GOOGLE_CLOUD_PROJECT_ID)
   );
 }
 
@@ -403,69 +396,10 @@ async function retrieveGoogleAgyQuotaSummary(
   });
 }
 
-export function formatDisplayName(modelId: string): string {
-  // Replace all underscores with hyphens
-  let cleaned = modelId.replace(/_/g, "-").trim();
-
-  // Special cases for well-known prefixes
-  if (cleaned.toLowerCase().startsWith("claude-")) {
-    // Handle versions like claude-3-5-sonnet -> Claude 3.5 Sonnet
-    return cleaned
-      .split("-")
-      .map((part, i) => {
-        if (i === 0) return "Claude";
-        if (/^\d+$/.test(part) && /^\d+$/.test(cleaned.split("-")[i + 1] || "")) {
-          return part + "." + cleaned.split("-")[i + 1];
-        }
-        if (/^\d+$/.test(part) && /^\d+$/.test(cleaned.split("-")[i - 1] || "")) {
-          return ""; // Skip second part of version
-        }
-        return part.charAt(0).toUpperCase() + part.slice(1).toLowerCase();
-      })
-      .filter(Boolean)
-      .join(" ");
-  }
-
-  // Replace gpt-oss (case-insensitive) with a temporary placeholder
-  cleaned = cleaned.replace(/gpt-oss/gi, "GPT_OSS");
-  // Replace digit-digit with digit.digit (e.g. 4-6 to 4.6)
-  cleaned = cleaned.replace(/(\d+)-(\d+)/g, "$1.$2");
-
-  let suffix = "";
-  if (cleaned.toLowerCase().endsWith("-medium")) {
-    suffix = " (Medium)";
-    cleaned = cleaned.slice(0, -7);
-  } else if (cleaned.toLowerCase().endsWith("-large")) {
-    suffix = " (Large)";
-    cleaned = cleaned.slice(0, -6);
-  }
-
-  const parts = cleaned.split("-").filter(Boolean);
-  const formattedParts = parts.map((part) => {
-    if (part === "GPT_OSS") {
-      return "GPT-OSS";
-    }
-    const lower = part.toLowerCase();
-    if (lower === "gpt") return "GPT";
-    if (lower === "oss") return "OSS";
-    // If it's a size like 120b, capitalize it to 120B
-    if (/^\d+[a-zA-Z]+$/.test(part)) {
-      return part.toUpperCase();
-    }
-    // If it's a version number like 3.5 or 4.6, keep as-is
-    if (/^[0-9]+(?:\.[0-9]+)*$/.test(part)) {
-      return part;
-    }
-    return part.charAt(0).toUpperCase() + part.slice(1).toLowerCase();
-  });
-
-  return formattedParts.join(" ") + suffix;
-}
-
 function normalizeSummaryWindow(
   value: unknown,
 ): Pick<GoogleAgyQuotaBucket, "window" | "windowLabel"> | undefined {
-  const normalized = normalizeString(value)
+  const normalized = nonEmptyString(value)
     ?.toUpperCase()
     .replace(/[\s-]+/gu, "_");
   if (normalized === "WEEKLY") {
@@ -478,7 +412,7 @@ function normalizeSummaryWindow(
 }
 
 function normalizeSummaryFamily(value: unknown): string | undefined {
-  const displayName = normalizeString(value);
+  const displayName = nonEmptyString(value);
   if (!displayName) {
     return undefined;
   }
@@ -493,7 +427,7 @@ function normalizeSummaryFamily(value: unknown): string | undefined {
 }
 
 function normalizeResetTimeIso(value: unknown): string | undefined {
-  const raw = normalizeString(value);
+  const raw = nonEmptyString(value);
   if (!raw) return undefined;
   const timestamp = Date.parse(raw);
   return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : undefined;
@@ -552,10 +486,10 @@ function normalizeSummaryBucket(params: {
     return undefined;
   }
 
-  const bucketId = normalizeString(params.bucket.bucketId);
-  const bucketLabel = normalizeString(params.bucket.displayName);
+  const bucketId = nonEmptyString(params.bucket.bucketId);
+  const bucketLabel = nonEmptyString(params.bucket.displayName);
   const remainingAmount =
-    normalizeString(params.bucket.remainingAmount) ?? normalizeString(params.bucket.remaining);
+    nonEmptyString(params.bucket.remainingAmount) ?? nonEmptyString(params.bucket.remaining);
   const resetTimeIso = normalizeResetTimeIso(params.bucket.resetTime);
 
   return {

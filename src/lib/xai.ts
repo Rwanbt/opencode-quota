@@ -15,6 +15,7 @@ import { sanitizeSingleLineDisplaySnippet } from "./display-sanitize.js";
 import type { FixedWindowProjectionEvidence } from "./entries.js";
 import { clampPercent } from "./format-utils.js";
 import { fetchWithTimeout } from "./http.js";
+import { isRecord, nonEmptyString } from "./json-guards.js";
 import { readAuthFile, readAuthFileCached } from "./opencode-auth.js";
 import { deriveResolvedAuthIdentity, type ResolvedAuthIdentity } from "./resolved-auth-identity.js";
 import type { AuthData, QuotaError } from "./types.js";
@@ -56,16 +57,8 @@ export type ResolvedXaiOAuth =
       expiresAt?: number;
     };
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-function getNonEmptyString(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
-}
-
 function isoOrUndefined(value: unknown): string | undefined {
-  const raw = getNonEmptyString(value);
+  const raw = nonEmptyString(value);
   if (!raw) return undefined;
 
   const date = new Date(raw);
@@ -73,7 +66,7 @@ function isoOrUndefined(value: unknown): string | undefined {
 }
 
 function periodKindFromType(value: unknown): XaiPeriodKind {
-  const raw = getNonEmptyString(value)?.toUpperCase() ?? "";
+  const raw = nonEmptyString(value)?.toUpperCase() ?? "";
   if (raw.includes("WEEK")) return "weekly";
   if (raw.includes("MONTH")) return "monthly";
   if (raw.includes("DAY")) return "daily";
@@ -141,9 +134,7 @@ function parseCreditsWindow(payload: unknown, observedAtMs: number): XaiWindowVa
   const period = isRecord(config.currentPeriod) ? config.currentPeriod : null;
   const hasUsage = Object.hasOwn(config, "creditUsagePercent");
   const hasPeriod = Boolean(
-    getNonEmptyString(period?.type) ||
-      getNonEmptyString(period?.start) ||
-      getNonEmptyString(period?.end),
+    nonEmptyString(period?.type) || nonEmptyString(period?.start) || nonEmptyString(period?.end),
   );
   if (!hasPeriod && !hasUsage) return null;
 
@@ -201,9 +192,9 @@ function parseXaiSubscriptionTier(payload: unknown): XaiSubscriptionTier | null 
   );
   if (!isRecord(active)) return null;
 
-  const tier = getNonEmptyString(active.tier);
+  const tier = nonEmptyString(active.tier);
   const activeOffer = isRecord(active.activeOffer) ? active.activeOffer : null;
-  const providerOfferId = getNonEmptyString(activeOffer?.providerOfferId);
+  const providerOfferId = nonEmptyString(activeOffer?.providerOfferId);
 
   if (providerOfferId && HEAVY_OFFER_ID_RE.test(providerOfferId)) return "Heavy";
 

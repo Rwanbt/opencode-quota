@@ -5,11 +5,8 @@
  * into provider-neutral accounting rows.
  */
 
-import {
-  getDeepSeekKeyDiagnostics,
-  hasDeepSeekApiKeyConfigured,
-  queryDeepSeekBalance,
-} from "../lib/deepseek.js";
+import { API_KEY_VENDORS, getApiKeyDiagnostics, hasApiKey } from "../lib/api-key-resolver.js";
+import { queryDeepSeekBalance } from "../lib/deepseek.js";
 import type {
   AccountingComponent,
   AccountingMetadata,
@@ -124,7 +121,7 @@ export const deepseekProvider: QuotaProvider = {
     });
     if (providerAvailable) return true;
 
-    return await hasDeepSeekApiKeyConfigured();
+    return await hasApiKey(API_KEY_VENDORS.deepseek);
   },
 
   matchesCurrentModel(model: string): boolean {
@@ -132,7 +129,7 @@ export const deepseekProvider: QuotaProvider = {
   },
 
   async fetch(ctx: QuotaProviderContext): Promise<QuotaProviderResult> {
-    const diagnostics = await getDeepSeekKeyDiagnostics().catch(() => ({
+    const diagnostics = await getApiKeyDiagnostics(API_KEY_VENDORS.deepseek).catch(() => ({
       configured: false,
       source: null,
       checkedPaths: [],

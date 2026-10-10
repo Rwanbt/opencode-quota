@@ -3,35 +3,24 @@ import {
   resolveAlibabaCodingPlanAuthCached,
 } from "../lib/alibaba-auth.js";
 import { resolveAnthropicAuthIdentity } from "../lib/anthropic.js";
-import { resolveChutesApiKey } from "../lib/chutes-config.js";
+import {
+  API_KEY_LOGIN_VENDORS,
+  API_KEY_VENDORS,
+  resolveApiKey,
+  resolveApiKeyLogin,
+} from "../lib/api-key-resolver.js";
 import { resolveCopilotAuthIdentity } from "../lib/copilot.js";
-import { resolveDeepSeekApiKey } from "../lib/deepseek-auth.js";
 import type { QuotaProviderCachePolicy } from "../lib/entries.js";
 import { resolveGoogleAgyAuthIdentity } from "../lib/google-agy.js";
 import { resolveGeminiCliAuthIdentity } from "../lib/google-gemini-cli.js";
-import { resolveKiloApiKey } from "../lib/kilo-config.js";
-import {
-  DEFAULT_KIMI_AUTH_CACHE_MAX_AGE_MS,
-  resolveKimiCnAuthCached,
-  resolveKimiGlobalAuthCached,
-} from "../lib/kimi-auth.js";
+import { resolveKimiCnAuthCached, resolveKimiGlobalAuthCached } from "../lib/kimi-auth.js";
 import {
   DEFAULT_MIMO_CONFIG_CACHE_MAX_AGE_MS,
   resolveMimoConfigCached,
 } from "../lib/mimo-config.js";
-import {
-  DEFAULT_MINIMAX_AUTH_CACHE_MAX_AGE_MS,
-  resolveMiniMaxAuthCached,
-  resolveMiniMaxChinaAuthCached,
-} from "../lib/minimax-auth.js";
-import { resolveNanoGptApiKey } from "../lib/nanogpt-config.js";
-import { resolveOllamaCloudApiKey } from "../lib/ollama-cloud-config.js";
+import { resolveMiniMaxAuthCached, resolveMiniMaxChinaAuthCached } from "../lib/minimax-auth.js";
 import { resolveOpenAIAuthIdentity } from "../lib/openai.js";
 import { consoleBaseUrl, resolveOpenCodeConsoleAuth } from "../lib/opencode-console-auth.js";
-import {
-  DEFAULT_OPENCODE_GO_AUTH_CACHE_MAX_AGE_MS,
-  resolveOpenCodeGoAuthCached,
-} from "../lib/opencode-go-auth.js";
 import { resolveOpenRouterAuthIdentity } from "../lib/openrouter.js";
 import type { CanonicalQuotaProviderId } from "../lib/provider-registration.js";
 import type {
@@ -44,10 +33,7 @@ import {
   deriveResolvedAuthIdentity,
   type ResolvedAuthIdentity,
 } from "../lib/resolved-auth-identity.js";
-import { resolveSyntheticApiKey } from "../lib/synthetic-config.js";
 import { resolveXaiAuthIdentity } from "../lib/xai.js";
-import { DEFAULT_ZAI_AUTH_CACHE_MAX_AGE_MS, resolveZaiAuthCached } from "../lib/zai-auth.js";
-import { DEFAULT_ZHIPU_AUTH_CACHE_MAX_AGE_MS, resolveZhipuAuthCached } from "../lib/zhipu-auth.js";
 
 const UNCACHED = { kind: "uncached" } as const satisfies QuotaProviderCachePolicy;
 
@@ -76,6 +62,35 @@ function resolvedCredentialPolicy(
       });
     },
   };
+}
+
+function apiKeyPolicy(providerId: keyof typeof API_KEY_VENDORS): QuotaProviderCachePolicy {
+  return resolvedCredentialPolicy(providerId, async () => {
+    const resolved = await resolveApiKey(API_KEY_VENDORS[providerId]);
+    return resolved ? { credential: resolved.key } : null;
+  });
+}
+
+function apiKeyLoginPolicy(providerId: "zai" | "zhipu" | "opencode-go"): QuotaProviderCachePolicy {
+  return resolvedCredentialPolicy(providerId, async () => {
+    const resolved = await resolveApiKeyLogin(API_KEY_LOGIN_VENDORS[providerId]);
+    return resolved.state === "configured" ? { credential: resolved.apiKey } : null;
+  });
+}
+
+/** A key bound to one regional endpoint; the endpoint is part of the identity. */
+function regionalKeyPolicy(
+  providerId: CanonicalQuotaProviderId,
+  resolve: () => Promise<
+    { state: "none" | "invalid" } | { state: "configured"; apiKey: string; endpoint: string }
+  >,
+): QuotaProviderCachePolicy {
+  return resolvedCredentialPolicy(providerId, async () => {
+    const resolved = await resolve();
+    return resolved.state === "configured"
+      ? { credential: resolved.apiKey, qualifiers: [resolved.endpoint] }
+      : null;
+  });
 }
 
 export async function resolveQuotaProviderDefinitionAuthIdentity(
@@ -134,10 +149,7 @@ export const PROVIDER_CACHE_POLICIES = {
     kind: "resolved-auth",
     resolveIdentity: () => resolveOpenRouterAuthIdentity(),
   },
-  kilo: resolvedCredentialPolicy("kilo", async () => {
-    const resolved = await resolveKiloApiKey();
-    return resolved ? { credential: resolved.key } : null;
-  }),
+  kilo: apiKeyPolicy("kilo"),
   cursor: UNCACHED,
   "alibaba-token-plan": UNCACHED,
   "alibaba-coding-plan": resolvedCredentialPolicy("alibaba-coding-plan", async () => {
@@ -148,14 +160,8 @@ export const PROVIDER_CACHE_POLICIES = {
       ? { credential: resolved.apiKey, qualifiers: [resolved.tier] }
       : null;
   }),
-  synthetic: resolvedCredentialPolicy("synthetic", async () => {
-    const resolved = await resolveSyntheticApiKey();
-    return resolved ? { credential: resolved.key } : null;
-  }),
-  chutes: resolvedCredentialPolicy("chutes", async () => {
-    const resolved = await resolveChutesApiKey();
-    return resolved ? { credential: resolved.key } : null;
-  }),
+  synthetic: apiKeyPolicy("synthetic"),
+  chutes: apiKeyPolicy("chutes"),
   "google-gemini-cli": {
     kind: "resolved-auth",
     resolveIdentity: () => resolveGeminiCliAuthIdentity(),
@@ -164,56 +170,17 @@ export const PROVIDER_CACHE_POLICIES = {
     kind: "resolved-auth",
     resolveIdentity: () => resolveGoogleAgyAuthIdentity(),
   },
-  zai: resolvedCredentialPolicy("zai", async () => {
-    const resolved = await resolveZaiAuthCached({ maxAgeMs: DEFAULT_ZAI_AUTH_CACHE_MAX_AGE_MS });
-    return resolved.state === "configured" ? { credential: resolved.apiKey } : null;
-  }),
-  zhipu: resolvedCredentialPolicy("zhipu", async () => {
-    const resolved = await resolveZhipuAuthCached({
-      maxAgeMs: DEFAULT_ZHIPU_AUTH_CACHE_MAX_AGE_MS,
-    });
-    return resolved.state === "configured" ? { credential: resolved.apiKey } : null;
-  }),
-  nanogpt: resolvedCredentialPolicy("nanogpt", async () => {
-    const resolved = await resolveNanoGptApiKey();
-    return resolved ? { credential: resolved.key } : null;
-  }),
-  "minimax-coding-plan": resolvedCredentialPolicy("minimax-coding-plan", async () => {
-    const resolved = await resolveMiniMaxAuthCached({
-      maxAgeMs: DEFAULT_MINIMAX_AUTH_CACHE_MAX_AGE_MS,
-    });
-    return resolved.state === "configured"
-      ? { credential: resolved.apiKey, qualifiers: [resolved.endpoint] }
-      : null;
-  }),
-  "minimax-china-coding-plan": resolvedCredentialPolicy("minimax-china-coding-plan", async () => {
-    const resolved = await resolveMiniMaxChinaAuthCached({
-      maxAgeMs: DEFAULT_MINIMAX_AUTH_CACHE_MAX_AGE_MS,
-    });
-    return resolved.state === "configured"
-      ? { credential: resolved.apiKey, qualifiers: [resolved.endpoint] }
-      : null;
-  }),
-  "kimi-code-plan-global": resolvedCredentialPolicy("kimi-code-plan-global", async () => {
-    const resolved = await resolveKimiGlobalAuthCached({
-      maxAgeMs: DEFAULT_KIMI_AUTH_CACHE_MAX_AGE_MS,
-    });
-    return resolved.state === "configured"
-      ? { credential: resolved.apiKey, qualifiers: [resolved.endpoint] }
-      : null;
-  }),
-  "kimi-code-plan-cn": resolvedCredentialPolicy("kimi-code-plan-cn", async () => {
-    const resolved = await resolveKimiCnAuthCached({
-      maxAgeMs: DEFAULT_KIMI_AUTH_CACHE_MAX_AGE_MS,
-    });
-    return resolved.state === "configured"
-      ? { credential: resolved.apiKey, qualifiers: [resolved.endpoint] }
-      : null;
-  }),
-  deepseek: resolvedCredentialPolicy("deepseek", async () => {
-    const resolved = await resolveDeepSeekApiKey();
-    return resolved ? { credential: resolved.key } : null;
-  }),
+  zai: apiKeyLoginPolicy("zai"),
+  zhipu: apiKeyLoginPolicy("zhipu"),
+  nanogpt: apiKeyPolicy("nanogpt"),
+  "minimax-coding-plan": regionalKeyPolicy("minimax-coding-plan", resolveMiniMaxAuthCached),
+  "minimax-china-coding-plan": regionalKeyPolicy(
+    "minimax-china-coding-plan",
+    resolveMiniMaxChinaAuthCached,
+  ),
+  "kimi-code-plan-global": regionalKeyPolicy("kimi-code-plan-global", resolveKimiGlobalAuthCached),
+  "kimi-code-plan-cn": regionalKeyPolicy("kimi-code-plan-cn", resolveKimiCnAuthCached),
+  deepseek: apiKeyPolicy("deepseek"),
   xai: {
     kind: "resolved-auth",
     resolveIdentity: () => resolveXaiAuthIdentity(),
@@ -224,12 +191,7 @@ export const PROVIDER_CACHE_POLICIES = {
     });
     return resolved.state === "configured" ? { credential: resolved.config.cookie } : null;
   }),
-  "opencode-go": resolvedCredentialPolicy("opencode-go", async () => {
-    const resolved = await resolveOpenCodeGoAuthCached({
-      maxAgeMs: DEFAULT_OPENCODE_GO_AUTH_CACHE_MAX_AGE_MS,
-    });
-    return resolved.state === "configured" ? { credential: resolved.apiKey } : null;
-  }),
+  "opencode-go": apiKeyLoginPolicy("opencode-go"),
   opencode: resolvedCredentialPolicy("opencode", async () => {
     const resolved = await resolveOpenCodeConsoleAuth();
     if (resolved.state !== "configured") return null;
@@ -242,9 +204,6 @@ export const PROVIDER_CACHE_POLICIES = {
       qualifiers: [consoleBaseUrl(credential)],
     };
   }),
-  "ollama-cloud": resolvedCredentialPolicy("ollama-cloud", async () => {
-    const resolved = await resolveOllamaCloudApiKey();
-    return resolved ? { credential: resolved.key } : null;
-  }),
+  "ollama-cloud": apiKeyPolicy("ollama-cloud"),
   "quota-providers": quotaProvidersCachePolicy,
 } satisfies Record<CanonicalQuotaProviderId, QuotaProviderCachePolicy>;

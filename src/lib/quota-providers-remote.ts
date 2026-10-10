@@ -1,11 +1,8 @@
-import {
-  createProviderApiKeyResolver,
-  getApiKeyCheckedPaths,
-  getGlobalOpencodeConfigCandidatePaths,
-} from "./api-key-resolver.js";
+import { type ApiKeySpec, getApiKeyCheckedPaths, resolveApiKey } from "./api-key-resolver.js";
 import { sanitizeSingleLineDisplayText } from "./display-sanitize.js";
 import type { AccountingResultType, QuotaToastEntry } from "./entries.js";
-import { getCredentialDatabasePaths, readAuthFile } from "./opencode-auth.js";
+import { isRecord } from "./json-guards.js";
+import { getCredentialDatabasePaths } from "./opencode-auth.js";
 import type {
   JsonV1Mapping,
   JsonV1NumberSource,
@@ -55,10 +52,6 @@ export type RemoteQuotaProviderResult =
   | { success: true; entries: QuotaToastEntry[]; rowErrors?: string[] }
   | { success: false; error: string };
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
 function hasOnlyKeys(value: Record<string, unknown>, allowed: readonly string[]): boolean {
   const allowedSet = new Set(allowed);
   return Object.keys(value).every((key) => allowedSet.has(key));
@@ -97,30 +90,23 @@ function accountingMetadata(
 export async function resolveQuotaProviderApiKey(
   source: RemoteApiQuotaProviderDefinition,
 ): Promise<QuotaProviderAuthResolution> {
-  const resolver = createProviderApiKeyResolver<QuotaProviderAuthSource>({
-    envVars: source.apiKeyEnv ? [{ name: source.apiKeyEnv, source: "env" }] : [],
+  const spec: ApiKeySpec = {
+    envVars: source.apiKeyEnv ? [source.apiKeyEnv] : [],
     providerKeys: [source.providerId],
-    allowedEnvVars: source.apiKeyEnv ? [source.apiKeyEnv] : [],
-    configJsonSource: "opencode.json",
-    configJsoncSource: "opencode.jsonc",
-    getConfigCandidates: getGlobalOpencodeConfigCandidatePaths,
-    auth: {
-      // Key logins only: `providerId` can name an integration with OAuth sign-ins
-      // (for example `opencode`), and resolving one could refresh its token for nothing.
-      readAuth: () => readAuthFile({ integrationIds: [source.providerId], methods: ["key"] }),
-      authKeys: [source.providerId],
-      authSource: "opencode.db",
-    },
-  });
-
-  const resolved = await resolver.resolve();
+    // Key logins only: `providerId` can name an integration with OAuth sign-ins
+    // (for example `opencode`), and resolving one could refresh its token for nothing.
+    keyLoginsOnly: true,
+  };
+  const resolved = await resolveApiKey(spec);
   return {
     ...(resolved ? { key: resolved.key } : {}),
-    source: resolved?.source ?? null,
-    checkedPaths: getApiKeyCheckedPaths({
-      envVarNames: source.apiKeyEnv ? [source.apiKeyEnv] : [],
-      getConfigCandidates: getGlobalOpencodeConfigCandidatePaths,
-    }),
+    // Custom providers report every environment variable source as plain "env".
+    source: !resolved
+      ? null
+      : resolved.source.startsWith("env:")
+        ? "env"
+        : (resolved.source as QuotaProviderAuthSource),
+    checkedPaths: getApiKeyCheckedPaths(spec),
     credentialDatabasePaths: getCredentialDatabasePaths(),
   };
 }

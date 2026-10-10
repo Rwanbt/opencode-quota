@@ -16,19 +16,20 @@ Use this template for API-key/token providers that support all three trusted sou
 2. trusted user/global OpenCode config
 3. environment variables
 
-Do not use it for OAuth-only providers such as OpenAI. `readAuth` must pass the provider's integration ids, as `config.ts` does: `readAuthFile({ integrationIds: PROVIDER_KEYS })`.
+Do not use it for OAuth-only providers such as OpenAI.
+
+Auth is one table entry, not a new file: add the provider to `API_KEY_VENDORS` in `src/lib/api-key-resolver.ts` (env var names and OpenCode provider ids). The shared resolver reads env, then trusted global config, then OpenCode logins for those ids, and `tests/lib.api-key-resolver.test.ts` covers that order; add a row to its vendor table.
 
 ## Copy targets
 
-| Template file      | Copy to                               | Purpose                                                  |
-| ------------------ | ------------------------------------- | -------------------------------------------------------- |
-| `config.ts`        | `src/lib/<provider>-config.ts`        | Resolve auth from OpenCode auth, global config, and env. |
-| `provider.ts`      | `src/providers/<provider>.ts`         | Register availability, model matching, and result types. |
-| `config.test.ts`   | `tests/lib.<provider>-config.test.ts` | Prove auth source precedence/fallbacks.                  |
-| `provider.test.ts` | `tests/providers.<provider>.test.ts`  | Prove provider wrapper behavior.                         |
+| Template file      | Copy to                              | Purpose                                                  |
+| ------------------ | ------------------------------------ | -------------------------------------------------------- |
+| `provider.ts`      | `src/providers/<provider>.ts`        | Register availability, model matching, and result types. |
+| `provider.test.ts` | `tests/providers.<provider>.test.ts` | Prove provider wrapper behavior.                         |
 
 Also update:
 
+- `src/lib/api-key-resolver.ts` (`API_KEY_VENDORS`) and its test table
 - `src/lib/provider-registration.ts` with the provider metadata and display order
 - `src/providers/registry.ts` with the provider singleton binding
 - `README.md`

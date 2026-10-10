@@ -4,7 +4,7 @@ const mocks = vi.hoisted(() => {
   const fetchResponse = vi.fn();
   return {
     fetchResponse,
-    resolveOllamaCloudApiKey: vi.fn(),
+    resolveApiKey: vi.fn(),
     fetchWithTimeout: vi.fn(
       async (
         _url: string,
@@ -23,8 +23,9 @@ vi.mock("../src/lib/http.js", () => ({
   fetchWithTimeout: mocks.fetchWithTimeout,
 }));
 
-vi.mock("../src/lib/ollama-cloud-config.js", () => ({
-  resolveOllamaCloudApiKey: mocks.resolveOllamaCloudApiKey,
+vi.mock("../src/lib/api-key-resolver.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/lib/api-key-resolver.js")>()),
+  resolveApiKey: mocks.resolveApiKey,
 }));
 
 import { _parseOllamaCloudUsage, queryOllamaCloudQuota } from "../src/lib/ollama-cloud.js";
@@ -80,14 +81,14 @@ const monthlyUsagePayload = {
 describe("queryOllamaCloudQuota", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mocks.resolveOllamaCloudApiKey.mockResolvedValue({
+    mocks.resolveApiKey.mockResolvedValue({
       key: "ollama-secret-key",
       source: "env:OLLAMA_API_KEY",
     });
   });
 
   it("returns null without a configured API key", async () => {
-    mocks.resolveOllamaCloudApiKey.mockResolvedValueOnce(null);
+    mocks.resolveApiKey.mockResolvedValueOnce(null);
 
     await expect(queryOllamaCloudQuota()).resolves.toBeNull();
     expect(mocks.fetchWithTimeout).not.toHaveBeenCalled();

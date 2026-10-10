@@ -11,6 +11,7 @@ import {
   setCachedAccessToken,
 } from "./google-token-cache.js";
 import { fetchWithTimeout } from "./http.js";
+import { nonEmptyString } from "./json-guards.js";
 import { mapWithConcurrency } from "./map-with-concurrency.js";
 import { readAuthFileCached } from "./opencode-auth.js";
 import {
@@ -92,20 +93,12 @@ type RetrieveUserQuotaResponse = {
   buckets?: RetrieveUserQuotaBucket[];
 };
 
-function normalizeString(value: unknown): string | undefined {
-  if (typeof value !== "string") {
-    return undefined;
-  }
-  const trimmed = value.trim();
-  return trimmed || undefined;
-}
-
 export function parseGeminiCliRefreshParts(refresh: string | undefined): RefreshParts {
   const [refreshToken = "", projectId = "", managedProjectId = ""] = (refresh ?? "").split("|");
   return {
     refreshToken: refreshToken.trim(),
-    ...(normalizeString(projectId) ? { projectId: projectId.trim() } : {}),
-    ...(normalizeString(managedProjectId) ? { managedProjectId: managedProjectId.trim() } : {}),
+    ...(nonEmptyString(projectId) ? { projectId: projectId.trim() } : {}),
+    ...(nonEmptyString(managedProjectId) ? { managedProjectId: managedProjectId.trim() } : {}),
   };
 }
 
@@ -118,9 +111,7 @@ function getAuthEntry(
 
 function resolveEmail(entry: GeminiCliOAuthAuthData): string | undefined {
   return (
-    normalizeString(entry.email) ??
-    normalizeString(entry.accountEmail) ??
-    normalizeString(entry.login)
+    nonEmptyString(entry.email) ?? nonEmptyString(entry.accountEmail) ?? nonEmptyString(entry.login)
   );
 }
 
@@ -130,13 +121,13 @@ function resolveProjectId(
   configuredProjectId?: string,
 ): string | undefined {
   return (
-    normalizeString(entry.managedProjectId) ??
-    normalizeString(entry.quotaProjectId) ??
+    nonEmptyString(entry.managedProjectId) ??
+    nonEmptyString(entry.quotaProjectId) ??
     parts.managedProjectId ??
-    normalizeString(entry.projectId) ??
-    normalizeString(entry.projectID) ??
+    nonEmptyString(entry.projectId) ??
+    nonEmptyString(entry.projectID) ??
     parts.projectId ??
-    normalizeString(configuredProjectId)
+    nonEmptyString(configuredProjectId)
   );
 }
 
@@ -179,7 +170,7 @@ export function resolveGeminiCliAccounts(
       refreshToken: parts.refreshToken,
       projectId,
       ...(email ? { email } : {}),
-      ...(normalizeString(entry.access) ? { accessToken: entry.access!.trim() } : {}),
+      ...(nonEmptyString(entry.access) ? { accessToken: entry.access!.trim() } : {}),
       ...(typeof entry.expires === "number" ? { expiresAt: entry.expires } : {}),
     });
   }
@@ -226,7 +217,7 @@ function getCompanionQuotaError(state: "missing" | "invalid"): string {
 }
 
 export async function resolveGeminiCliConfiguredProjectId(): Promise<string | undefined> {
-  const explicitEnvProjectId = normalizeString(process.env.OPENCODE_GEMINI_PROJECT_ID);
+  const explicitEnvProjectId = nonEmptyString(process.env.OPENCODE_GEMINI_PROJECT_ID);
   if (explicitEnvProjectId) {
     return explicitEnvProjectId;
   }
@@ -237,8 +228,8 @@ export async function resolveGeminiCliConfiguredProjectId(): Promise<string | un
   }
 
   return (
-    normalizeString(process.env.GOOGLE_CLOUD_PROJECT) ??
-    normalizeString(process.env.GOOGLE_CLOUD_PROJECT_ID)
+    nonEmptyString(process.env.GOOGLE_CLOUD_PROJECT) ??
+    nonEmptyString(process.env.GOOGLE_CLOUD_PROJECT_ID)
   );
 }
 
@@ -535,9 +526,9 @@ function mapQuotaBuckets(
   }
 
   const normalizedBuckets = buckets
-    .filter((bucket) => normalizeString(bucket.modelId))
+    .filter((bucket) => nonEmptyString(bucket.modelId))
     .map((bucket) => {
-      const modelId = normalizeString(bucket.modelId)!;
+      const modelId = nonEmptyString(bucket.modelId)!;
       const remainingFraction = bucket.remainingFraction;
       const percentRemaining =
         typeof remainingFraction === "number" && Number.isFinite(remainingFraction)
@@ -547,11 +538,11 @@ function mapQuotaBuckets(
         modelId,
         displayName: formatDisplayName(modelId),
         percentRemaining,
-        ...(normalizeString(bucket.resetTime) ? { resetTimeIso: bucket.resetTime!.trim() } : {}),
-        ...(normalizeString(bucket.remainingAmount)
+        ...(nonEmptyString(bucket.resetTime) ? { resetTimeIso: bucket.resetTime!.trim() } : {}),
+        ...(nonEmptyString(bucket.remainingAmount)
           ? { remainingAmount: bucket.remainingAmount!.trim() }
           : {}),
-        ...(normalizeString(bucket.tokenType) ? { tokenType: bucket.tokenType!.trim() } : {}),
+        ...(nonEmptyString(bucket.tokenType) ? { tokenType: bucket.tokenType!.trim() } : {}),
         ...(account.email ? { accountEmail: account.email } : {}),
         sourceKey: account.sourceKey,
       };

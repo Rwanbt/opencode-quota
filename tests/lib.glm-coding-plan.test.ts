@@ -8,11 +8,10 @@ const mocks = vi.hoisted(() => ({
   resolveZhipuAuthCached: vi.fn(),
 }));
 
-vi.mock("../src/lib/zai-auth.js", () => ({
-  resolveZaiAuthCached: mocks.resolveZaiAuthCached,
-}));
-vi.mock("../src/lib/zhipu-auth.js", () => ({
-  resolveZhipuAuthCached: mocks.resolveZhipuAuthCached,
+vi.mock("../src/lib/api-key-resolver.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/lib/api-key-resolver.js")>()),
+  resolveApiKeyLogin: (spec: { displayName: string }) =>
+    spec.displayName === "Z.ai" ? mocks.resolveZaiAuthCached() : mocks.resolveZhipuAuthCached(),
 }));
 
 const providers = [
