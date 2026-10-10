@@ -1,20 +1,9 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { vi } from "vitest";
+import { createFakeIntegration } from "./fake-integration.js";
 
 type MockFunction = ReturnType<typeof vi.fn>;
-
-type PromptClient = {
-  session: {
-    prompt: MockFunction;
-  };
-};
-
-type ToastClient = {
-  tui: {
-    showToast: MockFunction;
-  };
-};
 
 interface PricingMocks {
   getPricingSnapshotMeta: MockFunction;
@@ -26,32 +15,10 @@ interface PricingMocks {
   setPricingSnapshotSelection: MockFunction;
 }
 
-interface SessionTokenMocks {
-  fetchSessionTokensForDisplay: MockFunction;
-}
-
-interface AuthPlanMocks {
-  resolveAlibabaCodingPlanAuthCached?: MockFunction;
-}
-
-interface PluginBootstrapMocks extends PricingMocks, AuthPlanMocks {
+interface PluginBootstrapMocks extends PricingMocks {
   getProviders?: MockFunction;
   fetchSessionTokensForDisplay?: MockFunction;
-}
-
-interface PluginBootstrapOptions {
-  providers?: unknown[];
-  resetModules?: boolean;
-  resetPluginState?: boolean;
-  seedAuthPlans?: boolean;
-  seedSessionTokens?: boolean;
-}
-
-interface PluginRuntimeRoot {
-  cacheDir: string;
-  configDir: string;
-  dataDir: string;
-  stateDir: string;
+  resolveAlibabaCodingPlanAuthCached?: MockFunction;
 }
 
 export function createProvidersRegistryModuleMock(getProviders: MockFunction) {
@@ -76,7 +43,6 @@ export function createSessionTokensModuleMock(fetchSessionTokensForDisplay: Mock
 
 export function createAlibabaAuthModuleMock(resolveAlibabaCodingPlanAuthCached: MockFunction) {
   return {
-    DEFAULT_ALIBABA_AUTH_CACHE_MAX_AGE_MS: 5000,
     isAlibabaModelId: (model?: string) =>
       typeof model === "string" &&
       (model.toLowerCase().startsWith("alibaba/") || model.toLowerCase().startsWith("alibaba-cn/")),
@@ -84,25 +50,15 @@ export function createAlibabaAuthModuleMock(resolveAlibabaCodingPlanAuthCached: 
   };
 }
 
-export function createPluginBootstrapRuntimeRoot(root: string): PluginRuntimeRoot {
-  return {
-    dataDir: `${root}/data`,
-    configDir: `${root}/config`,
-    cacheDir: `${root}/cache`,
-    stateDir: `${root}/state`,
-  };
-}
-
 export function createPluginRuntimePathsMockModule(root: string) {
-  const runtimeRoot = createPluginBootstrapRuntimeRoot(root);
-
   return {
-    getOpencodeRuntimeDirs: () => ({ ...runtimeRoot }),
+    getOpencodeRuntimeDirs: () => ({
+      dataDir: `${root}/data`,
+      configDir: `${root}/config`,
+      cacheDir: `${root}/cache`,
+      stateDir: `${root}/state`,
+    }),
   };
-}
-
-export function resetPluginTestState(): void {
-  // Per-test module resets clear in-memory plugin/cache singletons.
 }
 
 /**
@@ -110,12 +66,25 @@ export function resetPluginTestState(): void {
  * `createPluginRuntimePathsMockModule(root)`.
  */
 export function writePluginTestSettings(root: string, settings: Record<string, unknown>): void {
-  const dir = join(createPluginBootstrapRuntimeRoot(root).configDir, "opencode-quota");
+  const dir = join(root, "config", "opencode-quota");
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, "settings.jsonc"), JSON.stringify(settings, null, 2));
 }
 
-export function seedDefaultPricingMocks(mocks: PricingMocks): void {
+/**
+ * Clears every mock and gives the mocked modules their default answers. `resetPluginState`
+ * loads fresh module instances, which clears module-level singleton state.
+ */
+export function seedDefaultPluginBootstrapMocks(
+  mocks: PluginBootstrapMocks,
+  options: { resetPluginState?: boolean } = {},
+): void {
+  vi.clearAllMocks();
+  if (options.resetPluginState) vi.resetModules();
+
+  mocks.getProviders?.mockReturnValue([]);
+  mocks.fetchSessionTokensForDisplay?.mockResolvedValue({});
+  mocks.resolveAlibabaCodingPlanAuthCached?.mockResolvedValue({ state: "none" });
   mocks.getPricingSnapshotMeta.mockReturnValue({
     source: "https://models.dev/api.json",
     generatedAt: Date.UTC(2026, 0, 1),
@@ -133,88 +102,66 @@ export function seedDefaultPricingMocks(mocks: PricingMocks): void {
   });
 }
 
-export function seedDefaultSessionTokenMocks(mocks: SessionTokenMocks): void {
-  mocks.fetchSessionTokensForDisplay.mockResolvedValue({
-    sessionTokens: undefined,
-    error: undefined,
-  });
-}
+export type ServerTool = {
+  name: string;
+  execute: (input: unknown, context: { sessionID: string }) => Promise<{ content: string }>;
+};
 
-export function seedDefaultAuthPlanMocks(mocks: AuthPlanMocks): void {
-  mocks.resolveAlibabaCodingPlanAuthCached?.mockResolvedValue({ state: "none" });
-}
+export type ServerCommand = {
+  name: string;
+  description?: string;
+  execute: (invocation: {
+    sessionID: string;
+    prompt: { text: string };
+    delivery?: "steer" | "queue";
+  }) => Promise<void>;
+};
 
-export function seedDefaultPluginBootstrapMocks(
-  mocks: PluginBootstrapMocks,
-  options: PluginBootstrapOptions = {},
-): void {
-  vi.clearAllMocks();
-
-  if (options.resetModules || options.resetPluginState) {
-    // Fresh module instances clear module-level singleton state.
-    vi.resetModules();
-  }
-
-  if (options.resetPluginState) {
-    resetPluginTestState();
-  }
-
-  mocks.getProviders?.mockReturnValue(options.providers ?? []);
-
-  if (mocks.fetchSessionTokensForDisplay && options.seedSessionTokens !== false) {
-    seedDefaultSessionTokenMocks(mocks);
-  }
-
-  if (options.seedAuthPlans !== false) {
-    seedDefaultAuthPlanMocks(mocks);
-  }
-
-  seedDefaultPricingMocks(mocks);
-}
-
-export function createPluginTestClient({
-  modelID,
-  providerID,
-  sessionData,
+/**
+ * A fake OpenCode context for the server plugin's `setup`. It records the tools, slash
+ * commands and session hooks the plugin adds; `emit` records the RPC events. OpenCode lists
+ * the providers `openCodeProviders` names, and `sessionGet` answers for every session.
+ */
+export function createServerContext({
+  directory = process.cwd(),
+  openCodeProviders = [],
+  sessionGet = vi.fn().mockResolvedValue({}),
+  events = { async *[Symbol.asyncIterator]() {} },
 }: {
-  modelID?: string;
-  providerID?: string;
-  sessionData?: Record<string, unknown>;
+  directory?: string;
+  openCodeProviders?: string[];
+  sessionGet?: MockFunction;
+  events?: AsyncIterable<{ type: string }>;
 } = {}) {
-  const data = {
-    ...(modelID === undefined && providerID === undefined
-      ? {}
-      : {
-          model: {
-            ...(modelID === undefined ? {} : { id: modelID }),
-            ...(providerID === undefined ? {} : { providerID }),
-          },
-        }),
-    ...(sessionData ?? {}),
-  };
-
-  return {
-    config: {
-      get: vi.fn().mockResolvedValue({ data: {} }),
-      providers: vi.fn().mockResolvedValue({ data: { providers: [] } }),
-    },
+  const tools: ServerTool[] = [];
+  const commands: ServerCommand[] = [];
+  const hooks = new Map<string, unknown>();
+  const emit = vi.fn(async (_name: string, _data: unknown) => {});
+  const ctx = {
+    location: { directory },
+    provider: { list: vi.fn(async () => ({ data: openCodeProviders.map((id) => ({ id })) })) },
     session: {
-      get: vi.fn().mockResolvedValue({ data }),
-      prompt: vi.fn().mockResolvedValue({}),
+      get: sessionGet,
+      wait: vi.fn(async (_input: { sessionID: string }) => {}),
+      prompt: vi.fn(async (_input: { sessionID: string; text: string }) => ({})),
+      hook: vi.fn(async (name: string, callback: unknown) => {
+        hooks.set(name, callback);
+        return { dispose: async () => {} };
+      }),
     },
-    tui: {
-      showToast: vi.fn().mockResolvedValue({}),
+    tool: {
+      transform: vi.fn(async (build: (editor: { add: (tool: ServerTool) => void }) => void) =>
+        build({ add: (tool) => tools.push(tool) }),
+      ),
     },
-    app: {
-      log: vi.fn().mockResolvedValue({}),
+    command: {
+      transform: vi.fn(async (build: (editor: { add: (command: ServerCommand) => void }) => void) =>
+        build({ add: (command) => commands.push(command) }),
+      ),
     },
+    rpc: { register: vi.fn(async () => ({ dispose: async () => {}, events: { emit } })) },
+    integration: createFakeIntegration([]),
+    event: { subscribe: () => events },
   };
-}
-
-export function getPromptText(client: PromptClient, callIndex = 0): string {
-  return client.session.prompt.mock.calls[callIndex]?.[0]?.body?.parts?.[0]?.text ?? "";
-}
-
-export function getToastMessage(client: ToastClient, callIndex = 0): string {
-  return client.tui.showToast.mock.calls[callIndex]?.[0]?.body?.message ?? "";
+  return { ctx, tools, commands, hooks, emit };
 }

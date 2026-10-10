@@ -1,7 +1,7 @@
 import { existsSync } from "fs";
 import { dirname, join } from "path";
 
-export type ConfigFileKind = "opencode";
+type ConfigFileKind = "opencode";
 export type ConfigFileFormat = "json" | "jsonc";
 
 export interface EditableConfigPath {
@@ -10,7 +10,7 @@ export interface EditableConfigPath {
   existed: boolean;
 }
 
-export interface RuntimeContextRoots {
+interface RuntimeContextRoots {
   workspaceRoot: string;
   configRoot: string;
 }
@@ -46,7 +46,7 @@ export function resolveOpenCodeLocationRoots(
   return { workspaceRoot, configRoot: workspaceRoot, fallbackDirectory: directory };
 }
 
-export function getConfigFileCandidatePaths(dir: string, kind: ConfigFileKind): string[] {
+function getConfigFileCandidatePaths(dir: string, kind: ConfigFileKind): string[] {
   return [join(dir, `${kind}.jsonc`), join(dir, `${kind}.json`)];
 }
 

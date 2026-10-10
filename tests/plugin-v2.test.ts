@@ -1,7 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { messageDocument } from "../src/lib/report-document.js";
-
 const buildOutput = vi.hoisted(() => vi.fn());
 vi.mock("../src/lib/quota-dialog-commands.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/lib/quota-dialog-commands.js")>()),
@@ -21,20 +19,8 @@ import {
 import { formatQuotaReportMessage } from "../src/lib/quota-report-message.js";
 import plugin from "../src/plugin.js";
 import { createFakeIntegration } from "./helpers/fake-integration.js";
+import { createServerContext, type ServerCommand } from "./helpers/plugin-test-harness.js";
 
-type RegisteredTool = {
-  name: string;
-  execute: (input: unknown, context: { sessionID: string }) => Promise<{ content: string }>;
-};
-type RegisteredCommand = {
-  name: string;
-  description?: string;
-  execute: (invocation: {
-    sessionID: string;
-    prompt: { text: string };
-    delivery: "steer" | "queue";
-  }) => Promise<void>;
-};
 type Part = { type: string; text?: string };
 type Message = { role: string; metadata?: Record<string, unknown>; content: Part[] };
 type HookEvent = { messages: Message[]; result?: string };
@@ -47,63 +33,25 @@ type RetryEvent = {
   decision: { retry: false } | { retry: true; delay: number };
 };
 
+/** A server context whose sessions use gpt-5 from OpenAI, the one provider OpenCode lists. */
 function createContext() {
-  const tools: RegisteredTool[] = [];
-  const commands: RegisteredCommand[] = [];
-  const hooks = new Map<string, (event: HookEvent) => void>();
-  const calls: string[] = [];
-  const ctx = {
-    location: { directory: "/tmp/opencode/quota-plugin-v2" },
-    provider: { list: vi.fn().mockResolvedValue({ data: [{ id: "openai" }] }) },
-    session: {
-      get: vi.fn().mockResolvedValue({ model: { id: "gpt-5", providerID: "openai" } }),
-      wait: vi.fn(async () => {
-        calls.push("wait");
-      }),
-      prompt: vi.fn(async () => {
-        calls.push("prompt");
-        return {};
-      }),
-      hook: vi.fn(async (name: string, callback: (event: HookEvent) => void) => {
-        hooks.set(name, callback);
-        return { dispose: async () => {} };
-      }),
-    },
-    tool: {
-      transform: vi.fn(async (callback) => {
-        callback({ add: (tool: RegisteredTool) => tools.push(tool) });
-      }),
-    },
-    command: {
-      transform: vi.fn(async (callback) => {
-        callback({ add: (command: RegisteredCommand) => commands.push(command) });
-      }),
-    },
-    rpc: { register: vi.fn(async () => ({ dispose: async () => {}, events: { emit: vi.fn() } })) },
-    integration: createFakeIntegration([]),
-    event: { subscribe: () => ({ async *[Symbol.asyncIterator]() {} }) },
-  };
-  return { ctx, tools, commands, hooks, calls };
-}
-
-function findCommand(commands: RegisteredCommand[], name: string): RegisteredCommand {
-  const found = commands.find((item) => item.name === name);
-  if (!found) throw new Error(`Command not registered: ${name}`);
-  return found;
-}
-
-function runCommand(commands: RegisteredCommand[], name: string, text = "") {
-  return findCommand(commands, name).execute({
-    sessionID: "session-web",
-    prompt: { text },
-    delivery: "queue",
+  return createServerContext({
+    directory: "/tmp/opencode/quota-plugin-v2",
+    openCodeProviders: ["openai"],
+    sessionGet: vi.fn().mockResolvedValue({ model: { id: "gpt-5", providerID: "openai" } }),
   });
 }
 
-function hook(hooks: Map<string, (event: HookEvent) => void>, name: string) {
+function runCommand(commands: ServerCommand[], name: string, text = "") {
+  const found = commands.find((item) => item.name === name);
+  if (!found) throw new Error(`Command not registered: ${name}`);
+  return found.execute({ sessionID: "session-web", prompt: { text }, delivery: "queue" });
+}
+
+function hook(hooks: Map<string, unknown>, name: string) {
   const found = hooks.get(name);
   if (!found) throw new Error(`Hook not registered: ${name}`);
-  return found;
+  return found as (event: HookEvent) => void;
 }
 
 const user = (text: string, metadata?: Record<string, unknown>): Message => ({
@@ -118,9 +66,9 @@ describe("V2 server plugin", () => {
     resolveRetryDelay.mockReset();
   });
 
-  it("registers a structured quota diagnostics tool without a server toast dependency", async () => {
+  it("registers the quota diagnostics tool without a server toast dependency or V1 command hooks", async () => {
     const { ctx, tools } = createContext();
-    buildOutput.mockResolvedValue({ state: "output", output: "Quota ready" });
+    buildOutput.mockResolvedValue({ output: "Quota ready" });
 
     await plugin.setup(ctx as never);
     expect(tools.map((tool) => tool.name)).toEqual([
@@ -135,12 +83,20 @@ describe("V2 server plugin", () => {
     const output = await quotaStatus?.execute({}, { sessionID: "session-test" });
     expect(output).toEqual({ content: "Quota ready" });
     expect(buildOutput).toHaveBeenCalledWith(
-      expect.objectContaining({
-        command: "quota_status",
-        sessionID: "session-test",
-      }),
+      expect.objectContaining({ sessionID: "session-test" }),
     );
     expect(ctx.provider.list).toHaveBeenCalledTimes(0);
+    // The report reads the session's model from OpenCode and gets no agent settings.
+    const [params] = buildOutput.mock.calls[0];
+    await expect(params.resolveSessionModel("session-test")).resolves.toEqual({
+      id: "gpt-5",
+      providerID: "openai",
+    });
+    expect(ctx.session.get).toHaveBeenCalledWith({ sessionID: "session-test" });
+    expect(buildOutput).toHaveBeenCalledWith(
+      expect.not.objectContaining({ agent: expect.anything(), default_agent: expect.anything() }),
+    );
+    expect((plugin as Record<string, unknown>)["command.execute.before"]).toBeUndefined();
   });
 
   it("registers /quota, /quota_status and /quota_usage for Web and Desktop", async () => {
@@ -152,24 +108,16 @@ describe("V2 server plugin", () => {
   });
 
   it("posts the report as a user message that never starts a model turn", async () => {
-    const { ctx, commands, calls } = createContext();
-    const document = messageDocument("# Quota\nopenai 42%\u001b[31m");
-    buildOutput.mockResolvedValue({
-      state: "output",
-      title: "OpenCode Quota",
-      output: "# Quota\nopenai 42%\u001b[31m",
-      document,
-    });
+    const { ctx, commands } = createContext();
+    buildOutput.mockResolvedValue({ output: "# Quota\nopenai 42%\u001b[31m" });
     vi.spyOn(Date, "now").mockReturnValue(1_790_000_000_000);
 
     await plugin.setup(ctx as never);
     await runCommand(commands, "quota_status");
 
-    expect(buildOutput).toHaveBeenCalledWith(
-      expect.objectContaining({ command: "quota_status", sessionID: "session-web" }),
-    );
-    expect(ctx.session.wait).toHaveBeenCalledWith({ sessionID: "session-web" });
-    expect(calls).toEqual(["wait", "prompt"]);
+    expect(buildOutput).toHaveBeenCalledWith(expect.objectContaining({ sessionID: "session-web" }));
+    expect(ctx.session.wait).toHaveBeenCalledExactlyOnceWith({ sessionID: "session-web" });
+    expect(ctx.session.wait).toHaveBeenCalledBefore(ctx.session.prompt);
     expect(ctx.session.prompt).toHaveBeenCalledTimes(1);
     expect(ctx.session.prompt.mock.calls[0][0]).toEqual({
       sessionID: "session-web",

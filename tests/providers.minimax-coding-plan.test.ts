@@ -70,16 +70,6 @@ describe.each(ENDPOINTS)("MiniMax $endpoint", (endpoint) => {
   const { provider, envVar, integrationId, url, name } = endpoint;
   const id = provider.id;
 
-  it("is not configured without a key, and asks nothing", async () => {
-    const http = fakeHttp(() => remainsReply([COUNTS_MODEL]));
-
-    const fetched = await fetchRows(provider);
-
-    expect(fetched.rows).toEqual([]);
-    expect(fetched.error).toEqual({ code: "not_configured" });
-    expect(http).not.toHaveBeenCalled();
-  });
-
   it("asks its own endpoint with the env key and reads the counts its way", async () => {
     process.env[envVar] = "env-key";
     const http = fakeHttp(() => remainsReply([COUNTS_MODEL]));

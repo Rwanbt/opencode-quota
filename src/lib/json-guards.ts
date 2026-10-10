@@ -20,3 +20,9 @@ export function nonEmptyString(value: unknown): string | undefined {
 export function finiteNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
+
+/** True when every key of `value` is one of `allowed`. */
+export function hasOnlyKeys(value: Record<string, unknown>, allowed: readonly string[]): boolean {
+  const allowedSet = new Set(allowed);
+  return Object.keys(value).every((key) => allowedSet.has(key));
+}

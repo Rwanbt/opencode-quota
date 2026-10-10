@@ -45,14 +45,14 @@ export type CredentialRow = {
 /** OpenCode 2 connection methods: a stored API key or an OAuth sign-in. */
 export type CredentialMethod = "key" | "oauth";
 
-export type ReadCredentialRowsOptions = {
+type ReadCredentialRowsOptions = {
   /** Keep only connections using one of these methods; checked before OpenCode resolves them. */
   methods?: readonly CredentialMethod[];
   /** Read only the active connection of each integration id. */
   firstOnly?: boolean;
 };
 
-export type CredentialReadRequest = ReadCredentialRowsOptions & {
+type CredentialReadRequest = ReadCredentialRowsOptions & {
   integrationIds: readonly string[];
 };
 
@@ -68,7 +68,7 @@ export type CredentialSource = {
 };
 
 /** The parts of the server plugin's `ctx.integration` the reader uses. */
-export type CredentialIntegration = Pick<Plugin.Context["integration"], "list" | "connection">;
+type CredentialIntegration = Pick<Plugin.Context["integration"], "list" | "connection">;
 
 type Connection = NonNullable<Awaited<ReturnType<CredentialIntegration["connection"]["active"]>>>;
 type CredentialConnection = Extract<Connection, { type: "credential" }>;

@@ -124,23 +124,23 @@ export const API_KEY_LOGIN_VENDORS = {
 } as const satisfies Record<string, ApiKeyLoginSpec>;
 
 /** How long a stored login read stays cached, unless the caller asks for another age. */
-export const API_KEY_LOGIN_CACHE_MAX_AGE_MS = 5_000;
+const API_KEY_LOGIN_CACHE_MAX_AGE_MS = 5_000;
 
 export type ApiKeySource = `env:${string}` | "opencode.json" | "opencode.jsonc" | "opencode.db";
 
-export interface ApiKeyResult {
+interface ApiKeyResult {
   key: string;
   source: ApiKeySource;
 }
 
-export interface ApiKeyDiagnostics {
+interface ApiKeyDiagnostics {
   configured: boolean;
   source: ApiKeySource | null;
   checkedPaths: string[];
   credentialDatabasePaths: string[];
 }
 
-export type ApiKeyLoginResult =
+type ApiKeyLoginResult =
   | { state: "none" }
   | { state: "configured"; apiKey: string }
   | { state: "invalid"; error: string };
@@ -153,7 +153,7 @@ export type ApiKeyLoginDiagnostics =
   | ({ state: "invalid"; source: "opencode.db"; error: string } & DiagnosticPaths);
 
 /** A candidate config file path with its format */
-export interface ConfigCandidate {
+interface ConfigCandidate {
   path: string;
   isJsonc: boolean;
 }
@@ -304,13 +304,12 @@ export async function getApiKeyDiagnostics(spec: ApiKeySpec): Promise<ApiKeyDiag
   };
 }
 
-/** Read the vendor's stored logins (cached for `maxAgeMs`, never below 0). */
-export async function readApiKeyLoginAuth(
-  spec: ApiKeyLoginSpec,
-  params?: { maxAgeMs?: number },
-): Promise<unknown> {
-  const maxAgeMs = Math.max(0, params?.maxAgeMs ?? API_KEY_LOGIN_CACHE_MAX_AGE_MS);
-  return readAuthFileCached({ maxAgeMs, ...loginReadOptions(spec) });
+/** Read the vendor's stored logins (cached for 5 seconds). */
+export async function readApiKeyLoginAuth(spec: ApiKeyLoginSpec): Promise<unknown> {
+  return readAuthFileCached({
+    maxAgeMs: API_KEY_LOGIN_CACHE_MAX_AGE_MS,
+    ...loginReadOptions(spec),
+  });
 }
 
 /** The first stored login among `authKeys` decides: a broken one is `invalid`, not skipped. */
@@ -352,12 +351,11 @@ export function parseApiKeyLogin(spec: ApiKeyLoginSpec, auth: unknown): ApiKeyLo
 
 export async function resolveApiKeyLoginWithDiagnostics(
   spec: ApiKeyLoginSpec,
-  params?: { maxAgeMs?: number },
 ): Promise<{ auth: ApiKeyLoginResult; diagnostics: ApiKeyLoginDiagnostics }> {
   const fromEnvOrConfig = await resolveApiKeyFromEnvAndConfig(spec);
   const auth: ApiKeyLoginResult = fromEnvOrConfig
     ? { state: "configured", apiKey: fromEnvOrConfig.key }
-    : parseApiKeyLogin(spec, await readApiKeyLoginAuth(spec, params));
+    : parseApiKeyLogin(spec, await readApiKeyLoginAuth(spec));
   const paths = {
     checkedPaths: getApiKeyCheckedPaths(spec),
     credentialDatabasePaths: getCredentialDatabasePaths(),
@@ -380,41 +378,34 @@ export async function resolveApiKeyLoginWithDiagnostics(
   };
 }
 
-export async function resolveApiKeyLogin(
-  spec: ApiKeyLoginSpec,
-  params?: { maxAgeMs?: number },
-): Promise<ApiKeyLoginResult> {
+export async function resolveApiKeyLogin(spec: ApiKeyLoginSpec): Promise<ApiKeyLoginResult> {
   const fromEnvOrConfig = await resolveApiKeyFromEnvAndConfig(spec);
   if (fromEnvOrConfig) return { state: "configured", apiKey: fromEnvOrConfig.key };
-  return parseApiKeyLogin(spec, await readApiKeyLoginAuth(spec, params));
+  return parseApiKeyLogin(spec, await readApiKeyLoginAuth(spec));
 }
 
 export async function getApiKeyLoginDiagnostics(
   spec: ApiKeyLoginSpec,
-  params?: { maxAgeMs?: number },
 ): Promise<ApiKeyLoginDiagnostics> {
-  return (await resolveApiKeyLoginWithDiagnostics(spec, params)).diagnostics;
+  return (await resolveApiKeyLoginWithDiagnostics(spec)).diagnostics;
 }
 
 /**
  * Every key login of the vendor stored in OpenCode, in OpenCode's order, with what each one
- * holds. `parse` reads one login (default: `parseApiKeyLogin`); `selectRows` narrows the
- * logins further, for example to drop alias duplicates.
+ * holds. `selectRows` narrows the logins further, for example to drop alias duplicates.
  */
-export async function readKeyLogins<Auth extends { state: string } = ApiKeyLoginResult>(
+export async function readKeyLogins(
   spec: ApiKeyLoginSpec,
-  options: {
-    parse?: (auth: AuthData) => Auth;
-    selectRows?: (rows: CredentialRow[]) => CredentialRow[];
-  } = {},
-): Promise<Array<{ row: CredentialRow; auth: Exclude<Auth, { state: "none" }> }>> {
-  const parse = options.parse ?? ((auth: AuthData) => parseApiKeyLogin(spec, auth) as Auth);
+  options: { selectRows?: (rows: CredentialRow[]) => CredentialRow[] } = {},
+): Promise<Array<{ row: CredentialRow; auth: Exclude<ApiKeyLoginResult, { state: "none" }> }>> {
   const vendorRows = (await readCredentialRows(spec.authKeys, { methods: ["key"] })).filter((row) =>
     spec.authKeys.includes(row.integrationId),
   );
   const rows = options.selectRows ? options.selectRows(vendorRows) : vendorRows;
   return rows.flatMap((row) => {
-    const auth = parse({ [row.integrationId]: credentialRowAuthEntry(row) } as AuthData);
-    return auth.state === "none" ? [] : [{ row, auth: auth as Exclude<Auth, { state: "none" }> }];
+    const auth = parseApiKeyLogin(spec, {
+      [row.integrationId]: credentialRowAuthEntry(row),
+    } as AuthData);
+    return auth.state === "none" ? [] : [{ row, auth }];
   });
 }

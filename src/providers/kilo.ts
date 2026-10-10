@@ -1,12 +1,12 @@
 import type { Amount } from "../core/types.js";
-import { API_KEY_VENDORS, getApiKeyDiagnostics, hasApiKey } from "../lib/api-key-resolver.js";
+import { API_KEY_VENDORS, hasApiKey } from "../lib/api-key-resolver.js";
 import type { QuotaProvider, QuotaProviderContext } from "../lib/entries.js";
 import { fmtUsdAmount } from "../lib/format-utils.js";
 import { type KiloQuotaResult, queryKiloQuota } from "../lib/kilo.js";
 import { modelProviderMatchesRuntimeId } from "../lib/provider-model-matching.js";
 import { accountingDecimalFromNumber } from "./accounting-decimal.js";
 import { failedAccount, type ProviderFetchResult, type ProviderRow } from "./contract.js";
-import { simpleApiKeyStatusDetails, statusDetailsFromRecord } from "./result-helpers.js";
+import { apiKeyVendorDetails, statusDetailsFromRecord } from "./result-helpers.js";
 
 const LABEL = "Kilo Gateway";
 
@@ -55,13 +55,7 @@ export const kiloProvider: QuotaProvider = {
   },
 
   async fetch(ctx: QuotaProviderContext): Promise<ProviderFetchResult> {
-    const diagnostics = await getApiKeyDiagnostics(API_KEY_VENDORS.kilo).catch(() => ({
-      configured: false,
-      source: null,
-      checkedPaths: [],
-      credentialDatabasePaths: [],
-    }));
-    const keyDetails = simpleApiKeyStatusDetails(diagnostics);
+    const keyDetails = await apiKeyVendorDetails(API_KEY_VENDORS.kilo);
 
     const state = await queryKiloQuota({ requestTimeoutMs: ctx.config?.requestTimeoutMs });
     if (!state) return { attempted: false, accounts: [], debug: keyDetails };

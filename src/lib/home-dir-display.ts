@@ -81,13 +81,6 @@ function replaceHomeDirInBlock(block: ReportBlock, homeDir: string): ReportBlock
           ...(row.value !== undefined && { value: tilde(row.value) }),
         })),
       };
-    case "table":
-      return {
-        ...block,
-        headers: block.headers.map(tilde),
-        ...(block.fullHeaders !== undefined && { fullHeaders: block.fullHeaders.map(tilde) }),
-        rows: block.rows.map((row) => row.map(tilde)),
-      };
   }
 }
 
@@ -97,17 +90,10 @@ export function replaceHomeDirWithTildeInDocument(
   homeDir: string,
 ): ReportDocument {
   const tilde = (text: string) => replaceHomeDirWithTilde(text, homeDir);
-  const heading = document.heading;
 
   return {
     ...document,
-    ...(heading !== undefined && {
-      heading: {
-        ...heading,
-        line: tilde(heading.line),
-        ...(heading.subtitle !== undefined && { subtitle: tilde(heading.subtitle) }),
-      },
-    }),
+    ...(document.heading !== undefined && { heading: tilde(document.heading) }),
     sections: document.sections.map((section) => ({
       ...section,
       ...(section.title !== undefined && { title: tilde(section.title) }),

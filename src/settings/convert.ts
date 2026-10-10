@@ -8,6 +8,7 @@ import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { type ParseError, parse } from "jsonc-parser";
+import { isRecord } from "../lib/json-guards.js";
 import {
   type CheckedSetting,
   checkSetting,
@@ -186,10 +187,6 @@ const GO_WINDOWS = [
 ] as const;
 
 const SURFACES: readonly DisplaySurface[] = ["sidebar", "collapsed", "statusLine", "toast"];
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 type JsonFile = { state: "missing" } | { state: "invalid" } | { state: "parsed"; value: unknown };
 

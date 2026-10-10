@@ -1,3 +1,7 @@
+/**
+ * How an OpenCode source model (provider id + model id) maps to a models.dev (or Cursor) price
+ * key, and the rates for it.
+ */
 import {
   isCursorModelId,
   isCursorProviderId,
@@ -9,33 +13,16 @@ import {
   hasCost,
   hasModel,
   hasProvider,
-  isModelsDevProviderId,
   listProvidersForModelId,
   lookupCost,
 } from "./modelsdev-pricing.js";
-import { getOpenCodeDbPath } from "./opencode-db-path.js";
-import type { OpenCodeMessage } from "./opencode-storage.js";
-import {
-  iterAssistantMessages,
-  iterAssistantMessagesForSession,
-  iterAssistantMessagesForSessions,
-  readAllSessionsIndex,
-  SessionNotFoundError,
-} from "./opencode-storage.js";
-import type { TokenBuckets } from "./token-buckets.js";
-import { addTokenBuckets, emptyTokenBuckets, tokenBucketsFromMessage } from "./token-buckets.js";
-import { calculateUsdFromTokenBuckets } from "./token-cost.js";
 
-// Re-export for consumers
-export { SessionNotFoundError } from "./opencode-storage.js";
-export type { TokenBuckets } from "./token-buckets.js";
-
-export type PricedKey = {
+type PricedKey = {
   provider: string;
   model: string;
 };
 
-export type UnknownKey = {
+type UnknownKey = {
   sourceProviderID: string;
   sourceModelID: string;
   mappedProvider?: string;
@@ -45,7 +32,7 @@ export type UnknownKey = {
   reason?: "missing_model" | "missing_provider" | "ambiguous_model";
 };
 
-export type PricingResolution =
+type PricingResolution =
   | {
       ok: true;
       key: PricedKey;
@@ -58,81 +45,6 @@ export type PricingResolution =
         | "cursor_api_alias";
     }
   | { ok: false; unknown: UnknownKey };
-
-export type AggregateRow = {
-  key: PricedKey;
-  tokens: TokenBuckets;
-  costUsd: number;
-  messageCount: number;
-};
-
-export type SessionRow = {
-  sessionID: string;
-  title?: string;
-  tokens: TokenBuckets;
-  costUsd: number;
-  messageCount: number;
-};
-
-export type SourceProviderRow = {
-  providerID: string;
-  tokens: TokenBuckets;
-  costUsd: number;
-  messageCount: number;
-};
-
-export type SourceModelRow = {
-  sourceProviderID: string;
-  sourceModelID: string;
-  tokens: TokenBuckets;
-  costUsd: number;
-  messageCount: number;
-};
-
-export type UnknownRow = {
-  key: UnknownKey;
-  tokens: TokenBuckets;
-  messageCount: number;
-};
-
-export type UnpricedKey = {
-  sourceProviderID: string;
-  sourceModelID: string;
-  mappedProvider: string;
-  mappedModel: string;
-  reason: string;
-};
-
-export type UnpricedRow = {
-  key: UnpricedKey;
-  tokens: TokenBuckets;
-  messageCount: number;
-};
-
-export type SessionTreeNode = {
-  sessionID: string;
-  parentID?: string;
-  title?: string;
-  depth: number;
-};
-
-export type AggregateResult = {
-  window: { sinceMs?: number; untilMs?: number };
-  totals: {
-    priced: TokenBuckets;
-    unknown: TokenBuckets;
-    unpriced: TokenBuckets;
-    costUsd: number;
-    messageCount: number;
-    sessionCount: number;
-  };
-  bySourceProvider: SourceProviderRow[];
-  bySourceModel: SourceModelRow[];
-  byModel: AggregateRow[];
-  bySession: SessionRow[];
-  unknown: UnknownRow[];
-  unpriced: UnpricedRow[];
-};
 
 function normalizeModelId(raw: string): string {
   let s = raw.trim();
@@ -210,9 +122,9 @@ function normalizeSourceProviderId(raw?: string): string | undefined {
 
   for (let i = candidates.length - 1; i >= 0; i--) {
     const candidate = candidates[i]!;
-    if (isModelsDevProviderId(candidate)) return candidate;
+    if (hasProvider(candidate)) return candidate;
     const alias = SOURCE_PROVIDER_ALIASES[candidate];
-    if (alias && isModelsDevProviderId(alias)) return alias;
+    if (alias && hasProvider(alias)) return alias;
   }
 
   const directAlias = SOURCE_PROVIDER_ALIASES[lowered];
@@ -277,7 +189,7 @@ function moonshotaiPricingCandidates(model: string): string[] {
 }
 
 function resolveModelForProvider(providerID: string, normalizedModel: string): string | null {
-  if (!isModelsDevProviderId(providerID)) return null;
+  if (!hasProvider(providerID)) return null;
   const preferredDirect = pickBestModelForProvider(
     providerID,
     freeSuffixCandidates(normalizedModel),
@@ -538,390 +450,4 @@ function classifyMissingPricing(params: {
 
   // Provider exists but model key missing from snapshot.
   return { kind: "unknown" };
-}
-
-function compareSessionCreatedAt(
-  a: Awaited<ReturnType<typeof readAllSessionsIndex>>[string],
-  b: Awaited<ReturnType<typeof readAllSessionsIndex>>[string],
-): number {
-  const aCreated =
-    typeof a.time?.created === "number" && Number.isFinite(a.time.created)
-      ? a.time.created
-      : Number.MAX_SAFE_INTEGER;
-  const bCreated =
-    typeof b.time?.created === "number" && Number.isFinite(b.time.created)
-      ? b.time.created
-      : Number.MAX_SAFE_INTEGER;
-
-  if (aCreated !== bCreated) return aCreated - bCreated;
-  return a.id.localeCompare(b.id);
-}
-
-export async function resolveSessionTree(rootSessionID: string): Promise<SessionTreeNode[]> {
-  if (!rootSessionID.startsWith("ses_")) {
-    throw new SessionNotFoundError(rootSessionID, "(invalid session ID format)");
-  }
-
-  const sessionsIdx = await readAllSessionsIndex();
-  const root = sessionsIdx[rootSessionID];
-  if (!root) {
-    throw new SessionNotFoundError(rootSessionID, getOpenCodeDbPath());
-  }
-
-  const childrenByParentID = new Map<string, Array<(typeof sessionsIdx)[string]>>();
-  for (const session of Object.values(sessionsIdx)) {
-    if (!session.parentID) continue;
-    const children = childrenByParentID.get(session.parentID);
-    if (children) {
-      children.push(session);
-    } else {
-      childrenByParentID.set(session.parentID, [session]);
-    }
-  }
-
-  for (const children of childrenByParentID.values()) {
-    children.sort(compareSessionCreatedAt);
-  }
-
-  const tree: SessionTreeNode[] = [];
-  const visited = new Set<string>();
-
-  const visit = (session: (typeof sessionsIdx)[string], depth: number): void => {
-    if (visited.has(session.id)) return;
-    visited.add(session.id);
-
-    tree.push({
-      sessionID: session.id,
-      parentID: session.parentID,
-      title: session.title,
-      depth,
-    });
-
-    const children = childrenByParentID.get(session.id) ?? [];
-    for (const child of children) {
-      visit(child, depth + 1);
-    }
-  };
-
-  visit(root, 0);
-  return tree;
-}
-
-export async function aggregateUsage(params: {
-  sinceMs?: number;
-  untilMs?: number;
-  sessionID?: string;
-  sessionIDs?: string[];
-}): Promise<AggregateResult> {
-  if (params.sessionID && params.sessionIDs?.length) {
-    throw new Error("aggregateUsage received both sessionID and sessionIDs");
-  }
-
-  // Use session-scoped iterators when filtering by session ids for better performance.
-  let messages: OpenCodeMessage[];
-  if (params.sessionIDs) {
-    messages = await iterAssistantMessagesForSessions({
-      sessionIDs: params.sessionIDs,
-      sinceMs: params.sinceMs,
-      untilMs: params.untilMs,
-    });
-  } else if (params.sessionID) {
-    messages = await iterAssistantMessagesForSession({
-      sessionID: params.sessionID,
-      sinceMs: params.sinceMs,
-      untilMs: params.untilMs,
-    });
-  } else {
-    messages = await iterAssistantMessages({ sinceMs: params.sinceMs, untilMs: params.untilMs });
-  }
-  const sessionsIdx = await readAllSessionsIndex();
-
-  const byModel = new Map<string, AggregateRow>();
-  const bySession = new Map<string, SessionRow>();
-  const bySourceProvider = new Map<string, SourceProviderRow>();
-  const bySourceModel = new Map<string, SourceModelRow>();
-  const unknown = new Map<string, UnknownRow>();
-  const unpriced = new Map<string, UnpricedRow>();
-
-  let pricedTotals = emptyTokenBuckets();
-  let unknownTotals = emptyTokenBuckets();
-  let unpricedTotals = emptyTokenBuckets();
-  let costTotal = 0;
-  const pricingCache = new Map<string, ModelPricing>();
-
-  for (const msg of messages) {
-    const tokens = tokenBucketsFromMessage(msg);
-    const sid = msg.sessionID;
-    const sessionTitle = sessionsIdx[sid]?.title;
-    const existingSessionRow = bySession.get(sid);
-    if (existingSessionRow) {
-      existingSessionRow.tokens = addTokenBuckets(existingSessionRow.tokens, tokens);
-      existingSessionRow.messageCount += 1;
-    } else {
-      bySession.set(sid, {
-        sessionID: sid,
-        title: sessionTitle,
-        tokens,
-        costUsd: 0,
-        messageCount: 1,
-      });
-    }
-
-    const cacheKey = `${msg.providerID ?? ""}|||${msg.modelID ?? ""}`;
-    let pricing = pricingCache.get(cacheKey);
-    if (!pricing) {
-      pricing = resolveModelPricing({ providerID: msg.providerID, modelID: msg.modelID });
-      pricingCache.set(cacheKey, pricing);
-    }
-
-    if (pricing.kind === "unknown") {
-      unknownTotals = addTokenBuckets(unknownTotals, tokens);
-      const k = JSON.stringify(pricing.unknown);
-      const row = unknown.get(k);
-      if (row) {
-        row.tokens = addTokenBuckets(row.tokens, tokens);
-        row.messageCount += 1;
-      } else {
-        unknown.set(k, { key: pricing.unknown, tokens, messageCount: 1 });
-      }
-      continue;
-    }
-
-    if (pricing.kind === "unpriced") {
-      unpricedTotals = addTokenBuckets(unpricedTotals, tokens);
-      const rowKey: UnpricedKey = {
-        sourceProviderID: msg.providerID ?? "unknown",
-        sourceModelID: msg.modelID ?? "unknown",
-        mappedProvider: pricing.key.provider,
-        mappedModel: pricing.key.model,
-        reason: pricing.reason,
-      };
-      const k = JSON.stringify(rowKey);
-      const row = unpriced.get(k);
-      if (row) {
-        row.tokens = addTokenBuckets(row.tokens, tokens);
-        row.messageCount += 1;
-      } else {
-        unpriced.set(k, { key: rowKey, tokens, messageCount: 1 });
-      }
-      continue;
-    }
-
-    const costUsd = calculateUsdFromTokenBuckets(pricing.rates, tokens);
-    pricedTotals = addTokenBuckets(pricedTotals, tokens);
-    costTotal += costUsd;
-
-    // Tokscale-style: key by OpenCode source provider + source model id.
-    const srcProviderID = msg.providerID ?? "unknown";
-    const srcModelID = msg.modelID ?? "unknown";
-    const srcModelKey = `${srcProviderID}\n${srcModelID}`;
-    const sm = bySourceModel.get(srcModelKey);
-    if (sm) {
-      sm.tokens = addTokenBuckets(sm.tokens, tokens);
-      sm.costUsd += costUsd;
-      sm.messageCount += 1;
-    } else {
-      bySourceModel.set(srcModelKey, {
-        sourceProviderID: srcProviderID,
-        sourceModelID: srcModelID,
-        tokens,
-        costUsd,
-        messageCount: 1,
-      });
-    }
-
-    const srcProvider = srcProviderID;
-    const src = bySourceProvider.get(srcProvider);
-    if (src) {
-      src.tokens = addTokenBuckets(src.tokens, tokens);
-      src.costUsd += costUsd;
-      src.messageCount += 1;
-    } else {
-      bySourceProvider.set(srcProvider, {
-        providerID: srcProvider,
-        tokens,
-        costUsd,
-        messageCount: 1,
-      });
-    }
-
-    const modelKey = `${pricing.key.provider}/${pricing.key.model}`;
-    const existing = byModel.get(modelKey);
-    if (existing) {
-      existing.tokens = addTokenBuckets(existing.tokens, tokens);
-      existing.costUsd += costUsd;
-      existing.messageCount += 1;
-    } else {
-      byModel.set(modelKey, {
-        key: pricing.key,
-        tokens,
-        costUsd,
-        messageCount: 1,
-      });
-    }
-
-    const s = bySession.get(sid);
-    if (s) {
-      s.costUsd += costUsd;
-    }
-  }
-
-  const byModelRows = Array.from(byModel.values()).sort((a, b) => b.costUsd - a.costUsd);
-  const bySessionRows = Array.from(bySession.values()).sort((a, b) => b.costUsd - a.costUsd);
-  const bySourceProviderRows = Array.from(bySourceProvider.values()).sort(
-    (a, b) => b.costUsd - a.costUsd,
-  );
-  const bySourceModelRows = Array.from(bySourceModel.values()).sort(
-    (a, b) => b.costUsd - a.costUsd,
-  );
-  const unknownRows = Array.from(unknown.values()).sort(
-    (a, b) =>
-      b.tokens.input +
-      b.tokens.output +
-      b.tokens.reasoning +
-      b.tokens.cache_read +
-      b.tokens.cache_write -
-      (a.tokens.input +
-        a.tokens.output +
-        a.tokens.reasoning +
-        a.tokens.cache_read +
-        a.tokens.cache_write),
-  );
-
-  const unpricedRows = Array.from(unpriced.values()).sort(
-    (a, b) =>
-      b.tokens.input +
-      b.tokens.output +
-      b.tokens.reasoning +
-      b.tokens.cache_read +
-      b.tokens.cache_write -
-      (a.tokens.input +
-        a.tokens.output +
-        a.tokens.reasoning +
-        a.tokens.cache_read +
-        a.tokens.cache_write),
-  );
-
-  return {
-    window: { sinceMs: params.sinceMs, untilMs: params.untilMs },
-    totals: {
-      priced: pricedTotals,
-      unknown: unknownTotals,
-      unpriced: unpricedTotals,
-      costUsd: costTotal,
-      messageCount: messages.length,
-      sessionCount: new Set(messages.map((m) => m.sessionID)).size,
-    },
-    bySourceProvider: bySourceProviderRows,
-    bySourceModel: bySourceModelRows,
-    byModel: byModelRows,
-    bySession: bySessionRows,
-    unknown: unknownRows,
-    unpriced: unpricedRows,
-  };
-}
-
-/**
- * Lightweight session token summary for toast display.
- * Returns per-model input/output totals for a single session.
- */
-export type SessionTokenRow = {
-  modelID: string;
-  input: number;
-  cachedInput: number;
-  totalInput: number;
-  output: number;
-};
-
-export type SessionTokenSummary = {
-  sessionID: string;
-  models: SessionTokenRow[];
-  totalInput: number;
-  totalCachedInput: number;
-  totalCombinedInput: number;
-  totalOutput: number;
-};
-
-function summarizeSessionTokenMessages(
-  sessionID: string,
-  sessionMessages: readonly OpenCodeMessage[],
-): SessionTokenSummary | null {
-  if (sessionMessages.length === 0) return null;
-
-  const byModel = new Map<
-    string,
-    { input: number; cachedInput: number; totalInput: number; output: number }
-  >();
-  let totalInput = 0;
-  let totalCachedInput = 0;
-  let totalCombinedInput = 0;
-  let totalOutput = 0;
-
-  for (const msg of sessionMessages) {
-    const tokens = msg.tokens;
-    if (!tokens) continue;
-
-    const input = typeof tokens.input === "number" ? tokens.input : 0;
-    const cachedInput = typeof tokens.cache?.read === "number" ? tokens.cache.read : 0;
-    const totalInputForMessage = input + cachedInput;
-    const output = typeof tokens.output === "number" ? tokens.output : 0;
-
-    // Skip if both are 0
-    if (totalInputForMessage === 0 && output === 0) continue;
-
-    totalInput += input;
-    totalCachedInput += cachedInput;
-    totalCombinedInput += totalInputForMessage;
-    totalOutput += output;
-
-    const modelID = msg.modelID ?? "unknown";
-    const existing = byModel.get(modelID);
-    if (existing) {
-      existing.input += input;
-      existing.cachedInput += cachedInput;
-      existing.totalInput += totalInputForMessage;
-      existing.output += output;
-    } else {
-      byModel.set(modelID, { input, cachedInput, totalInput: totalInputForMessage, output });
-    }
-  }
-
-  // Sort by total tokens descending
-  const models = Array.from(byModel.entries())
-    .map(([modelID, t]) => ({
-      modelID,
-      input: t.input,
-      cachedInput: t.cachedInput,
-      totalInput: t.totalInput,
-      output: t.output,
-    }))
-    .filter((m) => m.totalInput > 0 || m.output > 0)
-    .sort((a, b) => b.totalInput + b.output - (a.totalInput + a.output));
-
-  return {
-    sessionID,
-    models,
-    totalInput,
-    totalCachedInput,
-    totalCombinedInput,
-    totalOutput,
-  };
-}
-
-export async function getSessionTokenSummary(
-  sessionID: string,
-): Promise<SessionTokenSummary | null> {
-  // Use session-scoped iterator for better performance (only reads this session's directory)
-  const sessionMessages = await iterAssistantMessagesForSession({ sessionID });
-  return summarizeSessionTokenMessages(sessionID, sessionMessages);
-}
-
-export async function getSessionTreeTokenSummary(
-  rootSessionID: string,
-): Promise<SessionTokenSummary | null> {
-  const sessionIDs = [
-    ...new Set((await resolveSessionTree(rootSessionID)).map((node) => node.sessionID)),
-  ];
-  const sessionMessages = await iterAssistantMessagesForSessions({ sessionIDs });
-  return summarizeSessionTokenMessages(rootSessionID, sessionMessages);
 }

@@ -19,11 +19,9 @@ interface OpenAIUsageResponse {
   rate_limit: { primary_window?: unknown; secondary_window?: unknown } | null;
   code_review_rate_limit?: { primary_window?: unknown } | null;
   spend_control?: { individual_limit?: unknown } | null;
-  credits?: { has_credits: boolean; unlimited: boolean; balance: string | null } | null;
 }
 
 interface JwtPayload {
-  "https://api.openai.com/profile"?: { email?: string };
   "https://api.openai.com/auth"?: { chatgpt_account_id?: string };
 }
 
@@ -127,15 +125,7 @@ export const OPENAI_AUTH_SOURCE_KEYS = ["openai", "codex", "chatgpt"] as const;
 
 type OpenAIAuthSourceKey = (typeof OPENAI_AUTH_SOURCE_KEYS)[number];
 
-export type OpenAIResult =
-  | {
-      success: true;
-      label: string;
-      email?: string;
-      windows: OpenAIWindows;
-      credits?: { hasCredits: boolean; unlimited: boolean; balance: string | null };
-    }
-  | QuotaError;
+export type OpenAIResult = { success: true; label: string; windows: OpenAIWindows } | QuotaError;
 
 /** A stored OpenAI login: one OpenCode could not return, or one with an access token. */
 export type OpenAIOAuthLogin =
@@ -146,11 +136,10 @@ export type OpenAIOAuthLogin =
       accessToken: string;
       refreshToken?: string;
       expiresAt?: number;
-      email?: string;
       accountId?: string;
     };
 
-export type ResolvedOpenAIOAuth = { state: "none" } | OpenAIOAuthLogin;
+type ResolvedOpenAIOAuth = { state: "none" } | OpenAIOAuthLogin;
 
 /** The first OAuth login under `openai`, `codex`, `chatgpt` with a token or a resolve error. */
 export function resolveOpenAIOAuth(auth: AuthData | null | undefined): ResolvedOpenAIOAuth {
@@ -171,7 +160,6 @@ export function resolveOpenAIOAuth(auth: AuthData | null | undefined): ResolvedO
       refreshToken:
         typeof entry.refresh === "string" && entry.refresh.trim() ? entry.refresh : undefined,
       expiresAt: typeof entry.expires === "number" ? entry.expires : undefined,
-      email: jwt?.["https://api.openai.com/profile"]?.email ?? undefined,
       accountId:
         jwt?.["https://api.openai.com/auth"]?.chatgpt_account_id ?? entry.accountId ?? undefined,
     };
@@ -223,7 +211,7 @@ async function readOpenAIErrorCode(resp: Response): Promise<string | undefined> 
   }
 }
 
-function parseUsageResponse(data: OpenAIUsageResponse, email: string | undefined): OpenAIResult {
+function parseUsageResponse(data: OpenAIUsageResponse): OpenAIResult {
   const observedAtMs = Date.now();
   const windows: OpenAIWindows = {};
   // Two windows of the same duration that disagree are both dropped instead of guessing.
@@ -256,20 +244,7 @@ function parseUsageResponse(data: OpenAIUsageResponse, email: string | undefined
     return { success: false, error: "No quota data" };
   }
 
-  const credits = data.credits;
-  return {
-    success: true,
-    label: derivePlanLabel(data.plan_type),
-    email,
-    windows,
-    credits: credits
-      ? {
-          hasCredits: Boolean(credits.has_credits),
-          unlimited: Boolean(credits.unlimited),
-          balance: credits.balance ?? null,
-        }
-      : undefined,
-  };
+  return { success: true, label: derivePlanLabel(data.plan_type), windows };
 }
 
 export async function queryOpenAIQuota(options: {
@@ -314,7 +289,7 @@ export async function queryOpenAIQuota(options: {
             error: `OpenAI API error ${resp.status}${code ? ` (${code})` : ""}`,
           };
         }
-        return parseUsageResponse((await resp.json()) as OpenAIUsageResponse, auth.email);
+        return parseUsageResponse((await resp.json()) as OpenAIUsageResponse);
       },
     });
   } catch (err) {

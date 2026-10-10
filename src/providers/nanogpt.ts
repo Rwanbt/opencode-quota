@@ -1,5 +1,5 @@
 import type { Amount } from "../core/types.js";
-import { API_KEY_VENDORS, getApiKeyDiagnostics, hasApiKey } from "../lib/api-key-resolver.js";
+import { API_KEY_VENDORS, hasApiKey } from "../lib/api-key-resolver.js";
 import type { QuotaProvider, QuotaProviderContext } from "../lib/entries.js";
 import { queryNanoGptQuota } from "../lib/nanogpt.js";
 import { modelProviderMatchesRuntimeId } from "../lib/provider-model-matching.js";
@@ -13,7 +13,7 @@ import {
   type ProviderRow,
   quotaRow,
 } from "./contract.js";
-import { simpleApiKeyStatusDetails, statusDetailsFromRecord } from "./result-helpers.js";
+import { apiKeyVendorDetails, statusDetailsFromRecord } from "./result-helpers.js";
 
 const LABEL = "NanoGPT";
 const REQUEST_UNIT = { kind: "count", unit: "request" } as const;
@@ -136,13 +136,7 @@ export const nanoGptProvider: QuotaProvider = {
   },
 
   async fetch(ctx: QuotaProviderContext): Promise<ProviderFetchResult> {
-    const diagnostics = await getApiKeyDiagnostics(API_KEY_VENDORS.nanogpt).catch(() => ({
-      configured: false,
-      source: null,
-      checkedPaths: [],
-      credentialDatabasePaths: [],
-    }));
-    const keyDetails = simpleApiKeyStatusDetails(diagnostics);
+    const keyDetails = await apiKeyVendorDetails(API_KEY_VENDORS.nanogpt);
 
     const result = await queryNanoGptQuota({ requestTimeoutMs: ctx.config?.requestTimeoutMs });
     if (!result) return { attempted: false, accounts: [], debug: keyDetails };

@@ -1,15 +1,13 @@
 export type MiniMaxQuotaEndpointId = "international" | "china";
 
-export interface MiniMaxQuotaEndpoint {
+interface MiniMaxQuotaEndpoint {
   id: MiniMaxQuotaEndpointId;
   label: string;
   apiBaseUrl: string;
   quotaUrl: string;
 }
 
-export const MINIMAX_QUOTA_ENDPOINTS: Readonly<
-  Record<MiniMaxQuotaEndpointId, MiniMaxQuotaEndpoint>
-> = {
+const MINIMAX_QUOTA_ENDPOINTS: Readonly<Record<MiniMaxQuotaEndpointId, MiniMaxQuotaEndpoint>> = {
   international: {
     id: "international",
     label: "MiniMax International",

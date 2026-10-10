@@ -28,8 +28,8 @@ const SUBSCRIPTIONS_TIMEOUT_MS = 2_000;
 const HEAVY_OFFER_ID_RE = /^heavy-p\d+m-\d{1,2}-[a-z]{3}\d{4}$/i;
 const USER_AGENT = "OpenCode-Quota-Toast/1.0";
 
-export type XaiPeriodKind = "weekly" | "monthly" | "daily" | "period";
-export type XaiLabel = "xAI Lite" | "xAI SuperGrok" | "xAI Heavy";
+type XaiPeriodKind = "weekly" | "monthly" | "daily" | "period";
+type XaiLabel = "xAI Lite" | "xAI SuperGrok" | "xAI Heavy";
 
 export interface XaiWindowValue {
   percentRemaining: number;
@@ -38,7 +38,7 @@ export interface XaiWindowValue {
   kind: XaiPeriodKind;
 }
 
-export type XaiResult =
+type XaiResult =
   | {
       success: true;
       label: XaiLabel;
@@ -47,7 +47,7 @@ export type XaiResult =
   | QuotaError
   | null;
 
-export type ResolvedXaiOAuth =
+type ResolvedXaiOAuth =
   | { state: "none" }
   | { state: "failed"; error: string }
   | {

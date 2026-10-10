@@ -1,9 +1,10 @@
-import { API_KEY_VENDORS, getApiKeyDiagnostics, hasApiKey } from "../lib/api-key-resolver.js";
+import { API_KEY_VENDORS, hasApiKey } from "../lib/api-key-resolver.js";
 import { queryChutesQuota } from "../lib/chutes.js";
 import type { QuotaProvider, QuotaProviderContext } from "../lib/entries.js";
 import { isCanonicalProviderAvailable } from "../lib/provider-availability.js";
 import { modelProviderIncludesAny } from "../lib/provider-model-matching.js";
 import { DAILY, failedAccount, type ProviderFetchResult, quotaRow } from "./contract.js";
+import { apiKeyDiagnosticsDetail } from "./result-helpers.js";
 
 export const chutesProvider: QuotaProvider = {
   id: "chutes",
@@ -24,13 +25,7 @@ export const chutesProvider: QuotaProvider = {
   },
 
   async fetch(ctx: QuotaProviderContext): Promise<ProviderFetchResult> {
-    const diagnostics = await getApiKeyDiagnostics(API_KEY_VENDORS.chutes).catch(() => ({
-      configured: false,
-      source: null,
-      checkedPaths: [],
-    }));
-    const detail = `configured=${diagnostics.configured ? "true" : "false"}${diagnostics.source ? ` source=${diagnostics.source}` : ""}${diagnostics.checkedPaths.length > 0 ? ` checked=${diagnostics.checkedPaths.join(" | ")}` : ""}`;
-    const debug = [{ key: "api_key_diagnostics", value: detail }];
+    const debug = await apiKeyDiagnosticsDetail(API_KEY_VENDORS.chutes);
 
     const result = await queryChutesQuota({ requestTimeoutMs: ctx.config?.requestTimeoutMs });
     if (!result) return { attempted: false, accounts: [], debug };

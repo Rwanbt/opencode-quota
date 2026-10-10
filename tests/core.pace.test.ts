@@ -2,26 +2,20 @@ import { describe, expect, it } from "vitest";
 import { type Pace, paceOf, paceText } from "../src/core/pace.js";
 import type { QuotaRow } from "../src/core/types.js";
 import { DEFAULT_WORDS } from "../src/view/format.js";
+import { quotaRow } from "./helpers/fake-answers.js";
 
 const NOW = Date.parse("2026-10-10T12:00:00.000Z");
 const MINUTE = 60_000;
 const at = (minutes: number) => new Date(NOW + minutes * MINUTE).toISOString();
 
 /** A 5-hour row; by default half of its window has passed, so even use leaves 50%. */
-function row(fields: Partial<QuotaRow> = {}): QuotaRow {
-  return {
-    id: "anthropic.five_hour",
-    providerId: "anthropic",
+const row = (fields: Partial<QuotaRow> = {}) =>
+  quotaRow("anthropic.five_hour", {
     label: "5h",
-    type: "quota",
-    method: "remote_api",
-    authority: "provider_reported",
-    prominence: "primary",
     window: "five_hour",
     resetsAt: at(150),
     ...fields,
-  };
-}
+  });
 
 describe("core/pace", () => {
   it.each([

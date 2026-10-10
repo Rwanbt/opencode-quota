@@ -64,7 +64,7 @@ export type AlibabaTokenPlanWindow = {
   resetTimeIso?: string;
 };
 
-export type AlibabaTokenPlanErrorKind =
+type AlibabaTokenPlanErrorKind =
   | "unsupported_platform"
   | "executable_not_found"
   | "shell_launcher_rejected"
@@ -78,7 +78,7 @@ export type AlibabaTokenPlanErrorKind =
   | "invalid_schema"
   | "no_data";
 
-export type AlibabaTokenPlanError = {
+type AlibabaTokenPlanError = {
   kind: AlibabaTokenPlanErrorKind;
   message: string;
 };
@@ -106,7 +106,7 @@ export type AlibabaTokenPlanSpawnRequest = {
   killGraceMs: number;
 };
 
-export type AlibabaTokenPlanSpawnResult = {
+type AlibabaTokenPlanSpawnResult = {
   code: number | null;
   stdout: Buffer;
   stderr: Buffer;
@@ -115,11 +115,9 @@ export type AlibabaTokenPlanSpawnResult = {
   spawnErrorCode?: string;
 };
 
-export type AlibabaTokenPlanExecutableResolution =
-  | { ok: true; file: string }
-  | AlibabaTokenPlanFailure;
+type AlibabaTokenPlanExecutableResolution = { ok: true; file: string } | AlibabaTokenPlanFailure;
 
-export type AlibabaTokenPlanRuntime = {
+type AlibabaTokenPlanRuntime = {
   platform?: NodeJS.Platform;
   pathEnv?: string;
   /** The project folder quota is computed for. */

@@ -18,13 +18,14 @@ import {
   resolveConfigWriteTarget,
   writeResolvedConfigText,
 } from "./config-write-target.js";
+import { isRecord } from "./json-guards.js";
 
-export interface ManagedConfigComment {
+interface ManagedConfigComment {
   path: (string | number)[];
   text: string;
 }
 
-export interface ConfigDocumentEdit {
+interface ConfigDocumentEdit {
   path: string;
   format: ConfigFileFormat;
   originalBytes: Buffer | null;
@@ -55,10 +56,6 @@ function asConfigDocumentError(error: unknown, fallbackPath: string): never {
     : new ConfigDocumentError(`Failed inspecting config: ${fallbackPath}`, fallbackPath);
 }
 
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
 function parseErrors(
   raw: string,
   format: ConfigFileFormat,
@@ -83,7 +80,7 @@ export function parseConfigDocument(
   if (parsed.errors.length > 0) {
     throw new ConfigDocumentError(`Cannot parse ${format.toUpperCase()} config: ${path}`, path);
   }
-  if (!isPlainObject(parsed.value)) {
+  if (!isRecord(parsed.value)) {
     throw new ConfigDocumentError(`Config root must be an object: ${path}`, path);
   }
   return parsed.value;
@@ -103,7 +100,7 @@ function collectValueEdits(
     return;
   }
 
-  if (isPlainObject(current) && isPlainObject(desired)) {
+  if (isRecord(current) && isRecord(desired)) {
     for (const [key, value] of Object.entries(desired)) {
       collectValueEdits(current[key], value, [...path, key], edits);
     }
@@ -126,8 +123,8 @@ function collectValueEdits(
       current.every((value, index) => {
         const desiredValue = desired[index];
         return (
-          isPlainObject(value) &&
-          isPlainObject(desiredValue) &&
+          isRecord(value) &&
+          isRecord(desiredValue) &&
           typeof value.id === "string" &&
           value.id === desiredValue.id
         );
@@ -236,7 +233,7 @@ function addManagedComment(raw: string, comment: ManagedConfigComment): string {
   return raw.slice(0, lineStart) + `${indentation}${comment.text}\n` + raw.slice(lineStart);
 }
 
-export function editConfigDocument(params: {
+function editConfigDocument(params: {
   raw: string;
   format: ConfigFileFormat;
   path: string;

@@ -7,9 +7,7 @@ import {
   hasGoogleQuotaRuntimeAvailable,
   inspectGoogleAuthPresence,
   queryGoogleQuota,
-  resolveGoogleAccounts,
   resolveGoogleAuthIdentity,
-  resolveGoogleConfiguredProjectId,
 } from "./google-oauth-quota.js";
 import { nonEmptyString } from "./json-guards.js";
 import type { ResolvedAuthIdentity } from "./resolved-auth-identity.js";
@@ -164,17 +162,6 @@ function toAgyBuckets(
   return [...deduplicated.values()].sort(compareAgyBuckets);
 }
 
-export function resolveAgyAccounts(
-  auth: AuthData | null | undefined,
-  configuredProjectId?: string,
-): AgyAccount[] {
-  return resolveGoogleAccounts(AGY, auth, configuredProjectId);
-}
-
-export function resolveAgyConfiguredProjectId(): Promise<string | undefined> {
-  return resolveGoogleConfiguredProjectId(AGY);
-}
-
 export function resolveGoogleAgyAuthIdentity(): Promise<ResolvedAuthIdentity | null> {
   return resolveGoogleAuthIdentity(AGY);
 }
@@ -195,8 +182,4 @@ export function queryGoogleAgyQuota(
   options: { requestTimeoutMs?: number; authData?: AuthData } = {},
 ): Promise<GoogleAgyResult> {
   return queryGoogleQuota(AGY, options);
-}
-
-export function clearAgyRuntimeCacheForTests(): void {
-  agyCompanion.clearCacheForTests();
 }

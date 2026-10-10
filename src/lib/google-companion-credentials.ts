@@ -32,7 +32,7 @@ export type GoogleCompanionConfiguredCredentials = {
   resolvedPath: string;
 };
 
-export type GoogleCompanionClientCredentials =
+type GoogleCompanionClientCredentials =
   | GoogleCompanionConfiguredCredentials
   | {
       state: "missing" | "invalid";

@@ -33,9 +33,10 @@ import {
   type OpenCodeSessionInfo,
   readAllSessionsIndex,
   readUsageMessagePages,
+  resolveSessionTree,
   SessionNotFoundError,
 } from "../lib/opencode-storage.js";
-import { type ModelPricing, resolveModelPricing, resolveSessionTree } from "../lib/quota-stats.js";
+import { type ModelPricing, resolveModelPricing } from "../lib/pricing-key.js";
 import {
   emptyTokenBuckets,
   type TokenBuckets,
@@ -62,7 +63,7 @@ export type UsageQuery = {
 };
 
 /** Token counts by kind; `processed` = `cachedInput` + `uncachedInput` + `output`. */
-export type UsageTokens = {
+type UsageTokens = {
   processed: number;
   cachedInput: number;
   uncachedInput: number;
@@ -220,8 +221,7 @@ async function sessionsToRead(
     return [sessionID];
   }
   if (query.range === "session_tree") {
-    const tree = await resolveSessionTree(requireSessionID(query));
-    return tree.map((node) => node.sessionID);
+    return resolveSessionTree(requireSessionID(query));
   }
   return undefined;
 }

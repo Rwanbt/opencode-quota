@@ -10,7 +10,7 @@ export interface OpenCodeConfigCandidate {
   format: ConfigFileFormat;
 }
 
-export type ReadOpenCodeConfigResult =
+type ReadOpenCodeConfigResult =
   | { state: "missing"; candidate: OpenCodeConfigCandidate }
   | { state: "invalid"; candidate: OpenCodeConfigCandidate }
   | { state: "parsed"; candidate: OpenCodeConfigCandidate; value: unknown };

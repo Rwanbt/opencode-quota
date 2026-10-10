@@ -570,7 +570,7 @@ describe("v6 surfaces on the quota snapshot", () => {
       telemetry: { enabled: true },
     });
     mocks.fetchSessionTokensForDisplay.mockResolvedValue({
-      sessionTokens: { models: [], totalInput: 1200, totalCachedInput: 300, totalOutput: 45 },
+      sessionTokens: { totalInput: 1200, totalCachedInput: 300, totalOutput: 45 },
     });
     const { quotaProvidersProvider } = await import("../src/providers/quota-providers.js");
     mocks.getProviders.mockReturnValue([

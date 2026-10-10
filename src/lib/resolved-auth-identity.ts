@@ -25,7 +25,7 @@ export type ResolvedAuthIdentity = string & {
   readonly [resolvedAuthIdentityBrand]: true;
 };
 
-export type ResolvedAuthPrincipal =
+type ResolvedAuthPrincipal =
   | { kind: "stable-id"; value: string }
   | { kind: "credential"; value: string };
 

@@ -53,7 +53,7 @@
       }
     },
     {
-      "includes": ["src/lib/display-sanitize.ts", "src/lib/markdown-table.ts"],
+      "includes": ["src/lib/display-sanitize.ts"],
       "linter": {
         "rules": {
           "suspicious": {

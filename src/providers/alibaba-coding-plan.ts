@@ -5,7 +5,6 @@
 
 import type { Amount } from "../core/types.js";
 import {
-  DEFAULT_ALIBABA_AUTH_CACHE_MAX_AGE_MS,
   getAlibabaCodingPlanAuthDiagnostics,
   isAlibabaModelId,
   resolveAlibabaCodingPlanAuthCached,
@@ -62,10 +61,7 @@ export const alibabaCodingPlanProvider: QuotaProvider = {
   id: "alibaba-coding-plan",
 
   async isAvailable(_ctx: QuotaProviderContext): Promise<boolean> {
-    const plan = await resolveAlibabaCodingPlanAuthCached({
-      maxAgeMs: DEFAULT_ALIBABA_AUTH_CACHE_MAX_AGE_MS,
-      fallbackTier: "lite",
-    });
+    const plan = await resolveAlibabaCodingPlanAuthCached();
     return plan.state === "configured" || plan.state === "invalid";
   },
 
@@ -77,10 +73,7 @@ export const alibabaCodingPlanProvider: QuotaProvider = {
   },
 
   async fetch(ctx: QuotaProviderContext): Promise<ProviderFetchResult> {
-    const plan = await getAlibabaCodingPlanAuthDiagnostics({
-      maxAgeMs: DEFAULT_ALIBABA_AUTH_CACHE_MAX_AGE_MS,
-      fallbackTier: "lite",
-    });
+    const plan = await getAlibabaCodingPlanAuthDiagnostics();
     const statePath = getAlibabaCodingPlanQuotaPath();
     const state = await inspectGeneratedCounterFile(statePath, ALIBABA_CODING_PLAN_STATE_VERSION);
     const lastUpdate =

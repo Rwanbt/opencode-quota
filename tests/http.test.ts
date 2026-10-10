@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fetchWithTimeout, REQUEST_TIMEOUT_MS } from "../src/lib/http.js";
+import { fetchWithTimeout } from "../src/lib/http.js";
 
 function createPendingFetch() {
   return vi.fn((_url: string | URL | Request, options?: RequestInit) => {
@@ -17,37 +17,27 @@ describe("fetchWithTimeout", () => {
     vi.unstubAllGlobals();
   });
 
-  it("defaults provider requests to a 5 second timeout", () => {
-    expect(REQUEST_TIMEOUT_MS).toBe(5000);
-  });
-
-  it("times out before headers using an explicit timeout", async () => {
+  it.each([
+    { name: "an explicit timeout", timeoutMs: 12_000, seconds: 12 },
+    { name: "the default timeout for provider requests", timeoutMs: undefined, seconds: 5 },
+  ])("times out before headers after $name, with a static message free of the URL", async ({
+    timeoutMs,
+    seconds,
+  }) => {
     vi.useFakeTimers();
     vi.stubGlobal("fetch", createPendingFetch());
 
-    const request = fetchWithTimeout("https://example.test/quota", {
+    const request = fetchWithTimeout("https://example.test/quota?token=secret-canary", {
       request: {},
-      timeoutMs: 12000,
+      ...(timeoutMs === undefined ? {} : { timeoutMs }),
       consume: (response) => response.json(),
     });
-    const assertion = expect(request).rejects.toThrow("Request timeout after 12s");
+    const message = new RegExp(`^Request timeout after ${seconds}s$`);
+    const assertion = expect(request).rejects.toThrow(message);
 
-    await vi.advanceTimersByTimeAsync(12000);
+    await vi.advanceTimersByTimeAsync(seconds * 1000);
     await assertion;
-  });
-
-  it("reports the default pre-header timeout in seconds", async () => {
-    vi.useFakeTimers();
-    vi.stubGlobal("fetch", createPendingFetch());
-
-    const request = fetchWithTimeout("https://example.test/quota", {
-      request: {},
-      consume: (response) => response.json(),
-    });
-    const assertion = expect(request).rejects.toThrow("Request timeout after 5s");
-
-    await vi.advanceTimersByTimeAsync(REQUEST_TIMEOUT_MS);
-    await assertion;
+    await expect(request).rejects.not.toThrow("secret-canary");
   });
 
   it("times out while consuming a stalled response body", async () => {
@@ -243,22 +233,5 @@ describe("fetchWithTimeout", () => {
         },
       }),
     ).rejects.toBe(parseError);
-  });
-
-  it("keeps timeout diagnostics static and free of request content", async () => {
-    vi.useFakeTimers();
-    vi.stubGlobal("fetch", createPendingFetch());
-    const secretUrl = "https://example.test/quota?token=secret-canary";
-
-    const request = fetchWithTimeout(secretUrl, {
-      request: {},
-      timeoutMs: 1000,
-      consume: (response) => response.text(),
-    });
-    const assertion = expect(request).rejects.toThrow(/^Request timeout after 1s$/);
-
-    await vi.advanceTimersByTimeAsync(1000);
-    await assertion;
-    await expect(request).rejects.not.toThrow("secret-canary");
   });
 });

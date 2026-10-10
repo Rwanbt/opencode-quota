@@ -20,7 +20,7 @@ export type QuotaRetryEvent = {
 };
 
 /** Where the retry decision reads quota and settings from. */
-export type QuotaRetryHost = {
+type QuotaRetryHost = {
   store: Pick<QuotaStore, "refresh">;
   loadSettings: () => Promise<
     Pick<

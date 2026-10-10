@@ -6,14 +6,13 @@ import { parse as parseJsonc } from "jsonc-parser";
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import type { QuotaSnapshot } from "../src/core/types.js";
 import type { UsageReport } from "../src/core/usage.js";
-import { messageDocument } from "../src/lib/report-document.js";
-import { answer, percentRow } from "./helpers/fake-answers.js";
-import { createFakeIntegration } from "./helpers/fake-integration.js";
+import { answer, NOT_SET_UP, percentRow } from "./helpers/fake-answers.js";
 import {
   createAlibabaAuthModuleMock,
   createPluginRuntimePathsMockModule,
   createPricingModuleMock,
   createProvidersRegistryModuleMock,
+  createServerContext,
   createSessionTokensModuleMock,
   seedDefaultPluginBootstrapMocks,
   writePluginTestSettings,
@@ -64,10 +63,6 @@ vi.mock("../src/lib/opencode-config-providers.js", () => ({
 }));
 
 type Handler = (input: unknown, context: unknown) => Promise<unknown>;
-type RegisteredCommand = {
-  name: string;
-  execute: (invocation: { sessionID: string; prompt: { text: string } }) => Promise<void>;
-};
 
 const callContext = {
   signal: new AbortController().signal,
@@ -91,36 +86,34 @@ const SETTINGS_FILE = `${TEST_RUNTIME_ROOT}/config/opencode-quota/settings.jsonc
 const withPercentWords = (percent: string) =>
   expect.objectContaining({ words: expect.objectContaining({ percent }) });
 
-type ServerEvent = { type: string };
+/** A set-up provider that answers with `fetch`; `extra` adds fields such as its cache policy. */
+function provider(id: string, fetch: unknown, extra: object = {}) {
+  return { id, isAvailable: vi.fn().mockResolvedValue(true), fetch, ...extra };
+}
+
+const ACCOUNT_NEUTRAL = { cachePolicy: { kind: "account-neutral" } };
+
+/** Copilot's answer with `percentRemaining` of its premium requests left. */
+const copilotAnswer = (percentRemaining: number) =>
+  answer({
+    name: "Copilot",
+    rows: [percentRow("allowance", "Premium requests", percentRemaining)],
+  });
 
 /** Each server's cleanup; run after every test, before its folder goes. */
 const cleanups: Array<() => unknown> = [];
 
-async function setupServer(
-  sessionGet = vi.fn().mockResolvedValue({}),
-  directory = process.cwd(),
-  events: AsyncIterable<ServerEvent> = { async *[Symbol.asyncIterator]() {} },
-) {
+/**
+ * Starts the server plugin; OpenCode lists Copilot unless `options` say otherwise. `call` runs an
+ * RPC method and checks its output. `runCommand` runs a slash command of Web and Desktop, and
+ * `quota` runs /quota and returns the report it posts into the chat.
+ */
+async function setupServer(options: Parameters<typeof createServerContext>[0] = {}) {
   const { default: server } = await import("../src/plugin.js");
-  const emit = vi.fn(async (_name: string, _data: unknown) => {});
-  const register = vi.fn(async () => ({ dispose: async () => {}, events: { emit } }));
-  const commands: RegisteredCommand[] = [];
-  const ctx = {
-    location: { directory },
-    provider: { list: vi.fn().mockResolvedValue({ data: [{ id: "copilot" }] }) },
-    session: { get: sessionGet, wait: vi.fn(), prompt: vi.fn(), hook: vi.fn() },
-    tool: { transform: vi.fn() },
-    command: {
-      transform: vi.fn(async (callback) => {
-        callback({ add: (command: RegisteredCommand) => commands.push(command) });
-      }),
-    },
-    rpc: { register },
-    integration: createFakeIntegration([]),
-    event: { subscribe: () => events },
-  };
-  const cleanup = await server.setup(ctx as never);
+  const fake = createServerContext({ openCodeProviders: ["copilot"], ...options });
+  const cleanup = await server.setup(fake.ctx as never);
   if (typeof cleanup === "function") cleanups.push(cleanup);
+  const { register } = fake.ctx.rpc;
   expect(register).toHaveBeenCalledOnce();
   const [definition, handlers] = register.mock.calls[0] as unknown as [
     { id: string; methods: Record<string, unknown> },
@@ -135,22 +128,27 @@ async function setupServer(
     expect(output).toStrictEqual(JSON.parse(JSON.stringify(output)));
     return output;
   };
-  return { ctx, definition, handlers, commands, call, emit, cleanup };
+  const runCommand = async (name: string, sessionID = "session-1") => {
+    const command = fake.commands.find((item) => item.name === name);
+    if (!command) throw new Error(`/${name} was not registered`);
+    await command.execute({ sessionID, prompt: { text: "" } });
+  };
+  const quota = async (sessionID = "session-1") => {
+    await runCommand("quota", sessionID);
+    const posted = fake.ctx.session.prompt.mock.calls.filter(
+      ([input]) => input.sessionID === sessionID,
+    );
+    // The report between its first and last line, which mark every quota report.
+    return (posted.at(-1)?.[0].text ?? "").split("\n").slice(1, -1).join("\n");
+  };
+  return { ...fake, definition, handlers, call, runCommand, quota, cleanup };
 }
 
 describe("server quota RPC", () => {
   beforeEach(async () => {
     seedDefaultPluginBootstrapMocks(mocks, { resetPluginState: true });
     mocks.getProviders.mockReturnValue([
-      {
-        id: "copilot",
-        isAvailable: vi.fn().mockResolvedValue(true),
-        fetch: vi
-          .fn()
-          .mockResolvedValue(
-            answer({ name: "Copilot", rows: [percentRow("allowance", "Premium requests", 81)] }),
-          ),
-      },
+      provider("copilot", vi.fn().mockResolvedValue(copilotAnswer(81))),
     ]);
     mocks.reconcileDetectedProvidersInGlobalConfig.mockResolvedValue({ changed: false });
     await rm(TEST_RUNTIME_ROOT, { recursive: true, force: true, maxRetries: 3 });
@@ -186,11 +184,8 @@ describe("server quota RPC", () => {
   });
 
   it("asks no provider and reads no snapshot file during setup", async () => {
-    useSettings();
     const fetch = vi.fn();
-    mocks.getProviders.mockReturnValue([
-      { id: "copilot", isAvailable: vi.fn().mockResolvedValue(true), fetch },
-    ]);
+    mocks.getProviders.mockReturnValue([provider("copilot", fetch)]);
     await setupServer();
 
     expect(fetch).not.toHaveBeenCalled();
@@ -258,26 +253,20 @@ describe("server quota RPC", () => {
   it("serves v6 rows from the store, saves them and emits changed", async () => {
     // A long interval: the snapshot call below answers from memory without a new fetch.
     useSettings({ checking: { minIntervalMs: 60_000 } });
-    mocks.getProviders.mockReturnValue([
-      {
-        id: "copilot",
-        cachePolicy: { kind: "account-neutral" },
-        isAvailable: vi.fn().mockResolvedValue(true),
-        fetch: vi.fn().mockResolvedValue(
-          answer({
-            name: "Copilot (pro)",
-            rows: [
-              percentRow("allowance", "Premium requests", 80, {
-                window: "month",
-                used: { decimal: "60", unit: { kind: "count", unit: "request" } },
-                limit: { decimal: "300", unit: { kind: "count", unit: "request" } },
-                resetsAt: "2026-11-01T00:00:00.000Z",
-              }),
-            ],
+    const fetch = vi.fn().mockResolvedValue(
+      answer({
+        name: "Copilot (pro)",
+        rows: [
+          percentRow("allowance", "Premium requests", 80, {
+            window: "month",
+            used: { decimal: "60", unit: { kind: "count", unit: "request" } },
+            limit: { decimal: "300", unit: { kind: "count", unit: "request" } },
+            resetsAt: "2026-11-01T00:00:00.000Z",
           }),
-        ),
-      },
-    ]);
+        ],
+      }),
+    );
+    mocks.getProviders.mockReturnValue([provider("copilot", fetch, ACCOUNT_NEUTRAL)]);
     const { call, emit } = await setupServer();
 
     const refreshed = (await call("refresh", { reason: "manual" })) as { snapshot: QuotaSnapshot };
@@ -494,21 +483,12 @@ describe("server quota RPC", () => {
           answerCopilot = resolve;
         }),
     );
+    const openai = vi
+      .fn()
+      .mockResolvedValue(answer({ name: "OpenAI", rows: [percentRow("five_hour", "5h", 60)] }));
     mocks.getProviders.mockReturnValue([
-      {
-        id: "copilot",
-        cachePolicy: { kind: "account-neutral" },
-        isAvailable: vi.fn().mockResolvedValue(true),
-        fetch: slowCopilot,
-      },
-      {
-        id: "openai",
-        cachePolicy: { kind: "account-neutral" },
-        isAvailable: vi.fn().mockResolvedValue(true),
-        fetch: vi
-          .fn()
-          .mockResolvedValue(answer({ name: "OpenAI", rows: [percentRow("five_hour", "5h", 60)] })),
-      },
+      provider("copilot", slowCopilot, ACCOUNT_NEUTRAL),
+      provider("openai", openai, ACCOUNT_NEUTRAL),
     ]);
     const { call, emit } = await setupServer();
     const providerIds = (snapshot: QuotaSnapshot) =>
@@ -523,9 +503,7 @@ describe("server quota RPC", () => {
 
     useSettings({ providers: { enabled: ["openai"] }, checking: { minIntervalMs: 60_000 } });
     await vi.waitFor(() => expect(emitted().at(-1)).toEqual(["openai"]), { timeout: 5_000 });
-    answerCopilot(
-      answer({ name: "Copilot", rows: [percentRow("allowance", "Premium requests", 70)] }),
-    );
+    answerCopilot(copilotAnswer(70));
 
     // The refresh asked for before the change answers with the settings of now.
     expect(providerIds((await running).snapshot)).toEqual(["openai"]);
@@ -544,9 +522,7 @@ describe("server quota RPC", () => {
       seen.push(`${pricing.getPricingSnapshotSelection()} ${days}`);
       return answer();
     });
-    mocks.getProviders.mockReturnValue([
-      { id: "copilot", isAvailable: vi.fn().mockResolvedValue(true), fetch },
-    ]);
+    mocks.getProviders.mockReturnValue([provider("copilot", fetch)]);
     const { call } = await setupServer();
 
     await call("refresh", { reason: "poll" });
@@ -566,16 +542,9 @@ describe("server quota RPC", () => {
     const fetch = vi.fn(async (ctx: { config: Record<string, unknown> }) => {
       seen.push([ctx.config.requestTimeoutMs, ctx.config.requestTimeoutMsConfigured]);
       if (seen.length === 1) throw new Error("Request timeout after 5s");
-      return answer({ name: "Copilot", rows: [percentRow("allowance", "Premium requests", 40)] });
+      return copilotAnswer(40);
     });
-    mocks.getProviders.mockReturnValue([
-      {
-        id: "copilot",
-        cachePolicy: { kind: "account-neutral" },
-        isAvailable: vi.fn().mockResolvedValue(true),
-        fetch,
-      },
-    ]);
+    mocks.getProviders.mockReturnValue([provider("copilot", fetch, ACCOUNT_NEUTRAL)]);
     const { call } = await setupServer();
     const failed = (await call("refresh", { reason: "manual" })) as { snapshot: QuotaSnapshot };
     expect(failed.snapshot.providers[0]?.error?.code).toBe("timeout");
@@ -595,17 +564,8 @@ describe("server quota RPC", () => {
 
   it("checks no provider again when the file lists the same check settings in another order", async () => {
     useSettings({ checking: { minIntervalMs: 60_000, requestTimeoutMs: 5_000 } });
-    const fetch = vi.fn(async () =>
-      answer({ name: "Copilot", rows: [percentRow("premium", "Premium requests", 40)] }),
-    );
-    mocks.getProviders.mockReturnValue([
-      {
-        id: "copilot",
-        cachePolicy: { kind: "account-neutral" },
-        isAvailable: vi.fn().mockResolvedValue(true),
-        fetch,
-      },
-    ]);
+    const fetch = vi.fn().mockResolvedValue(copilotAnswer(40));
+    mocks.getProviders.mockReturnValue([provider("copilot", fetch, ACCOUNT_NEUTRAL)]);
     const { call, emit } = await setupServer();
     await call("refresh", { reason: "manual" });
     expect(fetch).toHaveBeenCalledOnce();
@@ -658,16 +618,12 @@ describe("server quota RPC", () => {
   it("names the providers of the session's model in the snapshot", async () => {
     useSettings({ providers: { enabled: ["copilot", "openai"] } });
     mocks.getProviders.mockReturnValue(
-      ["copilot", "openai"].map((id) => ({
-        id,
-        isAvailable: vi.fn().mockResolvedValue(true),
-        fetch: vi.fn().mockResolvedValue(answer()),
-      })),
+      ["copilot", "openai"].map((id) => provider(id, vi.fn().mockResolvedValue(answer()))),
     );
     const sessionGet = vi.fn().mockResolvedValue({
       model: { id: "gpt-5", providerID: "openai" },
     });
-    const { call } = await setupServer(sessionGet);
+    const { call } = await setupServer({ sessionGet });
 
     const output = (await call("snapshot", { sessionID: "session-1" })) as {
       snapshot: QuotaSnapshot;
@@ -680,7 +636,6 @@ describe("server quota RPC", () => {
   });
 
   it("waits for the store's running fetch and file write when the plugin is cleaned up", async () => {
-    useSettings();
     let answerFetch: (result: unknown) => void = () => {};
     const fetch = vi.fn(
       () =>
@@ -688,14 +643,7 @@ describe("server quota RPC", () => {
           answerFetch = resolve;
         }),
     );
-    mocks.getProviders.mockReturnValue([
-      {
-        id: "copilot",
-        cachePolicy: { kind: "account-neutral" },
-        isAvailable: vi.fn().mockResolvedValue(true),
-        fetch,
-      },
-    ]);
+    mocks.getProviders.mockReturnValue([provider("copilot", fetch, ACCOUNT_NEUTRAL)]);
     const { call, cleanup } = await setupServer();
     await call("snapshot", {});
     await vi.waitFor(() => expect(fetch).toHaveBeenCalledOnce());
@@ -706,9 +654,7 @@ describe("server quota RPC", () => {
     });
     await new Promise((resolve) => setTimeout(resolve, 10));
     expect(done).toBe(false);
-    answerFetch(
-      answer({ name: "Copilot", rows: [percentRow("allowance", "Premium requests", 70)] }),
-    );
+    answerFetch(copilotAnswer(70));
     await cleaning;
     expect(existsSync(SNAPSHOT_FILE)).toBe(true);
   });
@@ -723,12 +669,9 @@ describe("server quota RPC", () => {
       }),
     );
     mocks.getProviders.mockReturnValue([
-      {
-        id: "copilot",
+      provider("copilot", fetch, {
         cachePolicy: { kind: "resolved-auth", resolveIdentity: async () => account },
-        isAvailable: vi.fn().mockResolvedValue(true),
-        fetch,
-      },
+      }),
     ]);
     let sendLoginChange: () => void = () => {};
     const loginChanged = new Promise<void>((resolve) => {
@@ -740,7 +683,7 @@ describe("server quota RPC", () => {
         yield { type: "credential.switched" };
       },
     };
-    const { call, emit } = await setupServer(undefined, process.cwd(), events);
+    const { call, emit } = await setupServer({ events });
     await call("refresh", { reason: "manual" });
     emit.mockClear();
 
@@ -757,7 +700,7 @@ describe("server quota RPC", () => {
   it("adds the session's tokens to a session snapshot", async () => {
     useSettings({ words: { sessionTokens: "tree" } });
     mocks.fetchSessionTokensForDisplay.mockResolvedValue({
-      sessionTokens: { models: [], totalInput: 1200, totalCachedInput: 300, totalOutput: 80 },
+      sessionTokens: { totalInput: 1200, totalCachedInput: 300, totalOutput: 80 },
     });
     const { call } = await setupServer();
 
@@ -766,7 +709,6 @@ describe("server quota RPC", () => {
     };
     expect(session.snapshot.sessionTokens).toEqual({ input: 1200, cachedInput: 300, output: 80 });
     expect(mocks.fetchSessionTokensForDisplay).toHaveBeenCalledWith({
-      enabled: true,
       sessionID: "session-1",
       scope: "tree",
     });
@@ -825,15 +767,9 @@ describe("server quota RPC", () => {
     const dialogModule = await import("../src/lib/quota-dialog-commands.js");
     vi.spyOn(dialogModule, "buildQuotaDialogCommandOutput").mockImplementation(async (params) => {
       await params.onDetectedProviderIds?.(["copilot"]);
-      return {
-        state: "output",
-        command: params.command,
-        title: "OpenCode Quota Status",
-        output: "status \u001b[31mreport",
-        document: messageDocument("status"),
-      };
+      return { output: "status \u001b[31mreport" };
     });
-    const { call, commands } = await setupServer();
+    const { call, runCommand } = await setupServer();
 
     await expect(call("status", { sessionID: "session-1" })).resolves.toEqual({
       text: "status report",
@@ -841,8 +777,7 @@ describe("server quota RPC", () => {
     expect(mocks.reconcileDetectedProvidersInGlobalConfig).not.toHaveBeenCalled();
 
     // The slash command of Web and Desktop adds the detected providers.
-    const slash = commands.find((command) => command.name === "quota_status");
-    await slash?.execute({ sessionID: "session-1", prompt: { text: "" } });
+    await runCommand("quota_status");
     expect(mocks.reconcileDetectedProvidersInGlobalConfig).toHaveBeenCalledWith({
       configRootDir: process.cwd(),
       detectedProviderIds: ["copilot"],
@@ -938,15 +873,15 @@ describe("server quota RPC", () => {
       ],
     });
     useSettings({ pricing: { source: "bundled", autoRefreshDays: 3 } });
-    const { ctx, commands } = await setupServer();
+    const { ctx, commands, runCommand } = await setupServer();
 
-    await commands
-      .find((command) => command.name === "quota")
-      ?.execute({
-        sessionID: "session-1",
-        prompt: { text: "" },
-      });
+    await runCommand("quota");
 
+    // /quota prices its usage with the price list the settings choose, as the token reports do.
+    expect(mocks.maybeRefreshPricingSnapshot).toHaveBeenCalledWith({
+      reason: "tokens",
+      snapshotSelection: "bundled",
+    });
     expect(ctx.session.wait).toHaveBeenCalledWith({ sessionID: "session-1" });
     const [message] = ctx.session.prompt.mock.calls[0] as [
       { text: string; metadata: Record<string, { command: string }> },
@@ -963,9 +898,8 @@ describe("server quota RPC", () => {
   });
 
   it("treats a session the server cannot find as a session without a model", async () => {
-    useSettings();
     const sessionGet = vi.fn().mockRejectedValue(new Error("Session not found"));
-    const { call } = await setupServer(sessionGet);
+    const { call } = await setupServer({ sessionGet });
 
     const output = (await call("snapshot", { sessionID: "missing" })) as {
       snapshot: QuotaSnapshot;
@@ -975,23 +909,14 @@ describe("server quota RPC", () => {
   });
 
   it("computes quota for the location's project folder, not the service's working folder", async () => {
-    useSettings();
     const workspaceRoots: string[] = [];
-    mocks.getProviders.mockReturnValue([
-      {
-        id: "copilot",
-        isAvailable: vi.fn().mockResolvedValue(true),
-        fetch: vi.fn(async (ctx: { workspaceRoot: string }) => {
-          workspaceRoots.push(ctx.workspaceRoot);
-          return answer({
-            name: "Copilot",
-            rows: [percentRow("allowance", "Premium requests", 81)],
-          });
-        }),
-      },
-    ]);
+    const fetch = vi.fn(async (ctx: { workspaceRoot: string }) => {
+      workspaceRoots.push(ctx.workspaceRoot);
+      return copilotAnswer(81);
+    });
+    mocks.getProviders.mockReturnValue([provider("copilot", fetch)]);
     const project = `${TEST_RUNTIME_ROOT}/project`;
-    const { call } = await setupServer(undefined, project);
+    const { call } = await setupServer({ directory: project });
 
     // The store's refresh, then /quota_status, which checks every provider itself.
     await call("refresh", { reason: "manual" });
@@ -1021,5 +946,245 @@ describe("server quota RPC", () => {
       );
     }
     expect(JSON.stringify(warn.mock.calls)).not.toContain(token);
+  });
+
+  describe("/quota and the quota_status tool", () => {
+    /** settings.jsonc for /quota: every provider, checked once a minute; `overrides` per group. */
+    const useQuotaSettings = (overrides: Record<string, unknown> = {}) =>
+      useSettings({
+        providers: { enabled: "auto" },
+        checking: { minIntervalMs: 60_000 },
+        ...overrides,
+      });
+
+    beforeEach(() => {
+      useQuotaSettings();
+    });
+
+    it.each([
+      { name: "a working repair", repair: () => Promise.resolve({ changed: true }), warns: false },
+      {
+        name: "a failed repair",
+        repair: () => Promise.reject(new Error("disk full")),
+        warns: true,
+      },
+    ])("adds the detected providers of the quota_status tool to the project with $name", async ({
+      repair,
+      warns,
+    }) => {
+      mocks.reconcileDetectedProvidersInGlobalConfig.mockImplementationOnce(repair);
+      const dialogModule = await import("../src/lib/quota-dialog-commands.js");
+      vi.spyOn(dialogModule, "buildQuotaDialogCommandOutput").mockImplementation(async (params) => {
+        await params.onDetectedProviderIds?.(["openai"]);
+        return { output: "OpenAI quota" };
+      });
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const projectDirectory = `${TEST_RUNTIME_ROOT}/project`;
+      const { tools } = await setupServer({ directory: projectDirectory });
+      const tool = tools.find((item) => item.name === "quota_status");
+
+      expect(await tool?.execute({}, { sessionID: "session-auto-provider" })).toEqual({
+        content: "OpenAI quota",
+      });
+      expect(mocks.reconcileDetectedProvidersInGlobalConfig).toHaveBeenCalledWith({
+        configRootDir: projectDirectory,
+        detectedProviderIds: ["openai"],
+      });
+      if (warns) {
+        expect(warn).toHaveBeenCalledWith(
+          "Failed to add detected providers to global OpenCode config",
+          expect.any(Error),
+        );
+      } else {
+        expect(warn).not.toHaveBeenCalled();
+      }
+    });
+
+    it("waits before asking a failed provider again; a manual refresh asks at once", async () => {
+      useQuotaSettings({ providers: { enabled: ["openai"] } });
+      const fetch = vi
+        .fn()
+        .mockRejectedValueOnce(new Error("temporary failure"))
+        .mockResolvedValueOnce(
+          answer({ name: "OpenAI", rows: [percentRow("five_hour", "5h", 69)] }),
+        );
+      mocks.getProviders.mockReturnValue([provider("openai", fetch)]);
+      const { call, quota } = await setupServer();
+
+      await quota();
+      const failed = await quota();
+      expect(fetch).toHaveBeenCalledTimes(1);
+      expect(failed).not.toContain("69% left");
+
+      await call("refresh", { reason: "manual" });
+      const recovered = await quota();
+
+      expect(fetch).toHaveBeenCalledTimes(2);
+      expect(recovered).toContain("69% left");
+    });
+
+    it.each([
+      { words: { percent: "used" }, shows: "5h 19% used", hides: "left" },
+      { words: { percent: "bare" }, shows: "5h 81%", hides: "left" },
+    ])("shows /quota in the percent words the settings choose: $words", async ({
+      words,
+      shows,
+      hides,
+    }) => {
+      useQuotaSettings({ providers: { enabled: ["openai"] }, words });
+      const fetch = vi
+        .fn()
+        .mockResolvedValue(answer({ name: "OpenAI", rows: [percentRow("five_hour", "5h", 81)] }));
+      mocks.getProviders.mockReturnValue([provider("openai", fetch)]);
+      const { quota } = await setupServer();
+
+      const output = await quota();
+
+      expect(output).toContain(shows);
+      expect(output).not.toContain(hides);
+    });
+
+    it.each([
+      {
+        name: "an error without rows",
+        id: "alibaba-coding-plan",
+        fetch: vi.fn().mockResolvedValue(
+          answer({
+            name: "Alibaba Coding Plan",
+            errors: ["Unsupported Alibaba Coding Plan tier: max"],
+          }),
+        ),
+        line: "Alibaba Coding Plan",
+      },
+      {
+        name: "a failed fetch",
+        id: "cursor",
+        fetch: vi.fn().mockRejectedValue(new Error("sqlite busy")),
+        line: "Cursor",
+      },
+      {
+        name: "nothing reported",
+        id: "anthropic",
+        fetch: vi.fn().mockResolvedValue(NOT_SET_UP),
+        line: "Anthropic",
+      },
+    ])("shows a line for a provider with $name", async ({ id, fetch, line }) => {
+      useQuotaSettings({ providers: { enabled: [id] } });
+      mocks.getProviders.mockReturnValue([provider(id, fetch)]);
+      const { quota } = await setupServer();
+
+      const output = await quota();
+
+      expect(output).toContain(line);
+      expect(output).not.toContain("Quota unavailable");
+    });
+
+    it("says no provider serves the session's model when onlyCurrentModel leaves none", async () => {
+      useQuotaSettings({ words: { onlyCurrentModel: true } });
+      const fetch = vi
+        .fn()
+        .mockResolvedValue(answer({ name: "Cursor", rows: [percentRow("api", "API", 50)] }));
+      mocks.getProviders.mockReturnValue([
+        provider("cursor", fetch, { matchesCurrentModel: (model?: string) => model === "auto" }),
+      ]);
+      const { quota } = await setupServer({
+        sessionGet: vi.fn().mockResolvedValue({ model: { id: "gpt-5", providerID: "openai" } }),
+      });
+
+      const output = await quota();
+
+      expect(output).toContain("No quota provider serves the session's current model.");
+    });
+
+    it("shows only the custom sources serving the session's model when onlyCurrentModel is on", async () => {
+      const definition = (id: string, model: string) => ({
+        id,
+        providerId: `${id}-gateway`,
+        modelIds: [model],
+        url: `https://${id}.example/quota`,
+        mode: "remote-api",
+        format: "quota-v1",
+        apiKeyEnv: "TEST_GATEWAY_KEY",
+      });
+      useQuotaSettings({
+        providers: {
+          enabled: ["custom"],
+          custom: [definition("alpha", "model-a"), definition("beta", "model-b")],
+        },
+        words: { onlyCurrentModel: true },
+      });
+      // Each custom definition is an account; its id is the login and in its row ids.
+      const source = (id: string, percentRemaining: number) => ({
+        name: id,
+        login: id,
+        rows: [
+          percentRow(`custom.${id}.monthly`, "Monthly", percentRemaining, { window: "month" }),
+        ],
+      });
+      // One check reads every source; only the rows shown depend on the session's model.
+      const fetch = vi.fn().mockResolvedValue(answer(source("alpha", 61), source("beta", 32)));
+      mocks.getProviders.mockReturnValue([provider("quota-providers", fetch)]);
+      let model = { id: "model-a", providerID: "alpha-gateway" };
+      const { quota } = await setupServer({
+        sessionGet: vi.fn(async () => ({ model })),
+        openCodeProviders: ["alpha-gateway", "beta-gateway"],
+      });
+
+      const alpha = await quota();
+      model = { id: "model-b", providerID: "beta-gateway" };
+      const beta = await quota();
+
+      expect(fetch).toHaveBeenCalledTimes(1);
+      expect(alpha).toContain("61% left");
+      expect(alpha).not.toContain("32% left");
+      expect(beta).toContain("32% left");
+      expect(beta).not.toContain("61% left");
+    });
+
+    it("answers /quota of every session from one check while the rows are fresh", async () => {
+      const fetch = vi
+        .fn()
+        .mockResolvedValue(answer({ name: "OpenAI", rows: [percentRow("five_hour", "5h", 95)] }));
+      mocks.getProviders.mockReturnValue([provider("openai", fetch, ACCOUNT_NEUTRAL)]);
+      const { quota } = await setupServer();
+
+      const first = await quota("session-a");
+      const second = await quota("session-b");
+
+      expect(fetch).toHaveBeenCalledTimes(1);
+      expect(first).toContain("95% left");
+      expect(second).toContain("95% left");
+    });
+
+    it.each([
+      {
+        id: "alibaba-coding-plan",
+        entry: (percentRemaining: number) =>
+          answer({
+            name: "Alibaba Coding Plan (Lite)",
+            rows: [percentRow("weekly", "Weekly", percentRemaining)],
+          }),
+      },
+      {
+        id: "cursor",
+        entry: (percentRemaining: number) =>
+          answer({ name: "Cursor (Pro)", rows: [percentRow("api", "API", percentRemaining)] }),
+      },
+    ])("counts $id usage again on every /quota", async ({ id, entry }) => {
+      const fetch = vi.fn().mockResolvedValueOnce(entry(70)).mockResolvedValueOnce(entry(60));
+      mocks.getProviders.mockReturnValue([provider(id, fetch)]);
+      mocks.resolveAlibabaCodingPlanAuthCached.mockResolvedValue({
+        state: "configured",
+        apiKey: "dashscope-key",
+        tier: "lite",
+      });
+      const { quota } = await setupServer();
+
+      await quota();
+      const latest = await quota();
+
+      expect(fetch).toHaveBeenCalledTimes(2);
+      expect(latest).toContain("60% left");
+    });
   });
 });

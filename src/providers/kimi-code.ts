@@ -6,7 +6,6 @@
 
 import { classifyWindow } from "../core/windows.js";
 import {
-  API_KEY_LOGIN_CACHE_MAX_AGE_MS,
   API_KEY_LOGIN_VENDORS,
   type ApiKeyLoginSpec,
   readKeyLogins,
@@ -52,9 +51,7 @@ async function fetchKimiQuota(
   spec: KimiSpec,
   ctx: QuotaProviderContext,
 ): Promise<ProviderFetchResult> {
-  const { auth, diagnostics } = await resolveApiKeyLoginWithDiagnostics(spec.auth, {
-    maxAgeMs: API_KEY_LOGIN_CACHE_MAX_AGE_MS,
-  });
+  const { auth, diagnostics } = await resolveApiKeyLoginWithDiagnostics(spec.auth);
   const endpoint = getKimiQuotaEndpoint(spec.endpoint);
   const authDetails = [
     ...apiKeyStatusDetails(diagnostics),
@@ -132,9 +129,7 @@ function kimiProvider(spec: KimiSpec): QuotaProvider {
       });
       if (!providerAvailable) return false;
 
-      const auth = await resolveApiKeyLogin(spec.auth, {
-        maxAgeMs: API_KEY_LOGIN_CACHE_MAX_AGE_MS,
-      });
+      const auth = await resolveApiKeyLogin(spec.auth);
       return auth.state === "configured" || auth.state === "invalid";
     },
 

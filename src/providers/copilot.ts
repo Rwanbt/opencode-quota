@@ -13,6 +13,7 @@ import {
   queryCopilotQuota,
 } from "../lib/copilot.js";
 import type { QuotaProvider, QuotaProviderContext } from "../lib/entries.js";
+import { fmtUsdAmount } from "../lib/format-utils.js";
 import {
   type CredentialRow,
   credentialRowAuthEntry,
@@ -59,10 +60,6 @@ function formatNumber(value: number): string {
   return new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 }).format(value);
 }
 
-function formatUsd(value: number): string {
-  return `$${value.toFixed(2)}`;
-}
-
 const COUNT_DECIMAL = new Intl.NumberFormat("en-US", {
   maximumFractionDigits: 2,
   useGrouping: false,
@@ -103,10 +100,10 @@ function formatAiCreditUsageValue(
   }
   if (result.billedUsed !== undefined) {
     const billedAmount =
-      result.billedAmountUsd === undefined ? "" : ` (${formatUsd(result.billedAmountUsd)})`;
+      result.billedAmountUsd === undefined ? "" : ` (${fmtUsdAmount(result.billedAmountUsd)})`;
     parts.push(`Billed ${formatNumber(result.billedUsed)}${billedAmount}`);
   } else if (result.billedAmountUsd !== undefined) {
-    parts.push(`Billed ${formatUsd(result.billedAmountUsd)}`);
+    parts.push(`Billed ${fmtUsdAmount(result.billedAmountUsd)}`);
   }
 
   if (result.mode !== "user_quota") {
@@ -164,8 +161,8 @@ function budgetRow(budget: CopilotBudgetResult, resetTimeIso?: string): Provider
   }
   const text =
     spent === undefined
-      ? `${formatUsd(budget.amountUsd)} limit | scope=${budget.scope}`
-      : `${formatUsd(spent)} spent | ${formatUsd(budget.amountUsd)} budget | scope=${budget.scope}`;
+      ? `${fmtUsdAmount(budget.amountUsd)} limit | scope=${budget.scope}`
+      : `${fmtUsdAmount(spent)} spent | ${fmtUsdAmount(budget.amountUsd)} budget | scope=${budget.scope}`;
   return { ...row, text };
 }
 

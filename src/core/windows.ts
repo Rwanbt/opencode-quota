@@ -7,7 +7,7 @@ import type { QuotaWindow } from "./types.js";
 const HOUR_MS = 60 * 60_000;
 const DAY_MS = 24 * HOUR_MS;
 
-export type WindowInfo = {
+type WindowInfo = {
   label: string;
   short: string;
   /** Fixed length, when the window has one (months and years do not). */

@@ -1,49 +1,75 @@
 /**
- * `opencode-quota show` and the frame every terminal report runs in: the settings (prices
+ * `opencode-quota show` and `status`, and the frame every terminal report runs in: the settings (prices
  * included), the logins from OpenCode's database, and the providers OpenCode knows.
  */
 import { resolve } from "path";
 import type { ProviderSourceHost } from "../core/provider-source.js";
 import { loadSettings } from "../settings/index.js";
 import { hasAnthropicCredentialsConfigured } from "./anthropic.js";
+import { API_KEY_LOGIN_VENDORS, resolveApiKeyLogin } from "./api-key-resolver.js";
 import {
-  API_KEY_LOGIN_CACHE_MAX_AGE_MS,
-  API_KEY_LOGIN_VENDORS,
-  resolveApiKeyLogin,
-} from "./api-key-resolver.js";
-import { buildCliShowJson, buildCliShowText, type CliReport } from "./cli-reports.js";
+  buildCliShowJson,
+  buildCliShowText,
+  buildCliStatus,
+  type CliReport,
+} from "./cli-reports.js";
 import { findGitWorktreeRoot } from "./config-file-utils.js";
 import type { QuotaProviderContext } from "./entries.js";
 import { bindCredentialSource } from "./opencode-auth.js";
 import { createSqliteCredentialSource } from "./opencode-auth-sqlite.js";
 import { loadConfiguredProviderIds } from "./opencode-config-providers.js";
-import { getQuotaProviderShape } from "./provider-metadata.js";
+import { getCanonicalQuotaProviderId } from "./provider-metadata.js";
 import { applyPricingSettings } from "./quota-dialog-commands.js";
 
-export interface RunCliShowCommandOptions {
+interface RunCliCommandOptions {
   argv?: string[];
   cwd?: string;
   stdout?: Pick<NodeJS.WriteStream, "write">;
   stderr?: Pick<NodeJS.WriteStream, "write">;
 }
 
-type ParsedShowArgs =
+type CliCommand = "show" | "status";
+
+type ParsedArgs =
   | { ok: true; providerId?: string; help: boolean; json: boolean; threshold?: number }
   | { ok: false; error: string };
 
-const SHOW_USAGE = [
-  "Usage:",
-  "  npx @slkiser/opencode-quota show [--provider <provider-id>] [--json] [--threshold <pct>]",
-  "",
-  "Options:",
-  "  --provider <provider-id>  Show quota for one provider",
-  "  --json                    Machine-readable JSON output (the last known quota)",
-  "  --threshold <pct>         With --json, exit 1 if any complete saved percentage is below",
-  "                            <pct>% remaining (exit 2 if data is incomplete or not comparable)",
-  "  --help, -h                Show help",
-].join("\n");
+const USAGE: Record<CliCommand, string> = {
+  show: [
+    "Usage:",
+    "  npx @slkiser/opencode-quota show [--provider <provider-id>] [--json] [--threshold <pct>]",
+    "",
+    "Options:",
+    "  --provider <provider-id>  Show quota for one provider",
+    "  --json                    Machine-readable JSON output (the last known quota)",
+    "  --threshold <pct>         With --json, exit 1 if any complete saved percentage is below",
+    "                            <pct>% remaining (exit 2 if data is incomplete or not comparable)",
+    "  --help, -h                Show help",
+  ].join("\n"),
+  status: [
+    "Usage:",
+    "  npx @slkiser/opencode-quota status [--provider <provider-id>] [--json]",
+    "",
+    "Print the same Quota Status diagnostics as the /quota_status slash command,",
+    "without launching OpenCode.",
+    "",
+    "Options:",
+    "  --provider <provider-id>  Restrict provider availability and live probes to one provider",
+    "  --json                    Machine-readable JSON output:",
+    "                            { version, generatedAt, config, providers, pricing, liveProbes }",
+    "  --help, -h                Show help",
+    "",
+    "Exit codes:",
+    "  0  success",
+    "  1  error",
+    "  2  no comparable provider data (with --json only)",
+  ].join("\n"),
+};
 
-function parseShowArgs(argv: string[]): ParsedShowArgs {
+const THRESHOLD_REDIRECT =
+  "--threshold is not supported by status. For threshold exit codes, use: opencode-quota show --json --threshold <pct>";
+
+function parseArgs(command: CliCommand, argv: string[]): ParsedArgs {
   let providerId: string | undefined;
   let json = false;
   let threshold: number | undefined;
@@ -61,6 +87,7 @@ function parseShowArgs(argv: string[]): ParsedShowArgs {
     }
 
     if (arg === "--threshold" || arg.startsWith("--threshold=")) {
+      if (command === "status") return { ok: false, error: THRESHOLD_REDIRECT };
       let value: string | undefined;
       if (arg === "--threshold") {
         value = argv[index + 1];
@@ -82,28 +109,16 @@ function parseShowArgs(argv: string[]): ParsedShowArgs {
       continue;
     }
 
-    if (arg === "--provider") {
-      const value = argv[index + 1];
-      if (!value || value.startsWith("-")) {
+    if (arg === "--provider" || arg.startsWith("--provider=")) {
+      const value = arg === "--provider" ? argv[index + 1] : arg.slice("--provider=".length).trim();
+      if (!value || (arg === "--provider" && value.startsWith("-"))) {
         return { ok: false, error: "Missing value for --provider." };
       }
       if (providerId) {
         return { ok: false, error: "Specify --provider only once." };
       }
       providerId = value;
-      index += 1;
-      continue;
-    }
-
-    if (arg.startsWith("--provider=")) {
-      const value = arg.slice("--provider=".length).trim();
-      if (!value) {
-        return { ok: false, error: "Missing value for --provider." };
-      }
-      if (providerId) {
-        return { ok: false, error: "Specify --provider only once." };
-      }
-      providerId = value;
+      if (arg === "--provider") index += 1;
       continue;
     }
 
@@ -121,7 +136,7 @@ function parseShowArgs(argv: string[]): ParsedShowArgs {
   return { ok: true, providerId, help: false, json, threshold };
 }
 
-export function resolveCliRoots(cwd: string): {
+function resolveCliRoots(cwd: string): {
   workspaceRoot: string;
   configRoot: string;
   fallbackDirectory: string;
@@ -139,12 +154,8 @@ export function resolveCliRoots(cwd: string): {
 async function loadCliAuthenticatedProviderIds(anthropicBinaryPath: string): Promise<string[]> {
   const [anthropicConfigured, kimiGlobalAuth, kimiCnAuth] = await Promise.all([
     hasAnthropicCredentialsConfigured({ binaryPath: anthropicBinaryPath }),
-    resolveApiKeyLogin(API_KEY_LOGIN_VENDORS["kimi-code-plan-global"], {
-      maxAgeMs: API_KEY_LOGIN_CACHE_MAX_AGE_MS,
-    }),
-    resolveApiKeyLogin(API_KEY_LOGIN_VENDORS["kimi-code-plan-cn"], {
-      maxAgeMs: API_KEY_LOGIN_CACHE_MAX_AGE_MS,
-    }),
+    resolveApiKeyLogin(API_KEY_LOGIN_VENDORS["kimi-code-plan-global"]),
+    resolveApiKeyLogin(API_KEY_LOGIN_VENDORS["kimi-code-plan-cn"]),
   ]);
 
   return [
@@ -203,7 +214,7 @@ function writeLine(stream: Pick<NodeJS.WriteStream, "write">, message: string): 
  * and prints it. It works with OpenCode closed: logins are read read-only from OpenCode's
  * database, and only while the report runs.
  */
-export async function runCliReport(params: {
+async function runCliReport(params: {
   cwd: string;
   failurePrefix: "Failed to show quota" | "Failed to generate quota status";
   build: (host: ProviderSourceHost) => Promise<CliReport>;
@@ -237,24 +248,31 @@ export async function runCliReport(params: {
   }
 }
 
-export async function runCliShowCommand(options: RunCliShowCommandOptions = {}): Promise<number> {
-  const argv = options.argv ?? process.argv.slice(3);
+/** Parses the arguments, prints the usage or an argument error, else runs the report. */
+async function runCliCommand(
+  command: CliCommand,
+  options: RunCliCommandOptions,
+  build: (
+    host: ProviderSourceHost,
+    args: { providerId?: string; json: boolean; threshold?: number },
+  ) => Promise<CliReport>,
+): Promise<number> {
   const stdout = options.stdout ?? process.stdout;
   const stderr = options.stderr ?? process.stderr;
 
-  const parsed = parseShowArgs(argv);
+  const parsed = parseArgs(command, options.argv ?? process.argv.slice(3));
   if (!parsed.ok) {
     writeLine(stderr, parsed.error);
-    writeLine(stderr, SHOW_USAGE);
+    writeLine(stderr, USAGE[command]);
     return 1;
   }
 
   if (parsed.help) {
-    writeLine(stdout, SHOW_USAGE);
+    writeLine(stdout, USAGE[command]);
     return 0;
   }
 
-  const providerId = parsed.providerId ? getQuotaProviderShape(parsed.providerId)?.id : undefined;
+  const providerId = parsed.providerId ? getCanonicalQuotaProviderId(parsed.providerId) : undefined;
   if (parsed.providerId && !providerId) {
     writeLine(stderr, `Unknown provider: ${parsed.providerId}`);
     return 1;
@@ -262,15 +280,25 @@ export async function runCliShowCommand(options: RunCliShowCommandOptions = {}):
 
   return runCliReport({
     cwd: options.cwd ?? process.cwd(),
-    failurePrefix: "Failed to show quota",
-    build: (host) =>
-      parsed.json
-        ? buildCliShowJson({
-            host: withOnlyProvider(host, providerId),
-            threshold: parsed.threshold,
-          })
-        : buildCliShowText(withOnlyProvider(host, providerId)),
+    failurePrefix: command === "show" ? "Failed to show quota" : "Failed to generate quota status",
+    build: (host) => build(host, { ...parsed, providerId }),
     stdout,
     stderr,
   });
+}
+
+export function runCliShowCommand(options: RunCliCommandOptions = {}): Promise<number> {
+  return runCliCommand("show", options, (host, args) => {
+    const only = withOnlyProvider(host, args.providerId);
+    return args.json
+      ? buildCliShowJson({ host: only, threshold: args.threshold })
+      : buildCliShowText(only);
+  });
+}
+
+/** `status`: the same Quota Status diagnostics as /quota_status, without OpenCode. */
+export function runCliStatusCommand(options: RunCliCommandOptions = {}): Promise<number> {
+  return runCliCommand("status", options, (host, args) =>
+    buildCliStatus({ host, providerId: args.providerId, json: args.json }),
+  );
 }

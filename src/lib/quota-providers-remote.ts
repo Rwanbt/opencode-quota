@@ -1,8 +1,10 @@
+import { isIsoTime } from "../core/validate.js";
 import type { ProviderRow } from "../providers/contract.js";
 import { type ApiKeySpec, getApiKeyCheckedPaths, resolveApiKey } from "./api-key-resolver.js";
 import { sanitizeSingleLineDisplayText } from "./display-sanitize.js";
+import { fmtUsdAmount } from "./format-utils.js";
 import { REQUEST_TIMEOUT_MS } from "./http.js";
-import { isRecord } from "./json-guards.js";
+import { hasOnlyKeys, isRecord } from "./json-guards.js";
 import { getCredentialDatabasePaths } from "./opencode-auth.js";
 import type {
   CustomResultType,
@@ -14,6 +16,7 @@ import type {
   RemoteApiQuotaProviderDefinition,
 } from "./quota-providers.js";
 import {
+  CUSTOM_RESULT_TYPES,
   customRow,
   customRowKey,
   JSON_V1_MAX_DISPLAY_CODE_POINTS,
@@ -28,15 +31,6 @@ const JSON_V1_MAX_CANDIDATES = 1_600;
 const JSON_V1_MAX_ENTRIES = 100;
 const JSON_V1_MAX_DETAILED_ERRORS = 16;
 
-const RESULT_TYPES = new Set<CustomResultType>([
-  "quota",
-  "rate_limit",
-  "usage",
-  "spend",
-  "budget",
-  "balance",
-  "status",
-]);
 const PERCENT_RESULT_TYPES = new Set<CustomResultType>(["quota", "rate_limit", "budget"]);
 /** `right` and `observedAtIso` are checked but not shown. */
 const QUOTA_V1_ROW_KEYS = [
@@ -50,7 +44,6 @@ const QUOTA_V1_ROW_KEYS = [
   "resetTimeIso",
   "observedAtIso",
 ];
-const ISO_TIMESTAMP_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
 const JSON_V1_DECIMAL_TEXT_RE = /^-?\d+(?:\.\d+)?$/;
 
 export type QuotaProviderAuthSource = "env" | "opencode.json" | "opencode.jsonc" | "opencode.db";
@@ -67,28 +60,11 @@ export type RemoteQuotaProviderResult =
   | { success: true; rows: ProviderRow[]; rowErrors?: string[] }
   | { success: false; error: string };
 
-function hasOnlyKeys(value: Record<string, unknown>, allowed: readonly string[]): boolean {
-  const allowedSet = new Set(allowed);
-  return Object.keys(value).every((key) => allowedSet.has(key));
-}
-
-function isoTimestampOrNull(value: unknown): string | null {
-  return typeof value === "string" &&
-    ISO_TIMESTAMP_RE.test(value) &&
-    Number.isFinite(Date.parse(value))
-    ? value
-    : null;
-}
-
 function boundedDisplayText(value: unknown, maxCodePoints: number): string | null {
   if (typeof value !== "string") return null;
   const normalized = sanitizeSingleLineDisplayText(value);
   const length = Array.from(normalized).length;
   return length >= 1 && length <= maxCodePoints ? normalized : null;
-}
-
-function formatUsd(value: number): string {
-  return `$${value.toFixed(2)}`;
 }
 
 export async function resolveQuotaProviderApiKey(
@@ -173,16 +149,25 @@ function parseQuotaV1Row(raw: unknown): ProviderRow | null {
 
   const name = boundedDisplayText(raw.name, 80);
   const resultType =
-    typeof raw.resultType === "string" && RESULT_TYPES.has(raw.resultType as CustomResultType)
+    typeof raw.resultType === "string" &&
+    CUSTOM_RESULT_TYPES.has(raw.resultType as CustomResultType)
       ? (raw.resultType as CustomResultType)
       : null;
   // Optional fields are undefined when absent and null when present but invalid.
   const label = raw.label === undefined ? undefined : boundedDisplayText(raw.label, 80);
   const right = raw.right === undefined ? undefined : boundedDisplayText(raw.right, 160);
   const resetTimeIso =
-    raw.resetTimeIso === undefined ? undefined : isoTimestampOrNull(raw.resetTimeIso);
+    raw.resetTimeIso === undefined
+      ? undefined
+      : isIsoTime(raw.resetTimeIso)
+        ? raw.resetTimeIso
+        : null;
   const observedAtIso =
-    raw.observedAtIso === undefined ? undefined : isoTimestampOrNull(raw.observedAtIso);
+    raw.observedAtIso === undefined
+      ? undefined
+      : isIsoTime(raw.observedAtIso)
+        ? raw.observedAtIso
+        : null;
   if (
     !name ||
     !resultType ||
@@ -580,7 +565,7 @@ function parseOpenRouterKeyV1(body: unknown): RemoteQuotaProviderResult {
         label: "Spend",
         resultType: "spend",
         method: "remote_api",
-        value: { text: formatUsd(usage) },
+        value: { text: fmtUsdAmount(usage) },
       }),
     ],
   };

@@ -1,7 +1,7 @@
 import { chmod, mkdir, rename, rm, writeFile } from "fs/promises";
 import { dirname } from "path";
 
-export type AtomicWritePolicy = "ordinary" | "configuration";
+type AtomicWritePolicy = "ordinary" | "configuration";
 
 export interface WriteJsonAtomicOptions {
   trailingNewline?: boolean;

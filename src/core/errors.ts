@@ -8,6 +8,25 @@ import type { QuotaError, QuotaErrorCode } from "./types.js";
 
 const DETAIL_MAX_LENGTH = 300;
 
+/** Every error code, to check a code read from a file or a provider answer. */
+const ERROR_CODES: Readonly<Record<QuotaErrorCode, true>> = {
+  not_configured: true,
+  login_expired: true,
+  no_plan: true,
+  rate_limited: true,
+  timeout: true,
+  network: true,
+  provider_error: true,
+  bad_response: true,
+  no_data: true,
+  local_tool: true,
+  internal: true,
+};
+
+export function isQuotaErrorCode(code: unknown): code is QuotaErrorCode {
+  return typeof code === "string" && Object.hasOwn(ERROR_CODES, code);
+}
+
 /** Local programs named in provider messages, longest names first. */
 export const LOCAL_TOOLS: readonly string[] = ["Alibaba Cloud CLI", "Claude CLI"];
 

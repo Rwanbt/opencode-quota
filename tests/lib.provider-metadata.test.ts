@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  getCanonicalQuotaProviderId,
   getQuotaProviderDisplayLabel,
   getQuotaProviderIdsForRuntimeId,
   getQuotaProviderRuntimeIds,
-  getQuotaProviderShape,
   QUOTA_PROVIDER_CATALOG,
 } from "../src/lib/provider-metadata.js";
 import { QUOTA_PROVIDER_REGISTRATION_SOURCE } from "../src/lib/provider-registration.js";
@@ -22,23 +22,12 @@ const KIMI_CN = ["kimi-code-plan-cn", "kimi-for-coding", "kimi", "kimi-code"];
 const XIAOMI = ["xiaomi", "xiaomi-token-plan-cn", "xiaomi-token-plan-ams", "xiaomi-token-plan-sgp"];
 
 describe("provider-metadata", () => {
-  it("lists every registered provider in order, each shape under its own id", () => {
+  it("lists every registered provider once, in order", () => {
     const ids = QUOTA_PROVIDER_REGISTRATION_SOURCE.map(({ id }) => id);
     expect(new Set(ids).size).toBe(ids.length);
     expect(Object.keys(QUOTA_PROVIDER_CATALOG)).toEqual(ids);
-    for (const [id, entry] of Object.entries(QUOTA_PROVIDER_CATALOG)) {
-      expect(entry.shape.id).toBe(id);
-      if (entry.shape.recommendedReplacementId) {
-        expect(ids).toContain(entry.shape.recommendedReplacementId);
-      }
-    }
-    expect(getQuotaProviderShape("alibaba")).toEqual({
-      id: "alibaba-coding-plan",
-      autoSetup: "yes",
-      authentication: "opencode_auth_api_key",
-      authFallbacks: ["env_api_key", "global_opencode_config"],
-    });
-    expect(getQuotaProviderShape("gemini-cli")?.recommendedReplacementId).toBe("google-agy");
+    expect(getCanonicalQuotaProviderId("alibaba")).toBe("alibaba-coding-plan");
+    expect(getCanonicalQuotaProviderId("not-a-provider")).toBeUndefined();
   });
 
   // Synonyms name the provider; runtime ids are only the OpenCode ids that count as it.
@@ -68,7 +57,7 @@ describe("provider-metadata", () => {
     ["mimo", undefined, "mimo", []],
     ["grok", undefined, "grok", []],
   ])("knows %j as %s (%s)", (input, id, label, runtimeIds) => {
-    expect(getQuotaProviderShape(input)?.id).toBe(id);
+    expect(getCanonicalQuotaProviderId(input)).toBe(id);
     expect(getQuotaProviderDisplayLabel(input)).toBe(label);
     expect(getQuotaProviderRuntimeIds(input)).toEqual(runtimeIds);
   });

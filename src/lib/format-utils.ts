@@ -27,7 +27,3 @@ export function formatLocalCallTimestamp(atMs?: number): string {
   const d = new Date(safeMs);
   return `${pad2(d.getHours())}:${pad2(d.getMinutes())} ${pad2(d.getDate())}/${pad2(d.getMonth() + 1)}/${d.getFullYear()}`;
 }
-
-export function abbreviateDisplayedModelName(name: string): string {
-  return name.replace(/antigravity/gi, "agy");
-}

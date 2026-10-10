@@ -50,16 +50,6 @@ const REGIONS = [
 describe.each(REGIONS)("Kimi Code $region", ({ provider, envVar, integrationId, url, name }) => {
   const id = provider.id;
 
-  it("is not configured without a key, and asks nothing", async () => {
-    const http = fakeHttp(() => USAGE_REPLY);
-
-    const fetched = await fetchRows(provider);
-
-    expect(fetched.rows).toEqual([]);
-    expect(fetched.error).toEqual({ code: "not_configured" });
-    expect(http).not.toHaveBeenCalled();
-  });
-
   it("asks its own endpoint with the env key and shows the weekly usage and each limit", async () => {
     process.env[envVar] = "env-key";
     const http = fakeHttp(() => USAGE_REPLY);

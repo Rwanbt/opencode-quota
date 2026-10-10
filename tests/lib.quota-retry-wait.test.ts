@@ -4,11 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { QuotaRow } from "../src/core/types.js";
 import type { QuotaRetryEvent } from "../src/lib/quota-retry-wait.js";
 import type { ProviderRow } from "../src/providers/contract.js";
 import type { LoadedSettings, Settings } from "../src/settings/index.js";
-import { answer, percentRow } from "./helpers/fake-answers.js";
+import { answer, percentRow, quotaRow } from "./helpers/fake-answers.js";
 import {
   createPluginRuntimePathsMockModule,
   createProvidersRegistryModuleMock,
@@ -43,19 +42,12 @@ function at(offsetMs: number): string {
   return new Date(NOW_MS + offsetMs).toISOString();
 }
 
-function row(key: string, percentRemaining: number | undefined, resetsAt?: string): QuotaRow {
-  return {
-    id: `zai.${key}`,
-    providerId: "zai",
-    label: key,
-    type: "quota",
-    method: "remote_api",
-    authority: "provider_reported",
-    prominence: "primary",
+/** A Z.ai row; without a percent it shows a text. */
+const row = (key: string, percentRemaining: number | undefined, resetsAt?: string) =>
+  quotaRow(`zai.${key}`, {
     ...(percentRemaining === undefined ? { text: "n/a" } : { percentRemaining }),
     ...(resetsAt ? { resetsAt } : {}),
-  };
-}
+  });
 
 const WINDOW_KEYS = { "5h": "five_hour", Weekly: "weekly" } as const;
 
@@ -144,6 +136,21 @@ describe("resolveQuotaResetRetryDelayMs", () => {
     };
   }
   const readSettings = vi.fn(() => current);
+  /** Registers `providers` and enables each by its id, then applies `edit`. */
+  function useProviders(
+    providers: Array<{ id: string }>,
+    edit: (settings: Settings) => void = () => {},
+  ): void {
+    mocks.getProviders.mockReturnValue(providers);
+    useSettings((settings) => {
+      settings.providers.enabled = providers.map((provider) => provider.id);
+      edit(settings);
+    });
+  }
+  /** Z.ai with its 5-hour window used up until 90 minutes from now. */
+  const usedUpZai = () =>
+    makeProvider("zai", [window("5h", 0, at(90 * MINUTE_MS))], (model) => model.includes("glm"));
+  const WAIT_FOR_ZAI = 90 * MINUTE_MS + QUOTA_RESET_RETRY_BUFFER_MS;
   const sourceHost = {
     client: {
       config: {
@@ -187,58 +194,41 @@ describe("resolveQuotaResetRetryDelayMs", () => {
   });
 
   it("waits for the used-up window of the retried model's provider only", async () => {
-    const zai = makeProvider("zai", [window("5h", 0, at(90 * MINUTE_MS))], (model) =>
-      model.includes("glm"),
-    );
+    const zai = usedUpZai();
     const synthetic = makeProvider(
       "synthetic",
       [window("Weekly", 0, at(10 * MINUTE_MS))],
       () => false,
     );
-    mocks.getProviders.mockReturnValue([zai, synthetic]);
     // waitForQuotaReset is on by default.
-    useSettings((settings) => {
-      settings.providers.enabled = ["zai", "synthetic"];
-    });
+    useProviders([zai, synthetic]);
 
-    await expect(resolve(limitEvent)).resolves.toBe(90 * MINUTE_MS + QUOTA_RESET_RETRY_BUFFER_MS);
+    await expect(resolve(limitEvent)).resolves.toBe(WAIT_FOR_ZAI);
     expect(zai.fetch).toHaveBeenCalledTimes(1);
     expect(synthetic.fetch).not.toHaveBeenCalled();
   });
 
   it("asks the provider for fresh quota on every limit error, whatever the interval", async () => {
-    const zai = {
-      ...makeProvider("zai", [window("5h", 0, at(90 * MINUTE_MS))], () => true),
-      cachePolicy: { kind: "account-neutral" },
-    };
-    mocks.getProviders.mockReturnValue([zai]);
-    useSettings((settings) => {
-      settings.providers.enabled = ["zai"];
+    const zai = { ...usedUpZai(), cachePolicy: { kind: "account-neutral" } };
+    useProviders([zai], (settings) => {
       settings.checking.minIntervalMs = 60 * MINUTE_MS;
     });
 
     const { resolveQuotaResetRetryDelayMs } = await import("../src/lib/quota-retry-wait.js");
     const host = await createHost();
     for (let attempt = 1; attempt <= 2; attempt++) {
-      await expect(resolveQuotaResetRetryDelayMs(host, limitEvent)).resolves.toBe(
-        90 * MINUTE_MS + QUOTA_RESET_RETRY_BUFFER_MS,
-      );
+      await expect(resolveQuotaResetRetryDelayMs(host, limitEvent)).resolves.toBe(WAIT_FOR_ZAI);
       expect(zai.fetch).toHaveBeenCalledTimes(attempt);
     }
   });
 
   it("ignores rows from an earlier read when the provider fails now", async () => {
-    const zai = makeProvider("zai", [window("5h", 0, at(90 * MINUTE_MS))], () => true);
-    mocks.getProviders.mockReturnValue([zai]);
-    useSettings((settings) => {
-      settings.providers.enabled = ["zai"];
-    });
+    const zai = usedUpZai();
+    useProviders([zai]);
 
     const { resolveQuotaResetRetryDelayMs } = await import("../src/lib/quota-retry-wait.js");
     const host = await createHost();
-    await expect(resolveQuotaResetRetryDelayMs(host, limitEvent)).resolves.toBe(
-      90 * MINUTE_MS + QUOTA_RESET_RETRY_BUFFER_MS,
-    );
+    await expect(resolveQuotaResetRetryDelayMs(host, limitEvent)).resolves.toBe(WAIT_FOR_ZAI);
     vi.setSystemTime(NOW_MS + MINUTE_MS);
     zai.fetch.mockRejectedValueOnce(new Error("fetch failed"));
     await expect(resolveQuotaResetRetryDelayMs(host, limitEvent)).resolves.toBeUndefined();
@@ -287,26 +277,21 @@ describe("resolveQuotaResetRetryDelayMs", () => {
   });
 
   it("ignores a provider where one of the logins failed: its kept rows are old", async () => {
-    const zai = makeProvider("zai", [window("5h", 0, at(90 * MINUTE_MS))], () => true);
+    const zai = usedUpZai();
     zai.fetch.mockResolvedValue(
       answer(
         { name: "Z.ai", rows: [window("5h", 0, at(90 * MINUTE_MS))] },
         { name: "[Z.ai Work]", errors: ["Token expired"] },
       ),
     );
-    mocks.getProviders.mockReturnValue([zai]);
-    useSettings((settings) => {
-      settings.providers.enabled = ["zai"];
-    });
+    useProviders([zai]);
 
     await expect(resolve(limitEvent)).resolves.toBeUndefined();
   });
 
   it("keeps OpenCode's decision when the setting is off", async () => {
-    const zai = makeProvider("zai", [window("5h", 0, at(90 * MINUTE_MS))], () => true);
-    mocks.getProviders.mockReturnValue([zai]);
-    useSettings((settings) => {
-      settings.providers.enabled = ["zai"];
+    const zai = usedUpZai();
+    useProviders([zai], (settings) => {
       settings.checking.waitForQuotaReset = false;
     });
 
@@ -324,11 +309,9 @@ describe("resolveQuotaResetRetryDelayMs", () => {
   });
 
   it("keeps OpenCode's decision when the provider still has quota left", async () => {
-    const zai = makeProvider("zai", [window("5h", 12, at(90 * MINUTE_MS))], () => true);
-    mocks.getProviders.mockReturnValue([zai]);
-    useSettings((settings) => {
-      settings.providers.enabled = ["zai"];
-    });
+    useProviders([
+      makeProvider("zai", [window("5h", 12, at(90 * MINUTE_MS))], (model) => model.includes("glm")),
+    ]);
 
     await expect(resolve(limitEvent)).resolves.toBeUndefined();
   });
