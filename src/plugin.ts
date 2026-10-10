@@ -107,12 +107,14 @@ async function logRpcFailure<T>(method: string, handler: () => Promise<T>): Prom
 
 /**
  * The settings (or one part of them) with the keys of that part the file sets, so a value set
- * to its default in the file still differs from no value.
+ * to its default in the file still differs from no value. The keys are sorted: their order in
+ * the file changes nothing.
  */
 function settingsWithSources(loaded: LoadedSettings, part?: "checking" | "pricing"): string {
-  if (part === undefined) return JSON.stringify([loaded.settings, loaded.fromFile]);
-  const fromFile = loaded.fromFile.filter((key) => key.startsWith(`${part}.`));
-  return JSON.stringify([loaded.settings[part], fromFile]);
+  const fromFile = loaded.fromFile
+    .filter((key) => part === undefined || key.startsWith(`${part}.`))
+    .sort();
+  return JSON.stringify([part === undefined ? loaded.settings : loaded.settings[part], fromFile]);
 }
 
 /** Writes the v5 settings into settings.jsonc once; a failure leaves them converted in memory. */

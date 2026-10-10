@@ -528,6 +528,40 @@ describe("server quota RPC", () => {
     expect(now.snapshot.providers[0]).not.toHaveProperty("error");
   });
 
+  it("checks no provider again when the file lists the same check settings in another order", async () => {
+    useSettings({ checking: { minIntervalMs: 60_000, requestTimeoutMs: 5_000 } });
+    const fetch = vi.fn(async () => ({
+      attempted: true,
+      entries: [{ accounting: TEST_ACCOUNTING, name: "Copilot", percentRemaining: 40 }],
+      errors: [],
+    }));
+    mocks.getProviders.mockReturnValue([
+      {
+        id: "copilot",
+        cachePolicy: { kind: "account-neutral" },
+        isAvailable: vi.fn().mockResolvedValue(true),
+        fetch,
+      },
+    ]);
+    const { call, emit } = await setupServer();
+    await call("refresh", { reason: "manual" });
+    expect(fetch).toHaveBeenCalledOnce();
+
+    // The same check settings in another order, and new words: the words show at once.
+    useSettings({
+      checking: { requestTimeoutMs: 5_000, minIntervalMs: 60_000 },
+      words: { percent: "used" },
+    });
+    await vi.waitFor(
+      () => expect(emit).toHaveBeenCalledWith("changed", { snapshot: withPercentWords("used") }),
+      { timeout: 5_000 },
+    );
+
+    // A refresh joins any check still running; the provider is not due for a minute.
+    await call("refresh", { reason: "poll" });
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+
   it("offers the v5 looks a save kept when it finished the conversion", async () => {
     // A v5 sidecar that does not parse, and v5 settings in opencode.json: the start converts
     // them in memory only, and the first save writes settings.jsonc and keeps the looks.
