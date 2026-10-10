@@ -2,14 +2,12 @@
  * Tools for AI agents: read the server settings, change the provider, checking and pricing
  * settings, and add, test and remove custom providers. Words, notices, export and telemetry
  * are the user's (in /quota → Customize); looks are not server settings at all. Every write
- * goes through `saveSettings` into OpenCode Quota's own settings file, never opencode.json.
+ * goes through `editSettings` into OpenCode Quota's own settings file, never opencode.json.
  *
  * Keys: a provider added by an agent reads its key only from a dedicated environment variable.
  * The tools refuse a built-in provider's variable and a key saved in OpenCode, so an agent
  * cannot send a key it was not given to a URL it chose, and no answer contains a key's value.
  */
-import { readFile } from "node:fs/promises";
-import { parse } from "jsonc-parser";
 import { rowsFromLegacyResult } from "./core/rows.js";
 import type { QuotaToastEntry } from "./lib/entries.js";
 import { scrubCredentialErrorText } from "./lib/opencode-auth.js";
@@ -26,13 +24,14 @@ import {
 import {
   checkSetting,
   describeRule,
+  editSettings,
   type LoadedSettings,
   loadSettings,
   type SaveResult,
   SETTINGS_SCHEMA,
   type Settings,
   type SettingsIssue,
-  saveSettings,
+  type SettingsPatch,
   settingsPath,
 } from "./settings/index.js";
 
@@ -132,11 +131,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * Every save these tools make. Agents may also write the settings the /quota window does not
- * show (custom providers, the Claude CLI path).
+ * Every write these tools make: one locked read, edit, check and write, so concurrent changes
+ * all survive. Agents may also write the settings the /quota window does not show (custom
+ * providers, the Claude CLI path).
  */
-function saveAsAgent(patch: unknown): Promise<SaveResult> {
-  return saveSettings(patch);
+function saveAsAgent(edit: (current: Settings) => SettingsPatch | undefined): Promise<SaveResult> {
+  return editSettings(edit, { allowFileOnly: true });
 }
 
 function entropyBitsPerCharacter(word: string): number {
@@ -328,7 +328,7 @@ async function setSettings(input: unknown): Promise<ToolResult> {
     ? patchIssues(patch)
     : [{ key: "patch", message: "expected an object of settings" }];
   if (issues.length > 0) return { ok: false, issues, message: "Nothing was saved." };
-  const saved = await saveAsAgent(patch);
+  const saved = await saveAsAgent(() => patch as SettingsPatch);
   if (!saved.ok) return { ok: false, issues: saved.issues, message: "Nothing was saved." };
   return {
     ok: true,
@@ -338,26 +338,45 @@ async function setSettings(input: unknown): Promise<ToolResult> {
   };
 }
 
-/**
- * `providers.custom` as written in the file (or in the v5 file while there is none), not as
- * checked: a save then keeps what the user wrote, and a bad entry stays visible instead of lost.
- */
-async function writtenCustomProviders(loaded: LoadedSettings): Promise<unknown[]> {
-  if (!loaded.exists) {
-    const converted = loaded.conversion?.values["providers.custom"];
-    return Array.isArray(converted) ? converted : [];
-  }
-  const root: unknown = parse(await readFile(loaded.path, "utf8"), [], {
-    allowTrailingComma: true,
-  });
-  const custom = isRecord(root) && isRecord(root.providers) ? root.providers.custom : undefined;
-  return Array.isArray(custom) ? custom : [];
+/** A checked definition as the file keeps it: the validator wants providerId left out when it is the id. */
+function writable(definition: QuotaProviderDefinition): Record<string, unknown> {
+  const { providerId, ...rest } = definition;
+  return providerId === definition.id ? rest : { ...definition };
 }
 
-function writtenIds(written: readonly unknown[]): string[] {
-  return written.flatMap((item) =>
-    isRecord(item) && typeof item.id === "string" ? [item.id] : [],
-  );
+/**
+ * The patch that writes `custom` as the whole list. Its entries are in the file's form (see
+ * `writable`), which the `SettingsPatch` type, built from checked settings, does not describe.
+ */
+function customProvidersPatch(custom: Array<Record<string, unknown>>): SettingsPatch {
+  return { providers: { custom } } as unknown as SettingsPatch;
+}
+
+/** The list with `definition` in place of the one with its id, or added at the end. */
+function upsert(
+  list: ReadonlyArray<Record<string, unknown>>,
+  definition: Record<string, unknown>,
+): Array<Record<string, unknown>> {
+  const at = list.findIndex((item) => item.id === definition.id);
+  return at === -1
+    ? [...list, definition]
+    : list.map((item, index) => (index === at ? definition : item));
+}
+
+/**
+ * Problems in the file's custom providers. The tools then change none: a list with a bad entry
+ * loads as empty, so writing it back would drop every entry the user has.
+ */
+function customProviderProblems(loaded: LoadedSettings): SettingsIssue[] {
+  return loaded.issues.filter((issue) => issue.key.startsWith("providers.custom"));
+}
+
+function fixFileFirst(problems: SettingsIssue[]): ToolResult {
+  return {
+    ok: false,
+    issues: problems,
+    message: `Nothing was changed: fix the custom providers in ${settingsPath()} first.`,
+  };
 }
 
 function notFound(id: unknown, ids: readonly string[]): ToolResult {
@@ -515,13 +534,12 @@ async function addProvider(input: unknown, host: QuotaAgentToolsHost): Promise<T
   if (secrets.length > 0) return { ok: false, issues: secrets, message: "Nothing was saved." };
 
   const loaded = await loadSettings();
-  const written = await writtenCustomProviders(loaded);
-  const existing = written.findIndex((item) => isRecord(item) && item.id === definition.id);
-  const index = existing === -1 ? written.length : existing;
-  const custom =
-    existing === -1
-      ? [...written, definition]
-      : written.map((item, at) => (at === existing ? definition : item));
+  const problems = customProviderProblems(loaded);
+  if (problems.length > 0) return fixFileFirst(problems);
+  // Checked here against the list as loaded, for issue keys that point into the definition;
+  // the save below checks again against the list it writes.
+  const custom = upsert(loaded.settings.providers.custom.map(writable), definition);
+  const index = custom.indexOf(definition);
   const checked = checkSetting("providers.custom", custom);
   if (checked.issues.length > 0) {
     const own = `providers.custom[${index}]`;
@@ -541,14 +559,19 @@ async function addProvider(input: unknown, host: QuotaAgentToolsHost): Promise<T
       return { ok: false, issues: [allowed.refused], message: "Nothing was saved." };
     }
   }
-  const saved = await saveAsAgent({ providers: { custom } });
+  let replaced = false;
+  const saved = await saveAsAgent((current) => {
+    const list = current.providers.custom.map(writable);
+    replaced = list.some((item) => item.id === added.id);
+    return customProvidersPatch(upsert(list, writable(added)));
+  });
   if (!saved.ok) return { ok: false, issues: saved.issues, message: "Nothing was saved." };
 
   const test = await testFetch(added, loaded.settings.checking.requestTimeoutMs);
   const notes = await visibilityNotes(added, loaded.settings, host);
   return {
     ok: true,
-    [existing === -1 ? "added" : "replaced"]: added.id,
+    [replaced ? "replaced" : "added"]: added.id,
     file: settingsPath(),
     test,
     ...(notes.length > 0 ? { notes } : {}),
@@ -565,7 +588,7 @@ async function testProvider(input: unknown, host: QuotaAgentToolsHost): Promise<
   const definitions = loaded.settings.providers.custom;
   const definition = definitions.find((item) => item.id === id);
   if (!definition) {
-    const problems = loaded.issues.filter((issue) => issue.key.startsWith("providers.custom"));
+    const problems = customProviderProblems(loaded);
     return {
       ...notFound(
         id,
@@ -581,12 +604,19 @@ async function testProvider(input: unknown, host: QuotaAgentToolsHost): Promise<
 
 async function removeProvider(input: unknown): Promise<ToolResult> {
   const id = isRecord(input) ? input.id : undefined;
-  const written = await writtenCustomProviders(await loadSettings());
-  const custom = written.filter((item) => !(isRecord(item) && item.id === id));
-  if (custom.length === written.length) return notFound(id, writtenIds(written));
-  const saved = await saveAsAgent({ providers: { custom } });
+  const problems = customProviderProblems(await loadSettings());
+  if (problems.length > 0) return fixFileFirst(problems);
+  let ids: string[] = [];
+  let found = false;
+  const saved = await saveAsAgent((current) => {
+    const kept = current.providers.custom.filter((item) => item.id !== id);
+    ids = kept.map((item) => item.id);
+    found = kept.length < current.providers.custom.length;
+    return found ? customProvidersPatch(kept.map(writable)) : undefined;
+  });
   if (!saved.ok) return { ok: false, issues: saved.issues, message: "Nothing was removed." };
-  return { ok: true, removed: id, remaining: writtenIds(custom), message: "Removed." };
+  if (!found) return notFound(id, ids);
+  return { ok: true, removed: id, remaining: ids, message: "Removed." };
 }
 
 function tool(

@@ -10,7 +10,8 @@ let root: string;
 let openCodeProviderIds: string[];
 
 beforeEach(async () => {
-  root = await mkdtemp(join(tmpdir(), "quota-agent-tools-"));
+  // Dots keep the folder name from forming one long random-looking word the output redacts.
+  root = await mkdtemp(join(tmpdir(), "quota.agent.tools."));
   vi.stubEnv("OPENCODE_CONFIG_DIR", join(root, "config"));
   vi.stubEnv("XDG_STATE_HOME", join(root, "state"));
   vi.stubEnv("MY_GATEWAY_API_KEY", "");
@@ -94,6 +95,8 @@ function saveOpenCodeKey(providerId: string, apiKey: string): void {
 
 /** A 32-character lowercase hex token, the shape of many API keys. */
 const HEX_TOKEN = "9f86d081884c7d659a2feaa0c55ad015";
+/** A path setting must be absolute; this one hides a key-like folder name. */
+const HEX_PATH = `/opt/${HEX_TOKEN}/claude`;
 
 const GATEWAY_WITHOUT_KEY_VARIABLE = Object.fromEntries(
   Object.entries(GATEWAY).filter(([field]) => field !== "apiKeyEnv"),
@@ -131,7 +134,7 @@ describe("quota_settings_get", () => {
     writeSettings(
       JSON.stringify({
         words: { percent: "used" },
-        providers: { custom: [GATEWAY, OTHER], anthropic: { binaryPath: HEX_TOKEN } },
+        providers: { custom: [GATEWAY, OTHER], anthropic: { binaryPath: HEX_PATH } },
       }),
     );
 
@@ -154,7 +157,7 @@ describe("quota_settings_get", () => {
     ]);
     expect(result.text).not.toContain("gateway-key-value-123");
     expect(result.settings?.["providers.anthropic.binaryPath"]).toMatchObject({
-      value: "[redacted]",
+      value: "/opt/[redacted]/claude",
     });
     expect(result.text).not.toContain(HEX_TOKEN);
   });
@@ -179,14 +182,14 @@ describe("quota_settings_set", () => {
   });
 
   it("never shows a key-like value in the diff", async () => {
-    writeSettings(JSON.stringify({ providers: { anthropic: { binaryPath: HEX_TOKEN } } }));
+    writeSettings(JSON.stringify({ providers: { anthropic: { binaryPath: HEX_PATH } } }));
 
     const result = await call("quota_settings_set", {
       patch: { providers: { anthropic: { binaryPath: null } } },
     });
 
     expect(result.diff).toEqual([
-      { key: "providers.anthropic.binaryPath", before: "[redacted]", after: "claude" },
+      { key: "providers.anthropic.binaryPath", before: "/opt/[redacted]/claude", after: "claude" },
     ]);
     expect(result.text).not.toContain(HEX_TOKEN);
   });
@@ -404,6 +407,59 @@ describe("quota_provider_add", () => {
       ["my-gateway-quota", "Gateway Two"],
     ]);
     expect(settingsText()).toContain("// keep me");
+  });
+
+  it("keeps every change when adds and a remove run at the same time", async () => {
+    writeSettings(FILE_WITH_COMMENTS);
+    const second = {
+      ...GATEWAY,
+      id: "second-quota",
+      providerId: "second-gateway",
+      apiKeyEnv: "SECOND_QUOTA_API_KEY",
+    };
+    vi.stubEnv("SECOND_QUOTA_API_KEY", "");
+
+    const results = await Promise.all([
+      call("quota_provider_add", { definition: GATEWAY }),
+      call("quota_provider_add", { definition: second }),
+      call("quota_provider_remove", { id: "other-quota" }),
+    ]);
+
+    expect(results.map((result) => result.ok)).toEqual([true, true, true]);
+    const ids = (await loadSettings()).settings.providers.custom.map((item) => item.id);
+    expect(ids.sort()).toEqual(["my-gateway-quota", "second-quota"]);
+    expect(settingsText()).toContain("// keep me");
+  });
+
+  it("writes back a provider whose providerId is its id, without the providerId", async () => {
+    const { providerId: _, ...sameAsOpenCode } = { ...OTHER, id: "my-router" };
+    writeSettings(JSON.stringify({ providers: { custom: [sameAsOpenCode] } }));
+
+    const added = await call("quota_provider_add", { definition: GATEWAY });
+    const removed = await call("quota_provider_remove", { id: "my-gateway-quota" });
+
+    expect([added.ok, removed.ok]).toEqual([true, true]);
+    expect(settingsText()).not.toContain('"providerId": "my-router"');
+    const loaded = await loadSettings();
+    expect(loaded.issues).toEqual([]);
+    expect(loaded.settings.providers.custom.map((item) => item.id)).toEqual(["my-router"]);
+  });
+
+  it.each([
+    ["quota_provider_add", { definition: GATEWAY }],
+    ["quota_provider_remove", { id: "other-quota" }],
+  ])("%s changes nothing while a custom provider in the file is invalid", async (name, input) => {
+    const file = JSON.stringify({ providers: { custom: [OTHER, { id: "broken" }] } });
+    writeSettings(file);
+
+    const result = await call(name, input);
+
+    expect(result).toMatchObject({
+      ok: false,
+      message: expect.stringMatching(/^Nothing was changed: fix the custom providers in /),
+    });
+    expect(result.issues?.length).toBeGreaterThan(0);
+    expect(settingsText()).toBe(file);
   });
 
   it("keeps a definition whose test fails and says what to fix", async () => {
