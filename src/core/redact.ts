@@ -30,17 +30,41 @@ const SECRET_WORDS = new Set([
   "bearer",
 ]);
 
-/**
- * True when a word of a field name is a secret word. Names split on anything but letters and
- * digits and on camelCase: "access_token", "apiKey", "XSRFToken", "Set-Cookie", "session_id".
- */
-export function namesSecret(name: string): boolean {
+/** Last words of a debug key that make it a fact about a secret: "api_key_source". */
+const FACT_WORDS = new Set([
+  "source",
+  "env",
+  "present",
+  "configured",
+  "set",
+  "kind",
+  "type",
+  "status",
+  "expires",
+  "expiry",
+  "age",
+  "path",
+  "file",
+  "name",
+  "count",
+]);
+
+/** A field name's words, split on anything but letters and digits and on camelCase. */
+function nameWords(name: string): string[] {
   return name
     .replace(/([a-z0-9])([A-Z])/gu, "$1 $2")
     .replace(/([A-Z]+)([A-Z][a-z])/gu, "$1 $2")
     .toLowerCase()
     .split(/[^a-z0-9]+/u)
-    .some((word) => SECRET_WORDS.has(word));
+    .filter(Boolean);
+}
+
+/**
+ * True when a word of a field name is a secret word: "access_token", "apiKey", "XSRFToken",
+ * "Set-Cookie", "session_id".
+ */
+export function namesSecret(name: string): boolean {
+  return nameWords(name).some((word) => SECRET_WORDS.has(word));
 }
 
 /**
@@ -108,7 +132,14 @@ export function safeDetail(text: string, maxLength: number): string {
   return redactSecrets(sanitizeSingleLineDisplayText(text)).slice(0, maxLength);
 }
 
-/** A debug detail's value made safe; fully redacted when its key names a secret. */
+/**
+ * A debug detail's value made safe: fully redacted when its key names a secret, unless the
+ * key's last word names a fact about it ("api_key_source", "token_expires_at", "apiKeyEnv");
+ * such a value, like any other, still has the secrets inside it redacted.
+ */
 export function safeDebugValue(key: string, value: string, maxLength: number): string {
-  return namesSecret(key) ? REDACTED : safeDetail(value, maxLength);
+  const words = nameWords(key);
+  const last = words.at(-1) === "at" ? words.at(-2) : words.at(-1);
+  const isFact = FACT_WORDS.has(last ?? "");
+  return namesSecret(key) && !isFact ? REDACTED : safeDetail(value, maxLength);
 }

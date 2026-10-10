@@ -25,23 +25,32 @@ describe("credential redaction", () => {
     expect(safeDetail("error: invalid_grant, keys: 3", 300)).toBe("error: invalid_grant, keys: 3");
   });
 
-  it("redacts a debug value when any word of its key is a secret word", () => {
-    for (const key of [
-      "session_id",
-      "sessionId",
-      "XSRFToken",
-      "x-api-key",
-      "api_key",
-      "apikey",
-      "refresh_token_expires_at",
-      "Authorization",
-      "client-secret-hint",
-      "passwd",
-    ]) {
-      expect(safeDebugValue(key, "CANARY", 300), key).toBe("[redacted]");
-    }
-    for (const key of ["keys", "monkey", "sessions_in_db", "console_auth_state", "tokens_used"]) {
-      expect(safeDebugValue(key, "plain", 300), key).toBe("plain");
-    }
+  it.each([
+    // Any secret word in the key hides the whole value.
+    ["session_id", "abc", "[redacted]"],
+    ["sessionId", "abc", "[redacted]"],
+    ["XSRFToken", "abc", "[redacted]"],
+    ["x-api-key", "abc", "[redacted]"],
+    ["api_key", "abc", "[redacted]"],
+    ["apikey", "abc", "[redacted]"],
+    ["Authorization", "abc", "[redacted]"],
+    ["client-secret-hint", "abc", "[redacted]"],
+    ["passwd", "abc", "[redacted]"],
+    ["has_token", "true", "[redacted]"],
+    // A fact about a secret stays, with secrets inside it still redacted.
+    ["api_key_source", "env", "env"],
+    ["token_expires_at", "2026-11-01T00:00:00.000Z", "2026-11-01T00:00:00.000Z"],
+    ["apiKeyEnv", "CHUTES_API_KEY", "CHUTES_API_KEY"],
+    ["token_present", "true", "true"],
+    ["cookie_configured", "yes", "yes"],
+    ["token_source", "Bearer sk-live-CANARY0123456789", "Bearer [redacted]"],
+    // No secret word: kept.
+    ["keys", "3", "3"],
+    ["monkey", "plain", "plain"],
+    ["sessions_in_db", "12", "12"],
+    ["console_auth_state", "configured", "configured"],
+    ["tokens_used", "500", "500"],
+  ])("debug key %s with %j shows %j", (key, value, shown) => {
+    expect(safeDebugValue(key, value, 300)).toBe(shown);
   });
 });

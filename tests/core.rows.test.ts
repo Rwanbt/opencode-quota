@@ -1013,13 +1013,12 @@ describe("rowsFromLegacyResult", () => {
       NOW_MS,
     );
     expect(JSON.stringify(result)).not.toContain("CANARY");
-    // A secret word anywhere in the key hides the value, also of a fact about a secret.
     expect(result.debug.slice(0, 5)).toEqual([
       { key: "session_token", value: "[redacted]" },
       { key: "Set-Cookie", value: "[redacted]" },
       { key: "apiKey", value: "[redacted]" },
-      { key: "token_expires_at", value: "[redacted]" },
-      { key: "api_key_source", value: "[redacted]" },
+      { key: "token_expires_at", value: "2026-11-01T00:00:00.000Z" },
+      { key: "api_key_source", value: "env" },
     ]);
   });
 
