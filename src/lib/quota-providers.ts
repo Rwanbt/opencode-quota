@@ -16,10 +16,35 @@ export function isMaintainedQuotaProviderTuning(definition: QuotaProviderDefinit
   return (MAINTAINED_LOCAL_ESTIMATE_IDS as readonly string[]).includes(definition.id);
 }
 
+/**
+ * The custom definitions that run: not maintained tunings, and not switched off. Nothing reads
+ * a switched-off definition's key or fetches it.
+ */
 export function customQuotaProviderDefinitions(
   definitions: readonly QuotaProviderDefinition[],
 ): QuotaProviderDefinition[] {
-  return definitions.filter((definition) => !isMaintainedQuotaProviderTuning(definition));
+  return definitions.filter(
+    (definition) => !isMaintainedQuotaProviderTuning(definition) && definition.enabled !== false,
+  );
+}
+
+/**
+ * Where a remote custom provider sends its key, for the user to check before switching it on:
+ * the URL's host and path, and where the key comes from. Never the key itself. Null for a local
+ * estimate, which sends nothing.
+ */
+export function describeQuotaProviderRequest(
+  definition: QuotaProviderDefinition,
+): { url: string; key: string } | null {
+  if (definition.mode !== "remote-api") return null;
+  const url = new URL(definition.url);
+  const saved = `OpenCode's API key for provider "${definition.providerId}"`;
+  return {
+    url: `${url.host}${url.pathname}`,
+    key: definition.apiKeyEnv
+      ? `environment variable ${definition.apiKeyEnv}, else ${saved}`
+      : saved,
+  };
 }
 
 export function resolveQuotaProviderSessionModelIdentity(params: {
@@ -167,6 +192,12 @@ interface QuotaProviderDefinitionBase {
   mode: QuotaProviderMode;
   /** Exact OpenCode model ids, without a provider prefix. Omission covers the provider. */
   modelIds?: string[];
+  /**
+   * `false` switches the definition off: its key is never read and it is never fetched (a
+   * maintained tuning is not applied). Omission means on. Agents add definitions switched off;
+   * only the user switches them on.
+   */
+  enabled?: boolean;
 }
 
 interface RemoteApiQuotaProviderDefinitionBase extends QuotaProviderDefinitionBase {
@@ -219,7 +250,7 @@ export type QuotaProvidersValidationResult =
   | { value: QuotaProviderDefinition[]; issues: [] }
   | { value?: undefined; issues: QuotaProviderValidationIssue[] };
 
-const BASE_FIELDS = ["id", "providerId", "label", "mode", "modelIds"] as const;
+const BASE_FIELDS = ["id", "providerId", "label", "mode", "modelIds", "enabled"] as const;
 const REMOTE_FIELDS = [...BASE_FIELDS, "url", "format", "apiKeyEnv", "adapter"] as const;
 const LOCAL_FIELDS = [...BASE_FIELDS, "windows", "pricingModelMap"] as const;
 const WINDOW_FIELDS = [
@@ -1441,6 +1472,11 @@ export function validateQuotaProviders(value: unknown): QuotaProvidersValidation
     }
 
     const modelIds = validateModelIds({ raw, providerKey, providerId, issues });
+    const enabled = raw.enabled;
+    if (hasOwnKey(raw, "enabled") && typeof enabled !== "boolean") {
+      issues.push({ key: `${providerKey}.enabled`, message: "expected true or false" });
+    }
+    const switchField = typeof enabled === "boolean" ? { enabled } : {};
     const modelIdsValid =
       !hasOwnKey(raw, "modelIds") ||
       (Array.isArray(raw.modelIds) && modelIds?.length === raw.modelIds.length);
@@ -1536,6 +1572,7 @@ export function validateQuotaProviders(value: unknown): QuotaProvidersValidation
           url: normalizedUrl.value,
           ...(apiKeyEnv !== undefined ? { apiKeyEnv: apiKeyEnv as string } : {}),
           ...(modelIds ? { modelIds } : {}),
+          ...switchField,
         };
         definitions.push({
           index,
@@ -1570,6 +1607,7 @@ export function validateQuotaProviders(value: unknown): QuotaProvidersValidation
             windows,
             ...(modelIds ? { modelIds } : {}),
             ...(pricingModelMap ? { pricingModelMap } : {}),
+            ...switchField,
           },
         });
       }

@@ -315,6 +315,26 @@ describe("buildQuotaStatusReport", () => {
     );
   });
 
+  it("shows a switched-off custom provider as off, with where to switch it on", async () => {
+    const report = await buildQuotaStatusReportForTest({
+      quotaProviders: [
+        {
+          id: "my-gateway-quota",
+          providerId: "my-gateway",
+          label: "My Gateway",
+          mode: "remote-api",
+          url: "https://gateway.example/v1/quota",
+          format: "quota-v1",
+          enabled: false,
+        },
+      ],
+    });
+
+    expect(getReportSection(report, "quota_providers:")).toContain(
+      "provider_my-gateway-quota: provider_id=my-gateway off (switch on in /quota_settings → Providers)",
+    );
+  });
+
   it("renders only safe quota-provider identity and diagnostic fields", async () => {
     const report = await buildQuotaStatusReportForTest({
       enabledProviders: ["quota-providers"],

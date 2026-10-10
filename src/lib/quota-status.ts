@@ -379,6 +379,15 @@ function createQuotaProvidersSection(params: {
   const rows: ReportKvRow[] = [];
 
   for (const definition of params.definitions) {
+    if (definition.enabled === false) {
+      rows.push({
+        key: `provider_${definition.id}`,
+        value: sanitizeSingleLineDisplayText(
+          `provider_id=${definition.providerId} off (switch on in /quota_settings → Providers)`,
+        ),
+      });
+      continue;
+    }
     const diagnostic = diagnosticsBySource.get(definition.id);
     const coverage = definition.modelIds ? definition.modelIds.join(",") : "all_models";
     if (definition.mode === "local-estimate" && isMaintainedQuotaProviderTuning(definition)) {

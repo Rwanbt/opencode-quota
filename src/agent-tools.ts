@@ -4,10 +4,10 @@
  * are the user's (in /quota → Customize); looks are not server settings at all. Every write
  * holds the settings lock and goes into OpenCode Quota's own settings file, never opencode.json.
  *
- * Keys: a provider added by an agent reads its key only from a variable named OPENCODE_QUOTA_…
- * that the user creates for it. That is decided by the name alone, so a refusal says nothing
- * about saved keys. Every answer is cleaned in one place: each key the plugin can read, and
- * anything in a known key format, is replaced before the agent sees it.
+ * Keys: a provider added by an agent is saved switched off (`"enabled": false`), so nothing
+ * reads its key or fetches it until the user switches it on in /quota_settings → Providers. No
+ * tool switches a provider on. Every answer is cleaned in one place: each key the plugin can
+ * read, and anything in a known key format, is replaced before the agent sees it.
  */
 import { rowsFromLegacyResult } from "./core/rows.js";
 import {
@@ -19,14 +19,14 @@ import type { QuotaToastEntry } from "./lib/entries.js";
 import { resolveEnvTemplate } from "./lib/env-template.js";
 import { readCredentialRows } from "./lib/opencode-auth.js";
 import {
+  describeQuotaProviderRequest,
   QUOTA_PROVIDERS_AGGREGATE_ID,
   type QuotaProviderDefinition,
-  type RemoteApiQuotaProviderDefinition,
 } from "./lib/quota-providers.js";
 import { collectLocalQuotaProviderEstimate } from "./lib/quota-providers-local.js";
 import {
-  DEDICATED_KEY_VARIABLE_PREFIX,
   fetchRemoteQuotaProvider,
+  resolveQuotaProviderApiKey,
 } from "./lib/quota-providers-remote.js";
 import {
   checkSetting,
@@ -76,7 +76,9 @@ const TOP_LEVEL_SETTINGS: ReadonlySet<string> = new Set(
 
 const DEFINITION_SECRET_MESSAGE =
   "looks like a key or other secret, so nothing was saved. Put the key in an environment " +
-  `variable starting with ${DEDICATED_KEY_VARIABLE_PREFIX} and set apiKeyEnv to its name.`;
+  "variable and set apiKeyEnv to its name, or leave apiKeyEnv out to use OpenCode's key.";
+
+const SWITCH_ON = "Ask the user to switch it on in /quota_settings → Providers";
 
 const SETTING_SECRET_MESSAGE = "looks like a key or other secret, so nothing was saved";
 
@@ -200,17 +202,15 @@ function definitionSecretIssues(definition: Record<string, unknown>): SettingsIs
 }
 
 /**
- * Every key the plugin can read: variables named like keys, named by a custom provider or
- * starting with OPENCODE_QUOTA_; keys in the global opencode.json(c); and API-key logins saved
- * in OpenCode for the providers OpenCode has. OAuth tokens are not read (that could refresh
- * them); `SECRET_PATTERNS` covers their shape.
+ * Every key the plugin can read: variables named like keys or named by a custom provider; keys
+ * in the global opencode.json(c); and API-key logins saved in OpenCode for the providers
+ * OpenCode has. OAuth tokens are not read (that could refresh them); `SECRET_PATTERNS` covers
+ * their shape.
  */
 async function credentialValues(host: QuotaAgentToolsHost): Promise<string[]> {
   const custom = (await loadSettings()).settings.providers.custom;
   const variables = new Set(
-    Object.keys(process.env).filter(
-      (name) => KEY_VARIABLE_NAME.test(name) || name.startsWith(DEDICATED_KEY_VARIABLE_PREFIX),
-    ),
+    Object.keys(process.env).filter((name) => KEY_VARIABLE_NAME.test(name)),
   );
   for (const definition of custom) {
     if (definition.mode === "remote-api" && definition.apiKeyEnv) {
@@ -416,22 +416,6 @@ function notFound(id: unknown, ids: readonly string[]): ToolResult {
   };
 }
 
-/** True when the key comes from a variable made for it: the only kind these tools allow. */
-function usesDedicatedVariable(
-  definition: RemoteApiQuotaProviderDefinition,
-): definition is RemoteApiQuotaProviderDefinition & { apiKeyEnv: string } {
-  return definition.apiKeyEnv?.startsWith(DEDICATED_KEY_VARIABLE_PREFIX) === true;
-}
-
-function keyVariableRule(id: string): string {
-  const name = id.toUpperCase().replace(/[^A-Z0-9]+/g, "_");
-  const example = `${DEDICATED_KEY_VARIABLE_PREFIX}${name}_API_KEY`;
-  return (
-    `apiKeyEnv must name an environment variable starting with ${DEDICATED_KEY_VARIABLE_PREFIX} ` +
-    `that the user creates just for this provider, e.g. ${example}`
-  );
-}
-
 /**
  * The rows the sidebar would show for a definition's entries, or why there are none. Row ids
  * are made from the names and ids in them, so every string in them is redacted first, to a
@@ -459,12 +443,18 @@ function testedRows(
   return { ok: true, rows: fetched.rows, ...(problems.length > 0 ? { problems } : {}) };
 }
 
-/** One fetch of one definition now, as the rows the sidebar would show, or why it failed. */
+/**
+ * One fetch of one switched-on definition now, as the rows the sidebar would show, or why it
+ * failed. Its key is read the way the plugin reads it.
+ */
 async function testFetch(
   definition: QuotaProviderDefinition,
   requestTimeoutMs: number,
   redact: Redact,
 ): Promise<ToolResult> {
+  if (definition.enabled === false) {
+    return { ok: false, error: `Not tested: it is switched off. ${SWITCH_ON}, then test it.` };
+  }
   if (definition.mode === "local-estimate") {
     return testedRows(
       definition,
@@ -473,16 +463,13 @@ async function testFetch(
       redact,
     );
   }
-  if (!usesDedicatedVariable(definition)) {
-    return { ok: false, error: `Not tested: ${keyVariableRule(definition.id)}.` };
-  }
-  const key = process.env[definition.apiKeyEnv]?.trim();
+  const { key } = await resolveQuotaProviderApiKey(definition);
   if (!key) {
     return {
       ok: false,
       error:
-        `No API key: ${definition.apiKeyEnv} is not set where OpenCode runs. The user creates ` +
-        "it with this provider's key and restarts OpenCode; then run quota_provider_test.",
+        `No API key found. It is read from ${describeQuotaProviderRequest(definition)?.key}. ` +
+        "The user saves it there and restarts OpenCode; then run quota_provider_test.",
     };
   }
   const result = await fetchRemoteQuotaProvider(definition, key, requestTimeoutMs);
@@ -527,11 +514,7 @@ async function visibilityNotes(
   return notes;
 }
 
-async function addProvider(
-  input: unknown,
-  host: QuotaAgentToolsHost,
-  redact: Redact,
-): Promise<ToolResult> {
+async function addProvider(input: unknown, host: QuotaAgentToolsHost): Promise<ToolResult> {
   const definition = isRecord(input) ? input.definition : undefined;
   if (!isRecord(definition)) {
     return {
@@ -543,8 +526,12 @@ async function addProvider(
   const secrets = definitionSecretIssues(definition);
   if (secrets.length > 0) return { ok: false, issues: secrets, message: "Nothing was saved." };
 
-  // The definition alone, so its problems point into it; the save checks the whole list.
-  const alone = checkSetting("providers.custom", [definition]);
+  // Written as the agent sent it, so the file gets no filled-in defaults; a label that only
+  // repeats the id is left out. Always switched off, also when it replaces one that was on.
+  const { label, ...withoutLabel } = definition;
+  const entry = { ...(label === definition.id ? withoutLabel : definition), enabled: false };
+  // The entry alone, so its problems point into it; the save checks the whole list.
+  const alone = checkSetting("providers.custom", [entry]);
   if (alone.issues.length > 0) {
     return {
       ok: false,
@@ -556,18 +543,6 @@ async function addProvider(
     };
   }
   const added = (alone.value as QuotaProviderDefinition[])[0];
-  if (added.mode === "remote-api" && !usesDedicatedVariable(added)) {
-    return {
-      ok: false,
-      issues: [{ key: "definition.apiKeyEnv", message: keyVariableRule(added.id) }],
-      message: "Nothing was saved.",
-    };
-  }
-
-  // Written as the agent sent it, so the file gets no filled-in defaults; a label that only
-  // repeats the id is left out.
-  const { label, ...withoutLabel } = definition;
-  const entry = label === definition.id ? withoutLabel : definition;
   let problems: SettingsIssue[] = [];
   let replaced = false;
   const saved = await editSettingsFile((current, issues) => {
@@ -581,19 +556,20 @@ async function addProvider(
   if (problems.length > 0) return fixFileFirst(problems);
   if (!saved.ok) return { ok: false, issues: saved.issues, message: "Nothing was saved." };
 
-  const { settings } = await loadSettings();
-  const test = await testFetch(added, settings.checking.requestTimeoutMs, redact);
-  const notes = await visibilityNotes(added, settings, host);
+  // What the user checks before switching it on: where the key would go, and from where.
+  const request = describeQuotaProviderRequest(added);
+  const check = request ? `, after checking that ${request.url} may get ${request.key}` : "";
+  const notes = await visibilityNotes(added, (await loadSettings()).settings, host);
   return {
     ok: true,
     [replaced ? "replaced" : "added"]: added.id,
     file: settingsPath(),
-    test,
+    enabled: false,
+    ...(request ? { request } : {}),
     ...(notes.length > 0 ? { notes } : {}),
-    message: test.ok
-      ? "Saved and tested."
-      : "Saved, but the test failed. Fix the definition and call quota_provider_add again " +
-        "with the same id, or remove it with quota_provider_remove.",
+    message:
+      `Saved, switched off: nothing reads its key or fetches it yet. ${SWITCH_ON}${check}; ` +
+      "then test it with quota_provider_test.",
   };
 }
 
@@ -694,7 +670,7 @@ const DEFINITION_EXAMPLE = JSON.stringify({
   mode: "remote-api",
   url: "https://gateway.example/v1/quota",
   format: "quota-v1",
-  apiKeyEnv: `${DEDICATED_KEY_VARIABLE_PREFIX}MY_GATEWAY_API_KEY`,
+  apiKeyEnv: "MY_GATEWAY_API_KEY",
 });
 
 export function quotaAgentTools(host: QuotaAgentToolsHost): QuotaAgentTool[] {
@@ -726,10 +702,10 @@ export function quotaAgentTools(host: QuotaAgentToolsHost): QuotaAgentTool[] {
     tool(
       host,
       "quota_provider_add",
-      "Add a custom OpenCode Quota provider, or replace the one with its id, then fetch it " +
-        "once. Returns the rows, or the error to fix (add it again with the same id). No key in " +
-        "the definition: apiKeyEnv names a variable starting with " +
-        `${DEDICATED_KEY_VARIABLE_PREFIX} that the user creates for it. Rules: ` +
+      "Add a custom OpenCode Quota provider, or replace the one with its id. It is saved " +
+        "switched off: the user switches it on in /quota_settings → Providers, then " +
+        "quota_provider_test fetches it. No key in the definition: apiKeyEnv names the " +
+        "variable holding it; without it, OpenCode's key for providerId is used. Rules: " +
         "https://github.com/slkiser/opencode-quota/blob/main/docs/readme/providers.md#custom-providers",
       {
         definition: {
@@ -737,12 +713,13 @@ export function quotaAgentTools(host: QuotaAgentToolsHost): QuotaAgentTool[] {
           description: `One custom provider definition, e.g. ${DEFINITION_EXAMPLE}.`,
         },
       },
-      (input, redact) => addProvider(input, host, redact),
+      (input) => addProvider(input, host),
     ),
     tool(
       host,
       "quota_provider_test",
-      "Fetch one custom OpenCode Quota provider by id now. Returns the rows or the error.",
+      "Fetch one switched-on custom OpenCode Quota provider by id now. Returns the rows or " +
+        "the error.",
       { id: ID_INPUT },
       (input, redact) => testProvider(input, host, redact),
     ),

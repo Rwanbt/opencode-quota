@@ -105,16 +105,18 @@ These show only your own member API key's usage, not the whole organization's.
 Custom providers can report quota, rate limit, usage, spend, budget, balance, or status. Ask your agent to add a custom provider: paste this into OpenCode and replace `<provider>`:
 
 ```text
-Add a custom OpenCode Quota provider for <provider> with the quota_provider_add tool, following docs/readme/providers.md#custom-providers in https://github.com/slkiser/opencode-quota. Never put a key or other secret in the definition: set apiKeyEnv to the name of a new environment variable starting with OPENCODE_QUOTA_ that holds only this key (for example OPENCODE_QUOTA_MYVENDOR_API_KEY). The tool saves the definition, tests it once and returns the rows or the error; fix what it reports and add it again with the same id until it shows rows.
+Add a custom OpenCode Quota provider for <provider> with the quota_provider_add tool, following docs/readme/providers.md#custom-providers in https://github.com/slkiser/opencode-quota. Never put a key or other secret in the definition: set apiKeyEnv to the name of the environment variable that holds the key, or leave it out to use the key OpenCode has for that provider. The tool saves the provider switched off; tell me the address and key source it returns. After I switch it on, test it with quota_provider_test, and fix what it reports (add it again with the same id) until it shows rows.
 ```
 
-The agent tools change only OpenCode Quota's own settings file (through a symlink, its target), never `opencode.json`; testing a local-estimate provider also updates its state file. A provider added by an agent reads its key only from an environment variable whose name starts with `OPENCODE_QUOTA_`, which you create just for it; a definition holding anything that looks like a key is refused. `quota_provider_test` and `quota_provider_remove` take a provider's `id`.
+Then switch the provider on in `/quota_settings` → **Providers** (or delete its `"enabled": false`). An agent saves every provider it adds or replaces switched off: nothing reads its key or contacts it until you switch it on, and no agent tool can switch it on.
+
+The agent tools change only OpenCode Quota's own settings file (through a symlink, its target), never `opencode.json`; testing a local-estimate provider also updates its state file. A definition holding anything that looks like a key is refused. `quota_provider_test` and `quota_provider_remove` take a provider's `id`.
 
 To edit it yourself, put definitions in `quotaProviders` in the global `opencode-quota/quota-toast.jsonc` (or `.json`); without that file, use `experimental.quotaToast.quotaProviders` in the global OpenCode config. Restart OpenCode after editing.
 
 - **Remote API:** real quota data from a supported endpoint (formats below).
 - **Local estimate:** counts matching completed OpenCode requests in 1–16 windows, with optional spend estimates. `utc-day` resets at UTC midnight; `rolling` uses `durationMinutes` (up to 366 days). Every window needs `requestLimit`; `usdBudget` is optional.
-- **Credentials:** the variable named by `apiKeyEnv`, then trusted global `provider.<providerId>.options.apiKey`, then an API-key login saved in OpenCode 2 (`opencode.db`) for that provider id; a variable whose name starts with `OPENCODE_QUOTA_` is the only source. Project secrets are never read.
+- **Credentials:** the variable named by `apiKeyEnv`, then trusted global `provider.<providerId>.options.apiKey`, then an API-key login saved in OpenCode 2 (`opencode.db`) for that provider id. A switched-off provider's key is never read, and project secrets never are.
 - With `enabledProviders: "auto"`, definitions run automatically. A manual list must include `quota-providers` plus every built-in provider you still want.
 - A custom model provider still needs its normal OpenCode provider/model config. `/connect` → **Other** stores its credential, not its model setup.
 - OpenRouter is built in. A custom OpenRouter definition only helps if you need a different endpoint or label.
