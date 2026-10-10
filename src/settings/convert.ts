@@ -8,7 +8,7 @@ import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { type ParseError, parse } from "jsonc-parser";
-import { canonicalProviderId, SETTINGS_SCHEMA, type Settings, settingsFrom } from "./schema.js";
+import { checkSetting, SETTINGS_SCHEMA, type Settings, setPath, settingsFrom } from "./schema.js";
 
 /** A v5 key that moved: `to` is a dotted key of settings.jsonc or of the TUI display settings. */
 export type ConvertedKey = { key: string; to: string; where: "server" | "display"; note?: string };
@@ -18,7 +18,8 @@ type DisplaySurface = "sidebar" | "collapsed" | "statusLine" | "toast";
 
 /**
  * The display settings a v5 file chose, in the shape the TUI stores them (only what the user
- * set; the TUI fills in its defaults). The TUI applies it once, when its storage is empty.
+ * set; the TUI fills in its defaults). Kept on disk from the write of settings.jsonc until the
+ * TUI applies it: `pendingDisplayImport`, then `acknowledgeDisplayImport`.
  */
 export type DisplayImport = {
   surfaces?: Partial<Record<DisplaySurface, { enabled?: boolean; hidden?: string[] }>>;
@@ -40,7 +41,7 @@ export type DisplayImport = {
 export type V5Conversion = {
   /** The v5 files the values came from, in the order v5 applied them. */
   sources: string[];
-  /** An old file does not parse: never write settings.jsonc from partial data. */
+  /** An old file does not parse: `convertV5` waits (maybe mid-edit); a save converts the rest. */
   malformed: boolean;
   /** True when this call wrote settings.jsonc. */
   written: boolean;
@@ -61,18 +62,6 @@ export type V5Conversion = {
 const SIDECAR_NAMES = ["quota-toast.jsonc", "quota-toast.json"] as const;
 /** v5 applied opencode.json first, so opencode.jsonc won per key. */
 const HOST_FILE_NAMES = ["opencode.json", "opencode.jsonc"] as const;
-
-const V5_GROUPS = new Set([
-  "resetNotifications",
-  "pricingSnapshot",
-  "tuiSidebarPanel",
-  "tuiCompactStatus",
-  "tuiPromptBar",
-  "maintainerAnnouncements",
-  "layout",
-  "export",
-  "telemetry",
-]);
 
 const NO_FORMAT_STYLE =
   "no v6 equivalent: the sidebar shows every row and the collapsed sidebar one per provider; hide rows in the /quota window";
@@ -99,92 +88,85 @@ const DROPPED: ReadonlyMap<string, string> = new Map(
 const SILENT = new Set(["tuiCompactStatus.suppressWhenNativeProviderQuota"]);
 
 const isBoolean = (value: unknown) => typeof value === "boolean";
-const isPositive = (value: unknown) =>
-  typeof value === "number" && Number.isFinite(value) && value > 0;
 const oneOf =
   (...values: unknown[]) =>
   (value: unknown) =>
     values.includes(value);
-const isWholeFrom = (min: number, max: number) => (value: unknown) =>
-  typeof value === "number" && Number.isInteger(value) && value >= min && value <= max;
 const isListOf = (check: (value: unknown) => boolean) => (value: unknown) =>
   Array.isArray(value) && value.length > 0 && value.every(check);
-const isAnything = () => true;
 
-/** v5's check for every key it kept (5.x src/lib/config.ts); `enabledProviders` is read apart. */
-const V5_CHECKS: ReadonlyMap<string, (value: unknown) => boolean> = new Map(
+/**
+ * Every v5 key v6 reads (5.x src/lib/config.ts): the settings.jsonc key it moved to unchanged,
+ * checked by that key's rule, or v5's own check when the value changes on the way.
+ */
+const V5_KEYS: ReadonlyMap<string, string | ((value: unknown) => boolean)> = new Map(
   Object.entries({
-    enableToast: isBoolean,
+    enabledProviders: "providers.enabled",
+    quotaProviders: "providers.custom",
+    anthropicBinaryPath: "providers.anthropic.binaryPath",
+    cursorPlan: "providers.cursor.plan",
+    cursorIncludedApiUsd: "providers.cursor.includedApiUsd",
+    cursorBillingCycleStartDay: "providers.cursor.billingCycleStartDay",
+    opencodeMonthlyLimit: "providers.opencode.monthlyLimitUsd",
+    minIntervalMs: "checking.minIntervalMs",
+    requestTimeoutMs: "checking.requestTimeoutMs",
+    waitForQuotaReset: "checking.waitForQuotaReset",
+    accountingDetail: "words.detail",
+    onlyCurrentModel: "words.onlyCurrentModel",
+    sessionTokenScope: "words.sessionTokens",
+    "pricingSnapshot.source": "pricing.source",
+    "pricingSnapshot.autoRefresh": "pricing.autoRefreshDays",
+    "maintainerAnnouncements.enabled": "announcements.enabled",
+    "maintainerAnnouncements.home": "announcements.home",
+    "maintainerAnnouncements.homeFrequency": "announcements.homeFrequency",
+    "export.enabled": "export.enabled",
+    "export.path": "export.path",
+    "telemetry.enabled": "telemetry.enabled",
+    percentDisplayMode: oneOf("remaining", "used"),
+    percentLabelStyle: oneOf("full", "bare"),
+    quotaProjection: oneOf("runway"),
+    resetTimeDecimals: (value) => checkSetting("words.resetDecimals", value).issues.length === 0,
+    resetTimeSpaced: isBoolean,
+    // Removed in v5 but still translated (the rule lived in `update`, which v6 removed).
+    opencodeZenDisplay: () => true,
     "resetNotifications.enabled": isBoolean,
     "resetNotifications.windows": isListOf(
       oneOf("fiveHour", "hourly", "daily", "weekly", "monthly", "yearly"),
     ),
-    percentDisplayMode: oneOf("remaining", "used"),
-    quotaProjection: oneOf("runway"),
-    percentLabelStyle: oneOf("full", "bare"),
-    accountingDetail: oneOf("summary", "detailed"),
-    resetTimeDecimals: isWholeFrom(0, 4),
-    resetTimeSpaced: isBoolean,
-    minIntervalMs: isPositive,
-    requestTimeoutMs: isPositive,
-    // Copied as it is; the v6 check reports a bad definition (v5 dropped the whole list).
-    quotaProviders: isAnything,
-    anthropicBinaryPath: (value) => typeof value === "string" && value.trim() !== "",
-    cursorPlan: oneOf("none", "pro", "pro-plus", "ultra"),
-    cursorIncludedApiUsd: isPositive,
-    cursorBillingCycleStartDay: isWholeFrom(1, 28),
-    opencodeGoWindows: isListOf(oneOf("rolling", "weekly", "monthly")),
-    opencodeMonthlyLimit: isPositive,
-    // Removed in v5 but still translated (the rule lived in `update`, which v6 removed).
-    opencodeZenDisplay: isAnything,
-    "pricingSnapshot.source": oneOf("auto", "bundled", "runtime"),
-    "pricingSnapshot.autoRefresh": (value) => Number.isInteger(value) && (value as number) > 0,
+    enableToast: isBoolean,
     showOnIdle: isBoolean,
     showOnQuestion: isBoolean,
     showOnCompact: isBoolean,
     showOnBothFail: isBoolean,
-    toastDurationMs: isPositive,
-    onlyCurrentModel: isBoolean,
-    waitForQuotaReset: isBoolean,
+    toastDurationMs: (value) => typeof value === "number" && Number.isFinite(value) && value > 0,
     showSessionTokens: isBoolean,
-    sessionTokenScope: oneOf("current", "tree"),
+    opencodeGoWindows: isListOf(oneOf("rolling", "weekly", "monthly")),
     "tuiSidebarPanel.enabled": isBoolean,
     "tuiSidebarPanel.opencodeGoPreferredWindow": oneOf("rolling", "weekly", "monthly"),
     "tuiCompactStatus.enabled": isBoolean,
     "tuiCompactStatus.homeBottom": isBoolean,
     "tuiCompactStatus.sessionPrompt": isBoolean,
     "tuiPromptBar.enabled": isBoolean,
-    "maintainerAnnouncements.enabled": isBoolean,
-    "maintainerAnnouncements.home": isBoolean,
-    "maintainerAnnouncements.homeFrequency": oneOf("daily", "always"),
-    "export.enabled": isBoolean,
-    "export.path": (value) => typeof value === "string",
-    "telemetry.enabled": isBoolean,
   }),
 );
 
-/** v5 keys that moved to settings.jsonc unchanged. */
-const SERVER_RENAMES: ReadonlyArray<readonly [string, string]> = [
-  ["enabledProviders", "providers.enabled"],
-  ["quotaProviders", "providers.custom"],
-  ["cursorPlan", "providers.cursor.plan"],
-  ["cursorIncludedApiUsd", "providers.cursor.includedApiUsd"],
-  ["cursorBillingCycleStartDay", "providers.cursor.billingCycleStartDay"],
-  ["opencodeMonthlyLimit", "providers.opencode.monthlyLimitUsd"],
-  ["minIntervalMs", "checking.minIntervalMs"],
-  ["requestTimeoutMs", "checking.requestTimeoutMs"],
-  ["waitForQuotaReset", "checking.waitForQuotaReset"],
-  ["accountingDetail", "words.detail"],
-  ["onlyCurrentModel", "words.onlyCurrentModel"],
-  ["sessionTokenScope", "words.sessionTokens"],
-  ["pricingSnapshot.source", "pricing.source"],
-  ["pricingSnapshot.autoRefresh", "pricing.autoRefreshDays"],
-  ["maintainerAnnouncements.enabled", "announcements.enabled"],
-  ["maintainerAnnouncements.home", "announcements.home"],
-  ["maintainerAnnouncements.homeFrequency", "announcements.homeFrequency"],
-  ["export.enabled", "export.enabled"],
-  ["export.path", "export.path"],
-  ["telemetry.enabled", "telemetry.enabled"],
+/** v5's nested groups, e.g. "tuiSidebarPanel". */
+const V5_GROUPS: ReadonlySet<string> = new Set(
+  [...V5_KEYS.keys(), ...DROPPED.keys(), ...SILENT].flatMap((key) =>
+    key.includes(".") ? [key.split(".")[0]] : [],
+  ),
+);
+
+/** v5 display keys that moved as they are (or through `map`) to these TUI display settings. */
+const DISPLAY_MOVES: ReadonlyArray<[string, string[], ((value: unknown) => unknown)?]> = [
+  ["enableToast", ["surfaces.toast.enabled"]],
+  ["showOnIdle", ["toast.afterReply"], (value) => (value ? "always" : "off")],
+  ["showOnQuestion", ["toast.afterQuestion"]],
+  ["showOnCompact", ["toast.afterCompaction"]],
+  ["showOnBothFail", ["toast.whenAllFail"]],
+  ["toastDurationMs", ["toast.seconds"], (ms) => Math.max(1, Math.round(Number(ms) / 1000))],
+  ["showSessionTokens", ["sidebar.sessionTokens", "toast.sessionTokens"]],
+  ["tuiSidebarPanel.enabled", ["surfaces.sidebar.enabled"]],
 ];
 
 /** v5's OpenCode Go window names → v6 row ids and collapsed-sidebar windows. */
@@ -205,12 +187,8 @@ type JsonFile = { state: "missing" } | { state: "invalid" } | { state: "parsed";
 /** v5 read `.json` and `.jsonc` alike: comments and trailing commas allowed. */
 async function readJsonFile(path: string): Promise<JsonFile> {
   if (!existsSync(path)) return { state: "missing" };
-  let text: string;
-  try {
-    text = await readFile(path, "utf8");
-  } catch {
-    return { state: "invalid" };
-  }
+  const text = await readFile(path, "utf8").catch(() => undefined);
+  if (text === undefined) return { state: "invalid" };
   const errors: ParseError[] = [];
   const value = parse(text, errors, { allowTrailingComma: true });
   return errors.length > 0 ? { state: "invalid" } : { state: "parsed", value };
@@ -274,23 +252,6 @@ async function readV5GlobalFiles(configDir: string): Promise<V5Files> {
   return { sources, notes, malformed, sidecarSeen };
 }
 
-/** v5 `enabledProviders`: aliases made canonical; a value without one known id meant "none". */
-function readV5EnabledProviders(value: unknown): {
-  value: "auto" | string[];
-  unknown: string[];
-} {
-  if (value === "auto") return { value, unknown: [] };
-  if (!Array.isArray(value)) return { value: [], unknown: [JSON.stringify(value)] };
-  const known: string[] = [];
-  const unknown: string[] = [];
-  for (const item of value) {
-    const id = typeof item === "string" ? canonicalProviderId(item) : undefined;
-    if (id) known.push(id);
-    else unknown.push(typeof item === "string" ? item : JSON.stringify(item));
-  }
-  return { value: [...new Set(known)], unknown };
-}
-
 /** A v5 object as dotted keys; v5's nested groups are opened one level deep. */
 function flattenV5(raw: Record<string, unknown>): Array<[string, unknown]> {
   return Object.entries(raw).flatMap(
@@ -301,7 +262,10 @@ function flattenV5(raw: Record<string, unknown>): Array<[string, unknown]> {
   );
 }
 
-/** The valid v5 values in the order v5 applied them (a later valid value wins, an invalid one never does). */
+/**
+ * The valid v5 values in the order v5 applied them. Each file is checked before it layers, so a
+ * bad later value never replaces a good one.
+ */
 function readV5Values(sources: readonly V5Source[]): {
   values: Map<string, unknown>;
   dropped: SkippedKey[];
@@ -312,27 +276,29 @@ function readV5Values(sources: readonly V5Source[]): {
   const invalid: SkippedKey[] = [];
   for (const source of sources) {
     for (const [key, value] of flattenV5(source.raw)) {
-      if (SILENT.has(key)) continue;
+      const check = V5_KEYS.get(key);
       const droppedReason = DROPPED.get(key);
-      const check = V5_CHECKS.get(key);
+      if (SILENT.has(key)) continue;
       if (droppedReason) {
         dropped.push({ key, reason: droppedReason });
-      } else if (key === "enabledProviders") {
-        const read = readV5EnabledProviders(value);
-        if (read.unknown.length > 0) {
-          invalid.push({ key, reason: `unknown provider id(s): ${read.unknown.join(", ")}` });
-        }
-        // v5: a list of only unknown ids showed nothing, unless an earlier file set a list.
-        const onlyUnknown = read.value.length === 0 && read.unknown.length > 0;
-        if (!(onlyUnknown && values.has(key))) values.set(key, read.value);
       } else if (V5_GROUPS.has(key)) {
         invalid.push({ key, reason: "expected an object" });
       } else if (!check) {
         dropped.push({ key, reason: "not a v5 setting" });
-      } else if (check(value)) {
-        values.set(key, value);
+      } else if (typeof check === "function") {
+        if (check(value)) values.set(key, value);
+        else invalid.push({ key, reason: `${JSON.stringify(value)} was not valid in v5 either` });
       } else {
-        invalid.push({ key, reason: `${JSON.stringify(value)} was not valid in v5 either` });
+        const checked = checkSetting(check, value);
+        for (const issue of checked.issues) {
+          invalid.push({ key: issue.key.replace(check, key), reason: issue.message });
+        }
+        // A valid value is written as the user wrote it (a normalized custom provider fails a
+        // second check); a partly valid one as checked.
+        if (checked.issues.length === 0) values.set(key, value);
+        else if (checked.value !== undefined) values.set(key, checked.value);
+        // v5: a list of only unknown ids showed nothing, unless an earlier file set a list.
+        else if (key === "enabledProviders" && !values.has(key)) values.set(key, []);
       }
     }
   }
@@ -347,13 +313,9 @@ function mapV5Values(values: ReadonlyMap<string, unknown>): {
   dropped: SkippedKey[];
 } {
   const server: Record<string, unknown> = {};
+  const display: Record<string, unknown> = {};
   const converted: ConvertedKey[] = [];
   const dropped: SkippedKey[] = [];
-  const surfaces: NonNullable<DisplayImport["surfaces"]> = {};
-  const toast: NonNullable<DisplayImport["toast"]> = {};
-  const sidebar: NonNullable<DisplayImport["sidebar"]> = {};
-  const window: Record<string, string> = {};
-  let statusLine: DisplayImport["statusLine"];
 
   const has = (key: string) => values.has(key);
   const chosen = <T>(key: string, fallback: T): T =>
@@ -365,17 +327,9 @@ function mapV5Values(values: ReadonlyMap<string, unknown>): {
   const toDisplay = (key: string, to: string, note?: string) => {
     converted.push({ key, to, where: "display", ...(note ? { note } : {}) });
   };
-  const surface = (name: DisplaySurface) => {
-    surfaces[name] ??= {};
-    return surfaces[name];
-  };
 
-  for (const [from, to] of SERVER_RENAMES) {
-    if (has(from)) toServer(from, to, values.get(from));
-  }
-  if (has("anthropicBinaryPath")) {
-    const path = String(values.get("anthropicBinaryPath")).trim();
-    toServer("anthropicBinaryPath", "providers.anthropic.binaryPath", path);
+  for (const [key, to] of V5_KEYS) {
+    if (typeof to === "string" && has(key)) toServer(key, to, values.get(key));
   }
 
   const percentKeys = ["percentDisplayMode", "percentLabelStyle"].filter(has);
@@ -410,29 +364,10 @@ function mapV5Values(values: ReadonlyMap<string, unknown>): {
     }
   }
 
-  if (has("enableToast")) {
-    surface("toast").enabled = chosen("enableToast", true);
-    toDisplay("enableToast", "surfaces.toast.enabled");
-  }
-  if (has("showOnIdle")) {
-    toast.afterReply = chosen("showOnIdle", false) ? "always" : "off";
-    toDisplay("showOnIdle", "toast.afterReply");
-  }
-  if (has("showOnQuestion")) {
-    toast.afterQuestion = chosen("showOnQuestion", false);
-    toDisplay("showOnQuestion", "toast.afterQuestion");
-  }
-  if (has("showOnCompact")) {
-    toast.afterCompaction = chosen("showOnCompact", true);
-    toDisplay("showOnCompact", "toast.afterCompaction");
-  }
-  if (has("showOnBothFail")) {
-    toast.whenAllFail = chosen("showOnBothFail", true);
-    toDisplay("showOnBothFail", "toast.whenAllFail");
-  }
-  if (has("toastDurationMs")) {
-    toast.seconds = Math.max(1, Math.round(chosen("toastDurationMs", 9000) / 1000));
-    toDisplay("toastDurationMs", "toast.seconds");
+  for (const [key, targets, map] of DISPLAY_MOVES) {
+    if (!has(key)) continue;
+    for (const to of targets) setPath(display, to, map ? map(values.get(key)) : values.get(key));
+    toDisplay(key, targets.join(", "));
   }
 
   const resetNoticeKeys = ["resetNotifications.enabled", "resetNotifications.windows"].filter(has);
@@ -440,7 +375,7 @@ function mapV5Values(values: ReadonlyMap<string, unknown>): {
     const enabled = chosen("resetNotifications.enabled", false);
     const windows = chosen<string[]>("resetNotifications.windows", ["weekly"]);
     const onlyWeekly = windows.length === 1 && windows[0] === "weekly";
-    toast.resetNotice = !enabled ? "off" : onlyWeekly ? "weekly" : "all";
+    setPath(display, "toast.resetNotice", !enabled ? "off" : onlyWeekly ? "weekly" : "all");
     const note =
       enabled && !onlyWeekly
         ? `v6 notifies for weekly limits or for every limit; ${windows.join(", ")} became every limit`
@@ -448,20 +383,10 @@ function mapV5Values(values: ReadonlyMap<string, unknown>): {
     for (const key of resetNoticeKeys) toDisplay(key, "toast.resetNotice", note);
   }
 
-  if (has("showSessionTokens")) {
-    sidebar.sessionTokens = chosen("showSessionTokens", true);
-    toast.sessionTokens = chosen("showSessionTokens", true);
-    toDisplay("showSessionTokens", "sidebar.sessionTokens, toast.sessionTokens");
-  }
-
-  if (has("tuiSidebarPanel.enabled")) {
-    surface("sidebar").enabled = chosen("tuiSidebarPanel.enabled", true);
-    toDisplay("tuiSidebarPanel.enabled", "surfaces.sidebar.enabled");
-  }
   if (has("tuiSidebarPanel.opencodeGoPreferredWindow")) {
     const v5Window = values.get("tuiSidebarPanel.opencodeGoPreferredWindow");
     const go = GO_WINDOWS.find((entry) => entry.v5 === v5Window);
-    if (go) window["opencode-go"] = go.window;
+    if (go) setPath(display, "window.opencode-go", go.window);
     toDisplay(
       "tuiSidebarPanel.opencodeGoPreferredWindow",
       'window["opencode-go"]',
@@ -479,34 +404,24 @@ function mapV5Values(values: ReadonlyMap<string, unknown>): {
     // What v5 showed, with v5's defaults for the keys the user did not set.
     const compact = chosen("tuiCompactStatus.enabled", false);
     const promptBar = chosen("tuiPromptBar.enabled", false);
-    surface("statusLine").enabled =
-      promptBar || (compact && chosen("tuiCompactStatus.sessionPrompt", true));
-    statusLine = {
-      home: compact && chosen("tuiCompactStatus.homeBottom", true),
-      ...(promptBar ? { detail: "one" as const } : {}),
-    };
+    const sessionPrompt = chosen("tuiCompactStatus.sessionPrompt", true);
+    setPath(display, "surfaces.statusLine.enabled", promptBar || (compact && sessionPrompt));
+    setPath(display, "statusLine.home", compact && chosen("tuiCompactStatus.homeBottom", true));
+    if (promptBar) setPath(display, "statusLine.detail", "one");
     for (const key of statusKeys) toDisplay(key, "surfaces.statusLine.enabled, statusLine");
   }
 
   if (has("opencodeGoWindows")) {
     const kept = chosen<string[]>("opencodeGoWindows", []);
     const hidden = GO_WINDOWS.filter((go) => !kept.includes(go.v5)).map((go) => go.row);
-    for (const name of SURFACES) surface(name).hidden = hidden;
+    for (const name of SURFACES) setPath(display, `surfaces.${name}.hidden`, hidden);
     toDisplay(
       "opencodeGoWindows",
       "surfaces.*.hidden",
       "the other OpenCode Go windows are hidden now, not removed: export and /quota still list them",
     );
   }
-
-  const display: DisplayImport = {
-    ...(Object.keys(surfaces).length > 0 ? { surfaces } : {}),
-    ...(Object.keys(window).length > 0 ? { window } : {}),
-    ...(statusLine ? { statusLine } : {}),
-    ...(Object.keys(sidebar).length > 0 ? { sidebar } : {}),
-    ...(Object.keys(toast).length > 0 ? { toast } : {}),
-  };
-  return { server, display, converted, dropped };
+  return { server, display: display as DisplayImport, converted, dropped };
 }
 
 function firstPerKey(list: readonly SkippedKey[]): SkippedKey[] {
@@ -514,10 +429,7 @@ function firstPerKey(list: readonly SkippedKey[]): SkippedKey[] {
   return list.filter((item) => !seen.has(item.key) && seen.add(item.key));
 }
 
-/**
- * The v5 global settings converted in memory, or undefined when there are none. Nothing is
- * written here.
- */
+/** The v5 global settings converted in memory (nothing is written), or undefined when none. */
 export async function planV5Conversion(configDir: string): Promise<V5Conversion | undefined> {
   const files = await readV5GlobalFiles(configDir);
   if (files.sources.length === 0 && !files.sidecarSeen) return undefined;
@@ -540,10 +452,7 @@ export async function planV5Conversion(configDir: string): Promise<V5Conversion 
     displayImport: mapped.display,
     converted: mapped.converted,
     dropped: firstPerKey([...read.dropped, ...mapped.dropped]),
-    invalid: firstPerKey([
-      ...read.invalid,
-      ...checked.issues.map((issue) => ({ key: issue.key, reason: issue.message })),
-    ]),
+    invalid: firstPerKey(read.invalid),
     notes: files.notes,
   };
 }

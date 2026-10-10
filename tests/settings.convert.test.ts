@@ -4,14 +4,20 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  acknowledgeDisplayImport,
   convertV5,
   type DisplayImport,
   defaultSettings,
   loadSettings,
+  pendingDisplayImport,
   saveSettings,
   settingsPath,
 } from "../src/settings/index.js";
-import { VALID_QUOTA_PROVIDER_INPUTS, VALID_QUOTA_PROVIDERS } from "./fixtures/quota-providers.js";
+import {
+  quotaProvider,
+  VALID_QUOTA_PROVIDER_INPUTS,
+  VALID_QUOTA_PROVIDERS,
+} from "./fixtures/quota-providers.js";
 
 let root: string;
 let configDir: string;
@@ -20,6 +26,7 @@ beforeEach(async () => {
   root = await mkdtemp(join(tmpdir(), "quota-settings-convert-"));
   configDir = join(root, "config");
   vi.stubEnv("OPENCODE_CONFIG_DIR", configDir);
+  vi.stubEnv("XDG_STATE_HOME", join(root, "state"));
 });
 
 afterEach(async () => {
@@ -49,207 +56,110 @@ function valueAt(settings: object, key: string): unknown {
 }
 
 const GO_HIDDEN = { hidden: ["opencode-go.five_hour", "opencode-go.monthly"] };
+const GO_SURFACES = Object.fromEntries(
+  ["sidebar", "collapsed", "statusLine", "toast"].map((name) => [name, GO_HIDDEN]),
+);
 
 /** One row per v5 key (docs/v6-plan §5 table and §8 "where each v5 key went"). */
 const ROWS: Array<{
-  name: string;
   v5: Record<string, unknown>;
   server?: Record<string, unknown>;
   display?: DisplayImport;
   dropped?: string[];
 }> = [
-  { name: "enabled", v5: { enabled: false }, dropped: ["enabled"] },
+  { v5: { enabled: false }, dropped: ["enabled"] },
+  { v5: { enableToast: false }, display: { surfaces: { toast: { enabled: false } } } },
+  { v5: { showOnIdle: true }, display: { toast: { afterReply: "always" } } },
+  { v5: { showOnQuestion: true }, display: { toast: { afterQuestion: true } } },
+  { v5: { showOnCompact: false }, display: { toast: { afterCompaction: false } } },
+  { v5: { showOnBothFail: false }, display: { toast: { whenAllFail: false } } },
+  { v5: { toastDurationMs: 4_600 }, display: { toast: { seconds: 5 } } },
+  { v5: { resetNotifications: { enabled: true } }, display: { toast: { resetNotice: "weekly" } } },
   {
-    name: "enableToast",
-    v5: { enableToast: false },
-    display: { surfaces: { toast: { enabled: false } } },
-  },
-  { name: "showOnIdle", v5: { showOnIdle: true }, display: { toast: { afterReply: "always" } } },
-  {
-    name: "showOnQuestion",
-    v5: { showOnQuestion: true },
-    display: { toast: { afterQuestion: true } },
-  },
-  {
-    name: "showOnCompact",
-    v5: { showOnCompact: false },
-    display: { toast: { afterCompaction: false } },
-  },
-  {
-    name: "showOnBothFail",
-    v5: { showOnBothFail: false },
-    display: { toast: { whenAllFail: false } },
-  },
-  { name: "toastDurationMs", v5: { toastDurationMs: 4_600 }, display: { toast: { seconds: 5 } } },
-  {
-    name: "resetNotifications, weekly",
-    v5: { resetNotifications: { enabled: true } },
-    display: { toast: { resetNotice: "weekly" } },
-  },
-  {
-    name: "resetNotifications, other windows",
     v5: { resetNotifications: { enabled: true, windows: ["daily", "weekly"] } },
     display: { toast: { resetNotice: "all" } },
   },
   {
-    name: "resetNotifications, off",
     v5: { resetNotifications: { enabled: false, windows: ["monthly"] } },
     display: { toast: { resetNotice: "off" } },
   },
+  { v5: { tuiCommandDisplay: "inline" }, dropped: ["tuiCommandDisplay"] },
   {
-    name: "tuiCommandDisplay",
-    v5: { tuiCommandDisplay: "inline" },
-    dropped: ["tuiCommandDisplay"],
+    v5: { formatStyle: "allWindows", toastStyle: "classic" },
+    dropped: ["formatStyle", "toastStyle"],
   },
+  { v5: { tuiSidebarPanel: { formatStyle: "grouped" } }, dropped: ["tuiSidebarPanel.formatStyle"] },
   {
-    name: "formatStyle, toastStyle and the per-surface formatStyle",
-    v5: {
-      formatStyle: "allWindows",
-      toastStyle: "classic",
-      tuiSidebarPanel: { formatStyle: "grouped" },
-      tuiCompactStatus: { formatStyle: "singleWindow" },
-    },
-    dropped: [
-      "formatStyle",
-      "toastStyle",
-      "tuiCompactStatus.formatStyle",
-      "tuiSidebarPanel.formatStyle",
-    ],
+    v5: { tuiCompactStatus: { formatStyle: "single" } },
+    dropped: ["tuiCompactStatus.formatStyle"],
   },
+  { v5: { percentDisplayMode: "used" }, server: { "words.percent": "used" } },
+  { v5: { percentLabelStyle: "bare" }, server: { "words.percent": "bare" } },
+  { v5: { accountingDetail: "detailed" }, server: { "words.detail": "detailed" } },
+  { v5: { opencodeZenDisplay: "detailed" }, server: { "words.detail": "detailed" } },
   {
-    name: "percentDisplayMode",
-    v5: { percentDisplayMode: "used" },
-    server: { "words.percent": "used" },
-  },
-  {
-    name: "percentLabelStyle",
-    v5: { percentLabelStyle: "bare" },
-    server: { "words.percent": "bare" },
-  },
-  {
-    name: "accountingDetail",
-    v5: { accountingDetail: "detailed" },
-    server: { "words.detail": "detailed" },
-  },
-  {
-    name: "opencodeZenDisplay",
-    v5: { opencodeZenDisplay: "detailed" },
-    server: { "words.detail": "detailed" },
-  },
-  {
-    name: "opencodeZenDisplay next to accountingDetail",
     v5: { opencodeZenDisplay: "detailed", accountingDetail: "summary" },
     server: { "words.detail": "summary" },
     dropped: ["opencodeZenDisplay"],
   },
-  { name: "quotaProjection", v5: { quotaProjection: "runway" }, server: { "words.runsOut": true } },
+  { v5: { quotaProjection: "runway" }, server: { "words.runsOut": true } },
   {
-    name: "resetTimeDecimals",
     v5: { resetTimeDecimals: 2, resetTimeSpaced: false },
     server: { "words.reset": "decimal", "words.resetDecimals": 2 },
   },
-  { name: "resetTimeSpaced", v5: { resetTimeSpaced: false }, server: { "words.reset": "compact" } },
+  { v5: { resetTimeSpaced: false }, server: { "words.reset": "compact" } },
+  { v5: { minIntervalMs: 60_000 }, server: { "checking.minIntervalMs": 60_000 } },
+  { v5: { requestTimeoutMs: 9_000 }, server: { "checking.requestTimeoutMs": 9_000 } },
+  { v5: { waitForQuotaReset: false }, server: { "checking.waitForQuotaReset": false } },
+  { v5: { debug: true }, dropped: ["debug"] },
   {
-    name: "minIntervalMs, requestTimeoutMs, waitForQuotaReset",
-    v5: { minIntervalMs: 60_000, requestTimeoutMs: 9_000, waitForQuotaReset: false },
-    server: {
-      "checking.minIntervalMs": 60_000,
-      "checking.requestTimeoutMs": 9_000,
-      "checking.waitForQuotaReset": false,
-    },
-  },
-  { name: "debug", v5: { debug: true }, dropped: ["debug"] },
-  {
-    name: "enabledProviders",
     v5: { enabledProviders: ["nano-gpt", "quota-providers", "copilot"] },
     server: { "providers.enabled": ["nanogpt", "custom", "copilot"] },
   },
   {
-    name: "quotaProviders",
     v5: { quotaProviders: VALID_QUOTA_PROVIDER_INPUTS },
     server: { "providers.custom": VALID_QUOTA_PROVIDERS },
   },
   {
-    name: "anthropicBinaryPath",
     v5: { anthropicBinaryPath: " /opt/claude " },
     server: { "providers.anthropic.binaryPath": "/opt/claude" },
   },
+  { v5: { cursorPlan: "pro" }, server: { "providers.cursor.plan": "pro" } },
+  { v5: { cursorIncludedApiUsd: 25 }, server: { "providers.cursor.includedApiUsd": 25 } },
+  { v5: { cursorBillingCycleStartDay: 3 }, server: { "providers.cursor.billingCycleStartDay": 3 } },
+  { v5: { opencodeGoWindows: ["weekly"] }, display: { surfaces: GO_SURFACES } },
+  { v5: { opencodeMonthlyLimit: 20 }, server: { "providers.opencode.monthlyLimitUsd": 20 } },
   {
-    name: "cursorPlan, cursorIncludedApiUsd, cursorBillingCycleStartDay",
-    v5: { cursorPlan: "pro", cursorIncludedApiUsd: 25, cursorBillingCycleStartDay: 3 },
-    server: {
-      "providers.cursor.plan": "pro",
-      "providers.cursor.includedApiUsd": 25,
-      "providers.cursor.billingCycleStartDay": 3,
-    },
-  },
-  {
-    name: "opencodeGoWindows",
-    v5: { opencodeGoWindows: ["weekly"] },
-    display: {
-      surfaces: {
-        sidebar: GO_HIDDEN,
-        collapsed: GO_HIDDEN,
-        statusLine: GO_HIDDEN,
-        toast: GO_HIDDEN,
-      },
-    },
-  },
-  {
-    name: "opencodeMonthlyLimit",
-    v5: { opencodeMonthlyLimit: 20 },
-    server: { "providers.opencode.monthlyLimitUsd": 20 },
-  },
-  {
-    name: "pricingSnapshot",
     v5: { pricingSnapshot: { source: "bundled", autoRefresh: 3 } },
     server: { "pricing.source": "bundled", "pricing.autoRefreshDays": 3 },
   },
+  { v5: { onlyCurrentModel: true }, server: { "words.onlyCurrentModel": true } },
   {
-    name: "onlyCurrentModel",
-    v5: { onlyCurrentModel: true },
-    server: { "words.onlyCurrentModel": true },
-  },
-  {
-    name: "showSessionTokens",
     v5: { showSessionTokens: false },
     display: { sidebar: { sessionTokens: false }, toast: { sessionTokens: false } },
   },
+  { v5: { sessionTokenScope: "tree" }, server: { "words.sessionTokens": "tree" } },
   {
-    name: "sessionTokenScope",
-    v5: { sessionTokenScope: "tree" },
-    server: { "words.sessionTokens": "tree" },
-  },
-  {
-    name: "tuiSidebarPanel.enabled",
     v5: { tuiSidebarPanel: { enabled: false } },
     display: { surfaces: { sidebar: { enabled: false } } },
   },
   {
-    name: "tuiSidebarPanel.opencodeGoPreferredWindow",
     v5: { tuiSidebarPanel: { opencodeGoPreferredWindow: "rolling" } },
     display: { window: { "opencode-go": "five_hour" } },
   },
   {
-    name: "tuiCompactStatus",
     v5: { tuiCompactStatus: { enabled: true, homeBottom: false } },
     display: { surfaces: { statusLine: { enabled: true } }, statusLine: { home: false } },
   },
   {
-    name: "tuiPromptBar",
     v5: { tuiPromptBar: { enabled: true } },
     display: {
       surfaces: { statusLine: { enabled: true } },
       statusLine: { home: false, detail: "one" },
     },
   },
+  { v5: { tuiCompactStatus: { maxWidth: 80 } }, dropped: ["tuiCompactStatus.maxWidth"] },
   {
-    name: "tuiCompactStatus.maxWidth",
-    v5: { tuiCompactStatus: { maxWidth: 80 } },
-    dropped: ["tuiCompactStatus.maxWidth"],
-  },
-  {
-    name: "maintainerAnnouncements",
     v5: { maintainerAnnouncements: { enabled: false, home: false, homeFrequency: "always" } },
     server: {
       "announcements.enabled": false,
@@ -258,34 +168,21 @@ const ROWS: Array<{
     },
   },
   {
-    name: "layout",
     v5: { layout: { maxWidth: 60, narrowAt: 40, tinyAt: 30 } },
     dropped: ["layout.maxWidth", "layout.narrowAt", "layout.tinyAt"],
   },
   {
-    name: "export",
     v5: { export: { enabled: true, path: "~/quota.json" } },
     server: { "export.enabled": true, "export.path": "~/quota.json" },
   },
-  {
-    name: "telemetry",
-    v5: { telemetry: { enabled: true } },
-    server: { "telemetry.enabled": true },
-  },
-  {
-    name: "removed and unknown keys",
-    v5: {
-      alibabaCodingPlanTier: "pro",
-      customSources: [],
-      someTypo: 1,
-      tuiCompactStatus: { suppressWhenNativeProviderQuota: true },
-    },
-    dropped: ["alibabaCodingPlanTier", "customSources", "someTypo"],
-  },
+  { v5: { telemetry: { enabled: true } }, server: { "telemetry.enabled": true } },
+  { v5: { alibabaCodingPlanTier: "pro" }, dropped: ["alibabaCodingPlanTier"] },
+  { v5: { customSources: [], someTypo: 1 }, dropped: ["customSources", "someTypo"] },
+  { v5: { tuiCompactStatus: { suppressWhenNativeProviderQuota: true } } },
 ];
 
 describe("convertV5, key by key", () => {
-  it.each(ROWS)("$name", async (row) => {
+  it.each(ROWS)("$v5", async (row) => {
     writeV5(row.v5);
 
     const conversion = await convertV5();
@@ -294,6 +191,7 @@ describe("convertV5, key by key", () => {
     expect(conversion?.written).toBe(true);
     expect(conversion?.invalid).toEqual([]);
     expect(conversion?.displayImport).toEqual(row.display ?? {});
+    expect(await pendingDisplayImport()).toEqual(row.display);
     expect(conversion?.dropped.map((item) => item.key).sort()).toEqual(
       [...(row.dropped ?? [])].sort(),
     );
@@ -322,8 +220,9 @@ describe("convertV5, key by key", () => {
 });
 
 describe("convertV5, which v5 files", () => {
-  it("writes settings.jsonc once, 0600, says where it came from, and leaves the old file", async () => {
-    const old = writeV5({ percentDisplayMode: "used" });
+  it("writes settings.jsonc once (0600), keeps the looks until the TUI acknowledges them", async () => {
+    const old = writeV5({ percentDisplayMode: "used", enableToast: false });
+    const looks = join(root, "state", "opencode", "opencode-quota", "display-import.json");
 
     const conversion = await convertV5();
 
@@ -336,8 +235,12 @@ describe("convertV5, which v5 files", () => {
     expect(readFileSync(old, "utf8")).toContain('"percentDisplayMode": "used"');
     if (process.platform !== "win32") {
       expect(statSync(settingsPath()).mode & 0o777).toBe(0o600);
+      expect(statSync(looks).mode & 0o777).toBe(0o600);
     }
     expect(await convertV5()).toBeUndefined();
+    expect(await pendingDisplayImport()).toEqual({ surfaces: { toast: { enabled: false } } });
+    await acknowledgeDisplayImport();
+    expect(await pendingDisplayImport()).toBeUndefined();
   });
 
   it("converts the sidecar and names the experimental.quotaToast block v5 ignored", async () => {
@@ -354,8 +257,13 @@ describe("convertV5, which v5 files", () => {
   });
 
   it("without a sidecar reads opencode.json then opencode.jsonc; a bad later value never wins", async () => {
-    writeHost({ percentDisplayMode: "used", minIntervalMs: 60_000 }, "opencode.json");
-    writeHost({ percentDisplayMode: "sideways", minIntervalMs: 120_000 }, "opencode.jsonc");
+    const fake = [quotaProvider({ apiKey: "sk-fake" })];
+    const json = { percentDisplayMode: "used", quotaProviders: VALID_QUOTA_PROVIDER_INPUTS };
+    writeHost({ ...json, minIntervalMs: 60_000 }, "opencode.json");
+    writeHost(
+      { percentDisplayMode: "?", minIntervalMs: 120_000, quotaProviders: fake },
+      "opencode.jsonc",
+    );
 
     const conversion = await convertV5();
 
@@ -363,7 +271,12 @@ describe("convertV5, which v5 files", () => {
     expect(conversion?.sources).toHaveLength(2);
     expect(conversion?.settings.words.percent).toBe("used");
     expect(conversion?.settings.checking.minIntervalMs).toBe(120_000);
-    expect(conversion?.invalid.map((item) => item.key)).toEqual(["percentDisplayMode"]);
+    expect(conversion?.settings.providers.custom).toEqual(VALID_QUOTA_PROVIDERS);
+    expect(conversion?.invalid.map((item) => item.key)).toEqual([
+      "percentDisplayMode",
+      "quotaProviders[0].apiKey",
+    ]);
+    expect(readFileSync(settingsPath(), "utf8")).not.toContain("sk-fake");
   });
 
   it("converts quota-toast.jsonc when both sidecars exist and names the other", async () => {
@@ -393,15 +306,27 @@ describe("convertV5, which v5 files", () => {
     expect(loaded.conversion?.sources).toHaveLength(1);
   });
 
-  it("keeps the converted values on the first save while they are only in memory", async () => {
-    writeV5("{ broken");
-    writeHost({ percentDisplayMode: "used" });
+  it("on the first save converts what parses and reports the file that does not", async () => {
+    const broken = writeV5("{ broken");
+    writeHost({ percentDisplayMode: "used", enableToast: false });
 
     const result = await saveSettings({ words: { reset: "short" } });
 
-    expect(result.diff).toEqual([{ key: "words.reset", before: "exact", after: "short" }]);
-    const loaded = await loadSettings();
-    expect(loaded.settings.words).toMatchObject({ percent: "used", reset: "short" });
+    expect(result).toEqual({
+      ok: true,
+      issues: [
+        {
+          key: "$conversion",
+          message: `${broken} does not parse as a JSON object, so it was not converted`,
+        },
+      ],
+      diff: [{ key: "words.reset", before: "exact", after: "short" }],
+    });
+    expect((await loadSettings()).settings.words).toMatchObject({
+      percent: "used",
+      reset: "short",
+    });
+    expect(await pendingDisplayImport()).toEqual({ surfaces: { toast: { enabled: false } } });
   });
 
   it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(

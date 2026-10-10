@@ -1,153 +1,129 @@
 /**
- * The server settings: their shape, their defaults, and one table of rules. Reading the file,
- * saving a patch and the agent tools all check values against the same table, so a value is
- * valid in one place exactly when it is valid in the others.
+ * The server settings: one table of rules with their defaults. The Settings type, the defaults,
+ * reading, saving and the agent tools all come from it, so a value is valid in one place exactly
+ * when it is valid in the others.
  */
+import { isAbsolute } from "node:path";
 import type { Node } from "jsonc-parser";
 import { getNodeValue } from "jsonc-parser";
 import { normalizeQuotaProviderId, QUOTA_PROVIDER_CATALOG } from "../lib/provider-metadata.js";
 import { type QuotaProviderDefinition, validateQuotaProviders } from "../lib/quota-providers.js";
 
-/** "58% left", "58% remaining", "58%", or "42% used". */
-export type PercentStyle = "left" | "remaining" | "bare" | "used";
-/** How a time until a reset reads: "2h 14m", "2h14m", "2h", or "2.2h". */
-export type ResetStyle = "exact" | "compact" | "short" | "decimal";
-export type CursorPlan = "none" | "pro" | "pro-plus" | "ultra";
-
-export type Settings = {
-  version: 6;
-  providers: {
-    /** "auto" = every provider quota finds; a list = only these (`custom` = the custom providers). */
-    enabled: "auto" | string[];
-    /** Custom providers (file only: an agent or a person edits them). */
-    custom: QuotaProviderDefinition[];
-    /** The Claude CLI quota runs for Claude limits (file only). */
-    anthropic: { binaryPath: string };
-    cursor: {
-      plan: CursorPlan;
-      includedApiUsd: number | null;
-      billingCycleStartDay: number | null;
-    };
-    opencode: { monthlyLimitUsd: number | null };
-  };
-  checking: { minIntervalMs: number; requestTimeoutMs: number; waitForQuotaReset: boolean };
-  /** The words every client uses (TUI, Web, Desktop, CLI). */
-  words: {
-    percent: PercentStyle;
-    reset: ResetStyle;
-    /** Decimals of the "decimal" reset style. */
-    resetDecimals: number;
-    /** "detailed" also shows supplementary rows. */
-    detail: "summary" | "detailed";
-    runsOut: boolean;
-    /** Show only the providers serving the session's current model. */
-    onlyCurrentModel: boolean;
-    /** Session tokens of this session, or with its subagents. */
-    sessionTokens: "current" | "tree";
-  };
-  pricing: { source: "auto" | "bundled" | "runtime"; autoRefreshDays: number };
-  /** Maintainer notices; `home` shows their count on Home, once a day or every time. */
-  announcements: { enabled: boolean; home: boolean; homeFrequency: "daily" | "always" };
-  /** `path` is file only; "" = `$XDG_CACHE_HOME/opencode/quota-export.json`. */
-  export: { enabled: boolean; path: string };
-  telemetry: { enabled: boolean };
-};
-
-export function defaultSettings(): Settings {
-  return {
-    version: 6,
-    providers: {
-      enabled: "auto",
-      custom: [],
-      anthropic: { binaryPath: "claude" },
-      cursor: { plan: "none", includedApiUsd: null, billingCycleStartDay: null },
-      opencode: { monthlyLimitUsd: null },
-    },
-    checking: { minIntervalMs: 300_000, requestTimeoutMs: 5_000, waitForQuotaReset: true },
-    words: {
-      percent: "left",
-      reset: "exact",
-      resetDecimals: 1,
-      detail: "summary",
-      runsOut: false,
-      onlyCurrentModel: false,
-      sessionTokens: "current",
-    },
-    pricing: { source: "auto", autoRefreshDays: 7 },
-    announcements: { enabled: true, home: true, homeFrequency: "daily" },
-    export: { enabled: false, path: "" },
-    telemetry: { enabled: false },
-  };
-}
-
-export type SettingRule =
+type NumberBounds = { min?: number; above?: number; max?: number };
+export type SettingRule = (
   | { kind: "boolean" }
   | { kind: "choice"; values: readonly string[] }
   /** `above` is an exclusive lower bound, `min` and `max` inclusive ones. */
-  | {
-      kind: "number";
-      integer: boolean;
-      min?: number;
-      above?: number;
-      max?: number;
-      nullable?: boolean;
-    }
-  | { kind: "text"; allowEmpty: boolean }
-  | { kind: "providers" }
-  | { kind: "customProviders" };
-
-const BOOLEAN: SettingRule = { kind: "boolean" };
-const ABOVE_ZERO: SettingRule = { kind: "number", integer: false, above: 0 };
-const OPTIONAL_ABOVE_ZERO: SettingRule = {
-  kind: "number",
-  integer: false,
-  above: 0,
-  nullable: true,
+  | ({ kind: "number"; integer: boolean; nullable?: boolean } & NumberBounds)
+  /** An absolute or `~/` path without `..`; also "" or a command name when allowed. */
+  | { kind: "path"; allowEmpty?: boolean; allowCommand?: boolean }
+  | { kind: "providers" | "customProviders" }
+) & {
+  default: unknown;
+  /** Only the file sets it (by hand or by an agent): `saveSettings` needs `allowFileOnly`. */
+  fileOnly?: boolean;
 };
 
-function choice(...values: string[]): SettingRule {
-  return { kind: "choice", values };
-}
+const bool = (value: boolean) => ({ kind: "boolean", default: value }) as const;
+const choice = <const V extends readonly string[]>(values: V, value: V[number]) =>
+  ({ kind: "choice", values, default: value }) as const;
+const above0 = (value: number) =>
+  ({ kind: "number", integer: false, above: 0, default: value }) as const;
+const whole = (min: number, max?: number) => ({ kind: "number", integer: true, min, max }) as const;
+const USD = { kind: "number", integer: false, above: 0, nullable: true, default: null } as const;
 
-/** Every setting by its dotted key, in the order a new file lists them. */
-export const SETTINGS_SCHEMA: Readonly<Record<string, SettingRule>> = {
-  version: { kind: "number", integer: true, min: 6, max: 6 },
-  "providers.enabled": { kind: "providers" },
-  "providers.custom": { kind: "customProviders" },
-  "providers.anthropic.binaryPath": { kind: "text", allowEmpty: false },
-  "providers.cursor.plan": choice("none", "pro", "pro-plus", "ultra"),
-  "providers.cursor.includedApiUsd": OPTIONAL_ABOVE_ZERO,
-  "providers.cursor.billingCycleStartDay": {
-    kind: "number",
-    integer: true,
-    min: 1,
-    max: 28,
-    nullable: true,
+/** Every setting by its dotted key with its default, in the order a new file lists them. */
+export const SETTINGS_SCHEMA = {
+  version: { ...whole(6, 6), default: 6 },
+  /** "auto" = every provider quota finds; a list = only these (`custom` = the custom providers). */
+  "providers.enabled": { kind: "providers", default: "auto" },
+  "providers.custom": { kind: "customProviders", default: [], fileOnly: true },
+  /** The Claude CLI quota runs for Claude limits. */
+  "providers.anthropic.binaryPath": {
+    kind: "path",
+    allowCommand: true,
+    default: "claude",
+    fileOnly: true,
   },
-  "providers.opencode.monthlyLimitUsd": OPTIONAL_ABOVE_ZERO,
-  "checking.minIntervalMs": ABOVE_ZERO,
-  "checking.requestTimeoutMs": ABOVE_ZERO,
-  "checking.waitForQuotaReset": BOOLEAN,
-  "words.percent": choice("left", "remaining", "bare", "used"),
-  "words.reset": choice("exact", "compact", "short", "decimal"),
-  "words.resetDecimals": { kind: "number", integer: true, min: 0, max: 4 },
-  "words.detail": choice("summary", "detailed"),
-  "words.runsOut": BOOLEAN,
-  "words.onlyCurrentModel": BOOLEAN,
-  "words.sessionTokens": choice("current", "tree"),
-  "pricing.source": choice("auto", "bundled", "runtime"),
-  "pricing.autoRefreshDays": { kind: "number", integer: true, min: 1 },
-  "announcements.enabled": BOOLEAN,
-  "announcements.home": BOOLEAN,
-  "announcements.homeFrequency": choice("daily", "always"),
-  "export.enabled": BOOLEAN,
-  "export.path": { kind: "text", allowEmpty: true },
-  "telemetry.enabled": BOOLEAN,
+  "providers.cursor.plan": choice(["none", "pro", "pro-plus", "ultra"], "none"),
+  "providers.cursor.includedApiUsd": USD,
+  "providers.cursor.billingCycleStartDay": { ...whole(1, 28), nullable: true, default: null },
+  "providers.opencode.monthlyLimitUsd": USD,
+  "checking.minIntervalMs": above0(300_000),
+  "checking.requestTimeoutMs": above0(5_000),
+  "checking.waitForQuotaReset": bool(true),
+  /** The words every client uses: "58% left", "58% remaining", "58%", or "42% used". */
+  "words.percent": choice(["left", "remaining", "bare", "used"], "left"),
+  /** "2h 14m", "2h14m", "2h", or "2.2h" (with `resetDecimals`). */
+  "words.reset": choice(["exact", "compact", "short", "decimal"], "exact"),
+  "words.resetDecimals": { ...whole(0, 4), default: 1 },
+  /** "detailed" also shows supplementary rows. */
+  "words.detail": choice(["summary", "detailed"], "summary"),
+  "words.runsOut": bool(false),
+  /** Show only the providers serving the session's current model. */
+  "words.onlyCurrentModel": bool(false),
+  /** Session tokens of this session, or with its subagents. */
+  "words.sessionTokens": choice(["current", "tree"], "current"),
+  "pricing.source": choice(["auto", "bundled", "runtime"], "auto"),
+  "pricing.autoRefreshDays": { ...whole(1), default: 7 },
+  /** Maintainer notices; `home` shows their count on Home, once a day or every time. */
+  "announcements.enabled": bool(true),
+  "announcements.home": bool(true),
+  "announcements.homeFrequency": choice(["daily", "always"], "daily"),
+  "export.enabled": bool(false),
+  /** "" = `$XDG_CACHE_HOME/opencode/quota-export.json`. */
+  "export.path": { kind: "path", allowEmpty: true, default: "", fileOnly: true },
+  "telemetry.enabled": bool(false),
+} as const satisfies Record<string, SettingRule>;
+
+const RULES: Readonly<Record<string, SettingRule>> = SETTINGS_SCHEMA;
+
+type KindValue = {
+  boolean: boolean;
+  number: number;
+  path: string;
+  providers: "auto" | string[];
+  customProviders: QuotaProviderDefinition[];
 };
+type ValueOf<R> = R extends { values: readonly (infer V)[] }
+  ? V
+  : R extends { nullable: true }
+    ? number | null
+    : R extends { kind: infer K extends keyof KindValue }
+      ? KindValue[K]
+      : never;
+type Head<K> = K extends `${infer Group}.${string}` ? Group : K;
+type Under<T, Group extends string> = {
+  [K in keyof T as K extends `${Group}.${infer Rest}` ? Rest : never]: T[K];
+};
+/** `{ "a.b": X }` as `{ a: { b: X } }`. */
+type Nest<T> = {
+  [K in keyof T as Head<K>]: K extends `${infer Group}.${string}` ? Nest<Under<T, Group>> : T[K];
+};
+type Schema = typeof SETTINGS_SCHEMA;
+export type Settings = Nest<{ -readonly [K in keyof Schema]: ValueOf<Schema[K]> }>;
+type Patch<T> = T extends readonly unknown[]
+  ? T
+  : T extends object
+    ? { [K in keyof T]?: Patch<T[K]> | null }
+    : T;
+/** A JSON merge patch of the settings: objects merge, null resets a key or a whole group. */
+export type SettingsPatch = Patch<Settings>;
+export type PercentStyle = Settings["words"]["percent"];
+export type ResetStyle = Settings["words"]["reset"];
+export type CursorPlan = Settings["providers"]["cursor"]["plan"];
+
+export function defaultSettings(): Settings {
+  const settings = {};
+  for (const [key, rule] of Object.entries(RULES)) {
+    setPath(settings, key, structuredClone(rule.default));
+  }
+  return settings as Settings;
+}
 
 /** Every key that holds other settings, e.g. "providers" and "providers.cursor". */
 const GROUPS: ReadonlySet<string> = new Set(
-  Object.keys(SETTINGS_SCHEMA).flatMap((key) => {
+  Object.keys(RULES).flatMap((key) => {
     const parts = key.split(".");
     return parts.slice(1).map((_, index) => parts.slice(0, index + 1).join("."));
   }),
@@ -157,10 +133,17 @@ export function isSettingsGroup(key: string): boolean {
   return GROUPS.has(key);
 }
 
+/** Whether `key` is a file-only setting or a group that holds one. */
+export function isFileOnly(key: string): boolean {
+  return Object.entries(RULES).some(
+    ([name, rule]) => rule.fileOnly === true && (name === key || name.startsWith(`${key}.`)),
+  );
+}
+
 /** The names directly inside `group` ("" = the top level), in file order. */
 export function keysUnder(group: string): string[] {
   const prefix = group ? `${group}.` : "";
-  const names = Object.keys(SETTINGS_SCHEMA)
+  const names = Object.keys(RULES)
     .filter((key) => key.startsWith(prefix))
     .map((key) => key.slice(prefix.length).split(".")[0]);
   return [...new Set(names)];
@@ -199,8 +182,10 @@ export function describeRule(rule: SettingRule): string {
               : "";
       return `${rule.nullable ? "null or " : ""}${kind}${bounds}`;
     }
-    case "text":
-      return rule.allowEmpty ? "a text" : "a non-empty text";
+    case "path": {
+      const or = rule.allowEmpty ? '"" or ' : rule.allowCommand ? "a command name or " : "";
+      return `${or}an absolute or ~/ path without ".."`;
+    }
     case "providers":
       return `"auto" or a list of: ${PROVIDER_IDS.join(", ")}`;
     case "customProviders":
@@ -225,10 +210,15 @@ function checkNumber(rule: Extract<SettingRule, { kind: "number" }>, value: unkn
   );
 }
 
+/** An absolute or `~/` path with no `..` part, so it never depends on a working folder. */
+function isSafePath(path: string): boolean {
+  return (isAbsolute(path) || /^~[\\/]/u.test(path)) && !path.split(/[\\/]/u).includes("..");
+}
+
 function checkProviders(key: string, value: unknown): CheckedSetting {
   if (value === "auto") return { value, issues: [] };
   if (!Array.isArray(value)) {
-    return { issues: [{ key, message: `expected ${describeRule({ kind: "providers" })}` }] };
+    return { issues: [{ key, message: `expected ${describeRule(RULES[key])}` }] };
   }
   const known: string[] = [];
   const unknown: string[] = [];
@@ -238,12 +228,8 @@ function checkProviders(key: string, value: unknown): CheckedSetting {
     else unknown.push(typeof item === "string" ? item : JSON.stringify(item));
   }
   if (unknown.length === 0) return { value: [...new Set(known)], issues: [] };
-  const issues = [
-    {
-      key,
-      message: `unknown provider id(s): ${unknown.join(", ")}; valid: ${PROVIDER_IDS.join(", ")}`,
-    },
-  ];
+  const message = `unknown provider id(s): ${unknown.join(", ")}; valid: ${PROVIDER_IDS.join(", ")}`;
+  const issues = [{ key, message }];
   // Keep the ids that are right; a list of only wrong ids falls back to "auto".
   return known.length > 0 ? { value: [...new Set(known)], issues } : { issues };
 }
@@ -261,7 +247,7 @@ function checkCustomProviders(key: string, value: unknown): CheckedSetting {
 
 /** Checks one value against its rule; `key` must be in SETTINGS_SCHEMA. */
 export function checkSetting(key: string, value: unknown): CheckedSetting {
-  const rule = Object.hasOwn(SETTINGS_SCHEMA, key) ? SETTINGS_SCHEMA[key] : undefined;
+  const rule = Object.hasOwn(RULES, key) ? RULES[key] : undefined;
   if (!rule) return { issues: [unknownKeyIssue(key)] };
   const invalid = { issues: [{ key, message: `expected ${describeRule(rule)}` }] };
   switch (rule.kind) {
@@ -273,11 +259,12 @@ export function checkSetting(key: string, value: unknown): CheckedSetting {
         : invalid;
     case "number":
       return checkNumber(rule, value) ? { value, issues: [] } : invalid;
-    case "text": {
+    case "path": {
       if (typeof value !== "string") return invalid;
-      if (rule.allowEmpty) return { value, issues: [] };
-      const trimmed = value.trim();
-      return trimmed ? { value: trimmed, issues: [] } : invalid;
+      const path = value.trim();
+      const isCommand = rule.allowCommand === true && /^\w[\w.-]*$/u.test(path);
+      const valid = path === "" ? rule.allowEmpty === true : isCommand || isSafePath(path);
+      return valid ? { value: path, issues: [] } : invalid;
     }
     case "providers":
       return checkProviders(key, value);
@@ -324,10 +311,13 @@ export const NODE_WALKER: Walker<Node> = {
   leaf: getNodeValue,
 };
 
+/** A file sets a key twice: reading uses the last valid value, saving refuses. */
+export const DUPLICATE_KEY = "duplicate key; the last valid value is used";
+
 /**
- * The settings an object sets, as dotted keys in order. Unknown keys become issues; a group
- * set to something other than an object becomes an assignment of the group key, so the
- * caller decides (an issue when reading, a reset when a patch says null).
+ * The settings an object sets, as dotted keys in order. Unknown and duplicate keys become
+ * issues; a group set to something other than an object becomes an assignment of the group
+ * key, so the caller decides (an issue when reading, a reset when a patch says null).
  */
 export function flattenSettings<T>(
   walker: Walker<T>,
@@ -336,9 +326,12 @@ export function flattenSettings<T>(
 ): { assignments: Assignment[]; issues: SettingsIssue[] } {
   const assignments: Assignment[] = [];
   const issues: SettingsIssue[] = [];
+  const names = new Set<string>();
   for (const [name, child] of walker.entries(value) ?? []) {
     const key = prefix ? `${prefix}.${name}` : name;
-    if (Object.hasOwn(SETTINGS_SCHEMA, key)) {
+    if (names.has(name)) issues.push({ key, message: DUPLICATE_KEY });
+    names.add(name);
+    if (Object.hasOwn(RULES, key)) {
       assignments.push({ key, value: walker.leaf(child) });
     } else if (GROUPS.has(key) && walker.entries(child)) {
       const nested = flattenSettings(walker, child, key);
@@ -359,12 +352,15 @@ export function getSetting(settings: Settings, key: string): unknown {
   return value;
 }
 
-function setSetting(settings: Settings, key: string, value: unknown): void {
+/** Sets a dotted key in a nested object, making the groups on the way. */
+export function setPath(target: object, key: string, value: unknown): void {
   const parts = key.split(".");
-  const name = parts[parts.length - 1];
-  let group = settings as unknown as Record<string, unknown>;
-  for (const part of parts.slice(0, -1)) group = group[part] as Record<string, unknown>;
-  group[name] = value;
+  let group = target as Record<string, unknown>;
+  for (const part of parts.slice(0, -1)) {
+    group[part] ??= {};
+    group = group[part] as Record<string, unknown>;
+  }
+  group[parts[parts.length - 1]] = value;
 }
 
 /**
@@ -387,7 +383,7 @@ export function settingsFrom(assignments: readonly Assignment[]): {
     const checked = checkSetting(key, value);
     issues.push(...checked.issues);
     if (checked.value === undefined) continue;
-    setSetting(settings, key, checked.value);
+    setPath(settings, key, checked.value);
     fromFile.add(key);
   }
   return { settings, issues, fromFile: [...fromFile] };
@@ -398,7 +394,7 @@ export function diffSettings(
   before: Settings,
   after: Settings,
 ): Array<{ key: string; before: unknown; after: unknown }> {
-  return Object.keys(SETTINGS_SCHEMA)
+  return Object.keys(RULES)
     .map((key) => ({ key, before: getSetting(before, key), after: getSetting(after, key) }))
     .filter((change) => JSON.stringify(change.before) !== JSON.stringify(change.after));
 }

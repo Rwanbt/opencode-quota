@@ -1,4 +1,5 @@
 import {
+  chmodSync,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -6,6 +7,7 @@ import {
   renameSync,
   statSync,
   symlinkSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -14,8 +16,11 @@ import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   defaultSettings,
+  editSettings,
   type LoadedSettings,
   loadSettings,
+  type Settings,
+  type SettingsWatch,
   saveSettings,
   settingsPath,
   watchSettings,
@@ -24,14 +29,17 @@ import { VALID_QUOTA_PROVIDER_INPUTS, VALID_QUOTA_PROVIDERS } from "./fixtures/q
 
 let root: string;
 let configDir: string;
+const watches: SettingsWatch[] = [];
 
 beforeEach(async () => {
   root = await mkdtemp(join(tmpdir(), "quota-settings-"));
   configDir = join(root, "config");
   vi.stubEnv("OPENCODE_CONFIG_DIR", configDir);
+  vi.stubEnv("XDG_STATE_HOME", join(root, "state"));
 });
 
 afterEach(async () => {
+  for (const watch of watches.splice(0)) watch.close();
   await rm(root, { recursive: true, force: true });
 });
 
@@ -53,30 +61,31 @@ function valueAt(settings: object, key: string): unknown {
     .reduce<unknown>((value, part) => (value as Record<string, unknown>)[part], settings);
 }
 
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
 async function waitFor(condition: () => boolean): Promise<void> {
   for (let waited = 0; !condition(); waited += 20) {
     if (waited > 5_000) throw new Error("timed out waiting");
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await sleep(20);
   }
 }
 
+/** Watches until the test ends; `seen` collects every callback. */
+async function watchAll(
+  debounceMs = 50,
+): Promise<{ seen: LoadedSettings[]; watch: SettingsWatch }> {
+  const seen: LoadedSettings[] = [];
+  const watch = await watchSettings((loaded) => seen.push(loaded), { debounceMs });
+  watches.push(watch);
+  return { seen, watch };
+}
+
 describe("settingsPath", () => {
-  it.each([
-    {
-      name: "OPENCODE_CONFIG_DIR wins",
-      env: { OPENCODE_CONFIG_DIR: "a", XDG_CONFIG_HOME: "b" },
-      expected: ["a", "opencode-quota", "settings.jsonc"],
-    },
-    {
-      name: "else XDG_CONFIG_HOME/opencode, never ~/.config",
-      env: { OPENCODE_CONFIG_DIR: "", XDG_CONFIG_HOME: "b" },
-      expected: ["b", "opencode", "opencode-quota", "settings.jsonc"],
-    },
-  ])("$name", ({ env, expected }) => {
-    for (const [name, value] of Object.entries(env)) {
-      vi.stubEnv(name, value ? join(root, value) : "");
-    }
-    expect(settingsPath()).toBe(join(root, ...expected));
+  it("uses OPENCODE_CONFIG_DIR, else XDG_CONFIG_HOME/opencode, never ~/.config", () => {
+    vi.stubEnv("XDG_CONFIG_HOME", join(root, "xdg"));
+    expect(settingsPath()).toBe(join(configDir, "opencode-quota", "settings.jsonc"));
+    vi.stubEnv("OPENCODE_CONFIG_DIR", "");
+    expect(settingsPath()).toBe(join(root, "xdg", "opencode", "opencode-quota", "settings.jsonc"));
   });
 });
 
@@ -117,6 +126,7 @@ describe("loadSettings", () => {
     ["words.resetDecimals", 1.5],
     ["announcements.home", "yes"],
     ["providers.anthropic.binaryPath", "  "],
+    ["export.path", "../quota.json"],
     ["providers.enabled", ["nope"]],
     ["version", 7],
   ])("an invalid %s keeps its default and is reported", async (key, value) => {
@@ -129,15 +139,21 @@ describe("loadSettings", () => {
     expect(loaded.fromFile).not.toContain(key);
   });
 
-  it("never lets a bad later value replace a good one", async () => {
-    writeSettings('{ "words": { "percent": "used", "percent": "huge" } }');
+  it("reports a key set twice, uses its last valid value, and refuses to save", async () => {
+    const path = writeSettings('{ "words": { "percent": "used", "percent": "huge" } }');
 
     const loaded = await loadSettings();
+    const result = await saveSettings({ words: { percent: "bare" } });
 
     expect(loaded.settings.words.percent).toBe("used");
     expect(loaded.issues).toEqual([
+      { key: "words.percent", message: "duplicate key; the last valid value is used" },
       { key: "words.percent", message: 'expected one of: "left", "remaining", "bare", "used"' },
     ]);
+    expect(result).toMatchObject({ ok: false, diff: [] });
+    expect(result.issues[0]?.message).toBe(
+      `${path}: words.percent: duplicate key; fix it first, nothing was saved`,
+    );
   });
 
   it("keeps the known provider ids and names the unknown ones", async () => {
@@ -249,15 +265,30 @@ describe("saveSettings", () => {
     { name: "an unknown provider", patch: { providers: { enabled: ["nope"] } }, message: /nope/ },
     { name: "a group set to a value", patch: { words: "short" }, message: /expected an object/ },
     { name: "a patch that is not an object", patch: "words", message: /expected an object/ },
-  ])("rejects $name and writes nothing", async ({ patch, message }) => {
+    { name: "a file-only key", patch: { providers: { custom: [] } }, message: /file-only/ },
+    { name: "a group reset with a file-only key", patch: { export: null }, message: /file-only/ },
+    {
+      name: "a relative path, even with allowFileOnly",
+      patch: { export: { path: "../quota.json" } },
+      allowFileOnly: true,
+      message: /absolute or ~\/ path without "\.\."/,
+    },
+  ])("rejects $name and writes nothing", async ({ patch, allowFileOnly, message }) => {
     const path = writeSettings('{ "words": { "reset": "short" } }');
 
-    const result = await saveSettings(patch);
+    const result = await saveSettings(patch, { allowFileOnly });
 
     expect(result.ok).toBe(false);
     expect(result.diff).toEqual([]);
     expect(result.issues.map((issue) => issue.message).join("\n")).toMatch(message);
     expect(readFileSync(path, "utf8")).toBe('{ "words": { "reset": "short" } }');
+  });
+
+  it("saves a file-only key with allowFileOnly", async () => {
+    const patch = { providers: { anthropic: { binaryPath: "~/bin/claude" } } };
+
+    expect(await saveSettings(patch, { allowFileOnly: true })).toMatchObject({ ok: true });
+    expect((await loadSettings()).settings.providers.anthropic.binaryPath).toBe("~/bin/claude");
   });
 
   it("refuses to edit a file with a syntax error", async () => {
@@ -266,16 +297,50 @@ describe("saveSettings", () => {
     const result = await saveSettings({ words: { reset: "short" } });
 
     expect(result.ok).toBe(false);
-    expect(result.issues[0]?.message).toMatch(/syntax error on line 1; fix it first/);
+    expect(result.issues[0]?.message).toMatch(/syntax error on line 1: \w+; fix it first/);
     expect(readFileSync(path, "utf8")).toBe('{ "words": { "percent": "used" ');
   });
 
+  it("applies every patch when saves run at once, after taking over a stale lock", async () => {
+    const lock = `${writeSettings("{}")}.lock`;
+    writeFileSync(lock, "");
+    utimesSync(lock, 0, 0);
+    expect((await saveSettings({ words: { percent: "used" } })).ok).toBe(true);
+
+    const results = await Promise.all([
+      saveSettings({ words: { reset: "short" } }),
+      saveSettings({ words: { detail: "detailed" } }),
+      saveSettings({ checking: { minIntervalMs: 60_000 } }),
+    ]);
+
+    expect(results.map((result) => result.ok)).toEqual([true, true, true]);
+    expect((await loadSettings()).settings).toMatchObject({
+      words: { percent: "used", reset: "short", detail: "detailed" },
+      checking: { minIntervalMs: 60_000 },
+    });
+    expect(existsSync(lock)).toBe(false);
+  });
+
+  it("builds each edit from the settings it saves over, so overlapping edits both survive", async () => {
+    writeSettings('{ "providers": { "enabled": ["copilot"] } }');
+    const add = (id: string) => (current: Settings) => ({
+      providers: { enabled: [...(current.providers.enabled as string[]), id] },
+    });
+
+    const results = await Promise.all([editSettings(add("cursor")), editSettings(add("zai"))]);
+
+    expect(results.map((result) => result.ok)).toEqual([true, true]);
+    const enabled = (await loadSettings()).settings.providers.enabled;
+    expect([...enabled].sort()).toEqual(["copilot", "cursor", "zai"]);
+  });
+
   it.skipIf(process.platform === "win32")(
-    "writes through a symlinked file and keeps the link",
+    "writes through a symlinked file, keeps the link, and makes the target 0600",
     async () => {
       const target = join(root, "dotfiles", "quota.jsonc");
       mkdirSync(dirname(target), { recursive: true });
       writeFileSync(target, '{\n  // from my dotfiles\n  "version": 6\n}\n');
+      chmodSync(target, 0o644);
       mkdirSync(dirname(settingsPath()), { recursive: true });
       symlinkSync(target, settingsPath());
 
@@ -285,28 +350,81 @@ describe("saveSettings", () => {
       expect(lstatSync(settingsPath()).isSymbolicLink()).toBe(true);
       expect(readFileSync(target, "utf8")).toContain("// from my dotfiles");
       expect(readFileSync(target, "utf8")).toContain('"reset": "short"');
+      expect(statSync(target).mode & 0o777).toBe(0o600);
     },
   );
 });
 
 describe("watchSettings", () => {
-  it("calls back once for an edit and once for an atomic replace", async () => {
+  it("calls back once per edit, atomic replace, or key newly set to its default", async () => {
     const path = writeSettings('{ "words": { "percent": "used" } }');
-    const seen: LoadedSettings[] = [];
-    const watch = await watchSettings((loaded) => seen.push(loaded), { debounceMs: 50 });
-    try {
-      writeFileSync(path, '{ "words": { "percent": "bare" } }');
-      await waitFor(() => seen.length === 1);
-      await new Promise((resolve) => setTimeout(resolve, 400));
-      expect(seen.map((loaded) => loaded.settings.words.percent)).toEqual(["bare"]);
+    const { seen } = await watchAll();
+    const steps = [
+      () => writeFileSync(path, '{ "words": { "percent": "bare" } }'),
+      () => {
+        writeFileSync(`${path}.tmp`, '{ "words": { "percent": "remaining" } }');
+        renameSync(`${path}.tmp`, path);
+      },
+      // The same settings, but now the file sets the timeout, so providers drop their own.
+      () =>
+        writeFileSync(
+          path,
+          '{ "words": { "percent": "remaining" }, "checking": { "requestTimeoutMs": 5000 } }',
+        ),
+    ];
 
-      writeFileSync(`${path}.tmp`, '{ "words": { "percent": "remaining" } }');
-      renameSync(`${path}.tmp`, path);
-      await waitFor(() => seen.length === 2);
-      await new Promise((resolve) => setTimeout(resolve, 400));
-      expect(seen.map((loaded) => loaded.settings.words.percent)).toEqual(["bare", "remaining"]);
-    } finally {
-      watch.close();
+    for (const [index, step] of steps.entries()) {
+      step();
+      await waitFor(() => seen.length === index + 1);
+      await sleep(400);
+      expect(seen).toHaveLength(index + 1);
     }
+    const percents = seen.map((loaded) => loaded.settings.words.percent);
+    expect(percents).toEqual(["bare", "remaining", "remaining"]);
+    expect(seen[2]?.fromFile).toContain("checking.requestTimeoutMs");
+  });
+
+  it("calls back once for a burst of writes, with the last one", async () => {
+    const path = writeSettings("{}");
+    const { seen } = await watchAll(250);
+
+    for (const percent of ["used", "bare", "remaining"]) {
+      writeFileSync(path, JSON.stringify({ words: { percent } }));
+      await sleep(30);
+    }
+    await waitFor(() => seen.length === 1);
+    await sleep(500);
+
+    expect(seen.map((loaded) => loaded.settings.words.percent)).toEqual(["remaining"]);
+  });
+
+  it.skipIf(process.platform === "win32")(
+    "sees an edit of a symlinked file's target, which only the stat poll notices",
+    async () => {
+      const target = join(root, "dotfiles", "quota.jsonc");
+      mkdirSync(dirname(target), { recursive: true });
+      writeFileSync(target, "{}");
+      mkdirSync(dirname(settingsPath()), { recursive: true });
+      symlinkSync(target, settingsPath());
+      const { seen } = await watchAll();
+
+      writeFileSync(target, '{ "words": { "percent": "used" } }');
+      await waitFor(() => seen.length === 1);
+
+      expect(seen[0]?.settings.words.percent).toBe("used");
+    },
+  );
+
+  it("never calls back after close, even with a change pending", async () => {
+    const path = writeSettings("{}");
+    const { seen, watch } = await watchAll(300);
+
+    writeFileSync(path, '{ "words": { "percent": "used" } }');
+    await sleep(50);
+    watch.close();
+    // Past the debounce and a stat poll.
+    await sleep(2_500);
+
+    expect(seen).toEqual([]);
   });
 });
