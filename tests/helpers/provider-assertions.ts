@@ -1,13 +1,4 @@
-import { expect } from "vitest";
-
-import { rowsFromLegacyResult } from "../../src/core/rows.js";
-import type { QuotaProviderResult, QuotaToastEntry } from "../../src/lib/entries.js";
-
-export function expectNotAttempted(out: QuotaProviderResult): void {
-  expect(out.attempted).toBe(false);
-  expect(out.entries).toEqual([]);
-  expect(out.errors).toEqual([]);
-}
+import type { QuotaToastEntry } from "../../src/lib/entries.js";
 
 export const PROVIDER_ACCOUNTING_LEDGER: Record<string, Array<QuotaToastEntry["accounting"]>> = {
   anthropic: [
@@ -375,61 +366,4 @@ export function isLedgerRowKey(providerId: string, key: string): boolean {
   return (PROVIDER_ROW_KEYS[providerId] ?? []).some((pattern) =>
     new RegExp(`^${pattern.replace(/\./g, "\\.").replace(/\*/g, "[A-Za-z0-9_-]+")}$`).test(key),
   );
-}
-
-/** The v6 row keys the shim gives these entries, checked against the ledger. */
-export function expectLedgerRowKeys(providerId: string, entries: QuotaToastEntry[]): string[] {
-  const { rows } = rowsFromLegacyResult(providerId, { attempted: true, entries, errors: [] });
-  const keys = rows.map((row) => row.id.slice(providerId.length + 1));
-  for (const key of keys) {
-    expect(
-      isLedgerRowKey(providerId, key),
-      `${providerId}.${key} is not in PROVIDER_ROW_KEYS`,
-    ).toBe(true);
-  }
-  return keys;
-}
-
-export function visibleEntries(
-  entries: QuotaToastEntry[],
-  providerId?: string,
-): Array<Record<string, unknown>> {
-  return entries.map((entry) => {
-    expect(entry.accounting).toEqual(
-      expect.objectContaining({
-        resultType: expect.stringMatching(/^(quota|rate_limit|usage|spend|budget|balance|status)$/),
-        acquisitionMethod: expect.stringMatching(
-          /^(remote_api|dashboard_scrape|local_cli|local_runtime_accounting|local_estimation)$/,
-        ),
-        ownership: expect.stringMatching(/^(maintained|user_configured)$/),
-        authority: expect.stringMatching(/^(provider_reported|locally_derived)$/),
-      }),
-    );
-    if (providerId) {
-      const {
-        sourceId: _sourceId,
-        observedAtIso: _observedAtIso,
-        ...ledgerAccounting
-      } = entry.accounting;
-      expect(PROVIDER_ACCOUNTING_LEDGER[providerId]).toContainEqual(ledgerAccounting);
-      // Every sample row also becomes exactly one v6 row with a ledger key.
-      expect(expectLedgerRowKeys(providerId, [entry]), `${providerId}: ${entry.name}`).toHaveLength(
-        1,
-      );
-    }
-    const { accounting: _accounting, ...visible } = entry;
-    return visible;
-  });
-}
-
-export function expectAttemptedWithNoErrors(out: QuotaProviderResult): void {
-  expect(out.attempted).toBe(true);
-  expect(out.errors).toEqual([]);
-  visibleEntries(out.entries);
-}
-
-export function expectAttemptedWithErrorLabel(out: QuotaProviderResult, label: string): void {
-  expect(out.attempted).toBe(true);
-  expect(out.entries).toEqual([]);
-  expect(out.errors[0]?.label).toBe(label);
 }

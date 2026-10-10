@@ -1,41 +1,7 @@
 import { readFile } from "fs/promises";
 
 import { sanitizeDisplayText } from "../lib/display-sanitize.js";
-import type {
-  QuotaProviderPresentation,
-  QuotaProviderResult,
-  QuotaProviderStatusDetail,
-  QuotaToastEntry,
-  QuotaToastError,
-} from "../lib/entries.js";
-
-export function notAttemptedResult(): QuotaProviderResult {
-  return { attempted: false, entries: [], errors: [] };
-}
-
-export function attemptedResult(
-  entries: QuotaToastEntry[],
-  errors: QuotaToastError[] = [],
-  presentation?: QuotaProviderPresentation,
-): QuotaProviderResult {
-  return {
-    attempted: true,
-    entries,
-    errors,
-    ...(presentation ? { presentation } : {}),
-  };
-}
-
-export function attemptedErrorResult(
-  label: string,
-  message: string,
-  options: { retryable?: boolean } = {},
-): QuotaProviderResult {
-  return attemptedResult(
-    [],
-    [{ label, message, ...(options.retryable === true ? { retryable: true } : {}) }],
-  );
-}
+import type { QuotaProviderStatusDetail } from "../lib/entries.js";
 
 export function statusDetailsFromRecord(
   values: Readonly<Record<string, string | undefined>>,
@@ -92,16 +58,6 @@ export function apiKeyStatusDetails(diagnostics: {
   });
 }
 
-export function withStatusDetails(
-  result: QuotaProviderResult,
-  statusDetails: readonly QuotaProviderStatusDetail[],
-): QuotaProviderResult {
-  return {
-    ...result,
-    statusDetails: statusDetails.map((detail) => ({ ...detail })),
-  };
-}
-
 export async function inspectGeneratedCounterFile(
   path: string,
   expectedVersion: number,
@@ -144,24 +100,4 @@ export async function inspectGeneratedCounterFile(
     }
     return { exists: true, health: "malformed", version: null, lastUpdatedAt: null };
   }
-}
-
-export function mapNullableProviderResult<
-  TResult extends { success: true } | { success: false; error: string; retryable?: boolean } | null,
->(
-  result: TResult,
-  params: {
-    errorLabel: string;
-    onSuccess: (result: Extract<TResult, { success: true }>) => QuotaProviderResult;
-  },
-): QuotaProviderResult {
-  if (!result) {
-    return notAttemptedResult();
-  }
-
-  if (!result.success) {
-    return attemptedErrorResult(params.errorLabel, result.error, { retryable: result.retryable });
-  }
-
-  return params.onSuccess(result as Extract<TResult, { success: true }>);
 }
