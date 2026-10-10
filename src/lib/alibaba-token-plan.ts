@@ -13,8 +13,8 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { realpath, stat } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
+import { REQUEST_TIMEOUT_MS } from "./http.js";
 import { asRecord } from "./json-guards.js";
-import { REQUEST_TIMEOUT_MS } from "./types.js";
 
 export const ALIBABA_TOKEN_PLAN_COMMAND = "bl";
 export const ALIBABA_TOKEN_PLAN_ARGS = ["usage", "token-plan", "--output", "json"] as const;

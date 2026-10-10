@@ -1,20 +1,20 @@
 /**
- * Which providers serve a session's model. Shared by the v5 surfaces and the v6 snapshot, which
- * names the providers of the current model (`currentModelProviderIds`).
+ * Which providers serve a session's model: the snapshot's `currentModelProviderIds` and the
+ * `matchesCurrentModel` column of /quota_status.
  */
 import type { QuotaProvider } from "../lib/entries.js";
 import {
   getQuotaProviderIdsForRuntimeId,
   getQuotaProviderShape,
 } from "../lib/provider-metadata.js";
-import type { QuotaToastConfig } from "../lib/types.js";
+import type { QuotaProviderDefinition } from "../lib/quota-providers.js";
 
 export function matchesQuotaProviderCurrentSelection(params: {
   provider: QuotaProvider;
   currentModel?: string;
   currentProviderID?: string;
   enabledProviders?: string[] | "auto";
-  quotaProviders?: QuotaToastConfig["quotaProviders"];
+  quotaProviders?: QuotaProviderDefinition[];
 }): boolean {
   const matchesCurrentModel = (model: string): boolean =>
     params.provider.matchesCurrentModel

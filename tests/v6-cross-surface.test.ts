@@ -11,12 +11,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createFakeIntegration } from "./helpers/fake-integration.js";
 import {
   createAlibabaAuthModuleMock,
-  createConfigModuleMock,
   createPricingModuleMock,
   createProvidersRegistryModuleMock,
   createSessionTokensModuleMock,
-  makeQuotaToastTestConfig,
   seedDefaultPluginBootstrapMocks,
+  writePluginTestSettings,
 } from "./helpers/plugin-test-harness.js";
 import { createQuotaRpcBridge, createQuotaRpcEvents } from "./helpers/quota-rpc-bridge.js";
 
@@ -28,7 +27,6 @@ const CANARIES = {
 
 const mocks = vi.hoisted(() => ({
   root: "",
-  loadConfig: vi.fn(),
   getProviders: vi.fn(),
   getPricingSnapshotMeta: vi.fn(),
   getPricingSnapshotSource: vi.fn(),
@@ -43,10 +41,6 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("@opentui/solid", () => ({
   useTerminalDimensions: () => () => ({ width: 120, height: 40 }),
-}));
-vi.mock("../src/lib/config.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../src/lib/config.js")>()),
-  ...createConfigModuleMock(mocks.loadConfig),
 }));
 vi.mock("../src/providers/registry.js", () =>
   createProvidersRegistryModuleMock(mocks.getProviders),
@@ -342,19 +336,14 @@ describe("v6 surfaces on the quota snapshot", () => {
     process.env.V6_TEAM_KEY = CANARIES.teamKey;
     process.env.V6_FAILING_KEY = CANARIES.failingKey;
     seedDefaultPluginBootstrapMocks(mocks, { resetPluginState: true });
-    mocks.loadConfig.mockResolvedValue(
-      makeQuotaToastTestConfig({
-        enabled: true,
-        enabledProviders: ["copilot", "minimax-coding-plan", "quota-providers"],
-        quotaProviders: CUSTOM_SOURCES as never,
-        minIntervalMs: 60_000,
-        sessionTokenScope: "session",
-        maintainerAnnouncements: { enabled: false, home: false },
-        export: { enabled: true, path: join(mocks.root, "quota-export.json") },
-        telemetry: { enabled: true },
-        tuiCommandDisplay: "dialog",
-      } as never),
-    );
+    writePluginTestSettings(mocks.root, {
+      providers: { enabled: ["copilot", "minimax-coding-plan", "custom"], custom: CUSTOM_SOURCES },
+      checking: { minIntervalMs: 60_000 },
+      words: { sessionTokens: "current" },
+      announcements: { enabled: false, home: false },
+      export: { enabled: true, path: join(mocks.root, "quota-export.json") },
+      telemetry: { enabled: true },
+    });
     mocks.fetchSessionTokensForDisplay.mockResolvedValue({
       sessionTokens: { models: [], totalInput: 1200, totalCachedInput: 300, totalOutput: 45 },
     });
@@ -467,9 +456,9 @@ describe("v6 surfaces on the quota snapshot", () => {
       ].join("\n"),
     });
 
-    // /quota still builds its report on the server and opens it in a dialog.
+    // /quota builds its report on the server from the same snapshot and opens it in a dialog.
     await tui.command("quota").run();
-    expect(tui.dialogs[0]).toEqual(expect.arrayContaining(["Quota limits", "  Failing: HTTP 503"]));
+    expect(tui.dialogs[0]).toContain(tui.toast.mock.calls[0]?.[0].message);
 
     // The export file and the gauges follow the snapshot without asking a provider again.
     const exportPath = join(mocks.root, "quota-export.json");

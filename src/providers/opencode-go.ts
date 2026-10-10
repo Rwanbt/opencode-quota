@@ -112,7 +112,7 @@ export const opencodeGoProvider: QuotaProvider = {
   },
 
   async fetch(ctx: QuotaProviderContext): Promise<QuotaProviderResult> {
-    const windows = ctx.config.opencodeGoWindows ?? OPENCODE_GO_WINDOW_ORDER;
+    const windows = OPENCODE_GO_WINDOW_ORDER;
     const selectedWindowsDetail = { key: "selected_windows", value: windows.join(",") };
     const consoleAuth = await resolveOpenCodeConsoleAuth();
 
@@ -199,7 +199,7 @@ async function fetchOpenCodeGoLegacy(
   statusDetails: QuotaProviderStatusDetail[],
   consoleSignInFailure?: string,
 ): Promise<QuotaProviderResult> {
-  const windows = ctx.config.opencodeGoWindows ?? OPENCODE_GO_WINDOW_ORDER;
+  const windows = OPENCODE_GO_WINDOW_ORDER;
   const notSubscribedResult = () =>
     withStatusDetails(attemptedResult([]), [...statusDetails, NOT_SUBSCRIBED_DETAIL]);
   const auth = await resolveApiKeyLogin(OPENCODE_GO_AUTH);

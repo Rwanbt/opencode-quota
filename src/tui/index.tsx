@@ -2,15 +2,22 @@
 /**
  * OpenCode Quota's TUI plugin. It draws the server's quota snapshot: the Quota panel in the
  * session sidebar, the status line under the message box (and on Home when turned on), and
- * the toasts. It reads only the quota RPC (`snapshot`, `refresh`, `notices`, the `changed`
- * event) and the display settings in OpenCode's plugin storage. The report dialogs of the
- * slash commands live in `legacy-dialogs.tsx` until the quota window replaces them.
+ * the toasts. It uses only the quota RPC (`snapshot`, `refresh`, `notices`,
+ * `acknowledgeDisplayImport`, the `changed` event) and the display settings in OpenCode's
+ * plugin storage. The report dialogs of the slash commands live in `legacy-dialogs.tsx` until
+ * the quota window replaces them.
  */
 import { Plugin } from "@opencode/plugin/tui";
 import type { JSX } from "@opentui/solid";
 import { Show } from "solid-js";
+import type { QuotaSnapshot } from "../core/types.js";
 import { type ClientHost, createQuotaClient, reportFailure } from "./client.js";
-import { type DisplaySettings, type DisplayStorage, loadDisplaySettings } from "./display.js";
+import {
+  applyDisplayImport,
+  type DisplaySettings,
+  type DisplayStorage,
+  loadDisplaySettings,
+} from "./display.js";
 import {
   type LegacyDialogHost,
   registerQuotaCommands,
@@ -21,7 +28,7 @@ import {
 import { SidebarPanel, type SurfaceHost } from "./sidebar.js";
 import { HomeFooter, StatusLine } from "./status-line.js";
 import type { Theme } from "./theme.js";
-import { createToasts, type TurnEnd } from "./toasts.js";
+import { createToasts, TOAST_TITLE, type TurnEnd } from "./toasts.js";
 
 type SidebarState = { open: boolean };
 
@@ -44,6 +51,10 @@ type TuiContext = LegacyDialogHost &
       ) => () => void;
     };
   };
+
+const SETTINGS_CONVERTED_MESSAGE =
+  "Settings converted from v5 to settings.jsonc, details in /quota_status";
+const SETTINGS_CONVERTED_TOAST_MS = 15_000;
 
 function eventSessionID(event: TuiEvent): string | undefined {
   const sessionID = event.data?.sessionID;
@@ -79,7 +90,27 @@ const plugin = Plugin.define({
 
     const isChildSession = (sessionID: string) =>
       Boolean(api.data.session.get(sessionID)?.parentID);
-    const quota = createQuotaClient(api, (snapshot) => toasts.showResetNotices(snapshot));
+    // The server converted the v5 settings: apply their looks (only where nothing is saved),
+    // tell the server, and say so once in this TUI process.
+    let conversionShown = false;
+    const showConversion = (snapshot: QuotaSnapshot) => {
+      const { displayImport } = snapshot;
+      if (!displayImport || conversionShown) return;
+      conversionShown = true;
+      api.ui.toast.show({
+        variant: "info",
+        title: TOAST_TITLE,
+        message: SETTINGS_CONVERTED_MESSAGE,
+        duration: SETTINGS_CONVERTED_TOAST_MS,
+      });
+      applyDisplayImport(api.storage, displayImport)
+        .then(() => quota.acknowledgeDisplayImport())
+        .catch(reportFailure);
+    };
+    const quota = createQuotaClient(api, (snapshot) => {
+      toasts.showResetNotices(snapshot);
+      showConversion(snapshot);
+    });
     const toasts = createToasts({
       show: (toast) => api.ui.toast.show(toast),
       display,
@@ -98,6 +129,16 @@ const plugin = Plugin.define({
         // listeners, so each mount replaces the listeners and registers everything again.
         disposeMount?.();
         const stopQuota = quota.start();
+        // The first snapshot carries the converted v5 looks (`displayImport`). Ask for it once
+        // the slot is mounted: on Home nothing else does until those looks turn the status
+        // line on.
+        queueMicrotask(() => {
+          try {
+            quota.watch()();
+          } catch (error) {
+            reportFailure(error);
+          }
+        });
         registerQuotaCommands(api);
         registerTypedQuotaCommands(api);
         const afterTurn = (event: TuiEvent, trigger: TurnEnd) => {

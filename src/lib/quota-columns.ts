@@ -5,8 +5,10 @@
 
 import { bar, padLeft, wrapDisplayText } from "./format-utils.js";
 import { spreadTableGaps } from "./markdown-table.js";
-import { QUOTA_COMMAND_BAR_WIDTH } from "./quota-command-format.js";
 import type { ReportBlock, ReportQuotaRow } from "./report-document.js";
+
+/** The narrowest bar a quota table shrinks to. */
+const QUOTA_COMMAND_BAR_WIDTH = 10;
 
 /** The bar's length; a longer one only stretches the eye between a label and its percent. */
 export const QUOTA_TABLE_BAR_WIDTH = 24;

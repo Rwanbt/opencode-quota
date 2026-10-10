@@ -37,24 +37,24 @@ vi.mock("../src/lib/opencode-runtime-paths.js", () => ({
   getOpencodeRuntimeDirs: () => runtimeDirs.value,
 }));
 
-vi.mock("../src/lib/quota-dialog-commands.js", () => ({
-  buildStatusReportData: vi.fn(async () => {
-    if (!statusData.value) {
-      return { output: null, payload: null };
-    }
-    return {
-      output: statusData.value.output,
-      payload: statusData.value.payload,
-      hasComparableProviderData: statusData.value.hasComparableProviderData ?? true,
-    };
-  }),
+vi.mock("../src/lib/quota-dialog-commands.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/lib/quota-dialog-commands.js")>()),
+  buildStatusReportData: vi.fn(async () => ({
+    output: statusData.value?.output,
+    payload: statusData.value?.payload,
+    hasComparableProviderData: statusData.value?.hasComparableProviderData ?? true,
+  })),
 }));
 
-import { buildCliShowJson, buildCliShowText, buildCliStatus } from "../src/lib/cli-reports.js";
-import { resolveOpenCodeLocationRoots } from "../src/lib/config-file-utils.js";
-import { buildStatusReportData } from "../src/lib/quota-dialog-commands.js";
-import { resolveQuotaRuntimeContext } from "../src/lib/quota-runtime-context.js";
-import { __resetQuotaStateForTests } from "../src/lib/quota-state.js";
+const { snapshotFilePath } = await import("../src/core/persist.js");
+const { loadProviderSource } = await import("../src/core/provider-source.js");
+const { createQuotaStore } = await import("../src/core/store.js");
+const { buildCliShowJson, buildCliShowText, buildCliStatus } = await import(
+  "../src/lib/cli-reports.js"
+);
+const { buildStatusReportData } = await import("../src/lib/quota-dialog-commands.js");
+const { loadSettings } = await import("../src/settings/index.js");
+type ProviderSourceHost = import("../src/core/provider-source.js").ProviderSourceHost;
 
 function basePayload(overrides: Record<string, unknown> = {}) {
   return {
@@ -100,27 +100,38 @@ describe("CLI reports", () => {
   let workspaceDir: string;
   let savedConfigDir: string | undefined;
 
-  // A minimal configuration client: the given provider ids, no SDK config. Quota settings
-  // come from the files in the workspace folder.
-  async function runtimeFor(providerIds: string[] = []) {
-    return resolveQuotaRuntimeContext({
+  // OpenCode's provider list is the given ids; the settings come from settings.jsonc.
+  async function hostFor(providerIds: string[] = []): Promise<ProviderSourceHost> {
+    const loaded = await loadSettings();
+    return {
       client: {
         config: {
-          get: async () => ({ data: {} }),
           providers: async () => ({ data: { providers: providerIds.map((id) => ({ id })) } }),
         },
       },
-      roots: resolveOpenCodeLocationRoots(workspaceDir),
-      includeSessionMeta: false,
-    });
+      workspaceRoot: workspaceDir,
+      settings: () => loaded,
+    };
   }
 
-  function writeQuotaConfig(quotaToast: Record<string, unknown>): void {
+  function writeSettings(settings: Record<string, unknown>): void {
+    mkdirSync(join(globalConfigDir, "opencode-quota"), { recursive: true });
     writeFileSync(
-      join(workspaceDir, "opencode.json"),
-      JSON.stringify({ experimental: { quotaToast } }),
+      join(globalConfigDir, "opencode-quota", "settings.jsonc"),
+      JSON.stringify(settings),
       "utf8",
     );
+  }
+
+  /** What OpenCode's store saves after checking every enabled provider. */
+  async function saveSnapshot(): Promise<void> {
+    const host = await hostFor();
+    const store = createQuotaStore({
+      source: () => loadProviderSource(host),
+      file: snapshotFilePath(),
+    });
+    await store.refresh({ reason: "manual" });
+    await store.dispose();
   }
 
   beforeEach(() => {
@@ -132,15 +143,14 @@ describe("CLI reports", () => {
     mkdirSync(globalConfigDir, { recursive: true });
     mkdirSync(workspaceDir, { recursive: true });
     runtimeDirs.value = {
-      dataDir: "/tmp/opencode-quota-cli-reports-data",
+      dataDir: join(tempDir, "data"),
       configDir: globalConfigDir,
       cacheDir: join(tempDir, "cache"),
-      stateDir: "/tmp/opencode-quota-cli-reports-state",
+      stateDir: join(tempDir, "state"),
     };
     mockProviders.length = 0;
     statusData.value = null;
     vi.mocked(buildStatusReportData).mockClear();
-    __resetQuotaStateForTests();
   });
 
   afterEach(() => {
@@ -149,7 +159,6 @@ describe("CLI reports", () => {
     else delete process.env.OPENCODE_CONFIG_DIR;
     mockProviders.length = 0;
     statusData.value = null;
-    __resetQuotaStateForTests();
     rmSync(tempDir, { recursive: true, force: true });
   });
 
@@ -173,9 +182,9 @@ describe("CLI reports", () => {
         }),
       };
       mockProviders.push(provider);
-      writeQuotaConfig({ enabledProviders: ["synthetic"], showSessionTokens: true });
+      writeSettings({ providers: { enabled: ["synthetic"] } });
 
-      const report = await buildCliShowText({ runtime: await runtimeFor() });
+      const report = await buildCliShowText(await hostFor());
 
       expect(report.exitCode).toBe(0);
       expect(report.stdout).toContain("Synthetic Weekly");
@@ -206,9 +215,9 @@ describe("CLI reports", () => {
           errors: [],
         }),
       });
-      writeQuotaConfig({ enabledProviders: ["synthetic"], percentDisplayMode: "used" });
+      writeSettings({ providers: { enabled: ["synthetic"] }, words: { percent: "used" } });
 
-      const report = await buildCliShowText({ runtime: await runtimeFor() });
+      const report = await buildCliShowText(await hostFor());
 
       expect(report).toEqual({
         exitCode: 0,
@@ -217,45 +226,7 @@ describe("CLI reports", () => {
       });
     });
 
-    it("uses the provider as an invocation override", async () => {
-      const copilotProvider = {
-        id: "copilot",
-        cachePolicy: { kind: "account-neutral" as const },
-        isAvailable: vi.fn().mockResolvedValue(true),
-        fetch: vi.fn().mockResolvedValue({
-          attempted: true,
-          entries: [{ accounting: TEST_ACCOUNTING, name: "Copilot", percentRemaining: 50 }],
-          errors: [],
-        }),
-      };
-      const openAiProvider = {
-        id: "openai",
-        isAvailable: vi.fn().mockResolvedValue(true),
-        fetch: vi.fn().mockResolvedValue({ attempted: true, entries: [], errors: [] }),
-      };
-      mockProviders.push(openAiProvider, copilotProvider);
-      writeQuotaConfig({ enabledProviders: ["openai"] });
-
-      const report = await buildCliShowText({ runtime: await runtimeFor(), providerId: "copilot" });
-
-      expect(report.exitCode).toBe(0);
-      expect(report.stdout).toContain("Copilot");
-      expect(copilotProvider.fetch).toHaveBeenCalledOnce();
-      expect(openAiProvider.fetch).not.toHaveBeenCalled();
-      expect(report.stderr).toBe("");
-    });
-
-    it("returns non-zero when quota is disabled in config", async () => {
-      writeQuotaConfig({ enabled: false });
-
-      await expect(buildCliShowText({ runtime: await runtimeFor() })).resolves.toEqual({
-        exitCode: 1,
-        stdout: "",
-        stderr: "Quota disabled in config (enabled: false).\n",
-      });
-    });
-
-    it("renders explicit unavailable provider output but returns non-zero", async () => {
+    it("returns non-zero without asking a provider that is not available", async () => {
       const provider = {
         id: "copilot",
         cachePolicy: { kind: "account-neutral" as const },
@@ -263,12 +234,11 @@ describe("CLI reports", () => {
         fetch: vi.fn(),
       };
       mockProviders.push(provider);
+      writeSettings({ providers: { enabled: ["copilot"] } });
 
-      const report = await buildCliShowText({ runtime: await runtimeFor(), providerId: "copilot" });
+      const report = await buildCliShowText(await hostFor());
 
       expect(report.exitCode).toBe(1);
-      expect(report.stdout).toContain("Copilot: Unavailable (not detected)");
-      expect(report.stderr).toBe("");
       expect(provider.fetch).not.toHaveBeenCalled();
     });
 
@@ -311,12 +281,9 @@ describe("CLI reports", () => {
         }),
       };
       mockProviders.push(copilotProvider, geminiCliProvider);
-      writeQuotaConfig({
-        enabledProviders: ["copilot", "google-gemini-cli"],
-        formatStyle: "allWindows",
-      });
+      writeSettings({ providers: { enabled: ["copilot", "google-gemini-cli"] } });
 
-      const report = await buildCliShowText({ runtime: await runtimeFor() });
+      const report = await buildCliShowText(await hostFor());
 
       expect(report.exitCode).toBe(0);
       expect(report.stdout).toContain("Copilot");
@@ -344,7 +311,7 @@ describe("CLI reports", () => {
       };
       mockProviders.push(provider);
 
-      const report = await buildCliShowText({ runtime: await runtimeFor(["github-copilot"]) });
+      const report = await buildCliShowText(await hostFor(["github-copilot"]));
 
       expect(report.exitCode).toBe(0);
       expect(report.stdout).toContain("Copilot");
@@ -354,27 +321,26 @@ describe("CLI reports", () => {
   });
 
   describe("buildCliShowJson", () => {
-    function syntheticProvider(entries: unknown[], errors: unknown[] = []) {
+    function syntheticProvider(entries: unknown[], errors: unknown[] = [], id = "synthetic") {
       return {
-        id: "synthetic",
+        id,
         cachePolicy: { kind: "account-neutral" as const },
         isAvailable: vi.fn().mockResolvedValue(true),
         fetch: vi.fn().mockResolvedValue({ attempted: true, entries, errors }),
       };
     }
 
-    it("outputs valid JSON with cached provider data", async () => {
+    it("outputs valid JSON with the quota OpenCode saved last", async () => {
       const provider = syntheticProvider([
         { accounting: TEST_ACCOUNTING, name: "Synthetic", label: "Weekly:", percentRemaining: 75 },
       ]);
       mockProviders.push(provider);
-      writeQuotaConfig({ enabledProviders: ["synthetic"] });
+      writeSettings({ providers: { enabled: ["synthetic"] } });
 
-      // The text report populates the cache.
-      expect((await buildCliShowText({ runtime: await runtimeFor() })).exitCode).toBe(0);
+      await saveSnapshot();
       expect(provider.fetch).toHaveBeenCalledOnce();
 
-      const report = await buildCliShowJson({ runtime: await runtimeFor() });
+      const report = await buildCliShowJson({ host: await hostFor() });
 
       expect(report.exitCode).toBe(0);
       expect(report.stderr).toBe("");
@@ -386,21 +352,21 @@ describe("CLI reports", () => {
       expect(parsed).toHaveProperty("cacheAgeSeconds");
       expect(parsed.providers).toHaveProperty("synthetic");
       expect(parsed.providers.synthetic.status).toBe("ok");
-      expect(parsed.providers.synthetic.entries[0].name).toBe("Synthetic");
+      expect(parsed.providers.synthetic.entries[0].name).toBe("Synthetic Weekly");
       expect(parsed.providers.synthetic.entries[0].percentRemaining).toBe(75);
       expect(parsed.providers.synthetic.entries[0].renderType).toBe("percent");
       expect(parsed.providers.synthetic.entries[0]).not.toHaveProperty("unlimited");
-      expect(provider.fetch).toHaveBeenCalledTimes(1); // still only called from the text report
+      expect(provider.fetch).toHaveBeenCalledTimes(1); // only OpenCode's store asked it
     });
 
-    it("reads from cache only and returns unavailable when no cache exists", async () => {
+    it("asks no provider and returns unavailable when nothing was saved", async () => {
       const provider = syntheticProvider([
         { accounting: TEST_ACCOUNTING, name: "Synthetic", percentRemaining: 100 },
       ]);
       mockProviders.push(provider);
-      writeQuotaConfig({ enabledProviders: ["synthetic"] });
+      writeSettings({ providers: { enabled: ["synthetic"] } });
 
-      const report = await buildCliShowJson({ runtime: await runtimeFor() });
+      const report = await buildCliShowJson({ host: await hostFor() });
 
       expect(report.exitCode).toBe(0);
       expect(report.stderr).toBe("");
@@ -408,39 +374,33 @@ describe("CLI reports", () => {
       expect(provider.fetch).not.toHaveBeenCalled();
     });
 
-    it("returns non-zero when quota is disabled in config", async () => {
-      writeQuotaConfig({ enabled: false });
-
-      await expect(buildCliShowJson({ runtime: await runtimeFor() })).resolves.toEqual({
-        exitCode: 1,
-        stdout: "",
-        stderr: "Quota disabled in config (enabled: false).\n",
-      });
-    });
-
     it.each([
       [80, 50, 0],
       [30, 50, 1],
     ])("--threshold uses percentage rows even when the first row is a quantity: %s vs %s", async (percentRemaining, threshold, expectedCode) => {
       mockProviders.push(
-        syntheticProvider([
-          {
-            kind: "quantity",
-            accounting: { ...TEST_ACCOUNTING, resultType: "balance" },
-            semantic: {
-              metric: { kind: "component", component: "current_balance" },
-              prominence: "primary",
+        syntheticProvider(
+          [
+            {
+              kind: "quantity",
+              accounting: { ...TEST_ACCOUNTING, resultType: "balance" },
+              semantic: {
+                metric: { kind: "component", component: "current_balance" },
+                prominence: "primary",
+              },
+              name: "kilo-gateway-total-balance",
+              quantity: { decimal: "5", unit: { kind: "currency", code: "USD" } },
             },
-            name: "Synthetic balance",
-            quantity: { decimal: "5", unit: { kind: "currency", code: "USD" } },
-          },
-          { accounting: TEST_ACCOUNTING, name: "Synthetic", percentRemaining },
-        ]),
+            { accounting: TEST_ACCOUNTING, name: "kilo-gateway-credits", percentRemaining },
+          ],
+          [],
+          "kilo",
+        ),
       );
-      writeQuotaConfig({ enabledProviders: ["synthetic"] });
+      writeSettings({ providers: { enabled: ["kilo"] } });
 
-      await buildCliShowText({ runtime: await runtimeFor() });
-      const report = await buildCliShowJson({ runtime: await runtimeFor(), threshold });
+      await saveSnapshot();
+      const report = await buildCliShowJson({ host: await hostFor(), threshold });
 
       expect(report.exitCode).toBe(expectedCode);
     });
@@ -451,14 +411,14 @@ describe("CLI reports", () => {
           { accounting: TEST_ACCOUNTING, name: "Synthetic", percentRemaining: 100 },
         ]),
       );
-      writeQuotaConfig({ enabledProviders: ["synthetic"] });
+      writeSettings({ providers: { enabled: ["synthetic"] } });
 
-      const report = await buildCliShowJson({ runtime: await runtimeFor(), threshold: 10 });
+      const report = await buildCliShowJson({ host: await hostFor(), threshold: 10 });
 
       expect(report.exitCode).toBe(2);
     });
 
-    it("--threshold exits 2 when cached ok providers have no percentRemaining values", async () => {
+    it("--threshold exits 2 when saved ok providers have no percentRemaining values", async () => {
       mockProviders.push(
         syntheticProvider([
           {
@@ -470,35 +430,35 @@ describe("CLI reports", () => {
           },
         ]),
       );
-      writeQuotaConfig({ enabledProviders: ["synthetic"] });
+      writeSettings({ providers: { enabled: ["synthetic"] } });
 
-      await buildCliShowText({ runtime: await runtimeFor() });
-      const report = await buildCliShowJson({ runtime: await runtimeFor(), threshold: 10 });
+      await saveSnapshot();
+      const report = await buildCliShowJson({ host: await hostFor(), threshold: 10 });
 
       expect(report.exitCode).toBe(2);
     });
 
-    it("--threshold exits 2 for partial cached results instead of passing incomplete data", async () => {
+    it("--threshold exits 2 for partial saved results instead of passing incomplete data", async () => {
       mockProviders.push(
         syntheticProvider(
-          [{ accounting: TEST_ACCOUNTING, name: "Synthetic", percentRemaining: 80 }],
+          [{ accounting: TEST_ACCOUNTING, name: "Synthetic", label: "5h:", percentRemaining: 80 }],
           [{ label: "Synthetic secondary", message: "quota endpoint unavailable" }],
         ),
       );
-      writeQuotaConfig({ enabledProviders: ["synthetic"] });
+      writeSettings({ providers: { enabled: ["synthetic"] } });
 
-      await buildCliShowText({ runtime: await runtimeFor() });
-      const report = await buildCliShowJson({ runtime: await runtimeFor(), threshold: 50 });
+      await saveSnapshot();
+      const report = await buildCliShowJson({ host: await hostFor(), threshold: 50 });
 
       expect(report.exitCode).toBe(2);
       expect(JSON.parse(report.stdout).providers.synthetic).toMatchObject({
         status: "partial",
         entries: [expect.objectContaining({ percentRemaining: 80 })],
-        errors: [{ label: "Synthetic secondary", message: "quota endpoint unavailable" }],
+        errors: [{ label: "Synthetic", message: "Nothing reported" }],
       });
     });
 
-    it("--provider copilot only includes the copilot key", async () => {
+    it("includes only the providers enabled now", async () => {
       const copilotProvider = {
         id: "copilot",
         cachePolicy: { kind: "account-neutral" as const },
@@ -515,10 +475,11 @@ describe("CLI reports", () => {
           { accounting: TEST_ACCOUNTING, name: "Synthetic", percentRemaining: 50 },
         ]),
       );
-      writeQuotaConfig({ enabledProviders: ["copilot", "synthetic"] });
+      writeSettings({ providers: { enabled: ["copilot", "synthetic"] } });
+      await saveSnapshot();
 
-      await buildCliShowText({ runtime: await runtimeFor() });
-      const report = await buildCliShowJson({ runtime: await runtimeFor(), providerId: "copilot" });
+      writeSettings({ providers: { enabled: ["copilot"] } });
+      const report = await buildCliShowJson({ host: await hostFor() });
 
       expect(report.exitCode).toBe(0);
       const parsed = JSON.parse(report.stdout);
@@ -535,7 +496,7 @@ describe("CLI reports", () => {
         "Quota Status (opencode-quota v3.11.2)\ntoast:\n- enabledProviders: synthetic",
       );
 
-      const report = await buildCliStatus({ runtime: await runtimeFor(), json: false });
+      const report = await buildCliStatus({ host: await hostFor(), json: false });
 
       expect(report).toEqual({
         exitCode: 0,
@@ -550,7 +511,7 @@ describe("CLI reports", () => {
     it("emits a structured JSON payload and returns zero when live probes exist", async () => {
       useStatusData();
 
-      const report = await buildCliStatus({ runtime: await runtimeFor(), json: true });
+      const report = await buildCliStatus({ host: await hostFor(), json: true });
 
       expect(report.exitCode).toBe(0);
       expect(report.stderr).toBe("");
@@ -567,7 +528,7 @@ describe("CLI reports", () => {
     it("exits 2 with JSON when there is no comparable provider data", async () => {
       useStatusData(basePayload({ liveProbes: [] }), false);
 
-      const report = await buildCliStatus({ runtime: await runtimeFor(), json: true });
+      const report = await buildCliStatus({ host: await hostFor(), json: true });
 
       expect(report.exitCode).toBe(2);
       expect(report.stderr).toBe("");
@@ -578,7 +539,7 @@ describe("CLI reports", () => {
     it("exits 2 with JSON when probes fail without producing quota entries", async () => {
       useStatusData(basePayload({ liveProbes: [{ id: "synthetic", ok: false }] }), false);
 
-      const report = await buildCliStatus({ runtime: await runtimeFor(), json: true });
+      const report = await buildCliStatus({ host: await hostFor(), json: true });
 
       expect(report.exitCode).toBe(2);
       expect(JSON.parse(report.stdout).liveProbes).toEqual([{ id: "synthetic", ok: false }]);
@@ -587,7 +548,7 @@ describe("CLI reports", () => {
     it("succeeds with JSON when a partial probe produced quota entries", async () => {
       useStatusData(basePayload({ liveProbes: [{ id: "synthetic", ok: false }] }), true);
 
-      const report = await buildCliStatus({ runtime: await runtimeFor(), json: true });
+      const report = await buildCliStatus({ host: await hostFor(), json: true });
 
       expect(report.exitCode).toBe(0);
     });
@@ -596,7 +557,7 @@ describe("CLI reports", () => {
       useStatusData();
 
       const report = await buildCliStatus({
-        runtime: await runtimeFor(),
+        host: await hostFor(),
         providerId: "synthetic",
         json: true,
       });
@@ -608,17 +569,6 @@ describe("CLI reports", () => {
       const parsed = JSON.parse(report.stdout);
       expect(parsed.providers).toHaveLength(1);
       expect(parsed).not.toHaveProperty("providerFilterId");
-    });
-
-    it("returns non-zero when quota is disabled in config", async () => {
-      writeQuotaConfig({ enabled: false });
-
-      await expect(buildCliStatus({ runtime: await runtimeFor(), json: false })).resolves.toEqual({
-        exitCode: 1,
-        stdout: "",
-        stderr: "Quota disabled in config (enabled: false).\n",
-      });
-      expect(buildStatusReportData).not.toHaveBeenCalled();
     });
   });
 });

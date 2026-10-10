@@ -5,6 +5,7 @@
  * (percent style, reset style, …) are the server's and come with the snapshot.
  */
 import { isQuotaWindow } from "../core/windows.js";
+import type { DisplayImport } from "../settings/index.js";
 import type { BarShape } from "../view/format.js";
 import type { RowSettings, Surface, SurfaceRows, WindowChoice } from "../view/select.js";
 import type { ColorRole, Layout, StatusLevel } from "../view/text.js";
@@ -46,7 +47,10 @@ export type DisplaySettings = RowSettings & {
   };
 };
 
-export type StoredDisplay = { version: number; settings: DisplaySettings };
+/** The stored value; `settings` is missing until display settings were saved once. */
+export type StoredDisplay = { version: number; settings?: DisplaySettings };
+
+const NOTHING_SAVED: StoredDisplay = { version: SETTINGS_VERSION };
 
 /** The theme color each role gets unless you change it. */
 export const THEME_COLORS: Record<ColorRole, ColorName | "bar"> = {
@@ -259,8 +263,23 @@ export type DisplayStorage = {
  * another TUI or by hand).
  */
 export function loadDisplaySettings(storage: DisplayStorage): () => DisplaySettings {
-  const [stored] = storage.store<StoredDisplay>("settings", {
-    initial: { version: SETTINGS_VERSION, settings: defaultDisplaySettings() },
-  });
+  const [stored] = storage.store<StoredDisplay>("settings", { initial: NOTHING_SAVED });
   return () => readDisplaySettings(stored);
+}
+
+/**
+ * Saves the v5 looks the settings conversion found as the display settings, only while
+ * nothing is saved yet: a choice made in any TUI is never overwritten.
+ */
+export async function applyDisplayImport(
+  storage: DisplayStorage,
+  displayImport: DisplayImport,
+): Promise<void> {
+  if (Object.keys(displayImport).length === 0) return;
+  const [, update] = storage.store<StoredDisplay>("settings", { initial: NOTHING_SAVED });
+  await update((draft) => {
+    if (draft.settings !== undefined) return;
+    draft.version = SETTINGS_VERSION;
+    draft.settings = readDisplaySettings({ settings: displayImport });
+  });
 }

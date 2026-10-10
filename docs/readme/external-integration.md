@@ -18,7 +18,7 @@ Use this for scripts and CI:
 opencode-quota show --json
 ```
 
-It works with OpenCode closed and reads cached data only. It runs with your terminal's settings; see [Terminal commands](troubleshooting.md#terminal-commands).
+It works with OpenCode closed: it reads the quota OpenCode saved last and never asks a provider. See [Terminal commands](troubleshooting.md#terminal-commands).
 
 ```bash
 # Only Copilot
@@ -47,14 +47,14 @@ opencode-quota show --json --provider copilot \
 
 ## 2. Read an export file
 
-Use this for a status bar or another tool that checks quota often. Add this to `opencode-quota/quota-toast.json`:
+Use this for a status bar or another tool that checks quota often. Add this to `opencode-quota/settings.jsonc` ([where](configuration.md#where-settings-live)):
 
 ```jsonc
 { "export": { "enabled": true } }
 ```
 
 - The file is `~/.cache/opencode/quota-export.json` (or `$XDG_CACHE_HOME/opencode/quota-export.json` when `XDG_CACHE_HOME` is set). `export.path` changes it.
-- OpenCode's background service rewrites it each time its quota snapshot changes (providers are asked when a TUI shows quota or a reply ends, at most once per `minIntervalMs`), and it keeps its last contents when OpenCode stops.
+- OpenCode's background service rewrites it each time its quota snapshot changes (providers are asked when a TUI shows quota or a reply ends, at most once per `checking.minIntervalMs`), and it keeps its last contents when OpenCode stops.
 - A write error is logged but never breaks the TUI.
 
 ### tmux example (add to your tmux config)
@@ -75,7 +75,7 @@ interval = 60
 
 ## 3. Send OpenTelemetry metrics
 
-Use this only when OpenCode's server process (normally the background service) already has an OpenTelemetry metrics provider and exporter. OpenCode Quota does not create or configure them. Add this to `opencode-quota/quota-toast.json`:
+Use this only when OpenCode's server process (normally the background service) already has an OpenTelemetry metrics provider and exporter. OpenCode Quota does not create or configure them. Add this to `opencode-quota/settings.jsonc` ([where](configuration.md#where-settings-live)):
 
 ```jsonc
 { "telemetry": { "enabled": true } }
@@ -151,43 +151,13 @@ The command and export file both use JSON schema version `2`. Every provider has
 A percentage entry uses `renderType: "percent"` and `percentRemaining`. A value entry uses `renderType: "value"` and `value`. Internally typed quantities flatten into formatted value strings (for example, `USD 12.50`), and booleans flatten to `Enabled` or `Disabled`.
 
 - Scripts must not assume the first row is a percentage or that a provider has only one row. Select `renderType`, `resultType`, and any other field you need.
-- Display settings (`accountingDetail`, `formatStyle`, `percentDisplayMode`) never change JSON. The export uses the full cached snapshot, so supplementary rows can add more value entries.
+- The `words` settings never change JSON. It has every row of the snapshot, so supplementary rows can add more value entries.
 - Version 2 does not expose internal metrics, row prominence, used/limit/remaining basis facts, or per-fact authority.
 - Threshold checks use percentage rows only.
 
-Optional entry fields include `window`, `resetAt`, `observedAt`, and `sourceId`. A provider can also include `rawDetails`: curated, safe provider facts that stay out of normal quota displays. In `show --json`, custom `quotaProviders` rows include `sourceId`, and the `quota-providers` result has a `sources` list so tools can match each row to its definition. The export file is built from the server's quota snapshot instead: its rows have no `sourceId` or `observedAt`, their `resultType` is `quota`, `usage`, `budget`, `balance`, or `status`, and there is no `sources` list. Treat `status: "partial"` as incomplete.
+Both are built from the server's quota snapshot. Optional entry fields are `window` and `resetAt`; `resultType` is `quota`, `usage`, `budget`, `balance`, or `status`. A provider can also include `rawDetails`: curated, safe provider facts that stay out of normal quota displays. Rows from `providers.custom` appear under `providers["quota-providers"]` with `ownership: "user_configured"`. Treat `status: "partial"` as incomplete.
 
 Secrets, credentials, URLs, checked paths, and raw provider responses remain excluded from public JSON. Use `/quota_status` for live diagnostics.
-
-<details>
-<summary><strong>Configured source details</strong></summary>
-
-In `show --json`, rows from a configured `quotaProviders` definition appear under `providers["quota-providers"]` and keep their stable `sourceId`:
-
-```json
-{
-  "sourceId": "openrouter-primary",
-  "renderType": "percent",
-  "percentRemaining": 40
-}
-```
-
-The provider also includes a summary for every configured source:
-
-```json
-"sources": [
-  {
-    "id": "openrouter-primary",
-    "providerId": "openrouter",
-    "status": "ok",
-    "entryCount": 1
-  }
-]
-```
-
-Each summary is exactly `id`, effective `providerId`, coarse `status`, and `entryCount`. A source can be `ok` after producing valid rows while failed mapping candidates can still make the aggregate provider `partial`.
-
-</details>
 
 <details>
 <summary><strong>Small JSON example</strong></summary>
@@ -204,7 +174,7 @@ Each summary is exactly `id`, effective `providerId`, coarse `status`, and `entr
       "fetchedAt": 1748735958,
       "entries": [
         {
-          "name": "Premium Requests",
+          "name": "Copilot Premium Requests",
           "resultType": "quota",
           "acquisitionMethod": "remote_api",
           "ownership": "maintained",

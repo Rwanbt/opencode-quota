@@ -1,6 +1,5 @@
 import { chmod, mkdir, rename, rm, writeFile } from "fs/promises";
 import { dirname } from "path";
-import { stringifyWithComments } from "./jsonc.js";
 
 export type AtomicWritePolicy = "ordinary" | "configuration";
 
@@ -32,8 +31,7 @@ export async function writeJsonAtomic(
   data: unknown,
   opts: WriteJsonAtomicOptions = {},
 ): Promise<void> {
-  // Use the comment-preserving stringifier here instead of JSON.stringify.
-  const content = stringifyWithComments(data) + (opts.trailingNewline ? "\n" : "");
+  const content = JSON.stringify(data, null, 2) + (opts.trailingNewline ? "\n" : "");
   await writeTextAtomic(path, content, opts);
 }
 

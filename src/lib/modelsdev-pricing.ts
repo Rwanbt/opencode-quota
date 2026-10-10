@@ -5,7 +5,9 @@ import { join } from "path";
 import { writeJsonAtomic } from "./atomic-json.js";
 import { fetchWithTimeout } from "./http.js";
 import { getOpencodeRuntimeDirs, type OpencodeRuntimeDirs } from "./opencode-runtime-paths.js";
-import type { PricingSnapshotSource } from "./types.js";
+
+/** Which price list reports use: "auto" (runtime when valid, else bundled), or one of them. */
+export type PricingSnapshotSource = "auto" | "bundled" | "runtime";
 
 const SOURCE_URL = "https://models.dev/api.json";
 const DEFAULT_MODELSDEV_PROVIDERS = ["anthropic", "google", "moonshotai", "openai", "xai", "zai"];

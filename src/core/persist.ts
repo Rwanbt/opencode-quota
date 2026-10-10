@@ -8,13 +8,20 @@
  * Each row is saved with its login (a hash), as the store numbers logins that share a name.
  */
 import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { writeJsonAtomic } from "../lib/atomic-json.js";
+import { getOpencodeRuntimeDirs } from "../lib/opencode-runtime-paths.js";
 import { safeDebugValue, safeDetail } from "./redact.js";
 import type { DebugDetail, QuotaError, QuotaErrorCode, QuotaRow, ResetNotice } from "./types.js";
 import { validateRows } from "./validate.js";
 import { isQuotaWindow } from "./windows.js";
 
 const FILE_VERSION = 2;
+
+/** The snapshot file the server and the terminal command share. */
+export function snapshotFilePath(): string {
+  return join(getOpencodeRuntimeDirs().stateDir, "opencode-quota", "snapshot-v6.json");
+}
 const LOGIN_RE = /^[0-9a-f]{0,64}$/u;
 const ENTRY_MAX_AGE_MS = 7 * 24 * 60 * 60_000;
 const DETAIL_MAX_LENGTH = 300;

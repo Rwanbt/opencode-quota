@@ -4,7 +4,6 @@ import { describe, expect, it } from "vitest";
 import { validateQuotaProviders } from "../src/lib/quota-providers.js";
 import {
   hasMarkdownLinkTo,
-  readFencedCodeBlocks,
   readMarkdownParagraphContaining,
   readMarkdownSection,
 } from "./helpers/markdown-document.js";
@@ -80,26 +79,26 @@ describe("quota provider Phase 7 documentation consistency", () => {
     }
 
     expect(configuration).toContain("Ask your agent to add a custom provider");
-    expect(configuration).toContain("experimental.quotaToast");
-    expect(configuration).toContain("quotaProviders");
-    expect(configuration).toContain("JSONC");
-    expect(configuration).toContain("do not duplicate it in a second file");
+    expect(configuration).not.toContain("experimental.quotaToast");
+    expect(configuration).not.toContain("quotaProviders");
+    expect(configuration).toContain("settings.jsonc");
+    expect(configuration).toContain("There are no project settings.");
 
     for (const document of [configuration, providers]) {
       expect(document).toContain("apiKeyEnv");
       expect(document).toContain("provider.<providerId>.options.apiKey");
       expect(document).toContain("opencode.db");
-      expect(document).toContain("quota-providers");
+      expect(document).toContain("providers.custom");
     }
 
-    expect(configurationCustomProviders).toContain("global-only");
+    expect(configurationCustomProviders).toContain("`providers.custom` in `settings.jsonc`");
     expect(
       readMarkdownParagraphContaining(
         configurationCustomProviders,
         "`modelIds`",
-        "`onlyCurrentModel`",
+        "`words.onlyCurrentModel`",
       ),
-    ).toMatch(/`modelIds`[\s\S]*\bonly\b[\s\S]*`onlyCurrentModel`/);
+    ).toMatch(/`modelIds`[\s\S]*\bonly\b[\s\S]*`words.onlyCurrentModel`/);
     const pricingMapRule = readMarkdownParagraphContaining(
       configurationCustomProviders,
       "pricingModelMap",
@@ -167,38 +166,10 @@ describe("quota provider Phase 7 documentation consistency", () => {
     );
     expect(externalJsonBasics).toContain('"version": 2');
     expect(externalJsonBasics).toContain('providers["quota-providers"]');
-    expect(externalJsonBasics).toContain("configured `quotaProviders` definition");
+    expect(externalJsonBasics).toContain('ownership: "user_configured"');
     expect(external).not.toContain("custom-sources");
     expect(external).not.toContain("Custom-provider");
-    expect(externalJsonBasics).toContain('"sourceId": "openrouter-primary"');
-    expect(externalJsonBasics).toContain('"sources": [');
-    expect(externalJsonBasics).toContain('"id": "openrouter-primary"');
-    expect(externalJsonBasics).toContain('"entryCount": 1');
-    const sourceSummaryBlock = readFencedCodeBlocks(externalJsonBasics).find(
-      (block) => block.info === "json" && block.content.includes('"sources"'),
-    );
-    if (sourceSummaryBlock === undefined) throw new Error("Source summary JSON example not found");
-    const sourceSummaryExample = JSON.parse(`{${sourceSummaryBlock.content}}`) as {
-      sources: Array<Record<string, unknown>>;
-    };
-    expect(sourceSummaryExample.sources).toHaveLength(1);
-    expect(Object.keys(sourceSummaryExample.sources[0]).sort()).toEqual(
-      ["id", "providerId", "status", "entryCount"].sort(),
-    );
-
-    const sourceSummaryRule = readMarkdownParagraphContaining(
-      externalJsonBasics,
-      "Each summary",
-      "`providerId`",
-      "`status`",
-      "`entryCount`",
-    );
-    expect(sourceSummaryRule).toMatch(/\bexactly\b/i);
-    expect(sourceSummaryRule).toMatch(/\beffective `providerId`/i);
-    expect(sourceSummaryRule).toMatch(/\bcoarse `status`/i);
-    expect(sourceSummaryRule).toMatch(
-      /failed mapping candidates?[\s\S]*aggregate provider[\s\S]*`partial`/i,
-    );
+    expect(external).not.toContain("quotaProviders");
     expect(
       readMarkdownParagraphContaining(externalJsonBasics, "raw provider responses", "public JSON"),
     ).toMatch(/raw provider responses[\s\S]*\b(?:excluded|omitted) from public JSON\b/i);
@@ -231,7 +202,6 @@ describe("quota provider Phase 7 documentation consistency", () => {
 
   it("keeps surface formatters generic", () => {
     for (const path of [
-      "src/lib/quota-command-format.ts",
       "src/view/select.ts",
       "src/view/text.ts",
       "src/tui/sidebar.tsx",

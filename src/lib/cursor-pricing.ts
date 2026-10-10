@@ -1,6 +1,7 @@
 import type { CostBuckets } from "./modelsdev-pricing.js";
 import { getQuotaProviderRuntimeIds } from "./provider-metadata.js";
-import type { CursorQuotaPlan } from "./types.js";
+
+export type CursorQuotaPlan = "none" | "pro" | "pro-plus" | "ultra";
 
 export type CursorResolvedModel =
   | { kind: "local"; model: CursorLocalPricingModel; pool: "auto_composer" }

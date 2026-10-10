@@ -12,7 +12,14 @@ Then restart OpenCode and run `/quota_status` (or `npx @slkiser/opencode-quota s
 
 ## Moving from 5.x
 
-Update as above; you don't need to edit your settings.
+Update as above; you don't need to edit your settings. On the first start, OpenCode Quota converts your old global settings automatically:
+
+- It reads `opencode-quota/quota-toast.jsonc` or `.json` in the global OpenCode folder, or `experimental.quotaToast` in the global `opencode.json` when there is no such file.
+- It writes the result to `opencode-quota/settings.jsonc` (see [Configuration](configuration.md)) and leaves the old file in place. From then on, only `settings.jsonc` is read.
+- Your old display choices (which surfaces and toasts show) move into the TUI.
+- The TUI shows a toast once. In that session, `/quota_status` lists what was converted, what was dropped, and why.
+
+Project settings files (`<your-repo>/opencode-quota/quota-toast.jsonc`) are not read; `/quota_status` lists any it finds. Put what you still need in `settings.jsonc`.
 
 The `init`, `update`, and `provider add` terminal commands are gone; `show` and `status` stay:
 
@@ -37,6 +44,5 @@ What changed in `5.0.0`:
 - **Quota runs in OpenCode's background service.** Inside OpenCode, `PATH`, environment variables, and the working folder (your home folder) come from the service, not your terminal. See [Service environment](troubleshooting.md#service-environment).
 - **Web and Desktop get slash commands, but no toasts or panels,** because OpenCode 2 gives plugins no Web UI hooks. See [Web and Desktop notes](manual-install.md#web-and-desktop-notes).
 - **One plugin entry.** One `"plugin"` entry in `opencode.json` loads the server and the TUI; no `tui.json` entry is needed.
-- **TUI reports open in a popup** and leave no chat message. `tuiCommandDisplay` now defaults to `"dialog"`; set `"inline"` to keep them in the chat.
+- **TUI reports open in a popup** and leave no chat message.
 - **OpenCode Zen uses your OpenCode Console sign-in; OpenCode Go uses it or an API key.** Their old workspace/cookie settings are no longer read. See [OpenCode Go](providers.md#opencode-go) and [OpenCode Zen](providers.md#opencode-zen).
-- **Removed settings:** `tuiCompactStatus.suppressWhenNativeProviderQuota` and `opencodeZenDisplay` (use `accountingDetail`). Old keys are ignored.

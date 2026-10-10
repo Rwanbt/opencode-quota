@@ -127,20 +127,19 @@ describe("runCliStatusCommand", () => {
     mkdirSync(globalConfigDir, { recursive: true });
     mkdirSync(workspaceDir, { recursive: true });
     runtimeDirs.value = {
-      dataDir: "/tmp/opencode-quota-cli-status-data",
+      dataDir: join(tempDir, "data"),
       configDir: globalConfigDir,
       cacheDir: join(tempDir, "cache"),
-      stateDir: "/tmp/opencode-quota-cli-status-state",
+      stateDir: join(tempDir, "state"),
     };
     vi.stubEnv("OPENCODE_DB", join(tempDir, "opencode.db"));
     mockProviders.length = 0;
     statusData.value = null;
     vi.mocked(buildStatusReportData).mockClear();
+    mkdirSync(join(globalConfigDir, "opencode-quota"), { recursive: true });
     writeFileSync(
-      join(workspaceDir, "opencode.json"),
-      JSON.stringify({
-        experimental: { quotaToast: { enabledProviders: ["synthetic"] } },
-      }),
+      join(globalConfigDir, "opencode-quota", "settings.jsonc"),
+      JSON.stringify({ providers: { enabled: ["synthetic"] } }),
       "utf8",
     );
   });
@@ -288,20 +287,6 @@ describe("runCliStatusCommand", () => {
     expect(result.code).toBe(1);
     expect(result.stderr).toContain("Unknown option: --bogus");
     expect(result.stderr).toContain("opencode-quota status");
-  });
-
-  it("returns non-zero when quota is disabled in config", async () => {
-    writeFileSync(
-      join(workspaceDir, "opencode.json"),
-      JSON.stringify({ experimental: { quotaToast: { enabled: false } } }),
-      "utf8",
-    );
-    const result = await runStatus([]);
-
-    expect(result.code).toBe(1);
-    expect(result.stdout).toBe("");
-    expect(result.stderr).toContain("Quota disabled in config");
-    expect(buildStatusReportData).not.toHaveBeenCalled();
   });
 
   it("prints help and returns zero for --help", async () => {

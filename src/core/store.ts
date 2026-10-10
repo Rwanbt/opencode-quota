@@ -93,9 +93,13 @@ export type StoreSource = {
 };
 
 export type RefreshReason = "poll" | "turn" | "manual" | "retry";
-/** With a model, the snapshot also names the providers serving it. */
-export type SnapshotOptions = { model?: SessionModel };
-export type RefreshOptions = SnapshotOptions & {
+/**
+ * With a model, the snapshot also names the providers serving it. `refresh: false` answers the
+ * saved rows without asking any provider, also for the due ones.
+ */
+export type SnapshotOptions = { model?: SessionModel; refresh?: boolean };
+export type RefreshOptions = {
+  model?: SessionModel;
   reason: RefreshReason;
   providerIds?: readonly string[];
 };
@@ -568,9 +572,11 @@ export function createQuotaStore(deps: QuotaStoreDeps): QuotaStore {
     snapshot(options = {}) {
       return start(async () => {
         const operation = await prepare();
-        track(runRefresh(operation, { reason: "poll" })).catch((error) => {
-          log(`background quota refresh failed: ${errorMessage(error)}`);
-        });
+        if (options.refresh !== false) {
+          track(runRefresh(operation, { reason: "poll" })).catch((error) => {
+            log(`background quota refresh failed: ${errorMessage(error)}`);
+          });
+        }
         return buildSnapshot(operation, options.model);
       });
     },

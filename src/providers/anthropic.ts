@@ -37,10 +37,6 @@ import {
 
 type AcquisitionMethod = QuotaToastEntry["accounting"]["acquisitionMethod"];
 
-export function getAnthropicNoDataMessage(): string {
-  return "Quota unavailable via local Claude CLI or OAuth credentials";
-}
-
 function formatWindowDetail(
   window: { percentRemaining: number; resetTimeIso?: string } | undefined,
 ): string | undefined {

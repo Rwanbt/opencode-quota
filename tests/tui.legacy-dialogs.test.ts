@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { TextAttributes } from "@opentui/core";
@@ -8,15 +8,8 @@ const terminal = vi.hoisted(() => ({ width: 120, height: 40 }));
 vi.mock("@opentui/solid", () => ({
   useTerminalDimensions: () => () => ({ ...terminal }),
 }));
-const loadConfig = vi.hoisted(() => vi.fn());
-vi.mock("../src/lib/config.js", async (importOriginal) => {
-  const original = await importOriginal<typeof import("../src/lib/config.js")>();
-  loadConfig.mockImplementation(original.loadConfig);
-  return { ...original, loadConfig };
-});
 
 import { formatLocalCallTimestamp } from "../src/lib/format-utils.js";
-import { buildQuotaCommandDocument } from "../src/lib/quota-command-format.js";
 import {
   parseQuotaSlashCommand,
   QUOTA_DIALOG_COMMANDS,
@@ -35,7 +28,9 @@ import plugin from "../src/tui/index.tsx";
 // The server plugin's quota RPC runs palette commands; the TUI shows their output.
 const rpc = vi.hoisted(() => ({
   command: vi.fn(),
-  snapshot: vi.fn(),
+  snapshot: vi.fn(async () => ({
+    snapshot: { version: 6, providers: [], resetNotices: [], generatedAtMs: 0 },
+  })),
   refresh: vi.fn(),
   notices: vi.fn(),
   events: { on: vi.fn(() => () => {}) },
@@ -287,25 +282,14 @@ describe("V2 quota TUI commands", () => {
 
     beforeEach(() => {
       projectDir = realpathSync(mkdtempSync(join(tmpdir(), "opencode-quota-tui-report-")));
-      mkdirSync(join(projectDir, "global"));
-      mkdirSync(join(projectDir, "opencode-quota"));
-      vi.stubEnv("OPENCODE_CONFIG_DIR", join(projectDir, "global"));
       vi.stubGlobal("React", {
         createElement: (type: unknown, props: Record<string, unknown> | null) => ({ type, props }),
       });
       return () => rmSync(projectDir, { recursive: true, force: true });
     });
 
-    function writeCommandDisplay(value: string) {
-      writeFileSync(
-        join(projectDir, "opencode-quota", "quota-toast.json"),
-        JSON.stringify({ tuiCommandDisplay: value }),
-      );
-    }
-
-    /** Waits for the listener to read tuiCommandDisplay and act on it. */
+    /** Waits for the listener to act on the report. */
     async function settle() {
-      await loadConfig.mock.results.at(-1)?.value;
       await new Promise((resolve) => setImmediate(resolve));
     }
 
@@ -348,13 +332,11 @@ describe("V2 quota TUI commands", () => {
       });
       await settle();
 
-      // Only the read at start, for typed commands.
-      expect(loadConfig).toHaveBeenCalledOnce();
       expect(context.ui.dialog.show).not.toHaveBeenCalled();
       expect(context.client.session.inbox.cancel).not.toHaveBeenCalled();
     });
 
-    it("dialog mode (the default) opens the report and removes it from the chat", async () => {
+    it("opens the report and removes it from the chat", async () => {
       const { context, emit } = startTui(
         { directory: projectDir },
         { type: "session", sessionID: "ses_open" },
@@ -380,7 +362,7 @@ describe("V2 quota TUI commands", () => {
       expect(rpc.command).not.toHaveBeenCalled();
     });
 
-    it("dialog mode handles the report of a session created from Home", async () => {
+    it("handles the report of a session created from Home", async () => {
       const { context, emit } = startTui({ directory: projectDir }, { type: "home" });
       // OpenCode opens the new session before the server runs the command.
       context.ui.router.current.mockReturnValue({ type: "session", sessionID: "ses_new" });
@@ -398,29 +380,6 @@ describe("V2 quota TUI commands", () => {
       });
       expect(context.ui.dialog.show).toHaveBeenCalledOnce();
     });
-
-    it("inline mode leaves the report in the chat and opens no dialog", async () => {
-      writeCommandDisplay("inline");
-      const { context, emit } = startTui(
-        { directory: projectDir },
-        { type: "session", sessionID: "ses_open" },
-      );
-
-      emit("session.inbox.enqueued", {
-        sessionID: "ses_open",
-        inboxID: "msg_report",
-        item: item(report, metadata),
-      });
-      await settle();
-
-      // The read at start, then the read for the report.
-      expect(loadConfig).toHaveBeenCalledTimes(2);
-      await expect(loadConfig.mock.results[1].value).resolves.toMatchObject({
-        tuiCommandDisplay: "inline",
-      });
-      expect(context.ui.dialog.show).not.toHaveBeenCalled();
-      expect(context.client.session.inbox.cancel).not.toHaveBeenCalled();
-    });
   });
 
   describe("typed quota slash commands", () => {
@@ -428,23 +387,14 @@ describe("V2 quota TUI commands", () => {
 
     beforeEach(() => {
       projectDir = realpathSync(mkdtempSync(join(tmpdir(), "opencode-quota-tui-typed-")));
-      mkdirSync(join(projectDir, "global"));
-      mkdirSync(join(projectDir, "opencode-quota"));
-      vi.stubEnv("OPENCODE_CONFIG_DIR", join(projectDir, "global"));
       return () => rmSync(projectDir, { recursive: true, force: true });
     });
 
-    /** Starts the TUI and waits for its first read of tuiCommandDisplay. */
-    async function startTyped(
-      display: "dialog" | "inline",
+    /** Starts the TUI and finds its Enter binding. */
+    function startTyped(
       route: { type: "home" } | { type: "session"; sessionID: string } = { type: "home" },
     ) {
-      writeFileSync(
-        join(projectDir, "opencode-quota", "quota-toast.json"),
-        JSON.stringify({ tuiCommandDisplay: display }),
-      );
       const tui = startTui({ directory: projectDir }, route);
-      await loadConfig.mock.results.at(-1)?.value;
       const enter = tui.layers().find((layer) => layer.priority === 1)!;
       return { ...tui, enter: enter.commands[0] };
     }
@@ -472,7 +422,7 @@ describe("V2 quota TUI commands", () => {
     });
 
     it("registers one Enter binding above OpenCode's prompt, only in the base mode", async () => {
-      const { layers, enter } = await startTyped("dialog");
+      const { layers, enter } = startTyped();
 
       const layer = layers().find((item) => item.priority === 1)!;
       expect(layer.mode).toBeUndefined();
@@ -482,8 +432,8 @@ describe("V2 quota TUI commands", () => {
       expect("slash" in enter).toBe(false);
     });
 
-    it("dialog mode clears the prompt and runs the command with its arguments, synchronously", async () => {
-      const { context, editor, enter } = await startTyped("dialog", {
+    it("clears the prompt and runs the command with its arguments, synchronously", async () => {
+      const { context, editor, enter } = startTyped({
         type: "session",
         sessionID: "ses_open",
       });
@@ -502,8 +452,8 @@ describe("V2 quota TUI commands", () => {
       );
     });
 
-    it("dialog mode runs /quota on Home without a session and without a prompt", async () => {
-      const { context, editor, enter } = await startTyped("dialog");
+    it("runs /quota on Home without a session and without a prompt", async () => {
+      const { context, editor, enter } = startTyped();
       editor.plainText = "/quota ";
 
       expect(enter.run()).toBeUndefined();
@@ -516,8 +466,8 @@ describe("V2 quota TUI commands", () => {
       );
     });
 
-    it("leaves other text, inline mode, and a missing editor to OpenCode's submit", async () => {
-      const dialog = await startTyped("dialog");
+    it("leaves other text and a missing editor to OpenCode's submit", async () => {
+      const dialog = startTyped();
       for (const text of ["hello", "/quotax", "/help", ""]) {
         dialog.editor.plainText = text;
         expect(dialog.enter.run()).toBe(false);
@@ -525,87 +475,8 @@ describe("V2 quota TUI commands", () => {
       dialog.context.renderer.currentFocusedEditor = null;
       expect(dialog.enter.run()).toBe(false);
       expect(dialog.editor.clear).not.toHaveBeenCalled();
-
-      const inline = await startTyped("inline");
-      inline.editor.plainText = "/quota";
-      expect(inline.enter.run()).toBe(false);
-      expect(inline.editor.clear).not.toHaveBeenCalled();
       expect(rpc.command).not.toHaveBeenCalled();
     });
-
-    it("opens the dialog, the default, before the first read of tuiCommandDisplay finishes", async () => {
-      writeFileSync(
-        join(projectDir, "opencode-quota", "quota-toast.json"),
-        JSON.stringify({ tuiCommandDisplay: "inline" }),
-      );
-      const { context, editor, layers } = startTui({ directory: projectDir });
-      const enter = layers().find((layer) => layer.priority === 1)!.commands[0];
-      editor.plainText = "/quota";
-
-      // Enter right after start: the setting is still unknown.
-      expect(enter.run()).toBeUndefined();
-      expect(editor.clear).toHaveBeenCalledOnce();
-      await vi.waitFor(() => expect(context.ui.dialog.show).toHaveBeenCalledOnce());
-
-      // Once read, "inline" goes on to OpenCode's submit.
-      await loadConfig.mock.results.at(-1)?.value;
-      expect(enter.run()).toBe(false);
-      expect(editor.clear).toHaveBeenCalledOnce();
-    });
-
-    it("reads tuiCommandDisplay again after each typed command", async () => {
-      const { editor, enter } = await startTyped("inline");
-      writeFileSync(
-        join(projectDir, "opencode-quota", "quota-toast.json"),
-        JSON.stringify({ tuiCommandDisplay: "dialog" }),
-      );
-      editor.plainText = "/quota";
-
-      // The setting read at start still applies; the new one applies to the next command.
-      expect(enter.run()).toBe(false);
-      await loadConfig.mock.results.at(-1)?.value;
-      expect(enter.run()).toBeUndefined();
-      expect(editor.clear).toHaveBeenCalledOnce();
-    });
-  });
-
-  it("reads tuiCommandDisplay from the location's Git worktree root, like the server plugin", async () => {
-    const repo = realpathSync(mkdtempSync(join(tmpdir(), "opencode-quota-tui-roots-")));
-    try {
-      mkdirSync(join(repo, ".git"));
-      mkdirSync(join(repo, "packages", "app"), { recursive: true });
-      const { emit } = startTui(
-        { directory: join(repo, "packages", "app") },
-        { type: "session", sessionID: "ses_open" },
-      );
-
-      emit("session.inbox.enqueued", {
-        sessionID: "ses_open",
-        inboxID: "msg_report",
-        item: {
-          type: "user",
-          payload: {
-            text: formatQuotaReportMessage("openai 42%"),
-            metadata: {
-              opencodeQuota: {
-                command: "quota",
-                title: "OpenCode Quota",
-                at: 1,
-                document: messageDocument("openai 42%"),
-              },
-            },
-          },
-        },
-      });
-      await vi.waitFor(() => expect(loadConfig).toHaveBeenCalledTimes(2));
-
-      expect(loadConfig.mock.calls.map((call) => call[2])).toEqual([
-        { configRootDir: repo },
-        { configRootDir: repo },
-      ]);
-    } finally {
-      rmSync(repo, { recursive: true, force: true });
-    }
   });
 
   it("runs commands for the session on screen, and without a session elsewhere", async () => {
@@ -818,32 +689,55 @@ describe("V2 quota TUI commands", () => {
 
   it("groups /quota rows into full-width tables, and falls back to the chat lines when narrow", async () => {
     stubRenderingReact();
-    const accounting = {
-      resultType: "quota",
-      acquisitionMethod: "remote_api",
-      ownership: "maintained",
-      authority: "provider_reported",
-    } as const;
-    const document = buildQuotaCommandDocument({
-      entries: [
-        { accounting, name: "Copilot", label: "Quota:", right: "30/200", percentRemaining: 85 },
+    const document: ReportDocument = {
+      heading: { line: "Quota" },
+      sections: [
         {
-          accounting: { ...accounting, resultType: "spend" },
-          name: "OpenCode Zen",
-          label: "Monthly spend:",
-          kind: "value",
-          value: "USD 0.00",
+          id: "group-0",
+          title: "→ [Copilot]",
+          blocks: [
+            {
+              kind: "quota",
+              provider: "Copilot",
+              percentMode: "remaining",
+              lines: ["  Quota         █████████░   85% left | 30/200"],
+              rows: [{ label: "Quota", barPercent: 85, value: "85%", usage: "30/200", notes: [] }],
+            },
+          ],
         },
         {
-          accounting,
-          name: "OpenAI",
-          group: "OpenAI (Business)",
-          label: "5h:",
-          percentRemaining: 100,
+          id: "group-1",
+          title: "→ [OpenCode Zen]",
+          blocks: [
+            {
+              kind: "quota",
+              provider: "OpenCode Zen",
+              percentMode: "remaining",
+              lines: ["  Month spend   USD 0.00"],
+              rows: [{ label: "Month spend", value: "USD 0.00", notes: [] }],
+            },
+          ],
+        },
+        {
+          id: "group-2",
+          title: "→ [OpenAI] (Business)",
+          blocks: [
+            {
+              kind: "quota",
+              provider: "OpenAI (Business)",
+              percentMode: "remaining",
+              lines: ["  5h            ██████████  100% left"],
+              rows: [{ label: "5h", barPercent: 100, value: "100%", notes: [] }],
+            },
+          ],
+        },
+        {
+          id: "errors",
+          title: "Partial failures",
+          blocks: [{ kind: "lines", lines: ["  Z.ai: Authentication expired"] }],
         },
       ],
-      errors: [{ label: "Z.ai", message: "Authentication expired" }],
-    });
+    };
     rpc.command.mockResolvedValue({
       state: "output",
       command: "quota",
@@ -968,23 +862,15 @@ describe("V2 quota TUI commands", () => {
       unknown: [],
       unpriced: [],
     };
-    const accounting = {
-      resultType: "quota",
-      acquisitionMethod: "remote_api",
-      ownership: "maintained",
-      authority: "provider_reported",
-    } as const;
     // Each document has the heading its server builder gives it.
     const reports = new Map<QuotaDialogCommandId, { document: ReportDocument; subtitle?: string }>([
       [
         "quota",
         {
-          document: buildQuotaCommandDocument({
-            entries: [{ accounting, name: "Copilot", percentRemaining: 81 }],
-            errors: [],
-            generatedAtMs,
-          }),
-          subtitle: time,
+          document: {
+            heading: { line: "Quota" },
+            sections: [{ id: "quota", blocks: [{ kind: "lines", lines: ["Copilot  81% left"] }] }],
+          },
         },
       ],
       [

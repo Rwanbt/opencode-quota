@@ -11,14 +11,8 @@ import { describeError } from "../core/errors.js";
 import { safeDebugValue, safeDetail } from "../core/redact.js";
 import type { Amount, ProviderSnapshot, QuotaRow } from "../core/types.js";
 import type { UsageReport } from "../core/usage.js";
-import type { LoadedSettings } from "../settings/index.js";
+import type { LoadedSettings, Settings, V5Conversion } from "../settings/index.js";
 import { formatShare, formatTokens } from "../view/numbers.js";
-import {
-  type LoadConfigIssue,
-  QUOTA_TOAST_SETTING_SOURCE_KEYS,
-  type QuotaToastSettingSources,
-} from "./config.js";
-import type { RuntimeContextRoots } from "./config-file-utils.js";
 import { sanitizeSingleLineDisplayText } from "./display-sanitize.js";
 import { replaceHomeDirWithTildeInDocument } from "./home-dir-display.js";
 import type { MaintainerAnnouncementsSummary } from "./maintainer-announcements.js";
@@ -30,6 +24,7 @@ import {
   getRuntimePricingRefreshStatePath,
   getRuntimePricingSnapshotPath,
   listProviders,
+  type PricingSnapshotSource,
   readPricingRefreshState,
 } from "./modelsdev-pricing.js";
 import type { CredentialSourceDiagnostics } from "./opencode-auth.js";
@@ -48,15 +43,7 @@ import {
   type ReportSection,
   renderPlainTextReport,
 } from "./report-document.js";
-import type { MaintainerAnnouncementsConfig, PricingSnapshotSource } from "./types.js";
 import { getPackageVersion } from "./version.js";
-
-/** Session token fetch error info (the v5 session-token readers still pass it around). */
-export interface SessionTokenError {
-  sessionID: string;
-  error: string;
-  checkedPath?: string;
-}
 
 /** Rows listed per provider section; the rest are counted. */
 const ROW_LIST_LIMIT = 8;
@@ -70,26 +57,17 @@ type ProviderAvailability = {
   matchesCurrentModel?: boolean;
 };
 
-/** What the v6 settings file would give now; the plugin still reads the v5 settings. */
-export type V6SettingsPreview = Pick<
-  LoadedSettings,
-  "path" | "exists" | "issues" | "conversion" | "notRead"
->;
-
 export type QuotaStatusReportParams = {
-  /** Where the v5 settings loader found the settings. */
-  configSource: string;
-  configPaths: string[];
-  globalConfigPaths?: string[];
-  workspaceConfigPaths?: string[];
-  settingSources?: QuotaToastSettingSources;
-  configIssues?: LoadConfigIssue[];
-  runtimeRoots?: RuntimeContextRoots;
+  /** The server settings as read now. */
+  settings: Pick<LoadedSettings, "path" | "exists" | "issues" | "notRead">;
+  /** The v5 settings conversion: written when this server started, or done in memory. */
+  conversion?: V5Conversion;
+  /** The project folder quota is computed for. */
+  workspaceRoot: string;
   enabledProviders: string[] | "auto";
   onlyCurrentModel: boolean;
   quotaProviders?: readonly QuotaProviderDefinition[];
   pricingSnapshotSource: PricingSnapshotSource;
-  v6Settings?: V6SettingsPreview;
   currentModel?: string;
   /** Whether a session was available for model lookup */
   sessionModelLookup?: "ok" | "not_found" | "no_session";
@@ -99,7 +77,7 @@ export type QuotaStatusReportParams = {
   providers: readonly ProviderSnapshot[];
   credentialSource: CredentialSourceDiagnostics;
   maintainerAnnouncements?: {
-    config: MaintainerAnnouncementsConfig;
+    config: Settings["announcements"];
     summary: MaintainerAnnouncementsSummary;
   };
   /** The last 30 days of usage, for the models without a price; null when it can't be read. */
@@ -150,26 +128,6 @@ function hideCutHomeDir(text: string, homeDir: string): string {
   return text;
 }
 
-function formatSettingSources(sources: QuotaToastSettingSources | undefined): string {
-  const parts = QUOTA_TOAST_SETTING_SOURCE_KEYS.filter((key) => sources?.[key]).map(
-    (key) => `${key}<=${sources?.[key]}`,
-  );
-  return joinOrNone(parts);
-}
-
-function precedenceLabel(configSource: string): string {
-  switch (configSource) {
-    case "files":
-      return "global defaults -> workspace overrides";
-    case "sdk":
-      return "sdk fallback (no file-backed config)";
-    case "defaults":
-      return "built-in defaults only";
-    default:
-      return configSource;
-  }
-}
-
 function currentModelText(params: QuotaStatusReportParams): string {
   if (params.currentModel) return params.currentModel;
   if (params.sessionModelLookup === "not_found") return "(error: session.get returned no modelID)";
@@ -198,44 +156,59 @@ function customProviderText(definition: QuotaProviderDefinition): string {
   return parts.map((part) => sanitizeSingleLineDisplayText(part)).join(" ");
 }
 
-/** Where the settings come from today (the v5 loader), and what the v6 file would give. */
+function settingsFileText(params: QuotaStatusReportParams): string {
+  const { path, exists } = params.settings;
+  if (exists) return `${path} (exists)`;
+  if (params.conversion) return `${path} (missing; the v5 settings are converted in memory)`;
+  return `${path} (missing; using the defaults)`;
+}
+
+/** Where the v5 settings went: written to settings.jsonc, or why not. */
+function conversionRows(conversion: V5Conversion): ReportKvRow[] {
+  const { sources, converted, dropped, invalid } = conversion;
+  const counts = `${converted.length} converted, ${dropped.length} dropped, ${invalid.length} invalid`;
+  const outcome = conversion.written
+    ? "written to settings.jsonc"
+    : (conversion.notWrittenReason ?? "converted in memory");
+  const rows: ReportKvRow[] = [
+    { key: "conversion", value: `from ${joinOrNone(sources)} (${counts}); ${outcome}` },
+  ];
+  const notes = [
+    ...converted.filter((item) => item.note).map((item) => `${item.key}: ${item.note}`),
+    ...dropped.map((item) => `${item.key} dropped: ${item.reason}`),
+    ...invalid.map((item) => `${item.key} invalid: ${item.reason}`),
+    ...conversion.notes,
+  ];
+  for (const note of notes) {
+    rows.push({ key: "conversion_note", value: sanitizeSingleLineDisplayText(note) });
+  }
+  return rows;
+}
+
+/** The settings file, what is wrong in it, the v5 conversion, and what quota is set to do. */
 function settingsSection(params: QuotaStatusReportParams): ReportSection {
   const enabled = params.enabledProviders;
-  const rows: ReportKvRow[] = [
-    { key: "configSource", value: params.configSource },
-    { key: "precedence", value: precedenceLabel(params.configSource) },
-    { key: "configPaths", value: joinOrNone(params.configPaths) },
-    { key: "global_config_paths", value: joinOrNone(params.globalConfigPaths ?? []) },
-    { key: "workspace_config_paths", value: joinOrNone(params.workspaceConfigPaths ?? []) },
-    { key: "setting_sources", value: formatSettingSources(params.settingSources) },
+  const rows: ReportKvRow[] = [{ key: "settings_file", value: settingsFileText(params) }];
+  for (const issue of params.settings.issues) {
+    const text = `${issue.key}: ${issue.message}`;
+    rows.push({ key: "settings_issue", value: sanitizeSingleLineDisplayText(text) });
+  }
+  if (params.conversion) rows.push(...conversionRows(params.conversion));
+  rows.push({
+    key: "project_settings",
+    value: "none: the settings are global; v5 project-scope files are not read",
+  });
+  if (params.settings.notRead.length > 0) {
+    rows.push({ key: "not_read", value: joinOrNone(params.settings.notRead) });
+  }
+  rows.push(
     { key: "enabledProviders", value: enabled === "auto" ? "(auto)" : joinOrNone(enabled) },
     { key: "onlyCurrentModel", value: String(params.onlyCurrentModel) },
     { key: "currentModel", value: currentModelText(params) },
-  ];
-  for (const issue of params.configIssues ?? []) {
-    const text = `${issue.path} ${issue.key}: ${issue.message}`;
-    rows.push({ key: "config_error", value: sanitizeSingleLineDisplayText(text) });
-  }
-  if (params.runtimeRoots) {
-    rows.push({ key: "workspace_root", value: params.runtimeRoots.workspaceRoot });
-    rows.push({ key: "config_root", value: params.runtimeRoots.configRoot });
-  }
+    { key: "workspace_root", value: params.workspaceRoot },
+  );
   for (const definition of params.quotaProviders ?? []) {
     rows.push({ key: `provider_${definition.id}`, value: customProviderText(definition) });
-  }
-
-  const v6 = params.v6Settings;
-  if (v6) {
-    const state = v6.exists ? "exists" : "missing";
-    rows.push({ key: "v6_settings_file", value: `${v6.path} (${state}; not used yet)` });
-    const issues = v6.issues.map((issue) => `${issue.key}: ${issue.message}`);
-    rows.push({ key: "v6_issues", value: sanitizeSingleLineDisplayText(joinOrNone(issues)) });
-    if (v6.conversion) {
-      const { sources, converted, dropped, invalid } = v6.conversion;
-      const counts = `${converted.length} converted, ${dropped.length} dropped, ${invalid.length} invalid`;
-      rows.push({ key: "v6_conversion", value: `from ${joinOrNone(sources)} (${counts})` });
-    }
-    if (v6.notRead.length > 0) rows.push({ key: "v6_not_read", value: joinOrNone(v6.notRead) });
   }
   return kvSection("settings", rows);
 }

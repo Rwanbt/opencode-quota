@@ -3,6 +3,7 @@
  * vocabulary. The server builds these; the TUI, Web text and the CLI only read them. Every
  * value is plain JSON, because snapshots travel over the RPC and are saved to disk.
  */
+import type { DisplayImport } from "../settings/index.js";
 
 /** What a row's number means (ADR 0001: the 7 legacy result types become 5). */
 export type RowType = "quota" | "budget" | "usage" | "balance" | "status";
@@ -157,6 +158,8 @@ export type QuotaSnapshot = {
   sessionTokens?: SessionTokens;
   /** The server's words; clients use their defaults until the server sends them. */
   words?: Words;
+  /** The v5 looks the settings conversion found, until a TUI applied them. */
+  displayImport?: DisplayImport;
   resetNotices: ResetNotice[];
   generatedAtMs: number;
 };

@@ -8,6 +8,8 @@ import { createSignal } from "solid-js";
 import type { QuotaSnapshot, SessionTokens } from "../core/types.js";
 import {
   QuotaRpc,
+  type QuotaRpcAcknowledgeInput,
+  type QuotaRpcAcknowledgeOutput,
   type QuotaRpcNoticesInput,
   type QuotaRpcNoticesOutput,
   type QuotaRpcRefreshInput,
@@ -26,6 +28,10 @@ export type QuotaRpcClient = {
   snapshot(input: QuotaRpcSnapshotInput, options: CallOptions): Promise<QuotaRpcSnapshotOutput>;
   refresh(input: QuotaRpcRefreshInput, options: CallOptions): Promise<QuotaRpcSnapshotOutput>;
   notices(input: QuotaRpcNoticesInput, options: CallOptions): Promise<QuotaRpcNoticesOutput>;
+  acknowledgeDisplayImport(
+    input: QuotaRpcAcknowledgeInput,
+    options: CallOptions,
+  ): Promise<QuotaRpcAcknowledgeOutput>;
   events: {
     on(
       name: "changed",
@@ -59,6 +65,8 @@ export type QuotaClient = {
   watch(sessionID?: string): () => void;
   /** Loads the Home notice line now and on every poll until the returned stop. */
   watchHome(): () => void;
+  /** Tells the server this TUI applied the snapshot's `displayImport`. */
+  acknowledgeDisplayImport(): Promise<void>;
   /** Asks the server to refresh; answers the new snapshot, or undefined when the call failed. */
   refresh(reason: QuotaRpcRefreshReason, sessionID?: string): Promise<QuotaSnapshot | undefined>;
   /**
@@ -208,6 +216,10 @@ export function createQuotaClient(
       return () => {
         homeWatchers -= 1;
       };
+    },
+
+    async acknowledgeDisplayImport() {
+      await rpc().acknowledgeDisplayImport({}, options());
     },
 
     async refresh(reason, sessionID) {

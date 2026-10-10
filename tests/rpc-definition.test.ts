@@ -33,11 +33,19 @@ async function expectRejected(schema: StandardSchema, value: unknown, message: s
 const methods = QuotaRpc.methods;
 
 describe("quota RPC definition", () => {
-  it("defines the plain RPC id, the changed event and five methods", () => {
+  it("defines the plain RPC id, the changed event and seven methods", () => {
     expect(QUOTA_RPC_ID).toBe("slkiser.opencode-quota");
     expect(QuotaRpc.id).toBe(QUOTA_RPC_ID);
     expect(Object.keys(QuotaRpc.events)).toEqual(["changed"]);
-    expect(Object.keys(methods)).toEqual(["command", "snapshot", "refresh", "notices", "usage"]);
+    expect(Object.keys(methods)).toEqual([
+      "command",
+      "snapshot",
+      "refresh",
+      "notices",
+      "usage",
+      "saveSettings",
+      "acknowledgeDisplayImport",
+    ]);
   });
 
   it("uses Standard Schema v1 validators that carry no runtime types", () => {
@@ -206,6 +214,19 @@ describe("quota RPC definition", () => {
     for (const value of [undefined, {}, { report: null }, { report: [] }]) {
       await expectRejected(methods.usage.output, value, "output must carry a report");
     }
+  });
+
+  it("validates saveSettings and acknowledgeDisplayImport", async () => {
+    await expectAccepted(methods.saveSettings.input, { patch: { words: { percent: "used" } } });
+    for (const value of [undefined, {}, { patch: null }, { patch: [] }]) {
+      await expectRejected(methods.saveSettings.input, value, "input must carry a patch object");
+    }
+    await expectAccepted(methods.saveSettings.output, { ok: false, issues: [] });
+    for (const value of [{}, { ok: "yes", issues: [] }, { ok: true }]) {
+      await expectRejected(methods.saveSettings.output, value, "output must carry ok and issues");
+    }
+    await expectAccepted(methods.acknowledgeDisplayImport.input, {});
+    await expectRejected(methods.acknowledgeDisplayImport.input, 1, "input must be an object");
   });
 
   it("requires a snapshot in snapshot and refresh output and in the changed event", async () => {
