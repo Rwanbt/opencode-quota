@@ -519,6 +519,30 @@ export function listProvidersForModelId(modelId: string): string[] {
     .sort((a, b) => a.localeCompare(b));
 }
 
+let BUNDLED_IDS: { providers: ReadonlySet<string>; models: ReadonlySet<string> } | null = null;
+
+/** The provider and model ids of the price list shipped in this package, never a downloaded one. */
+function bundledIds(): { providers: ReadonlySet<string>; models: ReadonlySet<string> } {
+  if (!BUNDLED_IDS) {
+    const { providers } = loadBundledSnapshot();
+    BUNDLED_IDS = {
+      providers: new Set(Object.keys(providers)),
+      models: new Set(Object.values(providers).flatMap((models) => Object.keys(models))),
+    };
+  }
+  return BUNDLED_IDS;
+}
+
+/** True when the shipped price list has this provider id. */
+export function isBundledPricingProviderId(providerId: string): boolean {
+  return bundledIds().providers.has(providerId);
+}
+
+/** True when the shipped price list has this model id under any provider. */
+export function isBundledPricingModelId(modelId: string): boolean {
+  return bundledIds().models.has(modelId);
+}
+
 export function lookupCost(providerId: string, modelId: string): CostBuckets | null {
   return pricedProviders()[providerId]?.[modelId] ?? null;
 }

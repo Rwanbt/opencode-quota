@@ -1,7 +1,7 @@
 /**
  * One error vocabulary for every surface: `classifyError` turns a provider's free-text failure
  * into a `QuotaError`, and `describeError` gives the short words users see. The raw text is
- * kept in `detail` for /quota_status only, as a public issue may show it (`publicDetail`).
+ * kept in `detail`, scrubbed by `publicDetail`; /quota_status shows the code, status and words.
  */
 import { publicDetail } from "./redact.js";
 import type { QuotaError, QuotaErrorCode } from "./types.js";
@@ -9,7 +9,7 @@ import type { QuotaError, QuotaErrorCode } from "./types.js";
 const DETAIL_MAX_LENGTH = 300;
 
 /** Local programs named in provider messages, longest names first. */
-const LOCAL_TOOLS = ["Alibaba Cloud CLI", "Claude CLI"] as const;
+export const LOCAL_TOOLS: readonly string[] = ["Alibaba Cloud CLI", "Claude CLI"];
 
 /** Checked in order; the first match wins. Patterns run on the raw message, case-insensitive. */
 const RULES: ReadonlyArray<readonly [QuotaErrorCode, RegExp]> = [

@@ -88,7 +88,7 @@ export type QuotaError = {
   tool?: string;
   /** For `local_tool`: true when the program is missing rather than failing. */
   missing?: boolean;
-  /** The provider's own message, scrubbed; shown only in /quota_status. */
+  /** The provider's own message, scrubbed; no report shows it. */
   detail?: string;
 };
 

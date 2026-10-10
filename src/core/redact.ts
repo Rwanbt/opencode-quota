@@ -3,10 +3,11 @@
  * details and logs. Provider errors can echo a request (an Authorization header, a key in the
  * query string, a token in a JSON body), so every such text passes here before it is cut to
  * length, saved or shown. `publicDetail` also hides the home dir, email addresses and account
- * ids, for the details /quota_status shows and users paste into public issues.
+ * ids, for the error and debug details the store keeps. /quota_status shows only structured
+ * values and passes them through `publicDetail` as a second filter.
  */
 import { homedir } from "node:os";
-import { sanitizeSingleLineDisplayText } from "../lib/display-sanitize.js";
+import { sanitizeDisplayText, sanitizeSingleLineDisplayText } from "../lib/display-sanitize.js";
 import { replaceHomeDirWithTilde } from "../lib/home-dir-display.js";
 
 const REDACTED = "[redacted]";
@@ -48,7 +49,9 @@ const FACT_WORDS = new Set([
   "expires",
   "expiry",
   "age",
+  "state",
   "path",
+  "paths",
   "file",
   "name",
   "count",
@@ -74,10 +77,11 @@ export function namesSecret(name: string): boolean {
 }
 
 /**
- * A field value: a JSON array, quoted to its closing quote (escaped quotes and spaces included;
- * also with escaped quotes around it, as in JSON inside JSON), or one unquoted word.
+ * A field value: a JSON array (a "]" inside its strings included), quoted to its closing quote
+ * (escaped quotes and spaces included; also with escaped quotes around it, as in JSON inside
+ * JSON), or one unquoted word.
  */
-const VALUE = String.raw`(?:\[[^\]]*\]?|\\"(?:[^\\]|\\(?!"))*(?:\\")?|"(?:[^"\\]|\\.)*"?|'(?:[^'\\]|\\.)*'?|[^\s"'&,;}]+)`;
+const VALUE = String.raw`(?:\[(?:"(?:[^"\\]|\\.)*"?|'(?:[^'\\]|\\.)*'?|[^\]"'])*\]?|\\"(?:[^\\]|\\(?!"))*(?:\\")?|"(?:[^"\\]|\\.)*"?|'(?:[^'\\]|\\.)*'?|[^\s"'&,;}]+)`;
 
 /** Between a name and its value: `=`, `: `, JSON's `":` and escaped JSON's `\":`. */
 const SEPARATOR = String.raw`(\\?["']?\s*[:=]\s*)`;
@@ -107,8 +111,11 @@ function redactNamedValues(text: string): string {
 /** Checked in order, before named values; each replaces what it matches. */
 const SECRET_PATTERNS: ReadonlyArray<readonly [RegExp, string]> = [
   // Cookie, Set-Cookie and Authorization headers: the whole value, to the end of the line or
-  // the next "|". The JSON forms ("cookie": "a=1") are named values.
-  [/\b((?:set-)?cookie|(?:proxy-)?authorization)(\s*[:=]\s*)[^\r\n|]*/giu, `$1$2${REDACTED}`],
+  // the next " | " joiner. The JSON forms ("cookie": "a=1") are named values.
+  [
+    /\b((?:set-)?cookie|(?:proxy-)?authorization)(\s*[:=]\s*)(?:(?! \| )[^\r\n])*/giu,
+    `$1$2${REDACTED}`,
+  ],
   // Bearer abc, Basic abc (outside a header too)
   [/\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]{6,}/giu, `$1 ${REDACTED}`],
 ];
@@ -123,17 +130,20 @@ const SHAPE_PATTERNS: readonly RegExp[] = [
 ];
 
 /**
+ * One part of a name or model id: a word, also capitalised, camel-cased or with a number after
+ * it ("Coder", "DeepSeek", "Qwen3", "FP8"), a number, or up to 4 letters and digits ("A35B").
+ */
+const NAME_PART =
+  /^(?:[a-z]{1,20}|[A-Z]{1,20}\d{0,4}|(?:[A-Z]{1,6}|[A-Z]?[a-z]{2,20}){1,3}\d{0,4}|\d{1,14}|[A-Za-z0-9]{1,4})$/u;
+
+/**
  * A long run of letters, digits, `_` and `-` is a token or session id, unless it is words and
- * numbers joined by separators: a model id ("0-flash-preview-image-generation") or a name
+ * numbers joined by separators: a model id ("Qwen3-Coder-480B-A35B-Instruct-FP8") or a name
  * ("custom_production-gateway-us_check").
  */
 function hideOpaqueRun(run: string): string {
   const parts = run.split(/[-_]+/u).filter(Boolean);
-  const wordsOnly =
-    parts.length >= 2 &&
-    parts.every((part) =>
-      /^(?:[a-z]{1,20}|[A-Z][a-z]{0,19}|[A-Z]{1,20}|\d{1,14}|[A-Za-z0-9]{1,4})$/u.test(part),
-    );
+  const wordsOnly = parts.length >= 2 && parts.every((part) => NAME_PART.test(part));
   return wordsOnly ? run : REDACTED;
 }
 
@@ -148,9 +158,21 @@ export function redactSecrets(text: string): string {
   return result.replace(/[A-Za-z0-9_-]{32,}/gu, hideOpaqueRun);
 }
 
+/**
+ * The text as a screen shows it, before any pattern looks at it: JSON's `\u0049` escapes
+ * decoded and control characters removed (an escape inside a name or home dir would hide it
+ * from the patterns). Line breaks stay.
+ */
+function visibleText(text: string): string {
+  const decoded = text.replace(/(?<!\\)\\u([0-9A-Fa-f]{4})/gu, (_, hex: string) =>
+    String.fromCharCode(Number.parseInt(hex, 16)),
+  );
+  return sanitizeDisplayText(decoded);
+}
+
 /** One safe line: control characters removed, credentials redacted, then cut to `maxLength`. */
 export function safeDetail(text: string, maxLength: number): string {
-  return redactSecrets(sanitizeSingleLineDisplayText(text)).slice(0, maxLength);
+  return redactSecrets(sanitizeSingleLineDisplayText(visibleText(text))).slice(0, maxLength);
 }
 
 /**
@@ -197,13 +219,13 @@ function namesPrivateId(name: string): boolean {
 }
 
 /**
- * Text a public issue may show: the home dir as "~" (found before spaces are joined), then one
- * line with credentials as "[redacted]", email addresses as "[email]", and account, team, org,
- * user and session ids as "[id]". It is cut to `maxLength` last, so a cut never leaves part of
- * a hidden value.
+ * Text a public issue may show: control characters removed first, then the home dir as "~"
+ * (found before spaces are joined), then one line with credentials as "[redacted]", email
+ * addresses as "[email]", and account, team, org, user and session ids as "[id]". It is cut to
+ * `maxLength` last, so a cut never leaves part of a hidden value.
  */
 export function publicDetail(text: string, maxLength: number, homeDir = homedir()): string {
-  let result = sanitizeSingleLineDisplayText(replaceHomeDirWithTilde(text, homeDir));
+  let result = sanitizeSingleLineDisplayText(replaceHomeDirWithTilde(visibleText(text), homeDir));
   for (const [pattern, replacement] of PRIVATE_ID_PATTERNS) {
     result = result.replace(pattern, replacement);
   }

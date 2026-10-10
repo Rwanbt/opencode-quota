@@ -6,7 +6,9 @@ import type { AccountingCountUnit, AccountingQuantity } from "./entries.js";
  */
 const CANONICAL_DECIMAL_RE = /^-?(?:0|[1-9]\d*)(?:\.\d+)?$/u;
 
-const COUNT_LABELS: Readonly<Record<AccountingCountUnit, [singular: string, plural: string]>> = {
+export const COUNT_LABELS: Readonly<
+  Record<AccountingCountUnit, [singular: string, plural: string]>
+> = {
   request: ["request", "requests"],
   token: ["token", "tokens"],
   credit: ["credit", "credits"],

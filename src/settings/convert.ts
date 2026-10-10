@@ -467,6 +467,11 @@ export async function planV5Conversion(configDir: string): Promise<V5Conversion 
   };
 }
 
+/** True for a key v5 had: one v6 converts, drops, ignores, or a v5 group ("tuiSidebarPanel"). */
+export function isV5SettingKey(key: string): boolean {
+  return V5_KEYS.has(key) || DROPPED.has(key) || SILENT.has(key) || V5_GROUPS.has(key);
+}
+
 /**
  * v5 settings files that exist but v6 does not read: the global sidecars once settings.jsonc
  * exists, and every project-scope file (v6 has no project settings).
