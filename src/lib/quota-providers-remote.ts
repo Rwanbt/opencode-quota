@@ -15,6 +15,7 @@ import type {
   RemoteApiQuotaProviderDefinition,
 } from "./quota-providers.js";
 import {
+  customRowKey,
   JSON_V1_MAX_DISPLAY_CODE_POINTS,
   JSON_V1_MAX_NUMBER_MAGNITUDE,
   normalizeJsonV1Timestamp,
@@ -455,6 +456,7 @@ function mapJsonV1Candidate(
     accounting: accountingMetadata(mapping.resultType, observedAtIso),
     name: `${source.label} ${mapping.name}`,
     group: source.label,
+    rowKey: customRowKey(mapping.name),
     ...(mapping.label ? { label: mapping.label } : {}),
     ...(resetTimeIso ? { resetTimeIso } : {}),
   };

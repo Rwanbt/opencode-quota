@@ -582,7 +582,8 @@ describe("quotaProviders schema", () => {
         adapter: {
           mappings: Array.from({ length: 16 }, (_, index) => ({
             resultType: "usage",
-            name: "n".repeat(80),
+            // 80 code points each, and different: two names may not give one row id.
+            name: `${String(index).padStart(2, "0")}${"n".repeat(78)}`,
             unit: "u".repeat(32),
             unitPosition: "suffix",
             metric: {
@@ -601,6 +602,35 @@ describe("quotaProviders schema", () => {
     expect(result.issues).toEqual([]);
   });
 
+  it("rejects two json-v1 mapping names that would give one row id", () => {
+    const mapping = (name: string) => ({
+      resultType: "usage",
+      name,
+      metric: { type: "value", valueType: "used", value: { literal: 1 } },
+    });
+    const result = validateQuotaProviders([
+      quotaProvider({
+        format: "json-v1",
+        adapter: {
+          mappings: [
+            mapping("Daily limit"),
+            mapping("Daily-limit"),
+            mapping("日次"),
+            mapping("Daily_limit"),
+          ],
+        },
+      }),
+    ]);
+
+    expect(result.value).toBeUndefined();
+    expect(result.issues).toEqual([
+      {
+        key: "quotaProviders[0].adapter.mappings[3].name",
+        message: "gives the same row id as quotaProviders[0].adapter.mappings[0].name",
+      },
+    ]);
+  });
+
   it("accepts the maximum valid json-v1 schema shape within every structural bound", () => {
     const path = () => Array.from({ length: 8 }, () => "p".repeat(64));
     const result = validateQuotaProviders([
@@ -608,9 +638,9 @@ describe("quotaProviders schema", () => {
         format: "json-v1",
         adapter: {
           rowsPath: path(),
-          mappings: Array.from({ length: 16 }, () => ({
+          mappings: Array.from({ length: 16 }, (_, index) => ({
             resultType: "quota",
-            name: "n".repeat(80),
+            name: `${String(index).padStart(2, "0")}${"n".repeat(78)}`,
             label: "l".repeat(80),
             unit: "u".repeat(32),
             unitPosition: "suffix",

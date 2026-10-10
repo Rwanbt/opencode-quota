@@ -95,7 +95,9 @@ describe("quota store", () => {
     return provider;
   }
 
-  async function savedFile(): Promise<{ entries: Record<string, { rows: QuotaRow[] }> }> {
+  async function savedFile(): Promise<{
+    entries: Record<string, { rows: Array<{ login: string; row: QuotaRow }> }>;
+  }> {
     return JSON.parse(await readFile(file, "utf8"));
   }
 
@@ -432,7 +434,7 @@ describe("quota store", () => {
     const saved = await savedFile();
     const [key] = Object.keys(saved.entries);
     if (!key) throw new Error("nothing saved");
-    saved.entries[key]?.rows.push({ ...row("bad", 1), id: "openai.stolen" });
+    saved.entries[key]?.rows.push({ login: "", row: { ...row("bad", 1), id: "openai.stolen" } });
     await writeFile(file, JSON.stringify(saved));
     const restarted = only(await makeStore([copilot.provider], HOUR).snapshot());
     expect(restarted.rows).toEqual([row("allowance", 50)]);
@@ -444,15 +446,17 @@ describe("quota store", () => {
 
   it("keeps a failing login's last rows and backs off when another login answers", async () => {
     const copilot = fakeProvider();
-    copilot.fetch.mockResolvedValue(
-      ok([row("allowance", 50, { account: "Home" }), row("allowance", 40, { account: "Work" })]),
-    );
+    copilot.fetch.mockResolvedValue({
+      ...ok([row("allowance", 50, { account: "Home" }), row("allowance", 40, { account: "Work" })]),
+      rowLogins: ["home-login", "work-login"],
+    });
     const store = makeStore([copilot.provider], 0);
     await store.refresh({ reason: "poll" });
 
     clock += MINUTE;
     copilot.fetch.mockResolvedValue({
       rows: [row("allowance", 30, { account: "Home" })],
+      rowLogins: ["home-login"],
       error: { code: "login_expired", detail: "Work: token expired" },
       debug: [],
     });
@@ -560,7 +564,9 @@ describe("quota store", () => {
     expect(copilot.fetch).toHaveBeenCalledTimes(3);
 
     oldAccount.resolve(ok([row("allowance", 10)]));
-    expect(only(await running).rows).toEqual([row("allowance", 70)]);
+    // The refresh started for the old login: whose rows it would show is unknown now.
+    expect(only(await running).rows).toEqual([]);
+    expect(only(await store.snapshot()).rows).toEqual([row("allowance", 70)]);
     const seen = listener.mock.calls.flatMap(([snapshot]) => only(snapshot).rows);
     expect(seen).not.toContainEqual(row("allowance", 10));
   });
@@ -581,10 +587,10 @@ describe("quota store", () => {
     pending.resolve(ok([row("allowance", 30)]));
     await disposing;
     expect(Object.values((await savedFile()).entries).map((entry) => entry.rows)).toEqual([
-      [row("allowance", 30)],
+      [{ login: "", row: row("allowance", 30) }],
     ]);
-    // A disposed store starts no more background work.
-    await store.snapshot();
+    // A disposed store refuses new work.
+    await expect(store.snapshot()).rejects.toThrow("disposed");
     expect(copilot.fetch).toHaveBeenCalledOnce();
   });
 
@@ -613,6 +619,121 @@ describe("quota store", () => {
     expect(snapshot.currentModelProviderIds).toEqual(["openai"]);
     expect(await store.snapshot()).not.toHaveProperty("currentModelProviderIds");
     expect(await store.snapshot({ model: {} })).not.toHaveProperty("currentModelProviderIds");
+  });
+
+  it("never answers a refresh with the old login's rows after a login change", async () => {
+    const copilot = fakeProvider();
+    const identity = vi.fn(
+      async (): Promise<ProviderIdentity> => ({ key: "alice", persist: true }),
+    );
+    copilot.provider.identity = identity;
+    const store = makeStore([copilot.provider]);
+    await store.refresh({ reason: "manual" });
+
+    // The check after the next fetch is slow; Bob signs in meanwhile.
+    const aliceLookup = deferred<ProviderIdentity>();
+    identity
+      .mockImplementationOnce(async () => ({ key: "alice", persist: true }))
+      .mockImplementationOnce(() => aliceLookup.promise)
+      .mockImplementation(async () => ({ key: "bob", persist: true }));
+    copilot.fetch.mockResolvedValue(ok([row("allowance", 40)]));
+    const running = store.refresh({ reason: "manual" });
+    await vi.waitFor(() => expect(identity).toHaveBeenCalledTimes(4));
+    const listener = vi.fn();
+    store.subscribe(listener);
+    store.invalidateIdentity();
+    await vi.waitFor(() => expect(copilot.fetch).toHaveBeenCalledTimes(3));
+    await vi.waitFor(() =>
+      expect(only(listener.mock.lastCall?.[0]).rows).toEqual([row("allowance", 40)]),
+    );
+
+    aliceLookup.resolve({ key: "alice", persist: true });
+    const answer = only(await running);
+    expect(answer.rows).toEqual([]);
+    expect(answer).not.toHaveProperty("okAtMs");
+    // Later answers are Bob's.
+    copilot.fetch.mockResolvedValue(ok([row("allowance", 99)]));
+    expect(only(await store.refresh({ reason: "manual" })).rows).toEqual([row("allowance", 99)]);
+  });
+
+  it("waits for a refresh still reading its providers and refuses work after dispose", async () => {
+    const copilot = fakeProvider();
+    const providersRead = deferred<void>();
+    const store = createQuotaStore({
+      source: async () => {
+        await providersRead.promise;
+        return { providers: [copilot.provider], minIntervalMs: 0 };
+      },
+      file,
+      now: () => clock,
+      log: () => {},
+    });
+    stores.push(store);
+    const refreshing = store.refresh({ reason: "manual" });
+    const disposing = store.dispose();
+    providersRead.resolve();
+    await disposing;
+
+    await expect(refreshing).resolves.toBeDefined();
+    expect(copilot.fetch).not.toHaveBeenCalled();
+    await expect(readFile(file)).rejects.toThrow();
+    await expect(store.refresh({ reason: "manual" })).rejects.toThrow("disposed");
+    await expect(store.snapshot()).rejects.toThrow("disposed");
+  });
+
+  it(
+    "gives up on a login, provider list or fetch that never answers",
+    { timeout: 2000 },
+    async () => {
+      const never = () => new Promise<never>(() => {});
+      const stuck: StoreProvider = {
+        id: "copilot",
+        label: "Copilot",
+        identity: never,
+        fetch: never,
+      };
+      const timeouts = { readMs: 20, fetchMs: 20 };
+      const store = createQuotaStore({
+        source: async () => ({ providers: [stuck], minIntervalMs: 0 }),
+        file,
+        now: () => clock,
+        log: () => {},
+        timeouts,
+      });
+      const snapshot = await store.refresh({ reason: "manual" });
+      expect(only(snapshot).error).toMatchObject({ code: "timeout" });
+      await store.dispose();
+
+      const noProviders = createQuotaStore({ source: never, file, now: () => clock, timeouts });
+      await expect(noProviders.refresh({ reason: "manual" })).rejects.toThrow("timed out");
+      await noProviders.dispose();
+    },
+  );
+
+  it("numbers logins that share a name by login, so one failing keeps its number", async () => {
+    const copilot = fakeProvider();
+    copilot.fetch.mockResolvedValue({
+      ...ok([row("allowance", 50, { account: "Pro" }), row("allowance", 40, { account: "Pro" })]),
+      rowLogins: ["first", "second"],
+    });
+    const store = makeStore([copilot.provider], 0);
+    const before = only(await store.refresh({ reason: "poll" })).rows;
+    const accountOf = (rows: QuotaRow[], percent: number) =>
+      rows.find((item) => item.percentRemaining === percent)?.account;
+    expect([accountOf(before, 50), accountOf(before, 40)].sort()).toEqual(["Pro", "Pro 2"]);
+
+    // The first login fails; the second answers alone.
+    clock += MINUTE;
+    copilot.fetch.mockResolvedValue({
+      rows: [row("allowance", 30, { account: "Pro" })],
+      rowLogins: ["second"],
+      error: { code: "login_expired", detail: "first: token expired" },
+      debug: [],
+    });
+    const after = only(await store.refresh({ reason: "poll" })).rows;
+    expect(after).toHaveLength(2);
+    expect(accountOf(after, 50)).toBe(accountOf(before, 50));
+    expect(accountOf(after, 30)).toBe(accountOf(before, 40));
   });
 
   it("works without a file", async () => {

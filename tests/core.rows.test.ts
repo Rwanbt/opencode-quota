@@ -619,8 +619,8 @@ const CASES: Case[] = [
       },
     ],
     rows: [
-      ["quota-providers.custom.source-one.monthly", "Source One", "Remaining", "month"],
-      ["quota-providers.custom.source-one.balance", "Source One", "Balance", null],
+      ["quota-providers.custom.source-one.Monthly", "Source One", "Remaining", "month"],
+      ["quota-providers.custom.source-one.Balance", "Source One", "Balance", null],
     ],
   },
 ];
@@ -778,15 +778,41 @@ describe("rowsFromLegacyResult", () => {
 
       const result = fetchRows("quota-providers", entries);
       expect(result.rows.map((row) => [row.id, row.percentRemaining])).toEqual([
-        ["quota-providers.custom.my-gateway.requests_left", 30],
-        ["quota-providers.custom.my-gateway.requests_used", 30],
-        ["quota-providers.custom.my-gateway.budget_left", 30],
+        ["quota-providers.custom.my-gateway.Requests_left", 30],
+        ["quota-providers.custom.my-gateway.Requests_used", 30],
+        ["quota-providers.custom.my-gateway.Budget_left", 30],
       ]);
       for (const row of result.rows) {
         expect(row).not.toHaveProperty("used");
         expect(row).not.toHaveProperty("limit");
         expect(row).not.toHaveProperty("remaining");
       }
+    });
+
+    it("keys remote mappings apart by name, also names without ASCII letters", async () => {
+      const mapping = (name: string, percentage: number): JsonV1Mapping => ({
+        resultType: "quota",
+        name,
+        metric: { type: "percentage", percentage: { literal: percentage }, meaning: "remaining" },
+      });
+      const entries = await remoteEntries([
+        mapping("Daily limit", 10),
+        mapping("Daily-limit", 20),
+        mapping("日次上限", 30),
+        mapping("月次上限", 40),
+      ]);
+      const result = fetchRows("quota-providers", entries);
+      const ids = result.rows.map((row) => row.id);
+      expect(result.rows.map((row) => row.percentRemaining)).toEqual([10, 20, 30, 40]);
+      expect(ids.slice(0, 2)).toEqual([
+        "quota-providers.custom.my-gateway.Daily_limit",
+        "quota-providers.custom.my-gateway.Daily-limit",
+      ]);
+      expect(new Set(ids).size).toBe(4);
+      expect(result.debug.filter((item) => item.key === "dropped_row")).toEqual([]);
+      // The same name always gives the same id.
+      const again = fetchRows("quota-providers", await remoteEntries([mapping("日次上限", 50)]));
+      expect(again.rows[0]?.id).toBe(ids[2]);
     });
 
     function localDefinition(
@@ -861,7 +887,7 @@ describe("rowsFromLegacyResult", () => {
     expect(row?.windowStartedAt).toBe("2026-10-04T00:00:00.000Z");
   });
 
-  it("numbers two unnamed logins and drops a row repeated for one login", () => {
+  it("keeps each row's login for the store and drops a row repeated for one login", () => {
     const login = (sourceId: string) => accounting({ sourceId });
     const result = fetchRows("opencode-go", [
       windowEntry("[OpenCode Go] (active)", "5h", { accounting: login("a") }),
@@ -869,11 +895,13 @@ describe("rowsFromLegacyResult", () => {
       windowEntry("[OpenCode Go]", "Weekly", { accounting: login("b") }),
       windowEntry("[OpenCode Go]", "Weekly", { accounting: login("b") }),
     ]);
+    // Both logins have no name; the store numbers them, as it also sees logins that failed.
     expect(summary(result.rows)).toEqual([
       ["opencode-go.five_hour", null, "5h", "five_hour"],
-      ["opencode-go.five_hour", "Account 2", "5h", "five_hour"],
+      ["opencode-go.five_hour", null, "5h", "five_hour"],
       ["opencode-go.weekly", null, "Weekly", "week"],
     ]);
+    expect(result.rowLogins).toEqual(["a", "b", "b"]);
     expect(result.debug).toEqual([
       { key: "dropped_row", value: "opencode-go.weekly: repeated row" },
     ]);
@@ -960,6 +988,38 @@ describe("rowsFromLegacyResult", () => {
     for (const secret of secrets) expect(text).not.toContain(secret);
     expect(text).not.toContain("CANARY");
     expect(result.error?.detail).toContain("[redacted]");
+  });
+
+  it("redacts whole cookie headers, quoted secrets and values whose key names a secret", () => {
+    const message = [
+      "HTTP 401 Cookie: session=one; xsrf=CANARYcookie",
+      `{"password":"my CANARY quoted pass","user":"bob"}`,
+      "client_secret='CANARY single quoted'",
+    ].join(" | ");
+    const result = rowsFromLegacyResult(
+      "chutes",
+      {
+        attempted: true,
+        entries: [],
+        errors: [{ label: "Chutes", message }],
+        statusDetails: [
+          { key: "session_token", value: "CANARYsplit" },
+          { key: "Set-Cookie", value: "a=CANARYheader" },
+          { key: "apiKey", value: "CANARYkey" },
+          { key: "token_expires_at", value: "2026-11-01T00:00:00.000Z" },
+          { key: "api_key_source", value: "env" },
+        ],
+      },
+      NOW_MS,
+    );
+    expect(JSON.stringify(result)).not.toContain("CANARY");
+    expect(result.debug.slice(0, 5)).toEqual([
+      { key: "session_token", value: "[redacted]" },
+      { key: "Set-Cookie", value: "[redacted]" },
+      { key: "apiKey", value: "[redacted]" },
+      { key: "token_expires_at", value: "2026-11-01T00:00:00.000Z" },
+      { key: "api_key_source", value: "env" },
+    ]);
   });
 
   it("scrubs control characters from provider text", () => {

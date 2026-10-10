@@ -252,11 +252,11 @@ describe("server quota RPC", () => {
     });
 
     const saved = JSON.parse(await readFile(SNAPSHOT_FILE, "utf8")) as {
-      entries: Record<string, { rows: unknown[] }>;
+      entries: Record<string, { rows: Array<{ login: string; row: unknown }> }>;
     };
-    expect(Object.values(saved.entries).map((entry) => entry.rows)).toEqual([
-      refreshed.snapshot.providers[0]?.rows,
-    ]);
+    expect(Object.values(saved.entries).map((entry) => entry.rows.map((item) => item.row))).toEqual(
+      [refreshed.snapshot.providers[0]?.rows],
+    );
 
     const instant = (await call("snapshot", {})) as { snapshot: QuotaSnapshot };
     expect(instant.snapshot.providers[0]?.rows).toEqual(refreshed.snapshot.providers[0]?.rows);

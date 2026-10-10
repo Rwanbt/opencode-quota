@@ -39,6 +39,32 @@ export function resolveQuotaProviderSessionModelIdentity(params: {
   };
 }
 
+/** A short stable hash (32-bit FNV-1a, hex) that tells names apart in row keys. */
+function shortNameHash(text: string): string {
+  let hash = 0x811c9dc5;
+  for (const char of text) {
+    hash ^= char.codePointAt(0) ?? 0;
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash.toString(16).padStart(8, "0");
+}
+
+const CUSTOM_ROW_KEY_MAX_LENGTH = 48;
+
+/**
+ * The row key a custom source's mapping or entry name gets: spaces become "_", and the name
+ * stays as it is when that leaves only letters, digits, "_" and "-" ("Daily limit" →
+ * "Daily_limit", "Daily-limit" → "Daily-limit"). Other characters are dropped and a short hash
+ * of the exact name is added, so names stay apart ("日次" → 8 hex digits).
+ */
+export function customRowKey(name: string): string {
+  const spaced = name.trim().replace(/\s+/gu, "_");
+  const kept = spaced.replace(/[^A-Za-z0-9_-]/gu, "").slice(0, CUSTOM_ROW_KEY_MAX_LENGTH);
+  if (kept === spaced && /[A-Za-z0-9]/u.test(kept)) return kept;
+  const hash = shortNameHash(name.trim());
+  return /[A-Za-z0-9]/u.test(kept) ? `${kept}_${hash}` : hash;
+}
+
 export function selectEligibleQuotaProviderDefinitions(params: {
   definitions: readonly QuotaProviderDefinition[];
   availableProviderIds: ReadonlySet<string>;
@@ -1015,6 +1041,8 @@ function validateJsonV1Adapter(
   }
 
   const mappings: JsonV1Mapping[] = [];
+  // Each mapping's rows are keyed by its name, so two names must not give one key.
+  const rowKeys = new Map<string, number>();
   for (let index = 0; index < value.mappings.length; index += 1) {
     const mapping = validateJsonV1Mapping(
       value.mappings[index],
@@ -1022,7 +1050,19 @@ function validateJsonV1Adapter(
       providerLabel,
       issues,
     );
-    if (mapping) mappings.push(mapping);
+    if (!mapping) continue;
+    mappings.push(mapping);
+    const rowKey = customRowKey(mapping.name);
+    const first = rowKeys.get(rowKey);
+    if (first === undefined) {
+      rowKeys.set(rowKey, index);
+    } else {
+      adapterIssue(
+        issues,
+        `${key}.mappings[${index}].name`,
+        `gives the same row id as ${key}.mappings[${first}].name`,
+      );
+    }
   }
 
   return issueStart === issues.length && mappings.length === value.mappings.length

@@ -226,6 +226,7 @@ For `json-v1`, the guided command builds the adapter one field at a time: litera
 Adapter rules:
 
 - **Rows:** optional `rowsPath` and 1–16 `mappings`. Without `rowsPath`, an object is one row and an array holds the rows. Selected arrays hold 1–100 rows, responses allow at most 32 container levels, and at most 1,600 row/mapping candidates are checked.
+- **Mapping names:** each name keys its rows, so names must still differ when spaces count as `_` (`Daily limit` and `Daily_limit` clash; `Daily-limit` is fine).
 - **Paths:** 1–8 literal own-property segments of 1–64 Unicode code points. Dots and brackets mean nothing special; array indexes and the segments `__proto__`, `prototype`, and `constructor` are rejected.
 - **Size:** adapter input is limited to 8 container levels, 128 objects, 384 object properties, and 640 array elements. Names and labels are 1–80 code points, units 1–32, and status/display output (including a provider-prefixed entry name) at most 160.
 - **Metrics:** `percentage`, `used-limit`, `remaining-limit`, `spend-budget`, `remaining-budget`, `value`, and `status`. Calculations are fixed; no formulas or fallback parsing.

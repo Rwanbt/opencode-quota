@@ -5,15 +5,17 @@
  * saved (the newer check wins), and writes in this process run one at a time. Entries older
  * than a week are dropped. A file that does not parse is ignored; a bad entry or row is
  * skipped on its own. Provider text is scrubbed and credentials redacted again on read.
+ * Each row is saved with its login (a hash), as the store numbers logins that share a name.
  */
 import { readFile } from "node:fs/promises";
 import { writeJsonAtomic } from "../lib/atomic-json.js";
-import { safeDetail } from "./redact.js";
+import { safeDebugValue, safeDetail } from "./redact.js";
 import type { DebugDetail, QuotaError, QuotaErrorCode, QuotaRow, ResetNotice } from "./types.js";
 import { validateRows } from "./validate.js";
 import { isQuotaWindow } from "./windows.js";
 
-const FILE_VERSION = 1;
+const FILE_VERSION = 2;
+const LOGIN_RE = /^[0-9a-f]{0,64}$/u;
 const ENTRY_MAX_AGE_MS = 7 * 24 * 60 * 60_000;
 const DETAIL_MAX_LENGTH = 300;
 
@@ -31,10 +33,16 @@ const ERROR_CODES: readonly QuotaErrorCode[] = [
   "internal",
 ];
 
+/**
+ * A row and the login it came from: a hash of the provider's source id, "" when the provider
+ * has one login. The row's account is the login's own name, before the store numbers logins.
+ */
+export type LoginRow = { login: string; row: QuotaRow };
+
 /** What the file keeps per provider and account, keyed `${providerId}|${identity hash}`. */
 export type SavedEntry = {
   providerId: string;
-  rows: QuotaRow[];
+  rows: LoginRow[];
   okAtMs?: number;
   checkedAtMs?: number;
   error?: QuotaError;
@@ -43,15 +51,15 @@ export type SavedEntry = {
   debug: DebugDetail[];
   /** Windows of this account that reset recently; they belong to it like its rows. */
   notices: ResetNotice[];
-  /** Per row (`${id}\u001f${account}`): when its current reset time was first seen. */
+  /** Per row (see `rowSlot`): when its current reset time was first seen. */
   resetSeenAtMs: Record<string, number>;
 };
 
 export type SavedState = { entries: Map<string, SavedEntry> };
 
-/** One row's slot in `resetSeenAtMs`: rows match by id and account. */
-export function rowSlot(row: Pick<QuotaRow, "id" | "account">): string {
-  return `${row.id}\u001f${row.account ?? ""}`;
+/** One row's slot: rows of two checks match by id, account and login. */
+export function rowSlot({ login, row }: LoginRow): string {
+  return `${row.id}\u001f${row.account ?? ""}\u001f${login}`;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -81,9 +89,22 @@ function parseDebug(value: unknown): DebugDetail[] {
   if (!Array.isArray(value)) return [];
   return value.flatMap((item) =>
     isRecord(item) && typeof item.key === "string" && typeof item.value === "string"
-      ? [{ key: safeDetail(item.key, 64), value: safeDetail(item.value, DETAIL_MAX_LENGTH) }]
+      ? [
+          {
+            key: safeDetail(item.key, 64),
+            value: safeDebugValue(item.key, item.value, DETAIL_MAX_LENGTH),
+          },
+        ]
       : [],
   );
+}
+
+function parseRows(providerId: string, value: unknown[]): LoginRow[] {
+  return value.flatMap((item) => {
+    if (!isRecord(item) || typeof item.login !== "string" || !LOGIN_RE.test(item.login)) return [];
+    const login = item.login;
+    return validateRows(providerId, [item.row]).rows.map((row) => ({ login, row }));
+  });
 }
 
 function parseSeenTimes(value: unknown): Record<string, number> {
@@ -112,7 +133,7 @@ function parseEntry(key: string, value: unknown): SavedEntry | undefined {
     : [];
   return {
     providerId,
-    rows: validateRows(providerId, value.rows).rows,
+    rows: parseRows(providerId, value.rows),
     ...(okAtMs === undefined ? {} : { okAtMs }),
     ...(checkedAtMs === undefined ? {} : { checkedAtMs }),
     ...(error === undefined ? {} : { error }),
