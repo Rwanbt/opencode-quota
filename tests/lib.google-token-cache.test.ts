@@ -97,6 +97,20 @@ describe("google-token-cache", () => {
     await expect(access(legacyCachePath)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
+  it("keeps both accounts when two updates run at once", async () => {
+    const cache = await import("../src/lib/google-token-cache.js");
+    await Promise.all([
+      cache.setCachedAccessToken({ key: "first", entry: entry("first-token") }),
+      cache.setCachedAccessToken({ key: "second", entry: entry("second-token") }),
+    ]);
+
+    for (const key of ["first", "second"]) {
+      await expect(cache.getCachedAccessToken({ key, skewMs: 0 })).resolves.toMatchObject({
+        accessToken: `${key}-token`,
+      });
+    }
+  });
+
   it("does not reuse memory or opaque account keys across module instances", async () => {
     const firstModule = await import("../src/lib/google-token-cache.js");
     const firstKey = firstModule.makeAccountCacheKey({

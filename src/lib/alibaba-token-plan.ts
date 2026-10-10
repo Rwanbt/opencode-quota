@@ -16,11 +16,11 @@ import path from "node:path";
 import { asRecord } from "./json-guards.js";
 import { REQUEST_TIMEOUT_MS } from "./types.js";
 
-export const ALIBABA_TOKEN_PLAN_COMMAND = "bl";
-export const ALIBABA_TOKEN_PLAN_ARGS = ["usage", "token-plan", "--output", "json"] as const;
-export const ALIBABA_TOKEN_PLAN_STDOUT_LIMIT_BYTES = 256 * 1024;
-export const ALIBABA_TOKEN_PLAN_STDERR_LIMIT_BYTES = 16 * 1024;
-export const ALIBABA_TOKEN_PLAN_KILL_GRACE_MS = 250;
+const ALIBABA_TOKEN_PLAN_COMMAND = "bl";
+const ALIBABA_TOKEN_PLAN_ARGS = ["usage", "token-plan", "--output", "json"] as const;
+const ALIBABA_TOKEN_PLAN_STDOUT_LIMIT_BYTES = 256 * 1024;
+const ALIBABA_TOKEN_PLAN_STDERR_LIMIT_BYTES = 16 * 1024;
+const ALIBABA_TOKEN_PLAN_KILL_GRACE_MS = 250;
 const AUTH_EXIT_CODE = 3;
 
 const SUPPORTED_PLATFORMS = new Set<NodeJS.Platform>(["darwin", "linux"]);
