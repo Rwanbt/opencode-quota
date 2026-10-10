@@ -72,7 +72,7 @@ Rules:
 - To tune maintained estimates, use the reserved `alibaba-coding-plan` ID and its window shape. Do not add a duplicate normal provider block.
 - Not accepted: project secrets, scripts, methods, custom headers, templates, executable mappings, regular expressions, JSONPath, and automatic endpoint discovery.
 - A custom model provider still needs its normal OpenCode `provider` block in `opencode.json`: that block tells OpenCode how to use the model, and `providers.custom` tells OpenCode Quota how to measure it.
-- `/quota_status` shows the exact state path or the environment variable name, never URLs, keys, headers, response bodies, counter contents, or raw errors.
+- `/quota_status` shows the exact state path and safe credential source, never URLs, keys, headers, response bodies, counter contents, or raw errors.
 
 <details>
 <summary><strong>Complete example</strong></summary>

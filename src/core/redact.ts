@@ -2,11 +2,16 @@
  * Credential redaction for any provider text the store keeps or sends: error details, debug
  * details and logs. Provider errors can echo a request (an Authorization header, a key in the
  * query string, a token in a JSON body), so every such text passes here before it is cut to
- * length, saved or shown.
+ * length, saved or shown. `publicDetail` also hides the home dir, email addresses and account
+ * ids, for the details /quota_status shows and users paste into public issues.
  */
+import { homedir } from "node:os";
 import { sanitizeSingleLineDisplayText } from "../lib/display-sanitize.js";
+import { replaceHomeDirWithTilde } from "../lib/home-dir-display.js";
 
 const REDACTED = "[redacted]";
+const PRIVATE_ID = "[id]";
+const EMAIL_ADDRESS = "[email]";
 
 /** Words that make a field name secret wherever they stand in it: "session_id", "x-api-key". */
 const SECRET_WORDS = new Set([
@@ -47,6 +52,7 @@ const FACT_WORDS = new Set([
   "file",
   "name",
   "count",
+  "diagnostics",
 ]);
 
 /** A field name's words, split on anything but letters and digits and on camelCase. */
@@ -76,7 +82,7 @@ const VALUE = String.raw`(?:\\"(?:[^\\]|\\(?!"))*(?:\\")?|"(?:[^"\\]|\\.)*"?|'(?
 /** `name: value`, `name=value`, `"name":"value"` (also `\"name\":\"value\"`). */
 const NAMED_VALUE = String.raw`\b([A-Za-z_][\w-]{0,63})(\\?["']?\s*[:=]\s*)${VALUE}`;
 
-/** The value of every pair whose name names a secret; other values are searched as well. */
+/** The value of every pair whose name holds a secret; other values are searched as well. */
 function redactNamedValues(text: string): string {
   const pattern = new RegExp(NAMED_VALUE, "gu");
   let result = "";
@@ -84,7 +90,7 @@ function redactNamedValues(text: string): string {
   for (let match = pattern.exec(text); match; match = pattern.exec(text)) {
     const [whole, name = "", separator = ""] = match;
     const valueAt = match.index + name.length + separator.length;
-    if (namesSecret(name)) {
+    if (holdsSecret(name)) {
       result += `${text.slice(copied, valueAt)}${REDACTED}`;
       copied = match.index + whole.length;
     } else {
@@ -133,13 +139,69 @@ export function safeDetail(text: string, maxLength: number): string {
 }
 
 /**
- * A debug detail's value made safe: fully redacted when its key names a secret, unless the
- * key's last word names a fact about it ("api_key_source", "token_expires_at", "apiKeyEnv");
- * such a value, like any other, still has the secrets inside it redacted.
+ * True when a debug key's value is a secret: the key names one, and its last word does not
+ * name a fact about it ("api_key_source", "token_expires_at", "apiKeyEnv").
  */
-export function safeDebugValue(key: string, value: string, maxLength: number): string {
+function holdsSecret(key: string): boolean {
   const words = nameWords(key);
   const last = words.at(-1) === "at" ? words.at(-2) : words.at(-1);
-  const isFact = FACT_WORDS.has(last ?? "");
-  return namesSecret(key) && !isFact ? REDACTED : safeDetail(value, maxLength);
+  return namesSecret(key) && !FACT_WORDS.has(last ?? "");
+}
+
+/**
+ * A debug detail's value made safe: fully redacted when its key holds a secret; any other
+ * value still has the secrets inside it redacted.
+ */
+export function safeDebugValue(key: string, value: string, maxLength: number): string {
+  return holdsSecret(key) ? REDACTED : safeDetail(value, maxLength);
+}
+
+/** Whose data a field is about: a "<word> id" field holds a private identity. */
+const PRIVATE_ID_WORDS = ["account", "team", "org", "organization", "user", "session"];
+
+/** Checked in order; each replaces what it matches. */
+const PRIVATE_ID_PATTERNS: ReadonlyArray<readonly [RegExp, string]> = [
+  // account_id=abc, "teamId": "t_1", org-id: 42
+  [
+    new RegExp(
+      `\\b((?:[A-Za-z0-9]+[_-])*(?:${PRIVATE_ID_WORDS.join("|")})[_-]?ids?)(["']?\\s*[:=]\\s*)${VALUE}`,
+      "giu",
+    ),
+    `$1$2${PRIVATE_ID}`,
+  ],
+  // alice@example.com
+  [/[\w.%+-]+@[\w-]+(?:\.[\w-]+)*\.[A-Za-z]{2,}\b/gu, EMAIL_ADDRESS],
+];
+
+/** True when a field name ends in an account, team, org, user or session id: "teamId". */
+function namesPrivateId(name: string): boolean {
+  const words = nameWords(name);
+  const last = words.at(-1) ?? "";
+  if (last === "id" || last === "ids") return PRIVATE_ID_WORDS.includes(words.at(-2) ?? "");
+  return PRIVATE_ID_WORDS.some((word) => last === `${word}id` || last === `${word}ids`);
+}
+
+/**
+ * Text a public issue may show: one line, the home dir as "~", credentials as "[redacted]",
+ * email addresses as "[email]", and account, team, org, user and session ids as "[id]". It is
+ * cut to `maxLength` last, so a cut never leaves part of a hidden value.
+ */
+export function publicDetail(text: string, maxLength: number, homeDir = homedir()): string {
+  let result = replaceHomeDirWithTilde(sanitizeSingleLineDisplayText(text), homeDir);
+  for (const [pattern, replacement] of PRIVATE_ID_PATTERNS) {
+    result = result.replace(pattern, replacement);
+  }
+  return redactSecrets(result).slice(0, maxLength);
+}
+
+/** A detail's value as `publicDetail` shows it; all hidden when its key holds a secret or an id. */
+export function publicDebugValue(
+  key: string,
+  value: string,
+  maxLength: number,
+  homeDir = homedir(),
+): string {
+  if (namesPrivateId(key)) return PRIVATE_ID;
+  if (holdsSecret(key)) return REDACTED;
+  return publicDetail(value, maxLength, homeDir);
 }

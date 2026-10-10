@@ -1,14 +1,15 @@
 /**
  * The Quota Status report (`/quota_status`, the `quota_status` tool, `opencode-quota status`):
- * where the settings come from, what each enabled provider returned, logins, local files and
+ * where the settings come from, what each known provider returned, logins, local files and
  * prices. Every provider section is built the same way from the store's snapshot (state, rows,
  * error, debug details); providers put the facts they want shown in their debug details.
- * Users paste this report into public issues, so the home dir shows as "~" everywhere.
+ * Users paste this report into public issues, so the home dir shows as "~" everywhere, and
+ * every provider text passes `publicDetail` (no secrets, email addresses or account ids).
  */
 import { stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { describeError } from "../core/errors.js";
-import { safeDebugValue, safeDetail } from "../core/redact.js";
+import { publicDebugValue, publicDetail } from "../core/redact.js";
 import type { Amount, ProviderSnapshot, QuotaRow } from "../core/types.js";
 import type { UsageReport } from "../core/usage.js";
 import type { LoadedSettings, Settings, V5Conversion } from "../settings/index.js";
@@ -71,9 +72,12 @@ export type QuotaStatusReportParams = {
   currentModel?: string;
   /** Whether a session was available for model lookup */
   sessionModelLookup?: "ok" | "not_found" | "no_session";
-  /** Every registered provider, enabled or not. */
+  /** Every known provider, enabled or not: one section each, in this order. */
   providerAvailability: ProviderAvailability[];
-  /** The store's snapshot of each enabled and available provider: one section each. */
+  /**
+   * The store's snapshot of each provider it checked: the enabled and available ones, and the
+   * unavailable ones for their setup details.
+   */
   providers: readonly ProviderSnapshot[];
   credentialSource: CredentialSourceDiagnostics;
   maintainerAnnouncements?: {
@@ -110,22 +114,6 @@ function joinOrNone(values: readonly string[]): string {
 
 function kvSection(id: string, rows: ReportKvRow[]): ReportSection {
   return { id, title: `${id}:`, blocks: [{ kind: "kv", rows }] };
-}
-
-/**
- * The store cuts long details, sometimes inside a home path ("… | /Users/al"). "~" replaces
- * only a whole home dir, so a cut end that holds part of the user name becomes "~" too.
- */
-function hideCutHomeDir(text: string, homeDir: string): string {
-  const home = homeDir.replace(/[/\\]+$/u, "");
-  const userNameStart = Math.max(home.lastIndexOf("/"), home.lastIndexOf("\\")) + 1;
-  for (let length = home.length - 1; length > userNameStart; length -= 1) {
-    const cutHome = home.slice(0, length);
-    if (!text.endsWith(cutHome)) continue;
-    const before = text.slice(0, text.length - length);
-    if (before === "" || /[\s"'`=([:,|]$/u.test(before)) return `${before}~`;
-  }
-  return text;
 }
 
 function currentModelText(params: QuotaStatusReportParams): string {
@@ -262,15 +250,20 @@ async function pathsSection(): Promise<ReportSection> {
   ]);
 }
 
-function credentialSourceSection(diagnostics: CredentialSourceDiagnostics): ReportSection {
+function credentialSourceSection(
+  diagnostics: CredentialSourceDiagnostics,
+  homeDir: string,
+): ReportSection {
+  // A login's label is often its email address.
   const failures = diagnostics.failures.map((failure) =>
     [failure.integrationId, failure.label, failure.category, failure.detail]
-      .map((part) => sanitizeSingleLineDisplayText(part))
+      .map((part) => publicDetail(part, Infinity, homeDir))
       .join(":"),
   );
+  const listError = diagnostics.lastListError?.detail;
   return kvSection("credential_source", [
     { key: "source", value: diagnostics.state === "bound" ? diagnostics.kind : "unbound" },
-    { key: "list_error", value: diagnostics.lastListError?.detail ?? "(none)" },
+    { key: "list_error", value: listError ? publicDetail(listError, Infinity, homeDir) : "(none)" },
     { key: "failures", value: joinOrNone(failures) },
   ]);
 }
@@ -303,13 +296,31 @@ function providerState(provider: ProviderSnapshot, nowMs: number): string {
   return provider.rows.length > 0 ? `partial: ${words}` : `error: ${words}`;
 }
 
-/** One provider's section, the same for every provider: state, rows, error, debug details. */
+/** "unavailable" or "disabled" win over the check's own state: those show setup details only. */
+function sectionState(
+  availability: ProviderAvailability,
+  provider: ProviderSnapshot | undefined,
+  nowMs: number,
+): string {
+  if (!availability.available) return "unavailable";
+  if (!availability.enabled) return "disabled";
+  return provider ? providerState(provider, nowMs) : "not checked";
+}
+
+/**
+ * One provider's section, the same for every provider: state, rows, error, debug details.
+ * Every text from the provider passes `publicDetail`, even when the store already did.
+ */
 function providerSection(
-  provider: ProviderSnapshot,
+  availability: ProviderAvailability,
+  provider: ProviderSnapshot | undefined,
   nowMs: number,
   homeDir: string,
 ): ReportSection {
-  const rows: ReportKvRow[] = [{ key: "state", value: providerState(provider, nowMs) }];
+  const shown = (text: string) => publicDetail(text, Infinity, homeDir);
+  const state = sectionState(availability, provider, nowMs);
+  const rows: ReportKvRow[] = [{ key: "state", value: shown(state) }];
+  if (!provider) return kvSection(availability.id, rows);
   if (provider.checkedAtMs !== undefined) {
     const lastRows =
       provider.okAtMs !== undefined && provider.okAtMs !== provider.checkedAtMs
@@ -321,30 +332,28 @@ function providerSection(
   // (a timeout, a crash) has only the error's detail.
   const detail = provider.error?.detail;
   if (detail && !provider.debug.some((item) => item.key === "error")) {
-    rows.push({
-      key: "error_detail",
-      value: hideCutHomeDir(safeDetail(detail, Infinity), homeDir),
-    });
+    rows.push({ key: "error_detail", value: shown(detail) });
   }
   rows.push({ key: "rows", value: String(provider.rows.length) });
   for (const row of provider.rows.slice(0, ROW_LIST_LIMIT)) {
-    const id = row.account ? `${row.id} (${row.account})` : row.id;
-    const facts = rowFacts(row);
+    // The row id comes from this plugin's key rules; the account is the provider's login label.
+    const id = sanitizeSingleLineDisplayText(row.id);
     rows.push({
-      key: sanitizeSingleLineDisplayText(id),
-      value: sanitizeSingleLineDisplayText(facts),
+      key: row.account ? `${id} (${shown(row.account)})` : id,
+      value: shown(rowFacts(row)),
       indent: 1,
     });
   }
   if (provider.rows.length > ROW_LIST_LIMIT) {
     rows.push({ key: `… (${provider.rows.length - ROW_LIST_LIMIT} more)`, indent: 1 });
   }
-  // The store already made these safe; again here, as any snapshot may be shown.
   for (const item of provider.debug) {
-    const value = hideCutHomeDir(safeDebugValue(item.key, item.value, Infinity), homeDir);
-    rows.push({ key: safeDetail(item.key, 64), value });
+    rows.push({
+      key: publicDetail(item.key, 64, homeDir),
+      value: publicDebugValue(item.key, item.value, Infinity, homeDir),
+    });
   }
-  return kvSection(provider.providerId, rows);
+  return kvSection(availability.id, rows);
 }
 
 /** The models of the last 30 days without a price: their tokens add no cost. */
@@ -430,6 +439,7 @@ export async function buildQuotaStatusReportDocument(
   const homeDir = params.homeDir ?? homedir();
   const nowMs = params.generatedAtMs ?? Date.now();
   const version = (await getPackageVersion()) ?? "unknown";
+  const snapshots = new Map(params.providers.map((provider) => [provider.providerId, provider]));
   const sections: ReportSection[] = [
     settingsSection(params),
     providerListSection(params.providerAvailability),
@@ -437,8 +447,10 @@ export async function buildQuotaStatusReportDocument(
       ? [announcementsSection(params.maintainerAnnouncements)]
       : []),
     await pathsSection(),
-    credentialSourceSection(params.credentialSource),
-    ...params.providers.map((provider) => providerSection(provider, nowMs, homeDir)),
+    credentialSourceSection(params.credentialSource, homeDir),
+    ...params.providerAvailability.map((availability) =>
+      providerSection(availability, snapshots.get(availability.id), nowMs, homeDir),
+    ),
     await pricingSection(params),
   ];
 

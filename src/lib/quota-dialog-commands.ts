@@ -8,8 +8,9 @@ import {
   type ProviderSourceHost,
   providerContext,
 } from "../core/provider-source.js";
+import { rowsFromLegacyResult } from "../core/rows.js";
 import { matchesQuotaProviderCurrentSelection } from "../core/selection.js";
-import { createQuotaStore } from "../core/store.js";
+import { createQuotaStore, type StoreProvider } from "../core/store.js";
 import type { ProviderSnapshot, QuotaSnapshot, SessionModel } from "../core/types.js";
 import { type UsageReport, usageReport } from "../core/usage.js";
 import { getProviders } from "../providers/registry.js";
@@ -25,6 +26,7 @@ import {
 } from "./command-parsing.js";
 import { isCursorProviderId } from "./cursor-pricing.js";
 import { sanitizeDisplayText } from "./display-sanitize.js";
+import type { QuotaProvider, QuotaProviderContext } from "./entries.js";
 import {
   BUNDLED_MAINTAINER_ANNOUNCEMENTS,
   getMaintainerAnnouncementsSummary,
@@ -41,6 +43,7 @@ import {
   setPricingSnapshotSelection,
 } from "./modelsdev-pricing.js";
 import { getCredentialSourceDiagnostics } from "./opencode-auth.js";
+import { getQuotaProviderDisplayLabel } from "./provider-metadata.js";
 import {
   QUOTA_DIALOG_COMMANDS_BY_ID,
   type QuotaDialogCommandId,
@@ -267,6 +270,71 @@ export async function checkProviders(
   }
 }
 
+type ProviderCheck = { provider: QuotaProvider; enabled: boolean; available: boolean };
+
+async function isAvailable(provider: QuotaProvider, ctx: QuotaProviderContext): Promise<boolean> {
+  try {
+    return await provider.isAvailable(ctx);
+  } catch {
+    return false;
+  }
+}
+
+/** A provider the plugin does not check, run once for its setup details (what it found). */
+function setupCheck(provider: QuotaProvider, ctx: QuotaProviderContext): StoreProvider {
+  return {
+    id: provider.id,
+    label: getQuotaProviderDisplayLabel(provider.id),
+    identity: async () => ({ key: "status-setup", persist: false }),
+    fetch: async () => rowsFromLegacyResult(provider.id, await provider.fetch(ctx, {})),
+  };
+}
+
+/**
+ * A fresh check of every known provider (or only `providerId`) for /quota_status, through a
+ * store of its own that keeps nothing. The plugin's source decides which providers are enabled
+ * and available, and those are checked as the plugin's store would check them. Every
+ * unavailable provider runs once for its setup details; a provider that is turned off but
+ * available is not run.
+ */
+async function checkKnownProviders(
+  host: ProviderSourceHost,
+  providerId: string | undefined,
+): Promise<{ checks: ProviderCheck[]; snapshots: ProviderSnapshot[] }> {
+  const source = await loadProviderSource(host);
+  const sourceIds = new Set(source.providers.map((provider) => provider.id));
+  const ctx = providerContext(host);
+  const { enabledProviders } = ctx.config;
+  const known = getProviders().filter((provider) => !providerId || provider.id === providerId);
+  const checks = await Promise.all(
+    known.map(async (provider): Promise<ProviderCheck> => {
+      if (sourceIds.has(provider.id)) return { provider, enabled: true, available: true };
+      // In auto mode a provider is enabled when it is available, as v5 reports it.
+      if (enabledProviders === "auto") return { provider, enabled: false, available: false };
+      if (enabledProviders.includes(provider.id)) {
+        return { provider, enabled: true, available: false };
+      }
+      return { provider, enabled: false, available: await isAvailable(provider, ctx) };
+    }),
+  );
+
+  const setupChecks = checks
+    .filter((check) => !check.available)
+    .map((check) => setupCheck(check.provider, ctx));
+  const store = createQuotaStore({
+    source: async () => ({ ...source, providers: [...source.providers, ...setupChecks] }),
+    file: null,
+  });
+  try {
+    const knownIds = new Set(known.map((provider) => provider.id));
+    const snapshot = await store.refresh({ reason: "manual", providerIds: [...knownIds] });
+    const snapshots = snapshot.providers.filter((provider) => knownIds.has(provider.providerId));
+    return { checks, snapshots };
+  } finally {
+    await store.dispose();
+  }
+}
+
 /** The last 30 days of usage, for the models without a price; null when it can't be read. */
 async function readRecentUsage(nowMs: number): Promise<UsageReport | null> {
   try {
@@ -305,48 +373,36 @@ export async function buildStatusReportData(params: {
       ? "ok"
       : "not_found";
 
-  const ctx = providerContext(host, loaded);
-  const { enabledProviders, quotaProviders } = ctx.config;
-  const isAutoMode = enabledProviders === "auto";
-  const providers = getProviders().filter(
-    (provider) => !params.providerFilterId || provider.id === params.providerFilterId,
-  );
-  const availability = await Promise.all(
-    providers.map(async (p) => {
-      let ok = false;
-      try {
-        ok = await p.isAvailable(ctx);
-      } catch {
-        ok = false;
-      }
-      return {
-        id: p.id,
-        enabled: isAutoMode ? ok : enabledProviders.includes(p.id),
-        available: ok,
-        matchesCurrentModel:
-          currentModel || isCursorProviderId(currentProviderID)
-            ? matchesQuotaProviderCurrentSelection({
-                provider: p,
-                currentModel,
-                currentProviderID,
-                enabledProviders,
-                quotaProviders,
-              })
-            : undefined,
-      };
-    }),
-  );
+  const { enabledProviders, quotaProviders } = providerContext(host, loaded).config;
+  const [{ checks, snapshots }, usage] = await Promise.all([
+    checkKnownProviders(host, params.providerFilterId),
+    readRecentUsage(params.generatedAtMs),
+  ]);
+  const availability = checks.map(({ provider, enabled, available }) => ({
+    id: provider.id,
+    enabled,
+    available,
+    matchesCurrentModel:
+      currentModel || isCursorProviderId(currentProviderID)
+        ? matchesQuotaProviderCurrentSelection({
+            provider,
+            currentModel,
+            currentProviderID,
+            enabledProviders,
+            quotaProviders,
+          })
+        : undefined,
+  }));
 
-  if (isAutoMode) {
+  if (enabledProviders === "auto") {
     await params.onDetectedProviderIds?.(
       availability.filter((item) => item.available).map((item) => item.id),
     );
   }
-
-  const [checked, usage] = await Promise.all([
-    checkProviders(host, params.providerFilterId),
-    readRecentUsage(params.generatedAtMs),
-  ]);
+  const checkedIds = new Set(
+    availability.filter((item) => item.enabled && item.available).map((item) => item.id),
+  );
+  const checked = snapshots.filter((provider) => checkedIds.has(provider.providerId));
 
   const announcementProviderIds = availability
     .filter((item) => item.enabled && item.available)
@@ -366,7 +422,7 @@ export async function buildStatusReportData(params: {
     currentModel,
     sessionModelLookup,
     providerAvailability: availability,
-    providers: checked.providers,
+    providers: snapshots,
     credentialSource: getCredentialSourceDiagnostics(),
     maintainerAnnouncements: {
       config: settings.announcements,
@@ -401,7 +457,7 @@ export async function buildStatusReportData(params: {
       snapshotPath: getRuntimePricingSnapshotPath(),
       refreshStatePath: getRuntimePricingRefreshStatePath(),
     },
-    liveProbes: checked.providers.map((provider) => ({
+    liveProbes: checked.map((provider) => ({
       id: provider.providerId,
       ok: provider.error === undefined,
     })),
@@ -411,7 +467,7 @@ export async function buildStatusReportData(params: {
     document,
     output: renderPlainTextReport(document),
     payload,
-    hasComparableProviderData: checked.providers.some((provider) => provider.rows.length > 0),
+    hasComparableProviderData: checked.some((provider) => provider.rows.length > 0),
   };
 }
 

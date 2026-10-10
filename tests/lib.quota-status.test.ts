@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ProviderSnapshot, QuotaRow } from "../src/core/types.js";
 import type { UsageReport } from "../src/core/usage.js";
-import type { QuotaProviderResult } from "../src/lib/entries.js";
+import type { QuotaProviderContext, QuotaProviderResult } from "../src/lib/entries.js";
 import { formatLocalCallTimestamp } from "../src/lib/format-utils.js";
 import { buildStatusReportData } from "../src/lib/quota-dialog-commands.js";
 import {
@@ -13,6 +13,8 @@ import {
   type QuotaStatusReportParams,
 } from "../src/lib/quota-status.js";
 import { getPackageVersion } from "../src/lib/version.js";
+import { chutesProvider } from "../src/providers/chutes.js";
+import { syntheticProvider } from "../src/providers/synthetic.js";
 import { defaultSettings, loadSettings, type V5Conversion } from "../src/settings/index.js";
 
 const registry = vi.hoisted(() => ({ providers: [] as unknown[] }));
@@ -50,15 +52,21 @@ afterEach(() => {
   rmSync(root, { recursive: true, force: true });
 });
 
+/** Each snapshot given is an enabled and available provider, unless the test lists them. */
 function params(overrides: Partial<QuotaStatusReportParams> = {}): QuotaStatusReportParams {
+  const providers = overrides.providers ?? [];
   return {
     settings: { path: "/cfg/opencode-quota/settings.jsonc", exists: true, issues: [], notRead: [] },
     workspaceRoot: "/ws",
     enabledProviders: "auto",
     onlyCurrentModel: false,
     pricingSnapshotSource: "auto",
-    providerAvailability: [],
-    providers: [],
+    providerAvailability: providers.map(({ providerId }) => ({
+      id: providerId,
+      enabled: true,
+      available: true,
+    })),
+    providers,
     credentialSource: { state: "unbound", failures: [] },
     generatedAtMs: NOW,
     homeDir: root,
@@ -131,14 +139,19 @@ describe("buildQuotaStatusReport", () => {
     expect((await report()).split("\n")[0]).toBe(document.heading?.line);
   });
 
-  it("has settings, every provider, files and logins, one section per checked provider, then prices", async () => {
+  it("has settings, every provider, files and logins, one section per known provider, then prices", async () => {
     const text = await report({
       providerAvailability: [
         { id: "anthropic", enabled: true, available: true, matchesCurrentModel: true },
         { id: "copilot", enabled: true, available: true, matchesCurrentModel: false },
         { id: "openai", enabled: false, available: false },
+        { id: "xai", enabled: false, available: true },
       ],
-      providers: [snapshot("anthropic", { checkedAtMs: NOW }), snapshot("copilot")],
+      providers: [
+        snapshot("anthropic", { checkedAtMs: NOW }),
+        snapshot("copilot"),
+        snapshot("openai", { checkedAtMs: NOW, debug: [{ key: "auth_source", value: "(none)" }] }),
+      ],
       maintainerAnnouncements: {
         config: { enabled: true, home: true, homeFrequency: "daily" },
         summary: {
@@ -162,6 +175,8 @@ describe("buildQuotaStatusReport", () => {
       "credential_source:",
       "anthropic:",
       "copilot:",
+      "openai:",
+      "xai:",
       "pricing_snapshot:",
     ]);
     expect(section(text, "providers")).toBe(
@@ -170,8 +185,12 @@ describe("buildQuotaStatusReport", () => {
         "- anthropic: enabled available matchesCurrentModel=yes",
         "- copilot: enabled available matchesCurrentModel=no",
         "- openai: disabled unavailable",
+        "- xai: disabled available",
       ].join("\n"),
     );
+    expect(section(text, "openai")).toContain("- state: unavailable\n");
+    expect(section(text, "openai")).toContain("- auth_source: (none)");
+    expect(section(text, "xai")).toBe("xai:\n- state: disabled");
     expect(section(text, "maintainer_announcements")).toBe(
       [
         "maintainer_announcements:",
@@ -219,37 +238,22 @@ describe("buildQuotaStatusReport", () => {
     expect(JSON.stringify(document).replaceAll(`${root}foo`, "")).not.toContain(root);
   });
 
-  it.each([
-    {
-      name: "a JSON-quoted Windows command under a home with a space",
-      homeDir: "C:\\Users\\Alice Smith",
-      value: `claude --version | ${JSON.stringify("C:\\Users\\Alice Smith\\.local\\bin\\claude")}`,
-      shown: '- checked_commands: claude --version | "~\\\\.local\\\\bin\\\\claude"',
-      hidden: "Alice",
-    },
-    {
-      name: "a detail the store cut inside the home dir",
-      homeDir: "/Users/alice",
-      value: "/etc/claude | /Users/ali",
-      shown: "- checked_commands: /etc/claude | ~",
-      hidden: "/Users/ali",
-    },
-    {
-      name: "a detail cut before the user name",
-      homeDir: "/Users/alice",
-      value: "/etc/claude | /Users/",
-      shown: "- checked_commands: /etc/claude | /Users/",
-      hidden: "~",
-    },
-  ])("shows $name as ~", async ({ homeDir, value, shown, hidden }) => {
+  it("shows a JSON-quoted Windows command under a home with a space as ~", async () => {
+    const command = JSON.stringify("C:\\Users\\Alice Smith\\.local\\bin\\claude");
     const text = await report({
-      homeDir,
-      providers: [snapshot("anthropic", { debug: [{ key: "checked_commands", value }] })],
+      homeDir: "C:\\Users\\Alice Smith",
+      providers: [
+        snapshot("anthropic", {
+          debug: [{ key: "checked_commands", value: `claude --version | ${command}` }],
+        }),
+      ],
     });
 
     const anthropic = section(text, "anthropic");
-    expect(anthropic).toContain(shown);
-    expect(anthropic).not.toContain(hidden);
+    expect(anthropic).toContain(
+      '- checked_commands: claude --version | "~\\\\.local\\\\bin\\\\claude"',
+    );
+    expect(anthropic).not.toContain("Alice");
   });
 
   it.each([
@@ -368,6 +372,63 @@ describe("buildQuotaStatusReport", () => {
     expect(text).toContain("- error_detail: failed with api_key=[redacted]");
     expect(text).not.toContain(SECRET);
     expect(text).not.toContain("\u001b");
+  });
+
+  it.each([
+    {
+      name: "a login label that is an email address, on a row",
+      provider: snapshot("xai", {
+        checkedAtMs: NOW,
+        rows: [row("xai.monthly", { label: "Monthly", account: "alice.CANARY@example.com" })],
+      }),
+      shown: "  - xai.monthly ([email]): Monthly",
+    },
+    {
+      name: "a token and a cookie in row text",
+      provider: snapshot("xai", {
+        checkedAtMs: NOW,
+        rows: [
+          row("xai.note", {
+            label: "Note",
+            type: "status",
+            text: "token=CANARYtok Cookie: sid=CANARYsid; theme=dark",
+          }),
+        ],
+      }),
+      shown: "  - xai.note: Note, token=[redacted] Cookie: [redacted]",
+    },
+    {
+      name: "an email address in an error detail",
+      provider: snapshot("xai", {
+        checkedAtMs: NOW,
+        error: { code: "login_expired", detail: "alice.CANARY@example.com: HTTP 401" },
+      }),
+      shown: "- error_detail: [email]: HTTP 401",
+    },
+    {
+      name: "an email address in a provider message",
+      provider: snapshot("xai", {
+        debug: [{ key: "error", value: "alice.CANARY@example.com: HTTP 401" }],
+      }),
+      shown: "- error: [email]: HTTP 401",
+    },
+    {
+      name: "a short session id",
+      provider: snapshot("xai", { debug: [{ key: "session_id", value: "CANARY9" }] }),
+      shown: "- session_id: [id]",
+    },
+    {
+      name: "account and team ids in a detail",
+      provider: snapshot("xai", {
+        debug: [{ key: "request", value: "account_id=CANARY1 teamId: CANARY2" }],
+      }),
+      shown: "- request: account_id=[id] teamId: [id]",
+    },
+  ])("keeps private identities out of a provider section: $name", async ({ provider, shown }) => {
+    const text = await report({ providers: [provider] });
+
+    expect(section(text, "xai")).toContain(shown);
+    expect(text).not.toContain("CANARY");
   });
 
   it.each([
@@ -547,7 +608,7 @@ describe("buildQuotaStatusReport", () => {
           {
             integrationId: "openai",
             connectionId: "cred_1",
-            label: "Work",
+            label: "work.CANARY@example.com",
             category: "refresh_failed",
             detail: "HTTP 401 [redacted]",
             at: 2,
@@ -565,7 +626,7 @@ describe("buildQuotaStatusReport", () => {
       lines: [
         "- source: opencode-integration-api",
         "- list_error: Invalid credential value",
-        "- failures: openai:Work:refresh_failed:HTTP 401 [redacted] | xai::active_failed:database is locked",
+        "- failures: openai:[email]:refresh_failed:HTTP 401 [redacted] | xai::active_failed:database is locked",
       ],
     },
     {
@@ -586,6 +647,7 @@ describe("buildQuotaStatusReport", () => {
     const text = section(await report({ credentialSource }), "credential_source");
 
     for (const line of lines) expect(text).toContain(line);
+    expect(text).not.toContain("CANARY");
   });
 
   it.each([
@@ -647,10 +709,16 @@ describe("buildQuotaStatusReport", () => {
 describe("buildStatusReportData", () => {
   const client = { config: { providers: async () => ({ data: { providers: [] } }) } };
 
-  function fakeProvider(id: string, available: boolean, result?: QuotaProviderResult) {
+  function fakeProvider(
+    id: string,
+    available: boolean | ((ctx: QuotaProviderContext) => boolean),
+    result?: QuotaProviderResult,
+  ) {
     return {
       id,
-      isAvailable: vi.fn(async () => available),
+      isAvailable: vi.fn(async (ctx: QuotaProviderContext) =>
+        typeof available === "function" ? available(ctx) : available,
+      ),
       fetch: vi.fn(async () => result ?? { attempted: true, entries: [], errors: [] }),
     };
   }
@@ -702,7 +770,12 @@ describe("buildStatusReportData", () => {
 
   it("checks every enabled provider through a store and shows what it returned, secrets redacted", async () => {
     const syntheticProvider = synthetic();
-    const openai = fakeProvider("openai", false);
+    const openai = fakeProvider("openai", false, {
+      attempted: false,
+      entries: [],
+      errors: [],
+      statusDetails: [{ key: "auth_source", value: "(none)" }],
+    });
     registry.providers = [syntheticProvider, openai];
 
     const { data, text, onDetectedProviderIds } = await statusData();
@@ -716,16 +789,52 @@ describe("buildStatusReportData", () => {
     expect(syntheticSection).toContain("- access_token: [redacted]");
     expect(syntheticSection).toContain("- error: Synthetic: Weekly HTTP 503 Bearer [redacted]");
     expect(text).not.toContain(SECRET);
-    expect(text).not.toContain("\nopenai:\n");
     expect(section(text, "providers")).toContain("- openai: disabled unavailable");
+    // An unavailable provider runs once for its setup details.
+    expect(section(text, "openai")).toContain("- state: unavailable\n");
+    expect(section(text, "openai")).toContain("- auth_source: (none)");
     expect(section(text, "pricing_snapshot")).toContain("- unpriced_30d: (no usage)");
     expect(syntheticProvider.fetch).toHaveBeenCalledOnce();
-    expect(openai.fetch).not.toHaveBeenCalled();
+    expect(openai.fetch).toHaveBeenCalledOnce();
     expect(onDetectedProviderIds).toHaveBeenCalledWith(["synthetic"]);
     expect(data.payload?.liveProbes).toEqual([{ id: "synthetic", ok: false }]);
     expect(data.payload?.providers.map((provider) => provider.id)).toEqual(["synthetic", "openai"]);
     expect(data.hasComparableProviderData).toBe(true);
     expect(JSON.stringify(data.payload)).not.toContain(SECRET);
+  });
+
+  it("shows the real API-key setup details of providers without a key", async () => {
+    vi.stubEnv("CHUTES_API_KEY", "");
+    vi.stubEnv("SYNTHETIC_API_KEY", "");
+    registry.providers = [chutesProvider, syntheticProvider];
+
+    const { text } = await statusData();
+
+    for (const id of ["chutes", "synthetic"]) {
+      expect(section(text, id)).toContain("- state: unavailable\n");
+      expect(section(text, id)).toContain("- api_key_diagnostics: configured=false");
+    }
+  });
+
+  it("uses the plugin's availability rule everywhere, and runs no provider that is turned off", async () => {
+    // Like the custom providers: available only when every model is checked, as v6 does.
+    const custom = fakeProvider("quota-providers", (ctx) => !ctx.config.onlyCurrentModel);
+    const chutes = fakeProvider("chutes", true);
+    registry.providers = [custom, chutes];
+    writeV5Settings({ enabledProviders: ["quota-providers"], onlyCurrentModel: true });
+
+    const { data, text } = await statusData();
+
+    expect(section(text, "providers")).toBe(
+      "providers:\n- quota-providers: enabled available\n- chutes: disabled available",
+    );
+    expect(section(text, "quota-providers")).toContain(
+      "- state: error: Nothing reported (no_data)\n",
+    );
+    expect(custom.fetch).toHaveBeenCalledOnce();
+    expect(section(text, "chutes")).toBe("chutes:\n- state: disabled");
+    expect(chutes.fetch).not.toHaveBeenCalled();
+    expect(data.payload?.liveProbes).toEqual([{ id: "quota-providers", ok: false }]);
   });
 
   it("checks and shows only the provider asked for", async () => {

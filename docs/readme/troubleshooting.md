@@ -54,12 +54,12 @@ The TUI, Web, and Desktop get their numbers from OpenCode's background service. 
 
 ## Provider fixes
 
-Run `/quota_status` first and check that provider's section. Each section is named after the provider id (for example `copilot:` or `opencode-go:`) and shows `state` (`ok`, `partial`, `error`, or `not checked`), `checked_at`, the `rows` it returned, an `error` line per failed check, and the provider's own details. Setup steps and API-key variable names are in [Providers](providers.md).
+Run `/quota_status` first and check that provider's section. Every known provider has a section, named after its id (for example `copilot:` or `opencode-go:`). It shows `state` (`ok`, `partial`, `error`, `not checked`, `unavailable`, or `disabled`), `checked_at`, the `rows` it returned, an `error` line per failed check, and the provider's own details. An `unavailable` provider shows what it found and where it looked, which tells why it is missing. Email addresses show as `[email]` and account, team, org, user, and session ids as `[id]`. Setup steps and API-key variable names are in [Providers](providers.md).
 
 <details>
 <summary><strong>Custom providers</strong></summary>
 
-`/quota_status` lists each definition in the `settings` section as `provider_<id>`: IDs, mode, format and environment variable name (or limits and exact local state path), and model coverage. The `quota-providers` section shows the live check: `state`, the rows, and an `error` line per failed definition. These results are fetched live for the status command; cached results are not substituted.
+`/quota_status` lists each definition in the `settings` section as `provider_<id>`: IDs, mode, format and environment variable name (or limits and exact local state path), and model coverage. The `quota-providers` section shows the live check: `state`, the rows, an `error` line per failed definition, and a `custom_<id>_check` line per definition with its outcome, credential source, and checked paths (or local state health). These results are fetched live for the status command; cached results are not substituted.
 
 | Symptom                                    | Fix |
 | ------------------------------------------ | --- |
