@@ -174,9 +174,13 @@ const LOCAL = {
   windows: [{ id: "daily", type: "utc-day", requestLimit: 100 }],
 };
 
-const SWITCHED_OFF =
-  "Not tested: it is switched off. Ask the user to switch it on in /quota_settings → " +
-  "Providers, then test it.";
+/** What quota_provider_test answers for a switched-off provider. */
+function switchedOff(): string {
+  return (
+    `Not tested: it is switched off. Ask the user to switch it on: "enabled": true in ` +
+    `${settingsPath()}, or /quota_settings → Providers; then test it.`
+  );
+}
 
 /** The custom providers in the settings file, as the plugin loads them. */
 async function savedProviders() {
@@ -265,6 +269,18 @@ describe("quota_settings_get", () => {
       value: "/opt/[redacted]/claude",
     });
     for (const key of keys) expect(result.text).not.toContain(key);
+  });
+
+  it("never shows a key the plugin can read as a property name", async () => {
+    vi.stubEnv("MY_SERVICE_TOKEN", "private-model-key-77");
+    const local = { ...LOCAL, pricingModelMap: { "private-model-key-77": "openai/gpt-4o" } };
+    writeSettings(JSON.stringify({ providers: { custom: [{ ...local, enabled: false }] } }));
+
+    const result = await call("quota_settings_get", {});
+
+    const custom = result.settings?.["providers.custom"] as { value: Array<typeof local> };
+    expect(custom.value[0].pricingModelMap).toEqual({ "[redacted]": "openai/gpt-4o" });
+    expect(result.text).not.toContain("private-model-key-77");
   });
 
   it("replaces a short saved key only where it stands as a whole token", async () => {
@@ -473,6 +489,22 @@ describe("quota_provider_add", () => {
     expect(result).toMatchObject({ ok: true, added: "my-gateway-quota" });
   });
 
+  it.each([
+    "sk-proj-abcdefghijklmnop1234",
+    "Zx9QmT4vLr8KpW2sNb7YhC3dFg6JkA1e",
+  ])("refuses a secret as a property name, without repeating it: %s", async (secret) => {
+    const result = await call("quota_provider_add", {
+      definition: { ...LOCAL, pricingModelMap: { [secret]: "openai/gpt-4o" } },
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      issues: [{ key: "definition.pricingModelMap", message: expect.stringMatching(/secret/) }],
+    });
+    expect(result.text).not.toContain(secret);
+    expect(existsSync(settingsPath())).toBe(false);
+  });
+
   it("rejects an invalid definition with the validator's message", async () => {
     writeSettings(FILE_WITH_COMMENTS);
 
@@ -503,8 +535,8 @@ describe("quota_provider_add", () => {
       ok: true,
       added: definition.id,
       enabled: false,
-      message: expect.stringMatching(
-        /^Saved, switched off: .* Ask the user to switch it on in \/quota_settings → Providers/,
+      message: expect.stringContaining(
+        `Ask the user to switch it on: "enabled": true in ${settingsPath()}, or /quota_settings`,
       ),
     });
     expect(result).not.toHaveProperty("test");
@@ -526,6 +558,31 @@ describe("quota_provider_add", () => {
 
     expect(withKey.text).toBe(without.text);
     expect(withKey.ok).toBe(true);
+  });
+
+  it("hides the key a new definition names, in the answer that saves it", async () => {
+    vi.stubEnv("REVIEW_ALIAS", "aliasvaluexyz");
+
+    const result = await call("quota_provider_add", {
+      definition: { ...GATEWAY, id: "aliasvaluexyz", apiKeyEnv: "REVIEW_ALIAS" },
+    });
+
+    expect(result).toMatchObject({ ok: true, added: "[redacted]" });
+    expect(result.text).not.toContain("aliasvaluexyz");
+  });
+
+  it("hides the key of the provider it removes, in the answer that removes it", async () => {
+    vi.stubEnv("REVIEW_ALIAS", "aliasvaluexyz");
+    writeSettings(
+      JSON.stringify({
+        providers: { custom: [{ ...GATEWAY, id: "aliasvaluexyz", apiKeyEnv: "REVIEW_ALIAS" }] },
+      }),
+    );
+
+    const result = await call("quota_provider_remove", { id: "aliasvaluexyz" });
+
+    expect(result).toMatchObject({ ok: true, removed: "[redacted]" });
+    expect(result.text).not.toContain("aliasvaluexyz");
   });
 
   it("adds a provider whose key is read only once the user switches it on", async () => {
@@ -608,8 +665,9 @@ describe("quota_provider_add", () => {
       added: "my-gateway-quota",
       enabled: false,
       request: {
-        url: "gateway.example/v1/quota",
+        url: "https://gateway.example/v1/quota",
         key: `environment variable ${GATEWAY_VARIABLE}, else OpenCode's API key for provider "my-gateway"`,
+        insecure: false,
       },
     });
     expect(added.notes).toBeUndefined();
@@ -640,7 +698,7 @@ describe("quota_provider_add", () => {
     expect(await savedProviders()).toEqual([
       expect.objectContaining({ url: "https://elsewhere.example/quota", enabled: false }),
     ]);
-    expect(test).toMatchObject({ ok: false, error: SWITCHED_OFF });
+    expect(test).toMatchObject({ ok: false, error: switchedOff() });
     expect(fetch).not.toHaveBeenCalled();
   });
 
@@ -798,7 +856,7 @@ describe("quota_provider_test and quota_provider_remove", () => {
 
     const result = await call("quota_provider_test", { id: definition.id });
 
-    expect(result).toMatchObject({ id: definition.id, ok: false, error: SWITCHED_OFF });
+    expect(result).toMatchObject({ id: definition.id, ok: false, error: switchedOff() });
     expect(fetch).not.toHaveBeenCalled();
     expect(existsSync(join(root, "state", "opencode", "opencode-quota", "quota-providers"))).toBe(
       false,

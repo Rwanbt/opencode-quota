@@ -17,8 +17,8 @@ export function isMaintainedQuotaProviderTuning(definition: QuotaProviderDefinit
 }
 
 /**
- * The custom definitions that run: not maintained tunings, and not switched off. Nothing reads
- * a switched-off definition's key or fetches it.
+ * The custom definitions that run: not maintained tunings, and not switched off. A switched-off
+ * definition is never fetched and its key is never sent.
  */
 export function customQuotaProviderDefinitions(
   definitions: readonly QuotaProviderDefinition[],
@@ -28,22 +28,27 @@ export function customQuotaProviderDefinitions(
   );
 }
 
+/** Hosts a plain-HTTP address may use without a warning: this computer only. */
+const LOCAL_HOSTNAMES: ReadonlySet<string> = new Set(["localhost", "127.0.0.1", "[::1]"]);
+
 /**
  * Where a remote custom provider sends its key, for the user to check before switching it on:
- * the URL's host and path, and where the key comes from. Never the key itself. Null for a local
- * estimate, which sends nothing.
+ * the URL's origin and path (the scheme shows http or https), and where the key comes from.
+ * Never the key itself. `insecure` is true for plain HTTP to any host but localhost, 127.0.0.1
+ * or ::1. Null for a local estimate, which sends nothing.
  */
 export function describeQuotaProviderRequest(
   definition: QuotaProviderDefinition,
-): { url: string; key: string } | null {
+): { url: string; key: string; insecure: boolean } | null {
   if (definition.mode !== "remote-api") return null;
   const url = new URL(definition.url);
   const saved = `OpenCode's API key for provider "${definition.providerId}"`;
   return {
-    url: `${url.host}${url.pathname}`,
+    url: `${url.origin}${url.pathname}`,
     key: definition.apiKeyEnv
       ? `environment variable ${definition.apiKeyEnv}, else ${saved}`
       : saved,
+    insecure: url.protocol === "http:" && !LOCAL_HOSTNAMES.has(url.hostname),
   };
 }
 
@@ -193,7 +198,7 @@ interface QuotaProviderDefinitionBase {
   /** Exact OpenCode model ids, without a provider prefix. Omission covers the provider. */
   modelIds?: string[];
   /**
-   * `false` switches the definition off: its key is never read and it is never fetched (a
+   * `false` switches the definition off: it is never fetched and its key is never sent (a
    * maintained tuning is not applied). Omission means on. Agents add definitions switched off;
    * only the user switches them on.
    */

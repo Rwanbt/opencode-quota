@@ -620,6 +620,8 @@ export async function fetchRemoteQuotaProvider(
   apiKey: string,
   requestTimeoutMs?: number,
 ): Promise<RemoteQuotaProviderResult> {
+  // A switched-off provider is never sent a request or its key, whoever asks.
+  if (source.enabled === false) return { success: false, error: "Provider is switched off" };
   const timeoutMs = requestTimeoutMs ?? REQUEST_TIMEOUT_MS;
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);

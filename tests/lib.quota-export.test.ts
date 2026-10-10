@@ -697,6 +697,65 @@ describe("buildQuotaExport", () => {
     });
   });
 
+  it("marks a switched-off definition, so it is told apart from an unavailable one", async () => {
+    const ctx = createMockContext();
+    const definition = {
+      id: "first",
+      providerId: "gateway-one",
+      label: "First",
+      mode: "remote-api" as const,
+      url: "https://one.example/accounting",
+      format: "quota-v1" as const,
+    };
+    ctx.config.quotaProviders = [definition, { ...definition, id: "second", enabled: false }];
+    const diagnostic = {
+      providerId: "gateway-one",
+      mode: "remote-api",
+      format: "quota-v1",
+      modelIds: null,
+      apiKeyEnv: null,
+      selected: true,
+      attempted: true,
+      credentialSource: "opencode_db",
+      outcome: "success",
+      entryCount: 1,
+      checkedPaths: [],
+      credentialDatabasePaths: [],
+    };
+    // A result from before the user switched "second" off.
+    mockReadCachedProviderResult.mockResolvedValue({
+      hit: true,
+      result: {
+        attempted: true,
+        entries: [],
+        errors: [],
+        diagnostics: [
+          { ...diagnostic, sourceId: "first", outcome: "network_error", entryCount: 0 },
+          { ...diagnostic, sourceId: "second" },
+        ],
+      },
+      timestamp: Date.now(),
+    });
+
+    const actual = await buildQuotaExport({
+      providers: [createMockProvider("quota-providers")],
+      ctx,
+      ttlMs: 60_000,
+      fromCache: true,
+    });
+
+    expect(actual.providers["quota-providers"].sources).toEqual([
+      { id: "first", providerId: "gateway-one", status: "error", entryCount: 0 },
+      {
+        id: "second",
+        providerId: "gateway-one",
+        status: "unavailable",
+        entryCount: 0,
+        enabled: false,
+      },
+    ]);
+  });
+
   it("returns status unavailable when provider has no cache entry", async () => {
     mockReadCachedProviderResult.mockResolvedValue({ hit: false });
 

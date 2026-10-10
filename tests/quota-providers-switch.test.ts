@@ -9,8 +9,10 @@ import {
   customQuotaProviderDefinitions,
   describeQuotaProviderRequest,
   type QuotaProviderDefinition,
+  type RemoteApiQuotaProviderDefinition,
   validateQuotaProviders,
 } from "../src/lib/quota-providers.js";
+import { fetchRemoteQuotaProvider } from "../src/lib/quota-providers-remote.js";
 import { createRuntimeProviderIdResolver } from "../src/lib/runtime-provider-ids.js";
 import { quotaProvidersProvider } from "../src/providers/quota-providers.js";
 
@@ -106,18 +108,44 @@ describe("the enabled field of a custom provider", () => {
     ]);
   });
 
-  it("is described by host, path and key source, never the key", () => {
+  it("is described by scheme, host, path and key source, never the key", () => {
     vi.stubEnv("OFF_GATEWAY_KEY", "off-key-value");
     const [off, local] = definitions([{ ...OFF, providerId: "vendor" }, OFF_LOCAL]);
 
     expect(describeQuotaProviderRequest(off)).toEqual({
-      url: "off.example/v1/quota",
+      url: "https://off.example/v1/quota",
       key: `environment variable OFF_GATEWAY_KEY, else OpenCode's API key for provider "vendor"`,
+      insecure: false,
     });
     expect(describeQuotaProviderRequest({ ...off, apiKeyEnv: undefined })?.key).toBe(
       `OpenCode's API key for provider "vendor"`,
     );
     expect(describeQuotaProviderRequest(local)).toBeNull();
+  });
+
+  it.each([
+    { url: "http://localhost:8080/quota", insecure: false },
+    { url: "http://127.0.0.1/quota", insecure: false },
+    { url: "http://[::1]:9000/quota", insecure: false },
+    { url: "http://127.0.0.2/quota", insecure: true },
+    { url: "http://quota.localhost/quota", insecure: true },
+  ])("flags plain HTTP to any host but this computer's own: $url", ({ url, insecure }) => {
+    const [definition] = definitions([{ ...ON, url }]);
+
+    expect(describeQuotaProviderRequest(definition)).toMatchObject({ url, insecure });
+  });
+});
+
+describe("the fetch of a switched-off custom provider", () => {
+  it("sends no request and no key, even when called directly", async () => {
+    const fetch = vi.fn();
+    vi.stubGlobal("fetch", fetch);
+    const [off] = definitions([OFF]);
+
+    const result = await fetchRemoteQuotaProvider(off as RemoteApiQuotaProviderDefinition, "key");
+
+    expect(result).toEqual({ success: false, error: "Provider is switched off" });
+    expect(fetch).not.toHaveBeenCalled();
   });
 });
 

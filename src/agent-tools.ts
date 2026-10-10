@@ -4,10 +4,10 @@
  * are the user's (in /quota → Customize); looks are not server settings at all. Every write
  * holds the settings lock and goes into OpenCode Quota's own settings file, never opencode.json.
  *
- * Keys: a provider added by an agent is saved switched off (`"enabled": false`), so nothing
- * reads its key or fetches it until the user switches it on in /quota_settings → Providers. No
- * tool switches a provider on. Every answer is cleaned in one place: each key the plugin can
- * read, and anything in a known key format, is replaced before the agent sees it.
+ * Keys: a provider added by an agent is saved switched off (`"enabled": false`), so it is never
+ * fetched and its key is never sent until the user switches it on. No tool switches a provider
+ * on. Every answer is cleaned in one place: each key the plugin can read, and anything in a
+ * known key format, is replaced before the agent sees it.
  */
 import { rowsFromLegacyResult } from "./core/rows.js";
 import {
@@ -78,7 +78,13 @@ const DEFINITION_SECRET_MESSAGE =
   "looks like a key or other secret, so nothing was saved. Put the key in an environment " +
   "variable and set apiKeyEnv to its name, or leave apiKeyEnv out to use OpenCode's key.";
 
-const SWITCH_ON = "Ask the user to switch it on in /quota_settings → Providers";
+/** How the agent tells the user to switch a provider on. */
+function switchOnStep(): string {
+  return (
+    `Ask the user to switch it on: "enabled": true in ${settingsPath()}, or ` +
+    "/quota_settings → Providers"
+  );
+}
 
 const SETTING_SECRET_MESSAGE = "looks like a key or other secret, so nothing was saved";
 
@@ -151,19 +157,23 @@ function looksSecret(text: string, isName: boolean): boolean {
   );
 }
 
-/** A copy of a JSON value with `redact` applied to every string in it. */
+/** A copy of a JSON value with `redact` applied to every string in it, property names too. */
 function redactStrings(value: unknown, redact: Redact): unknown {
   if (typeof value === "string") return redact(value);
   if (Array.isArray(value)) return value.map((item) => redactStrings(item, redact));
   if (isRecord(value)) {
     return Object.fromEntries(
-      Object.entries(value).map(([name, item]) => [name, redactStrings(item, redact)]),
+      Object.entries(value).map(([name, item]) => [redact(name), redactStrings(item, redact)]),
     );
   }
   return value;
 }
 
-/** Every string in a value that looks like a secret, by its path; never the value itself. */
+/**
+ * Every string in a value that looks like a secret, by its path; never the value itself.
+ * Property names are checked like ids (a pricingModelMap is keyed by model ids), and a secret
+ * one is reported at its parent, so the path never repeats it.
+ */
 function secretIssues(
   value: unknown,
   key: string,
@@ -175,9 +185,11 @@ function secretIssues(
     return value.flatMap((item, index) => secretIssues(item, `${key}[${index}]`, message, isName));
   }
   if (isRecord(value)) {
-    return Object.entries(value).flatMap(([name, item]) =>
-      secretIssues(item, key ? `${key}.${name}` : name, message, isName || NAME_FIELDS.has(name)),
-    );
+    return Object.entries(value).flatMap(([name, item]) => {
+      if (looksSecret(name, true)) return [{ key: key || "patch", message }];
+      const path = key ? `${key}.${name}` : name;
+      return secretIssues(item, path, message, isName || NAME_FIELDS.has(name));
+    });
   }
   return [];
 }
@@ -205,17 +217,24 @@ function definitionSecretIssues(definition: Record<string, unknown>): SettingsIs
  * Every key the plugin can read: variables named like keys or named by a custom provider; keys
  * in the global opencode.json(c); and API-key logins saved in OpenCode for the providers
  * OpenCode has. OAuth tokens are not read (that could refresh them); `SECRET_PATTERNS` covers
- * their shape.
+ * their shape. A definition in the tool's input counts as saved already, so the answer that
+ * saves it hides its key too; the keys of the providers it replaces stay in.
  */
-async function credentialValues(host: QuotaAgentToolsHost): Promise<string[]> {
-  const custom = (await loadSettings()).settings.providers.custom;
+async function credentialValues(host: QuotaAgentToolsHost, input: unknown): Promise<string[]> {
+  const incoming = isRecord(input) && isRecord(input.definition) ? input.definition : {};
+  // Each provider's key variable and OpenCode provider (its id when providerId is left out).
+  const sources: Array<{ variable: unknown; providerId: unknown }> = [
+    ...(await loadSettings()).settings.providers.custom.map((definition) => ({
+      variable: definition.mode === "remote-api" ? definition.apiKeyEnv : undefined,
+      providerId: definition.providerId,
+    })),
+    { variable: incoming.apiKeyEnv, providerId: incoming.providerId ?? incoming.id },
+  ];
   const variables = new Set(
     Object.keys(process.env).filter((name) => KEY_VARIABLE_NAME.test(name)),
   );
-  for (const definition of custom) {
-    if (definition.mode === "remote-api" && definition.apiKeyEnv) {
-      variables.add(definition.apiKeyEnv);
-    }
+  for (const { variable } of sources) {
+    if (typeof variable === "string") variables.add(variable);
   }
   const values: unknown[] = [...variables].map((name) => process.env[name]);
 
@@ -233,7 +252,7 @@ async function credentialValues(host: QuotaAgentToolsHost): Promise<string[]> {
 
   const providerIds = new Set([
     ...(await host.openCodeProviderIds()),
-    ...custom.map((definition) => definition.providerId),
+    ...sources.flatMap(({ providerId }) => (typeof providerId === "string" ? [providerId] : [])),
   ]);
   const logins = await readCredentialRows([...providerIds], { methods: ["key"] });
   values.push(...logins.map((row) => row.value.key));
@@ -247,9 +266,11 @@ async function credentialValues(host: QuotaAgentToolsHost): Promise<string[]> {
  * Replaces, in one string, each key the plugin can read and each known key format. A key under
  * LONG_KEY_LENGTH counts only as a whole token (letters, digits, `_` and `-`).
  */
-async function credentialRedactor(host: QuotaAgentToolsHost): Promise<Redact> {
+async function credentialRedactor(host: QuotaAgentToolsHost, input: unknown): Promise<Redact> {
   // Longest first, so a key that contains another is replaced whole.
-  const values = [...new Set(await credentialValues(host))].sort((a, b) => b.length - a.length);
+  const values = [...new Set(await credentialValues(host, input))].sort(
+    (a, b) => b.length - a.length,
+  );
   const long = values.filter((value) => value.length >= LONG_KEY_LENGTH);
   const short = values
     .filter((value) => value.length < LONG_KEY_LENGTH)
@@ -453,7 +474,7 @@ async function testFetch(
   redact: Redact,
 ): Promise<ToolResult> {
   if (definition.enabled === false) {
-    return { ok: false, error: `Not tested: it is switched off. ${SWITCH_ON}, then test it.` };
+    return { ok: false, error: `Not tested: it is switched off. ${switchOnStep()}; then test it.` };
   }
   if (definition.mode === "local-estimate") {
     return testedRows(
@@ -568,8 +589,8 @@ async function addProvider(input: unknown, host: QuotaAgentToolsHost): Promise<T
     ...(request ? { request } : {}),
     ...(notes.length > 0 ? { notes } : {}),
     message:
-      `Saved, switched off: nothing reads its key or fetches it yet. ${SWITCH_ON}${check}; ` +
-      "then test it with quota_provider_test.",
+      `Saved, switched off: it is not fetched and its key is not sent yet. ${switchOnStep()}` +
+      `${check}; then test it with quota_provider_test.`,
   };
 }
 
@@ -642,7 +663,7 @@ function tool(
     async execute(input) {
       let redact: Redact;
       try {
-        redact = await credentialRedactor(host);
+        redact = await credentialRedactor(host, input);
       } catch {
         const message =
           "Nothing was done: the saved keys to hide from the answer could not be read.";
@@ -703,9 +724,10 @@ export function quotaAgentTools(host: QuotaAgentToolsHost): QuotaAgentTool[] {
       host,
       "quota_provider_add",
       "Add a custom OpenCode Quota provider, or replace the one with its id. It is saved " +
-        "switched off: the user switches it on in /quota_settings → Providers, then " +
-        "quota_provider_test fetches it. No key in the definition: apiKeyEnv names the " +
-        "variable holding it; without it, OpenCode's key for providerId is used. Rules: " +
+        "switched off; once the user switches it on (settings file or /quota_settings → " +
+        "Providers), quota_provider_test fetches it. No key in the definition: apiKeyEnv " +
+        "names the variable holding it; without it, OpenCode's key for providerId is used. " +
+        "Rules: " +
         "https://github.com/slkiser/opencode-quota/blob/main/docs/readme/providers.md#custom-providers",
       {
         definition: {
