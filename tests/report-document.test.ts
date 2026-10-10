@@ -4,7 +4,6 @@ import { formatLocalCallTimestamp } from "../src/lib/format-utils.js";
 import { fitTableToWidth, padTableColumns } from "../src/lib/markdown-table.js";
 import {
   commandHeading,
-  isReportDocument,
   messageDocument,
   type ReportDocument,
   renderableSections,
@@ -251,107 +250,5 @@ describe("report-document", () => {
     });
     expect(renderPlainTextReport(messageDocument(text))).toBe(text);
     expect(renderMarkdownReport(messageDocument(text))).toBe(text);
-  });
-
-  it("accepts well-formed documents and rejects malformed ones", () => {
-    const document: ReportDocument = {
-      heading: { line: "# Report 16:00 29/09/2026", subtitle: "16:00 29/09/2026" },
-      sections: [
-        {
-          id: "all",
-          title: "all:",
-          blocks: [
-            { kind: "lines", lines: ["a"] },
-            { kind: "kv", rows: [{ key: "k", value: "v", indent: 1, trailingColon: false }] },
-            {
-              kind: "table",
-              headers: ["A"],
-              rows: [["1"]],
-              aligns: ["right"],
-              widthMode: "markdown-conceal",
-            },
-            { kind: "table", headers: ["Tok"], fullHeaders: ["Tokens"], rows: [], aligns: [] },
-            {
-              kind: "quota",
-              provider: "Copilot",
-              percentMode: "remaining",
-              lines: ["  Quota  █░  50% left"],
-              rows: [
-                { label: "Quota", barPercent: 50, value: "50%", notes: [] },
-                { label: "Spend", value: "USD 0.00", usage: "1/2", reset: "1h", notes: [] },
-              ],
-            },
-          ],
-        },
-      ],
-    };
-
-    expect(isReportDocument(document)).toBe(true);
-    expect(isReportDocument(messageDocument("hi"))).toBe(true);
-    expect(isReportDocument({ heading: { line: "Maintainer announcements" }, sections: [] })).toBe(
-      true,
-    );
-    expect(isReportDocument(JSON.parse(JSON.stringify(document)))).toBe(true);
-    for (const value of [
-      undefined,
-      null,
-      "report",
-      [],
-      {},
-      { sections: {} },
-      { heading: { line: 1 }, sections: [] },
-      { heading: { title: "Report", generatedAtMs: 1 }, sections: [] },
-      { heading: { line: "# Report", subtitle: 1 }, sections: [] },
-      { sections: [{ blocks: [] }] },
-      { sections: [{ id: "s", blocks: [{ kind: "html", lines: [] }] }] },
-      { sections: [{ id: "s", blocks: [{ kind: "lines", lines: [1] }] }] },
-      { sections: [{ id: "s", blocks: [{ kind: "kv", rows: [{ key: "k", indent: 2 }] }] }] },
-      {
-        sections: [
-          {
-            id: "s",
-            blocks: [{ kind: "table", headers: ["A"], rows: [["1"]], aligns: ["center"] }],
-          },
-        ],
-      },
-      {
-        sections: [
-          {
-            id: "s",
-            blocks: [
-              { kind: "table", headers: ["A"], fullHeaders: ["A", "B"], rows: [], aligns: [] },
-            ],
-          },
-        ],
-      },
-      {
-        sections: [
-          {
-            id: "s",
-            blocks: [
-              {
-                kind: "quota",
-                provider: "Copilot",
-                percentMode: "remaining",
-                lines: [],
-                rows: [{ label: "Quota", value: "1%" }],
-              },
-            ],
-          },
-        ],
-      },
-      {
-        sections: [
-          {
-            id: "s",
-            blocks: [
-              { kind: "quota", provider: "Copilot", percentMode: "left", lines: [], rows: [] },
-            ],
-          },
-        ],
-      },
-    ]) {
-      expect(isReportDocument(value)).toBe(false);
-    }
   });
 });

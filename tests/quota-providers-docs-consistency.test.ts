@@ -236,6 +236,7 @@ describe("quota provider Phase 7 documentation consistency", () => {
       "src/view/text.ts",
       "src/tui/sidebar.tsx",
       "src/tui/status-line.tsx",
+      "src/tui/window/limits.ts",
     ]) {
       const formatter = read(path);
       expect(formatter).not.toContain("quota-providers");

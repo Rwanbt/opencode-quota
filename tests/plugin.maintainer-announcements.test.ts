@@ -4,7 +4,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { renderPlainTextReport } from "../src/lib/report-document.js";
 import { createFakeIntegration } from "./helpers/fake-integration.js";
 import {
   createAlibabaAuthModuleMock,
@@ -24,8 +23,7 @@ const TEST_ACCOUNTING = {
   ownership: "maintained",
   authority: "provider_reported",
 } as const;
-const ANNOUNCEMENT_HOME_MESSAGE =
-  "Notice: Maintainer announcement available. Run /quota_announcements.";
+const ANNOUNCEMENT_HOME_MESSAGE = "Notice: 1 unread maintainer notice, see /quota → Notices.";
 
 const TEST_ANNOUNCEMENT = vi.hoisted(() => ({
   id: "copilot-credits",
@@ -48,7 +46,6 @@ const mocks = vi.hoisted(() => ({
 
 const announcementMocks = vi.hoisted(() => ({
   getMaintainerAnnouncementsSummary: vi.fn(),
-  formatMaintainerAnnouncementHomeCountLine: vi.fn(),
 }));
 
 vi.mock("../src/providers/registry.js", () =>
@@ -76,8 +73,6 @@ vi.mock("solid-js", async (importOriginal) => {
 });
 vi.mock("../src/lib/maintainer-announcements.js", () => ({
   BUNDLED_MAINTAINER_ANNOUNCEMENTS: [TEST_ANNOUNCEMENT],
-  formatMaintainerAnnouncementHomeCountLine:
-    announcementMocks.formatMaintainerAnnouncementHomeCountLine,
   getMaintainerAnnouncementsSummary: announcementMocks.getMaintainerAnnouncementsSummary,
   getMaintainerAnnouncementTargetProviderIds: () => ["copilot"],
 }));
@@ -194,35 +189,6 @@ async function startCli() {
   return { listeners, toast, renderHome, notices, dispose };
 }
 
-async function buildAnnouncementsDialogOutput(params: { arguments?: string } = {}) {
-  const { buildQuotaDialogCommandOutput } = await import("../src/lib/quota-dialog-commands.js");
-  const { loadSettings } = await import("../src/settings/index.js");
-  const loaded = await loadSettings();
-  const quotaSnapshot = vi.fn();
-  const result = await buildQuotaDialogCommandOutput({
-    command: "quota_announcements",
-    arguments: params.arguments,
-    host: {
-      client: { config: { providers: async () => ({ data: { providers: [] } }) } },
-      workspaceRoot: process.cwd(),
-      settings: () => loaded,
-    },
-    sessionID: "session-announcements",
-    quotaSnapshot,
-  });
-  expect(quotaSnapshot).not.toHaveBeenCalled();
-  expect(result.state).toBe("output");
-  if (result.state !== "output") return "";
-  // Every command here renders its document as plain text.
-  expect(renderPlainTextReport(result.document)).toBe(result.output);
-  // The list's heading has no time and the dialog title names it, so the dialog shows no
-  // subtitle. Invalid arguments give a plain message without a heading.
-  expect(result.document.heading).toEqual(
-    params.arguments?.trim() ? undefined : { line: "Maintainer announcements" },
-  );
-  return result.output;
-}
-
 async function flushMaintainerFallbackWork(): Promise<void> {
   for (let i = 0; i < 5; i += 1) {
     await Promise.resolve();
@@ -235,13 +201,6 @@ describe("maintainer announcement plugin integration", () => {
     announcementMocks.getMaintainerAnnouncementsSummary
       .mockReset()
       .mockReturnValue(makeAnnouncementSummary());
-    announcementMocks.formatMaintainerAnnouncementHomeCountLine
-      .mockReset()
-      .mockImplementation((activeCount: number) => {
-        if (activeCount <= 0) return "";
-        if (activeCount === 1) return ANNOUNCEMENT_HOME_MESSAGE;
-        return `Notice: ${activeCount} maintainer announcements available. Run /quota_announcements.`;
-      });
     signals.length = 0;
     await rm(TEST_RUNTIME_ROOT, { recursive: true, force: true });
   });
@@ -249,82 +208,6 @@ describe("maintainer announcement plugin integration", () => {
   afterEach(async () => {
     vi.unstubAllGlobals();
     await rm(TEST_RUNTIME_ROOT, { recursive: true, force: true, maxRetries: 3 });
-  });
-
-  it("builds the CLI /quota_announcements output from available providers", async () => {
-    const provider = {
-      id: "copilot",
-      isAvailable: vi.fn().mockResolvedValue(true),
-      fetch: vi.fn(),
-    };
-    mocks.getProviders.mockReturnValue([provider]);
-
-    const { QUOTA_DIALOG_COMMANDS } = await import("../src/lib/quota-dialog-command-specs.js");
-    const announcementCommand = QUOTA_DIALOG_COMMANDS.find(
-      (command) => command.id === "quota_announcements",
-    );
-    expect(announcementCommand).toEqual(
-      expect.objectContaining({ slashName: "quota_announcements" }),
-    );
-
-    const output = await buildAnnouncementsDialogOutput();
-
-    expect(output).toBe(
-      "Maintainer announcements\n\n- If you use Copilot, GitHub billing is moving to AI Credits.\n  https://github.blog/example",
-    );
-    expect(output).not.toContain("copilot-credits");
-    expect(output).not.toContain("source:");
-    expect(output).not.toContain("state");
-    expect(provider.isAvailable).toHaveBeenCalledOnce();
-    expect(announcementMocks.getMaintainerAnnouncementsSummary).toHaveBeenCalledWith(
-      expect.objectContaining({ enabledProviders: ["copilot"] }),
-    );
-  });
-
-  it("renders none for provider-targeted announcements when the provider is unavailable", async () => {
-    const provider = {
-      id: "copilot",
-      isAvailable: vi.fn().mockResolvedValue(false),
-      fetch: vi.fn(),
-    };
-    mocks.getProviders.mockReturnValue([provider]);
-    announcementMocks.getMaintainerAnnouncementsSummary.mockImplementation((params: any) => {
-      const enabledProviders = Array.isArray(params?.enabledProviders)
-        ? params.enabledProviders
-        : [];
-      return enabledProviders.includes("copilot")
-        ? makeAnnouncementSummary()
-        : makeAnnouncementSummary({ activeCount: 0, activeAnnouncements: [] });
-    });
-
-    await expect(buildAnnouncementsDialogOutput()).resolves.toBe(
-      "Maintainer announcements\n\nNo current announcements.",
-    );
-    expect(provider.isAvailable).toHaveBeenCalledOnce();
-    expect(announcementMocks.getMaintainerAnnouncementsSummary).toHaveBeenCalledWith(
-      expect.objectContaining({ enabledProviders: [] }),
-    );
-  });
-
-  it("renders none when no active announcements are available", async () => {
-    announcementMocks.getMaintainerAnnouncementsSummary.mockReturnValue(
-      makeAnnouncementSummary({
-        activeCount: 0,
-        activeAnnouncements: [],
-      }),
-    );
-
-    await expect(buildAnnouncementsDialogOutput()).resolves.toBe(
-      "Maintainer announcements\n\nNo current announcements.",
-    );
-  });
-
-  it("rejects /quota_announcements arguments", async () => {
-    await expect(
-      buildAnnouncementsDialogOutput({ arguments: "show copilot-credits" }),
-    ).resolves.toBe(
-      "Invalid arguments for /quota_announcements\n\nThis command does not accept arguments.\n\nUsage: /quota_announcements",
-    );
   });
 
   it("shows the count-only announcement on Home instead of a toast", async () => {
@@ -363,7 +246,6 @@ describe("maintainer announcement plugin integration", () => {
     await flushMaintainerFallbackWork();
 
     expect(announcementMocks.getMaintainerAnnouncementsSummary).not.toHaveBeenCalled();
-    expect(announcementMocks.formatMaintainerAnnouncementHomeCountLine).not.toHaveBeenCalled();
     await cli.dispose();
   });
 });

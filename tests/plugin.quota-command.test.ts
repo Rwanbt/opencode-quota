@@ -57,12 +57,16 @@ vi.mock("../src/lib/opencode-config-providers.js", () => ({
   reconcileDetectedProvidersInGlobalConfig: mocks.reconcileDetectedProvidersInGlobalConfig,
 }));
 
-type Command = "quota" | "pricing_refresh" | "tokens_between";
+type Command = "pricing_refresh" | "tokens_between";
 type Tool = {
   name: string;
   execute: (input: unknown, context: { sessionID: string }) => Promise<{ content: string }>;
 };
 type CommandHandler = (input: unknown, context: unknown) => Promise<unknown>;
+type SlashCommand = {
+  name: string;
+  execute: (invocation: { sessionID: string; prompt: { text: string } }) => Promise<void>;
+};
 
 /** settings.jsonc: checked at most once a minute, no notices; `overrides` per group. */
 function useSettings(overrides: Record<string, unknown> = {}): void {
@@ -85,9 +89,10 @@ function quotaResult(entries: object[], errors: object[] = []) {
 const cleanups: Array<() => unknown> = [];
 
 /**
- * Starts the server plugin. `run` runs a palette command over the quota RPC, as the TUI does,
- * and returns its text; every session uses the model `sessionModel` gives. OpenCode lists the
- * quota providers' ids as its own, and `openCodeProviders` too.
+ * Starts the server plugin. `quota` runs the /quota slash command of Web and Desktop and
+ * returns the report it posts into the chat; `run` runs a report command over the quota RPC,
+ * as the TUI does, and returns its text. Every session uses the model `sessionModel` gives.
+ * OpenCode lists the quota providers' ids as its own, and `openCodeProviders` too.
  */
 async function startServer(
   options: {
@@ -99,6 +104,7 @@ async function startServer(
   const { default: server } = await import("../src/plugin.js");
   const register = vi.fn(async () => ({ dispose: async () => {}, events: { emit: vi.fn() } }));
   let tool: Tool | undefined;
+  const slashCommands: SlashCommand[] = [];
   const ctx = {
     location: { directory: options.directory ?? process.cwd() },
     provider: {
@@ -112,8 +118,13 @@ async function startServer(
     session: {
       get: vi.fn(async () => ({ model: options.sessionModel?.() })),
       hook: vi.fn(),
+      wait: vi.fn(async () => {}),
+      prompt: vi.fn(async (_input: { sessionID: string; text: string }) => {}),
     },
-    command: { transform: vi.fn() },
+    command: {
+      transform: async (build: (editor: { add: (value: SlashCommand) => void }) => void) =>
+        build({ add: (value) => slashCommands.push(value) }),
+    },
     rpc: { register },
     integration: createFakeIntegration([]),
     event: { subscribe: () => ({ async *[Symbol.asyncIterator]() {} }) },
@@ -150,11 +161,20 @@ async function startServer(
     }
     return result.output;
   };
+  const quota = async (sessionID = "session-1"): Promise<string> => {
+    const command = slashCommands.find((item) => item.name === "quota");
+    if (!command) throw new Error("/quota was not registered");
+    await command.execute({ sessionID, prompt: { text: "" } });
+    const posted = ctx.session.prompt.mock.calls.filter(([input]) => input.sessionID === sessionID);
+    const text = posted.at(-1)?.[0].text ?? "";
+    // The report between its first and last line, which mark every quota report.
+    return text.split("\n").slice(1, -1).join("\n");
+  };
   const refresh = () => handlers.refresh({ reason: "manual" }, {});
-  return { ctx, tool, run, refresh };
+  return { ctx, tool, run, quota, refresh };
 }
 
-describe("/quota command behavior", () => {
+describe("/quota and the report commands on the server", () => {
   beforeEach(async () => {
     seedDefaultPluginBootstrapMocks(mocks, { resetPluginState: true });
     mocks.reconcileDetectedProvidersInGlobalConfig.mockResolvedValue({ changed: false });
@@ -248,15 +268,15 @@ describe("/quota command behavior", () => {
         ]),
       );
     mocks.getProviders.mockReturnValue([provider("openai", fetch)]);
-    const { run, refresh } = await startServer();
+    const { quota, refresh } = await startServer();
 
-    await run("quota");
-    const failed = await run("quota");
+    await quota();
+    const failed = await quota();
     expect(fetch).toHaveBeenCalledTimes(1);
     expect(failed).not.toContain("69% left");
 
     await refresh();
-    const recovered = await run("quota");
+    const recovered = await quota();
 
     expect(fetch).toHaveBeenCalledTimes(2);
     expect(recovered).toContain("69% left");
@@ -264,9 +284,9 @@ describe("/quota command behavior", () => {
 
   it("uses the price list the settings choose, without a price download for /quota", async () => {
     useSettings({ pricing: { source: "bundled", autoRefreshDays: 7 } });
-    const { run } = await startServer();
+    const { quota } = await startServer();
 
-    await run("quota");
+    await quota();
 
     expect(mocks.setPricingSnapshotSelection).toHaveBeenCalledWith("bundled");
     expect(mocks.setPricingSnapshotAutoRefresh).toHaveBeenCalledWith(7);
@@ -296,9 +316,9 @@ describe("/quota command behavior", () => {
         ),
       ),
     ]);
-    const { run } = await startServer();
+    const { quota } = await startServer();
 
-    const output = await run("quota");
+    const output = await quota();
 
     for (const text of shows) expect(output).toContain(text);
     for (const text of hides) expect(output).not.toContain(text);
@@ -337,9 +357,9 @@ describe("/quota command behavior", () => {
   ])("shows a line for a provider with $name", async ({ id, fetch, line }) => {
     useSettings({ providers: { enabled: [id] } });
     mocks.getProviders.mockReturnValue([provider(id, fetch)]);
-    const { run } = await startServer();
+    const { quota } = await startServer();
 
-    const output = await run("quota");
+    const output = await quota();
 
     expect(output).toContain(line);
     expect(output).not.toContain("Quota unavailable");
@@ -357,11 +377,11 @@ describe("/quota command behavior", () => {
     mocks.getProviders.mockReturnValue([
       provider("cursor", fetch, { matchesCurrentModel: (model?: string) => model === "auto" }),
     ]);
-    const { run } = await startServer({
+    const { quota } = await startServer({
       sessionModel: () => ({ id: "gpt-5", providerID: "openai" }),
     });
 
-    const output = await run("quota");
+    const output = await quota();
 
     expect(output).toContain("No quota provider serves the session's current model.");
   });
@@ -394,14 +414,14 @@ describe("/quota command behavior", () => {
     const fetch = vi.fn().mockResolvedValue(quotaResult([entry("alpha", 61), entry("beta", 32)]));
     mocks.getProviders.mockReturnValue([provider("quota-providers", fetch)]);
     let model = { id: "model-a", providerID: "alpha-gateway" };
-    const { run } = await startServer({
+    const { quota } = await startServer({
       sessionModel: () => model,
       openCodeProviders: ["alpha-gateway", "beta-gateway"],
     });
 
-    const alpha = await run("quota");
+    const alpha = await quota();
     model = { id: "model-b", providerID: "beta-gateway" };
-    const beta = await run("quota");
+    const beta = await quota();
 
     expect(fetch).toHaveBeenCalledTimes(1);
     expect(alpha).toContain("61% left");
@@ -421,10 +441,10 @@ describe("/quota command behavior", () => {
     mocks.getProviders.mockReturnValue([
       provider("openai", fetch, { cachePolicy: { kind: "account-neutral" } }),
     ]);
-    const { run } = await startServer();
+    const { quota } = await startServer();
 
-    const first = await run("quota", { sessionID: "session-a" });
-    const second = await run("quota", { sessionID: "session-b" });
+    const first = await quota("session-a");
+    const second = await quota("session-b");
 
     expect(fetch).toHaveBeenCalledTimes(1);
     expect(first).toContain("95% left");
@@ -452,10 +472,10 @@ describe("/quota command behavior", () => {
       ({ sessionID }: { sessionID: string }) =>
         new Promise((resolve) => answers.set(sessionID, resolve)),
     );
-    const { run } = await startServer();
+    const { quota } = await startServer();
 
-    const runA = run("quota", { sessionID: "session-a" });
-    const runB = run("quota", { sessionID: "session-b" });
+    const runA = quota("session-a");
+    const runB = quota("session-b");
     await vi.waitFor(() => expect(answers.size).toBe(2));
     answers.get("session-b")?.({
       sessionTokens: { models: [], totalInput: 2222, totalOutput: 22 },
@@ -502,10 +522,10 @@ describe("/quota command behavior", () => {
       apiKey: "dashscope-key",
       tier: "lite",
     });
-    const { run } = await startServer();
+    const { quota } = await startServer();
 
-    await run("quota");
-    const latest = await run("quota");
+    await quota();
+    const latest = await quota();
 
     expect(fetch).toHaveBeenCalledTimes(2);
     expect(latest).toContain("60% left");

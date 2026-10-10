@@ -50,7 +50,7 @@ function groupsAndSources(out: QuotaProviderResult) {
   return out.entries.map((entry) => [entry.group, entry.accounting.sourceId]);
 }
 
-/** The /quota text for this result. */
+/** The quota lines `opencode-quota show` prints for this result. */
 function quotaCommandText(out: QuotaProviderResult): string {
   const { rows } = rowsFromLegacyResult("openai", out);
   const provider = { providerId: "openai", label: "OpenAI", rows, refreshing: false, debug: [] };
@@ -392,6 +392,9 @@ describe("openai provider", () => {
     expect(lines).toHaveLength(labels.length);
     expect(new Set(lines.map((line) => line.split(" Status")[0]!.trim())).size).toBe(labels.length);
     for (const line of lines) expect(line).toContain("ChatGPT quota unavailable for API key");
+    expect(out.entries.map((entry) => (entry as { value?: string }).value)).toEqual(
+      labels.map(() => "ChatGPT quota unavailable for API key"),
+    );
   });
 
   it("reports unknown active auth when no stored row is marked active", async () => {

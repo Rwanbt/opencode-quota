@@ -1,9 +1,9 @@
 /**
- * OpenCode V2 server plugin: quota slash commands for every client, a diagnostics tool, and
- * the quota RPC that serves the quota snapshot to the TUI. It reads the server settings
- * (settings.jsonc, converted from v5 once) and follows every change to them. It also writes
- * the export file and the OpenTelemetry gauges from each snapshot. Inside OpenCode, logins are
- * read only here, through OpenCode's integration API.
+ * OpenCode V2 server plugin: quota slash commands for Web and Desktop, a diagnostics tool, and
+ * the quota RPC that serves the quota snapshot, the notices and the reports to the TUI. It reads
+ * the server settings (settings.jsonc, converted from v5 once) and follows every change to them.
+ * It also writes the export file and the OpenTelemetry gauges from each snapshot. Inside
+ * OpenCode, logins are read only here, through OpenCode's integration API.
  */
 import { randomUUID } from "node:crypto";
 import { Plugin } from "@opencode/plugin";
@@ -20,7 +20,7 @@ import type { QuotaSnapshot, SessionModel } from "./core/types.js";
 import { usageReport } from "./core/usage.js";
 import { resolveOpenCodeLocationRoots } from "./lib/config-file-utils.js";
 import { sanitizeDisplayText } from "./lib/display-sanitize.js";
-import { homeNoticeLine } from "./lib/maintainer-home-notice.js";
+import { homeNoticeLine, listNotices, markNotices } from "./lib/maintainer-home-notice.js";
 import {
   bindCredentialSource,
   createIntegrationCredentialSource,
@@ -29,25 +29,23 @@ import {
 } from "./lib/opencode-auth.js";
 import { reconcileDetectedProvidersInGlobalConfig } from "./lib/opencode-config-providers.js";
 import {
-  QUOTA_DIALOG_COMMANDS,
-  type QuotaDialogCommandId,
-} from "./lib/quota-dialog-command-specs.js";
-import {
   applyPricingSettings,
   buildQuotaDialogCommandOutput,
   kickPricingRefresh,
+  type QuotaDialogCommandId,
 } from "./lib/quota-dialog-commands.js";
 import {
   containsQuotaReport,
   formatQuotaReportMessage,
   QUOTA_REPORT_METADATA_KEY,
   type QuotaReportMetadata,
+  quotaMessageText,
   removeQuotaReports,
 } from "./lib/quota-report-message.js";
 import { resolveQuotaResetRetryDelayMs } from "./lib/quota-retry-wait.js";
 import { messageDocument } from "./lib/report-document.js";
 import { fetchSessionTokensForDisplay } from "./lib/session-tokens.js";
-import { QuotaRpc, type QuotaRpcCommandOutput } from "./rpc.js";
+import { QuotaRpc, type QuotaRpcCommandOutput, REPORT_COMMANDS } from "./rpc.js";
 import {
   acknowledgeDisplayImport,
   convertV5,
@@ -171,11 +169,6 @@ export const QuotaToastPlugin = Plugin.define({
         host: sourceHost,
         sessionID,
         resolveSessionModel: sessionModel,
-        // /quota waits for the providers that are due a check; the rest show their last rows.
-        quotaSnapshot: async (id) => {
-          const snapshot = await store.refresh({ reason: "poll", model: await sessionModel(id) });
-          return forClients(await withSessionTokens(snapshot, id));
-        },
         conversion,
         onDetectedProviderIds: options.reconcileDetectedProviders
           ? async (providerIds) => {
@@ -245,6 +238,11 @@ export const QuotaToastPlugin = Plugin.define({
       ...(displayImport ? { displayImport } : {}),
     });
 
+    // A notice can target the users of some providers: the enabled and available ones,
+    // found without asking any provider for quota.
+    const noticeTargets = async () =>
+      (await loadProviderSource(sourceHost)).providers.map(({ id }) => id);
+
     // Awaited so the plugin is active only once the RPC is registered: OpenCode waits for
     // activation before it routes an RPC call, so the first TUI call cannot miss it.
     const registration = await ctx.rpc.register(QuotaRpc, {
@@ -255,7 +253,7 @@ export const QuotaToastPlugin = Plugin.define({
           });
         } catch (error) {
           // Return the reason as output so the TUI shows it instead of OpenCode's rpc.internal.
-          const spec = QUOTA_DIALOG_COMMANDS.find((item) => item.id === input.command)!;
+          const spec = REPORT_COMMANDS.find((item) => item.id === input.command)!;
           const output = sanitizeDisplayText(
             error instanceof Error ? error.message : String(error),
           );
@@ -265,7 +263,6 @@ export const QuotaToastPlugin = Plugin.define({
             title: spec.title,
             output,
             document: messageDocument(output),
-            dialogSize: spec.dialogSize,
           };
         }
       },
@@ -281,14 +278,49 @@ export const QuotaToastPlugin = Plugin.define({
           const snapshot = await store.refresh(options);
           return { snapshot: forClients(await withSessionTokens(snapshot, input.sessionID)) };
         }),
-      // A notice can target the users of some providers: the enabled and available ones,
-      // found without asking any provider for quota.
       notices: () =>
         logRpcFailure("notices", async () => {
           const { enabled, home, homeFrequency } = loaded.settings.announcements;
           if (!enabled || !home) return { homeLine: "" };
-          const providerIds = (await loadProviderSource(sourceHost)).providers.map(({ id }) => id);
-          return { homeLine: await homeNoticeLine({ frequency: homeFrequency, providerIds }) };
+          return {
+            homeLine: await homeNoticeLine({
+              frequency: homeFrequency,
+              providerIds: await noticeTargets(),
+            }),
+          };
+        }),
+      // The notice switches are settings: saved to settings.jsonc and in use before the answer.
+      noticeList: (input) =>
+        logRpcFailure("noticeList", async () => {
+          const patch = {
+            ...(input.enabled === undefined ? {} : { enabled: input.enabled }),
+            ...(input.home === undefined ? {} : { home: input.home }),
+          };
+          if (Object.keys(patch).length > 0) {
+            const saved = await saveSettings({ announcements: patch }, { allowFileOnly: false });
+            if (!saved.ok) {
+              const reasons = saved.issues.map((issue) => `${issue.key}: ${issue.message}`);
+              throw new Error(`cannot save the notice settings (${reasons.join("; ")})`);
+            }
+            await applySettings(await loadSettings({ projectDir }));
+          }
+          if (input.read?.length) await markNotices(input.read, true);
+          if (input.unread?.length) await markNotices(input.unread, false);
+          const { enabled, home } = loaded.settings.announcements;
+          const notices = enabled ? await listNotices({ providerIds: await noticeTargets() }) : [];
+          return { enabled, home, notices };
+        }),
+      status: (input) =>
+        logRpcFailure("status", async () => {
+          const result = await buildOutput("quota_status", input.sessionID, undefined, {
+            reconcileDetectedProviders: false,
+          });
+          return {
+            text:
+              result.state === "output"
+                ? sanitizeDisplayText(result.output)
+                : "OpenCode Quota is turned off in its settings.",
+          };
         }),
       usage: (input) =>
         logRpcFailure("usage", async () => {
@@ -398,14 +430,52 @@ export const QuotaToastPlugin = Plugin.define({
       });
     });
 
-    // Web, Desktop, and the TUI list these in their "/" menu. The TUI runs a typed command
-    // itself over the quota RPC, so it never reaches this. When a report does arrive, the TUI
-    // opens it in its dialog and cancels the posted report. Its command palette runs the same
-    // reports without posting them.
+    // Web and Desktop list these in their "/" menu and get the report as a chat message. The
+    // TUI runs /quota and /quota_status in its quota window and the other reports in a dialog,
+    // so a command typed there never reaches this.
+    const postReport = async (sessionID: string, command: string, report: string) => {
+      // A message admitted while the AI works is delivered into that turn at its next
+      // step, and can make the AI take one more step. Wait until the session is idle.
+      await ctx.session.wait({ sessionID });
+      const metadata: QuotaReportMetadata = { command, at: Date.now() };
+      // The report is posted as the user's message. resume: false admits it without
+      // starting a model turn, so it waits in the session inbox, where Web and Desktop
+      // show it. "steer" delivers it together with the user's next message; "queue"
+      // would later give it a model turn of its own.
+      await ctx.session.prompt({
+        sessionID,
+        text: formatQuotaReportMessage(sanitizeDisplayText(report)),
+        metadata: { [QUOTA_REPORT_METADATA_KEY]: metadata },
+        delivery: "steer",
+        resume: false,
+      });
+    };
     await ctx.command.transform((editor) => {
-      for (const spec of QUOTA_DIALOG_COMMANDS) {
+      editor.add({
+        name: "quota",
+        description: "Show your quota limits and the maintainer notices.",
+        async execute(invocation) {
+          // /quota waits for the providers that are due a check; the rest show their last rows.
+          const model = await sessionModel(invocation.sessionID);
+          const refreshed = await store.refresh({ reason: "poll", model });
+          const snapshot = forClients(await withSessionTokens(refreshed, invocation.sessionID));
+          const notices = loaded.settings.announcements.enabled
+            ? await listNotices({ providerIds: await noticeTargets() })
+            : [];
+          const report = quotaMessageText({ snapshot, notices, nowMs: Date.now() });
+          await postReport(invocation.sessionID, "quota", report);
+        },
+      });
+      const reports = [
+        {
+          id: "quota_status",
+          description: "Diagnostics for quota, TUI, pricing, and local storage.",
+        },
+        ...REPORT_COMMANDS,
+      ] as const;
+      for (const spec of reports) {
         editor.add({
-          name: spec.slashName,
+          name: spec.id,
           description: spec.description,
           async execute(invocation) {
             const result = await buildOutput(
@@ -415,26 +485,7 @@ export const QuotaToastPlugin = Plugin.define({
               { reconcileDetectedProviders: true },
             );
             if (result.state === "noop") return;
-            // A message admitted while the AI works is delivered into that turn at its next
-            // step, and can make the AI take one more step. Wait until the session is idle.
-            await ctx.session.wait({ sessionID: invocation.sessionID });
-            const metadata: QuotaReportMetadata = {
-              command: spec.id,
-              title: result.title,
-              at: Date.now(),
-              document: result.document,
-            };
-            // The report is posted as the user's message. resume: false admits it without
-            // starting a model turn, so it waits in the session inbox, where Web, Desktop,
-            // and the TUI show it. "steer" delivers it together with the user's next message;
-            // "queue" would later give it a model turn of its own.
-            await ctx.session.prompt({
-              sessionID: invocation.sessionID,
-              text: formatQuotaReportMessage(sanitizeDisplayText(result.output)),
-              metadata: { [QUOTA_REPORT_METADATA_KEY]: metadata },
-              delivery: "steer",
-              resume: false,
-            });
+            await postReport(invocation.sessionID, spec.id, result.output);
           },
         });
       }

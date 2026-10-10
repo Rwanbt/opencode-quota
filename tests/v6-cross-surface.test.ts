@@ -178,6 +178,7 @@ const THEME = {
   text: {
     base: "text",
     muted: "muted",
+    action: { primary: { focused: "action", selected: "selected" } },
     feedback: {
       success: { base: "green" },
       warning: { base: "yellow" },
@@ -186,6 +187,8 @@ const THEME = {
     },
   },
   hue: { accent: { 500: "accent" } },
+  background: { action: { primary: { focused: "action-bg" } }, raised: { high: "raised" } },
+  border: { base: "border" },
   surface: () => ({
     text: { base: "text", muted: "muted", action: { primary: { focused: "action" } } },
     background: { action: { primary: { focused: "action-bg" } } },
@@ -235,7 +238,6 @@ async function startHosts() {
   const listeners = new Map<string, Listener>();
   const renderers = new Map<string, (props?: { sessionID?: string }) => unknown>();
   let commands: Array<{ id: string; run: () => Promise<void> }> = [];
-  const dialogs: string[][] = [];
   const toast = vi.fn();
   vi.stubGlobal("React", {
     createElement: (
@@ -276,22 +278,13 @@ async function startHosts() {
       },
       toast: { show: toast },
       router: { current: () => ({ type: "session", sessionID: "ses_1" }) },
-      dialog: {
-        show: (render: () => unknown, onClose?: () => void) => {
-          dialogs.push(textLines(render()));
-          onClose?.();
-        },
-        clear: vi.fn(),
-        prompt: vi.fn(),
-        set: vi.fn(),
-      },
+      dialog: { show: vi.fn(), clear: vi.fn(), prompt: vi.fn(), set: vi.fn() },
     },
   } as never);
   return {
     render: (slot: string, props?: { sessionID?: string }) => renderers.get(slot)?.(props),
     emit: (name: string, data: Record<string, unknown>) => listeners.get(name)?.({ data }),
     command: (id: string) => commands.find((command) => command.id === `quota.${id}`)!,
-    dialogs,
     toast,
     stored,
     dispose: async () => {
@@ -435,9 +428,26 @@ describe("v6 surfaces on the quota snapshot", () => {
     expect(toast).toMatchObject({ variant: "info", title: "OpenCode Quota" });
     expect(toast.message).toContain("Quota providers (T… Provider error 503\nSession  1.20K in");
 
-    // /quota builds its report on the server from the same snapshot and opens it in a dialog.
-    await tui.command("quota").run();
-    expect(tui.dialogs[0]).toContain(tui.toast.mock.calls[0]?.[0].message);
+    // /quota opens the quota window above the message box, on its Limits tab: every row with
+    // its bar, percent, reset and pace.
+    await tui.command("window").run();
+    const quotaWindow = () => textLines(tui.render("session.composer.top", { sessionID: "ses_1" }));
+    await vi.waitFor(() =>
+      expect(quotaWindow()).toContain(" Quota providers · Team   Provider error 503"),
+    );
+    expect(quotaWindow()).toEqual(
+      expect.arrayContaining([
+        "Limits",
+        "Notices",
+        "Status",
+        " Copilot · pro   checked just now",
+        expect.stringMatching(/^ {3}Plan +█+░+ {2}81% left/u),
+        expect.stringMatching(
+          /^ {3}5h +░+│░+ {2}0% left +resets in 2h 14m +using it faster than it refills$/u,
+        ),
+        "Close",
+      ]),
+    );
 
     // The export file (version 2) and the gauges follow the snapshot without asking a provider
     // again.
@@ -494,7 +504,7 @@ describe("v6 surfaces on the quota snapshot", () => {
       expanded,
       sidebar(),
       tui.toast.mock.calls,
-      tui.dialogs,
+      quotaWindow(),
       exported,
       gauges,
       savedSnapshot,

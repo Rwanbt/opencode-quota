@@ -184,6 +184,8 @@ describe("server quota RPC", () => {
       "snapshot",
       "refresh",
       "notices",
+      "noticeList",
+      "status",
       "usage",
       "saveSettings",
       "acknowledgeDisplayImport",
@@ -685,11 +687,17 @@ describe("server quota RPC", () => {
   });
 
   it("serves the Home notice line only when the Home notice is on", async () => {
-    const { formatMaintainerAnnouncementHomeCountLine, getMaintainerAnnouncementsSummary } =
-      await import("../src/lib/maintainer-announcements.js");
-    const expected = formatMaintainerAnnouncementHomeCountLine(
-      getMaintainerAnnouncementsSummary({ enabledProviders: ["copilot"] }).activeCount,
+    const { BUNDLED_MAINTAINER_ANNOUNCEMENTS, getMaintainerAnnouncementsSummary } = await import(
+      "../src/lib/maintainer-announcements.js"
     );
+    const active = getMaintainerAnnouncementsSummary({
+      enabledProviders: ["copilot"],
+      announcements: BUNDLED_MAINTAINER_ANNOUNCEMENTS,
+    }).activeCount;
+    const expected =
+      active === 0
+        ? ""
+        : `Notice: ${active} unread maintainer ${active === 1 ? "notice" : "notices"}, see /quota → Notices.`;
     useSettings({ announcements: { enabled: true, home: true, homeFrequency: "always" } });
     await expect((await setupServer()).call("notices", {})).resolves.toEqual({
       homeLine: expected,
@@ -697,6 +705,60 @@ describe("server quota RPC", () => {
 
     useSettings({ announcements: { enabled: true, home: false } });
     await expect((await setupServer()).call("notices", {})).resolves.toEqual({ homeLine: "" });
+  });
+
+  it("lists the notices, saves their read state and the notice settings", async () => {
+    useSettings({ announcements: { enabled: true, home: true } });
+    const { call } = await setupServer();
+    const first = (await call("noticeList", {})) as {
+      enabled: boolean;
+      home: boolean;
+      notices: Array<{ id: string; read: boolean }>;
+    };
+    expect(first).toMatchObject({ enabled: true, home: true });
+    const ids = first.notices.map((notice) => notice.id);
+
+    const read = (await call("noticeList", { read: ids, home: false })) as typeof first;
+    expect(read.home).toBe(false);
+    expect(read.notices.every((notice) => notice.read)).toBe(true);
+    const saved = await readFile(SETTINGS_FILE, "utf8");
+    expect(saved).toContain('"home": false');
+
+    // With notices off, none is listed.
+    await expect(call("noticeList", { enabled: false })).resolves.toEqual({
+      enabled: false,
+      home: false,
+      notices: [],
+    });
+  });
+
+  it("serves the /quota_status report as text, and never writes the global config", async () => {
+    useSettings({ providers: { enabled: "auto" } });
+    const dialogModule = await import("../src/lib/quota-dialog-commands.js");
+    vi.spyOn(dialogModule, "buildQuotaDialogCommandOutput").mockImplementation(async (params) => {
+      await params.onDetectedProviderIds?.(["copilot"]);
+      return {
+        state: "output",
+        command: params.command,
+        title: "OpenCode Quota Status",
+        output: "status \u001b[31mreport",
+        document: messageDocument("status"),
+      };
+    });
+    const { call, commands } = await setupServer();
+
+    await expect(call("status", { sessionID: "session-1" })).resolves.toEqual({
+      text: "status report",
+    });
+    expect(mocks.reconcileDetectedProvidersInGlobalConfig).not.toHaveBeenCalled();
+
+    // The slash command of Web and Desktop adds the detected providers.
+    const slash = commands.find((command) => command.name === "quota_status");
+    await slash?.execute({ sessionID: "session-1", prompt: { text: "" } });
+    expect(mocks.reconcileDetectedProvidersInGlobalConfig).toHaveBeenCalledWith({
+      configRootDir: process.cwd(),
+      detectedProviderIds: ["copilot"],
+    });
   });
 
   it("writes the export file from each new snapshot only when the export is enabled", async () => {
@@ -729,65 +791,61 @@ describe("server quota RPC", () => {
     useSettings();
     const { call } = await setupServer();
 
-    const output = (await call("command", { command: "quota", sessionID: "session-1" })) as {
+    const output = (await call("command", { command: "tokens_all" })) as {
       output: string;
       document: ReportDocument;
     };
     expect(output).toEqual(
       expect.objectContaining({
         state: "output",
-        command: "quota",
-        title: "OpenCode Quota",
-        dialogSize: "xlarge",
+        command: "tokens_all",
+        title: "Tokens used (All Time)",
       }),
     );
-    expect(output.output).toContain("Copilot");
-    expect(renderPlainTextReport(output.document)).toBe(output.output);
-  });
-
-  it("never writes detected providers to the global config from the palette", async () => {
-    useSettings({ providers: { enabled: "auto" } });
-    const dialogModule = await import("../src/lib/quota-dialog-commands.js");
-    vi.spyOn(dialogModule, "buildQuotaDialogCommandOutput").mockImplementation(async (params) => {
-      await params.onDetectedProviderIds?.(["copilot"]);
-      return {
-        state: "output",
-        command: params.command,
-        title: "OpenCode Quota Status",
-        output: "status",
-        document: messageDocument("status"),
-        dialogSize: "xlarge",
-      };
-    });
-    const { call, commands } = await setupServer();
-
-    await call("command", { command: "quota_status", sessionID: "session-1" });
-    expect(mocks.reconcileDetectedProvidersInGlobalConfig).not.toHaveBeenCalled();
-
-    const slash = commands.find((command) => command.name === "quota_status");
-    await slash?.execute({ sessionID: "session-1", prompt: { text: "" } });
-    expect(mocks.reconcileDetectedProvidersInGlobalConfig).toHaveBeenCalledWith({
-      configRootDir: process.cwd(),
-      detectedProviderIds: ["copilot"],
-    });
+    expect(output.output).toContain("# Tokens used (All Time) (/tokens_all)");
+    expect(output.document.heading?.line).toContain("Tokens used (All Time)");
   });
 
   it("returns a failed palette command as output instead of an RPC error", async () => {
     useSettings();
     const dialogModule = await import("../src/lib/quota-dialog-commands.js");
     vi.spyOn(dialogModule, "buildQuotaDialogCommandOutput").mockRejectedValue(
-      new Error("quota \u001b[31mbroke"),
+      new Error("tokens \u001b[31mbroke"),
     );
     const { call } = await setupServer();
 
-    await expect(call("command", { command: "quota" })).resolves.toEqual({
+    await expect(call("command", { command: "tokens_today" })).resolves.toEqual({
       state: "output",
-      command: "quota",
-      title: "OpenCode Quota",
-      output: "quota broke",
-      document: messageDocument("quota broke"),
-      dialogSize: "xlarge",
+      command: "tokens_today",
+      title: "Tokens used (Today)",
+      output: "tokens broke",
+      document: messageDocument("tokens broke"),
     });
+  });
+
+  it("posts the /quota limits and notices of Web and Desktop into the chat", async () => {
+    useSettings();
+    const { ctx, commands } = await setupServer();
+
+    await commands
+      .find((command) => command.name === "quota")
+      ?.execute({
+        sessionID: "session-1",
+        prompt: { text: "" },
+      });
+
+    expect(ctx.session.wait).toHaveBeenCalledWith({ sessionID: "session-1" });
+    const [message] = ctx.session.prompt.mock.calls[0] as [
+      { text: string; metadata: Record<string, { command: string }> },
+    ];
+    expect(message.text.split("\n")).toEqual([
+      "[OpenCode Quota report]",
+      "Quota",
+      "Copilot Plan        81% left",
+      "[End of OpenCode Quota report]",
+    ]);
+    expect(message.metadata.opencodeQuota?.command).toBe("quota");
+    expect(commands.map((command) => command.name)).not.toContain("quota_announcements");
   });
 
   it("treats a session the server cannot find as a session without a model", async () => {
@@ -820,11 +878,11 @@ describe("server quota RPC", () => {
       },
     ]);
     const project = `${TEST_RUNTIME_ROOT}/project`;
-    const { call, handlers } = await setupServer(undefined, project);
+    const { call } = await setupServer(undefined, project);
 
     // The store's refresh, then /quota_status, which checks every provider itself.
     await call("refresh", { reason: "manual" });
-    await handlers.command({ command: "quota_status", sessionID: "session-1" }, callContext);
+    await call("status", { sessionID: "session-1" });
 
     expect(workspaceRoots).toHaveLength(2);
     expect(new Set(workspaceRoots)).toEqual(new Set([project]));

@@ -169,7 +169,7 @@ Provider credentials (API keys, cookies, tokens) are never set here. See [API ke
 | `pricing.autoRefreshDays`       | `7`       | Refresh local pricing after this many days. |
 | `announcements.enabled`         | `true`    | Show bundled maintainer notices. |
 | `announcements.home`            | `true`    | Show the count of active notices at the bottom of Home. |
-| `announcements.homeFrequency`   | `"daily"` | `"daily"`: show that Home line on the first Home screen of each day, for 10 minutes. `"always"`: show it on every Home screen. `/quota_announcements` always lists the notices. |
+| `announcements.homeFrequency`   | `"daily"` | `"daily"`: show that Home line on the first Home screen of each day, for 10 minutes. `"always"`: show it on every Home screen. The Notices tab of `/quota` lists every notice. |
 | `export.enabled`                | `false`   | Write a JSON file each time the quota snapshot changes. |
 | `export.path`                   | `""`      | Empty uses `$XDG_CACHE_HOME/opencode/quota-export.json`. Otherwise an absolute or `~/` path. |
 | `telemetry.enabled`             | `false`   | Publish quota and cache-age gauges through OpenCode's global OpenTelemetry `MeterProvider`. No extra provider calls. |
