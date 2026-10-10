@@ -428,7 +428,8 @@ export async function buildStatusReportData(params: {
       activeSource: getPricingSnapshotSource(),
       snapshot: {
         source: pricingMeta.source,
-        generatedAt: pricingMeta.generatedAt === "(none)" ? null : pricingMeta.generatedAt,
+        // "(none)" and "(invalid date)" are no time.
+        generatedAt: /^\d/u.test(pricingMeta.generatedAt) ? pricingMeta.generatedAt : null,
         units: pricingMeta.units,
       },
       snapshotPath: statusPathText(getRuntimePricingSnapshotPath()),

@@ -6,11 +6,11 @@
  *
  * Users paste this report into public issues, so it is built from a closed vocabulary. Every
  * value it prints is a member of a set this plugin defines (provider ids, row keys, windows,
- * error codes, states, setting keys, env variable names, folder and file names) or a number,
- * count or time this file formats. Everything else is counted or stands in as a placeholder:
- * "custom 1", "account 2", "(part 1)", "(custom path)", "3 other details not shown". A debug
- * detail shows only when its key is in its provider's allow list and its value passes that
- * key's rule.
+ * error codes, states, setting keys, the provider's own env variables, folder and file names)
+ * or a number, count or time this file formats in its range. Everything else is counted or
+ * stands in as a placeholder: "custom 1", "account 2", "(part 1)", "(custom path)", "(out of
+ * range)", "3 other details not shown". A debug detail shows only when its key is in its
+ * provider's allow list and its value passes that key's rule.
  */
 import { stat } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -28,11 +28,12 @@ import { isV5SettingKey } from "../settings/convert.js";
 import type { LoadedSettings, Settings, V5Conversion } from "../settings/index.js";
 import { isSettingsGroup, SETTINGS_SCHEMA } from "../settings/schema.js";
 import { formatShare, formatTokens } from "../view/format.js";
+import { COUNT_LABELS } from "./accounting-format.js";
+import { ERROR_MESSAGES as ALIBABA_TOKEN_PLAN_ERRORS } from "./alibaba-token-plan.js";
 import { API_KEY_LOGIN_VENDORS, API_KEY_VENDORS } from "./api-key-resolver.js";
 import { COPILOT_AUTH_KEYS } from "./copilot.js";
 import { CURSOR_CANONICAL_PLUGIN_PACKAGE } from "./cursor-detection.js";
 import { sanitizeSingleLineDisplayText } from "./display-sanitize.js";
-import type { AccountingCountUnit } from "./entries.js";
 import { AGY_AUTH_KEYS } from "./google-agy.js";
 import { GEMINI_CLI_AUTH_KEYS } from "./google-gemini-cli.js";
 import { replaceHomeDirWithTildeInDocument } from "./home-dir-display.js";
@@ -58,6 +59,7 @@ import { getOpenCodeDbStats } from "./opencode-storage.js";
 import {
   type CanonicalQuotaProviderId,
   getQuotaProviderDisplayLabel,
+  PROVIDER_ROW_KEYS,
   QUOTA_PROVIDER_CATALOG,
   QUOTA_PROVIDER_RUNTIME_IDS,
 } from "./provider-metadata.js";
@@ -103,15 +105,6 @@ const ERROR_CODES: Readonly<Record<QuotaErrorCode, true>> = {
   internal: true,
 };
 
-const COUNT_UNITS: Readonly<Record<AccountingCountUnit, true>> = {
-  request: true,
-  token: true,
-  credit: true,
-  message: true,
-  interaction: true,
-  unit: true,
-};
-
 const CURRENCIES: ReadonlySet<string> = new Set(Intl.supportedValuesOf("currency"));
 
 const CREDENTIAL_SOURCE_KINDS: Readonly<Record<CredentialSourceKind, true>> = {
@@ -120,45 +113,8 @@ const CREDENTIAL_SOURCE_KINDS: Readonly<Record<CredentialSourceKind, true>> = {
 };
 const CREDENTIAL_FAILURE_CATEGORIES = new Set(["refresh_failed", "resolve_empty", "active_failed"]);
 
-/** Every row key each provider writes (`*` is one part of the provider's own naming). */
-export const REPORT_ROW_KEYS: Readonly<Record<CanonicalQuotaProviderId, readonly string[]>> = {
-  anthropic: ["five_hour", "weekly", "weekly_fable", "extra_usage"],
-  copilot: ["allowance", "additional_budget"],
-  openai: ["five_hour", "weekly", "monthly", "code_review", "status"],
-  openrouter: ["key"],
-  kilo: ["pass_credits", "balance"],
-  cursor: ["api", "auto_composer"],
-  "alibaba-coding-plan": ["five_hour", "weekly", "monthly"],
-  "alibaba-token-plan": ["five_hour", "weekly"],
-  synthetic: ["five_hour", "weekly"],
-  chutes: ["daily"],
-  "google-gemini-cli": ["pro", "flash", "flash_lite", "model.*"],
-  "google-agy": [
-    "gemini.weekly",
-    "gemini.five_hour",
-    "claude_gpt.weekly",
-    "claude_gpt.five_hour",
-    "*.weekly",
-    "*.five_hour",
-  ],
-  zai: ["five_hour", "weekly", "mcp"],
-  zhipu: ["five_hour", "weekly", "mcp"],
-  nanogpt: ["daily", "monthly", "balance.usd", "balance.nano"],
-  "minimax-coding-plan": ["five_hour", "weekly"],
-  "minimax-china-coding-plan": ["five_hour", "weekly"],
-  "kimi-code-plan-global": ["weekly", "limit.*"],
-  "kimi-code-plan-cn": ["weekly", "limit.*"],
-  deepseek: ["total_balance.*", "granted_balance.*", "topped_up_balance.*", "available"],
-  xai: ["credits"],
-  xiaomi: ["monthly_tokens", "total_balance", "cash_balance", "gift_balance"],
-  "opencode-go": ["five_hour", "weekly", "monthly"],
-  opencode: ["monthly", "balance", "auto_reload"],
-  "ollama-cloud": ["session", "weekly", "monthly"],
-  "quota-providers": ["custom.*.*"],
-};
-
 /** Folder and file names this plugin and OpenCode use; a shown path is made only of these. */
-const KNOWN_PATH_PARTS: ReadonlySet<string> = new Set([
+export const KNOWN_PATH_PARTS: ReadonlySet<string> = new Set([
   ".config",
   ".local",
   "share",
@@ -174,7 +130,7 @@ const KNOWN_PATH_PARTS: ReadonlySet<string> = new Set([
   "cursor",
 ]);
 /** File names this plugin and OpenCode read or write. */
-const KNOWN_FILE_NAMES: ReadonlySet<string> = new Set([
+export const KNOWN_FILE_NAMES: ReadonlySet<string> = new Set([
   "settings.jsonc",
   "opencode.db",
   "opencode.json",
@@ -197,7 +153,7 @@ const KNOWN_FILE_NAMES: ReadonlySet<string> = new Set([
   "claude",
 ]);
 /** Paths outside the home dir this plugin looks at. */
-const KNOWN_ABSOLUTE_PATHS: ReadonlySet<string> = new Set([
+export const KNOWN_ABSOLUTE_PATHS: ReadonlySet<string> = new Set([
   "/opt/homebrew/bin/claude",
   "/usr/local/bin/claude",
 ]);
@@ -208,14 +164,14 @@ const KEY_FILE_SOURCES: ReadonlySet<string> = new Set([
   "opencode.db",
 ]);
 
-/** The env variables this plugin reads a key or a cookie from. */
-const KNOWN_ENV_NAMES: ReadonlySet<string> = new Set([
-  ...Object.values(API_KEY_VENDORS).flatMap((vendor) => vendor.envVars),
-  ...Object.values(API_KEY_LOGIN_VENDORS).flatMap((vendor) => vendor.envVars),
-  "OPENROUTER_API_KEY",
-  "CURSOR_API_KEY",
-  "MIMO_USAGE_COOKIE",
-]);
+/** The providers that read a key or a cookie, by id, and the env variables they read it from. */
+const KEY_VENDORS: Readonly<Record<string, { envVars: readonly string[] }>> = {
+  ...API_KEY_VENDORS,
+  ...API_KEY_LOGIN_VENDORS,
+  openrouter: { envVars: ["OPENROUTER_API_KEY"] },
+  cursor: { envVars: ["CURSOR_API_KEY"] },
+  xiaomi: { envVars: ["MIMO_USAGE_COOKIE"] },
+};
 
 type ProviderAvailability = {
   id: string;
@@ -270,11 +226,24 @@ function fmtInt(n: number): string {
   return Number.isFinite(n) ? Math.trunc(n).toLocaleString("en-US") : "(none)";
 }
 
-/** An ISO time this file formats, or "(none)" for no or a bad time. */
+/** The times this report prints: from 2000 to 2100. */
+const FIRST_DATE_MS = Date.UTC(2000, 0, 1);
+const LAST_DATE_MS = Date.UTC(2100, 0, 1);
+
+/** An ISO time from 2000 to 2100, "(none)" for no time, and "(invalid date)" for any other. */
 function isoText(ms: number | null | undefined): string {
-  if (typeof ms !== "number" || !Number.isFinite(ms) || ms <= 0) return "(none)";
-  const date = new Date(ms);
-  return Number.isNaN(date.getTime()) ? "(none)" : date.toISOString();
+  if (typeof ms !== "number" || ms === 0) return "(none)";
+  return ms >= FIRST_DATE_MS && ms < LAST_DATE_MS ? new Date(ms).toISOString() : "(invalid date)";
+}
+
+/** An ISO date text ("2026-10-11T00:00:00Z") as `isoText` shows it; other text is no date. */
+function dateText(text: string): string {
+  return /^\d{4}-\d{2}-\d{2}/u.test(text) ? isoText(Date.parse(text)) : "(invalid date)";
+}
+
+/** A whole number from `min` to `max`, else "(out of range)": a long number is no count. */
+function inRange(value: number, min: number, max: number): string {
+  return Number.isInteger(value) && value >= min && value <= max ? String(value) : "(out of range)";
 }
 
 function joinOrNone(values: readonly string[]): string {
@@ -304,11 +273,6 @@ function customNumbers(params: QuotaStatusReportParams): Map<string, number> {
   return new Map(
     (params.quotaProviders ?? []).map((definition, index) => [definition.id, index + 1]),
   );
-}
-
-/** `env:NAME` for a variable this plugin reads; `env:(other)` for any other. */
-function envText(name: string): string {
-  return KNOWN_ENV_NAMES.has(name) ? `env:${name}` : "env:(other)";
 }
 
 /** The path's parts after the home dir ("~" or `homeDir`), or undefined outside it. */
@@ -410,9 +374,22 @@ const ISSUE_CODES: ReadonlyArray<readonly [RegExp, string]> = [
 
 function issueCodeText(message: string): string {
   const line = /^syntax error on line (\d+)/u.exec(message)?.[1];
-  if (line !== undefined) return `syntax error on line ${Number(line)}`;
-  return ISSUE_CODES.find(([pattern]) => pattern.test(message))?.[1] ?? "invalid";
+  if (line !== undefined) return `syntax error on line ${inRange(Number(line), 1, 9999)}`;
+  return codeOf(ISSUE_CODES, message) ?? "invalid";
 }
+
+/** The code of the first pattern the text matches. */
+function codeOf(codes: ReadonlyArray<readonly [RegExp, string]>, text: string): string | undefined {
+  return codes.find(([pattern]) => pattern.test(text))?.[1];
+}
+
+/** Our code for each v5 conversion note, chosen by its words; never the paths it names. */
+const CONVERSION_NOTE_CODES: ReadonlyArray<readonly [RegExp, string]> = [
+  [/ does not parse as a JSON object, so it was not converted$/u, "file_not_a_json_object"],
+  [/ was not converted: v5 used .+ when both exist$/su, "jsonc_used_over_json"],
+  [/^experimental\.quotaToast in .+ v5 ignored it while /su, "quota_toast_block_ignored"],
+  [/ does not parse, so its experimental\.quotaToast was not converted$/u, "config_not_parsed"],
+];
 
 /** A settings key from the schema, a group, a file-level key, or the custom providers. */
 function issueKeyText(key: string): string | undefined {
@@ -479,7 +456,8 @@ function conversionRows(conversion: V5Conversion, homeDir: string): ReportKvRow[
     if (items.length > 0) rows.push({ key, value: v5KeysText(items.map((item) => item.key)) });
   }
   if (conversion.notes.length > 0) {
-    rows.push({ key: "conversion_notes", value: `${conversion.notes.length} not shown` });
+    const codes = conversion.notes.map((note) => codeOf(CONVERSION_NOTE_CODES, note) ?? "(other)");
+    rows.push({ key: "conversion_notes", value: codes.join(", ") });
   }
   return rows;
 }
@@ -617,10 +595,16 @@ function credentialSourceSection(diagnostics: CredentialSourceDiagnostics): Repo
   ]);
 }
 
-/** A decimal as the number it is: "4.50" → "4.5". */
+const COMPACT = new Intl.NumberFormat("en-US", {
+  notation: "compact",
+  maximumSignificantDigits: 3,
+});
+
+/** A decimal in three significant digits ("4.5", "1.23K", "123T"): no long number shows. */
 function numberText(decimal: string): string {
   const value = Number(decimal);
-  return Number.isFinite(value) ? String(value) : "(not a number)";
+  if (!Number.isFinite(value)) return "(not a number)";
+  return Math.abs(value) < 1e15 ? COMPACT.format(value) : "(out of range)";
 }
 
 /** "4.5 USD", "12 request"; a unit this plugin does not name shows as a placeholder. */
@@ -629,7 +613,7 @@ function amountText(amount: Amount): string {
   let unitText = "(custom unit)";
   if (unit.kind === "currency") unitText = CURRENCIES.has(unit.code) ? unit.code : "(currency)";
   else if (unit.kind === "count") {
-    unitText = Object.hasOwn(COUNT_UNITS, unit.unit) ? unit.unit : "(unit)";
+    unitText = Object.hasOwn(COUNT_LABELS, unit.unit) ? unit.unit : "(unit)";
   }
   return `${numberText(amount.decimal)} ${unitText}`;
 }
@@ -643,14 +627,15 @@ function rowFacts(row: QuotaRow): string {
   if (row.window !== undefined) {
     parts.push(isQuotaWindow(row.window) ? `window=${row.window}` : "window=(other)");
   }
-  if (typeof row.percentRemaining === "number" && Number.isFinite(row.percentRemaining)) {
-    parts.push(`${Math.round(row.percentRemaining)}% left`);
+  if (typeof row.percentRemaining === "number") {
+    const percent = inRange(Math.round(row.percentRemaining), 0, 100);
+    parts.push(percent === "(out of range)" ? "percent (out of range)" : `${percent}% left`);
   }
   if (row.used && row.limit) parts.push(`${numberText(row.used.decimal)}/${amountText(row.limit)}`);
   if (row.amount) parts.push(amountText(row.amount));
   if (row.flag !== undefined) parts.push(row.flag ? "yes" : "no");
   if (row.text !== undefined) parts.push("text not shown");
-  if (row.resetsAt !== undefined) parts.push(`resets ${isoText(Date.parse(row.resetsAt))}`);
+  if (row.resetsAt !== undefined) parts.push(`resets ${dateText(row.resetsAt)}`);
   return parts.join(", ");
 }
 
@@ -665,7 +650,7 @@ function rowIdText(
 ): string {
   const [providerId = "", ...keyParts] = row.id.split(".");
   if (!PROVIDER_IDS.has(providerId)) return "(other row)";
-  const patterns = REPORT_ROW_KEYS[providerId as CanonicalQuotaProviderId].map((key) =>
+  const patterns = PROVIDER_ROW_KEYS[providerId as CanonicalQuotaProviderId].map((key) =>
     key.split("."),
   );
   const pattern = patterns.find(
@@ -691,8 +676,9 @@ function errorText(error: QuotaError, providerId: string, nowMs: number): string
   if (!isErrorCode(error.code)) return "(unknown error code)";
   const tool =
     error.tool !== undefined && LOCAL_TOOLS.includes(error.tool) ? error.tool : undefined;
+  // A wait shows in minutes or hours: up to a week.
   const retryAtMs =
-    typeof error.retryAtMs === "number" && Number.isFinite(error.retryAtMs)
+    typeof error.retryAtMs === "number" && error.retryAtMs <= nowMs + 7 * 24 * 60 * 60 * 1000
       ? error.retryAtMs
       : undefined;
   const known: QuotaError = {
@@ -717,12 +703,15 @@ function providerState(provider: ProviderSnapshot, nowMs: number): string {
   return provider.rows.length > 0 ? `partial: ${words}` : `error: ${words}`;
 }
 
+/** Where a debug value is shown: the home dir, and the env variables its provider reads. */
+type DetailContext = { homeDir: string; envNames: readonly string[] };
+
 /**
  * A debug value's rule: the value as shown, or undefined when it is not one the rule allows.
- * Every rule prints only members of its own set, numbers and times it formats, known env
- * variable names and known paths.
+ * Every rule prints only members of its own set, numbers and times it formats in their range,
+ * its provider's own env variable names and known paths.
  */
-type DebugRule = (value: string, homeDir: string) => string | undefined;
+type DebugRule = (value: string, context: DetailContext) => string | undefined;
 type DebugRules = Readonly<Record<string, DebugRule>>;
 
 /** Shown as they are for any allowed key. */
@@ -739,26 +728,44 @@ function listOf(values: Iterable<string>): DebugRule {
   return (value) => (value.split(",").every((item) => allowed.has(item)) ? value : undefined);
 }
 
+/** The same rule for each named key. */
+function each(rule: DebugRule, ...keys: readonly string[]): DebugRules {
+  return Object.fromEntries(keys.map((key) => [key, rule]));
+}
+
 const bool: DebugRule = oneOf("true", "false");
 
 /** An error or message key: that it is set, never its words. */
 const present: DebugRule = () => "(text not shown)";
 
-/** A whole number, written with or without commas. */
-const count: DebugRule = (value) => {
-  const plain = value.replaceAll(",", "");
-  return /^\d{1,15}$/u.test(plain) ? String(Number(plain)) : undefined;
+/** A name the user chose (an organization, an enterprise): that it is set, never the name. */
+const setOrNot: DebugRule = (value) => (value.trim() ? "set" : "not set");
+
+/** A whole number from `min` to `max`, written with or without commas. */
+function whole(min: number, max: number): DebugRule {
+  return (value) => {
+    const plain = value.replaceAll(",", "");
+    return /^\d+$/u.test(plain) ? inRange(Number(plain), min, max) : undefined;
+  };
+}
+
+/** Accounts, models and state versions: a few at most. */
+const count = whole(0, 999);
+
+const time: DebugRule = dateText;
+
+/** A month ("2026-10") from 2000 to 2099. */
+const month: DebugRule = (value) => {
+  if (!/^\d{4}-\d{2}$/u.test(value)) return undefined;
+  return dateText(`${value}-01`) === "(invalid date)" ? "(invalid date)" : value;
 };
 
-const time: DebugRule = (value) => {
-  const shown = isoText(Date.parse(value));
-  return shown === "(none)" ? undefined : shown;
-};
-
-/** "2.1.3": the first three numbers of a version, as numbers. */
+/** "2.1.3": the first three numbers of a version, each up to 999. */
 const version: DebugRule = (value) => {
-  const match = /^(\d{1,6})\.(\d{1,6})\.(\d{1,6})/u.exec(value);
-  return match ? match.slice(1, 4).map(Number).join(".") : undefined;
+  const match = /^(\d+)\.(\d+)\.(\d+)/u.exec(value);
+  if (!match) return undefined;
+  const parts = match.slice(1, 4).map(Number);
+  return parts.every((part) => part <= 999) ? parts.join(".") : "(out of range)";
 };
 
 const status: DebugRule = (value) => {
@@ -766,27 +773,28 @@ const status: DebugRule = (value) => {
   return shown === undefined ? undefined : String(shown);
 };
 
-/** A file path, or `env:NAME`. */
-function pathOrEnv(value: string, homeDir: string): string {
-  return value.startsWith("env:") ? envText(value.slice(4)) : pathText(value, homeDir);
+/** A file path, or `env:NAME` for a variable its provider reads (`env:(other)` for any other). */
+function pathOrEnv(value: string, { homeDir, envNames }: DetailContext): string {
+  if (!value.startsWith("env:")) return pathText(value, homeDir);
+  return envNames.includes(value.slice(4)) ? value : "env:(other)";
 }
 
 /** Paths joined by " | ". */
-const pathList: DebugRule = (value, homeDir) =>
+const pathList: DebugRule = (value, context) =>
   value
     .split(" | ")
-    .map((path) => pathOrEnv(path, homeDir))
+    .map((path) => pathOrEnv(path, context))
     .join(" | ");
 
 /** Where an API key came from: `env:NAME`, a config file name, or a path. */
-const keySource: DebugRule = (value, homeDir) =>
-  KEY_FILE_SOURCES.has(value) ? value : pathOrEnv(value, homeDir);
+const keySource: DebugRule = (value, context) =>
+  KEY_FILE_SOURCES.has(value) ? value : pathOrEnv(value, context);
 
 /** The Claude CLI's arguments this plugin passes. */
 const CLAUDE_ARGS: ReadonlySet<string> = new Set(["--version", "auth", "status", "--json"]);
 
 /** Claude CLI command lines joined by " | ": the program as a path, then known arguments. */
-const claudeCommands: DebugRule = (value, homeDir) =>
+const claudeCommands: DebugRule = (value, { homeDir }) =>
   value
     .split(" | ")
     .map((command) => {
@@ -810,12 +818,12 @@ const claudeCommands: DebugRule = (value, homeDir) =>
  */
 function fields(rules: DebugRules, head?: DebugRule): DebugRule {
   const pattern = new RegExp(`(?:^| )(${Object.keys(rules).join("|")})=`, "gu");
-  return (value, homeDir) => {
+  return (value, context) => {
     const matches = [...value.matchAll(pattern)];
     const headText = value.slice(0, matches[0]?.index ?? value.length);
     const shown: string[] = [];
     if (headText) {
-      const text = head?.(headText, homeDir);
+      const text = head?.(headText, context);
       if (text === undefined) return undefined;
       shown.push(text);
     }
@@ -823,7 +831,7 @@ function fields(rules: DebugRules, head?: DebugRule): DebugRule {
       const name = match[1] ?? "";
       const start = match.index + match[0].length;
       const end = matches[index + 1]?.index ?? value.length;
-      const text = ruleValue(rules[name], value.slice(start, end), homeDir);
+      const text = ruleValue(rules[name], value.slice(start, end), context);
       if (text === undefined) return undefined;
       shown.push(`${name}=${text}`);
     }
@@ -831,61 +839,46 @@ function fields(rules: DebugRules, head?: DebugRule): DebugRule {
   };
 }
 
-function ruleValue(rule: DebugRule | undefined, value: string, homeDir: string) {
+function ruleValue(rule: DebugRule | undefined, value: string, context: DetailContext) {
   if (!rule) return undefined;
-  return NO_VALUES.has(value) ? value : rule(value, homeDir);
+  return NO_VALUES.has(value) ? value : rule(value, context);
 }
 
+/**
+ * How a provider that reads an API key (one with env variables) looked for it, as the key
+ * resolver writes it, with or without a stored login's state.
+ */
 const API_KEY_DETAILS: DebugRules = {
   api_key_configured: oneOf("true", "false", "unreadable"),
   api_key_source: keySource,
-  api_key_checked_paths: pathList,
-  api_key_credential_database_paths: pathList,
-};
-const API_KEY_LOGIN_DETAILS: DebugRules = {
-  ...API_KEY_DETAILS,
+  ...each(pathList, "api_key_checked_paths", "api_key_credential_database_paths"),
   auth_state: oneOf("none", "configured", "invalid"),
-  auth_error: present,
-  live_fetch_error: present,
+  ...each(present, "auth_error", "live_fetch_error"),
 };
 /** Synthetic and Chutes write their key lookup as one value. */
-const API_KEY_SUMMARY_DETAILS: DebugRules = {
-  ...API_KEY_DETAILS,
-  api_key_diagnostics: fields({ configured: bool, source: keySource, checked: pathList }),
-};
+const KEY_SUMMARY: DebugRule = fields({ configured: bool, source: keySource, checked: pathList });
 const GOOGLE_DETAILS: DebugRules = {
   auth_state: oneOf("missing", "present", "invalid"),
   auth_source: oneOf(...AGY_AUTH_KEYS, ...GEMINI_CLI_AUTH_KEYS),
-  account_count: count,
-  valid_account_count: count,
+  ...each(count, "account_count", "valid_account_count"),
   companion_package_state: oneOf("present", "missing", "invalid"),
   companion_package_path: pathList,
   auth_error: present,
 };
 const STATE_HEALTH = ["missing", "healthy", "malformed", "version_mismatch"] as const;
 const CONSOLE_AUTH_STATES = ["none", "configured", "expired", "invalid"] as const;
-const NODE_PLATFORMS = [
-  "aix",
-  "android",
-  "cygwin",
-  "darwin",
-  "freebsd",
-  "haiku",
-  "linux",
-  "netbsd",
-  "openbsd",
-  "sunos",
-  "win32",
-] as const;
 
-/** The debug details each provider's section may show, by key; every other one is counted. */
-const DEBUG_DETAILS: Readonly<Record<CanonicalQuotaProviderId, DebugRules>> = {
+/**
+ * The debug details each provider's section may show besides its setup and API-key details,
+ * by key; every other one is counted.
+ */
+const DEBUG_DETAILS: Readonly<Partial<Record<CanonicalQuotaProviderId, DebugRules>>> = {
   anthropic: {
-    cli_installed: bool,
+    ...each(bool, "cli_installed", "quota_supported"),
     cli_version: version,
-    binary_path: (value, homeDir) => (value === "claude (PATH)" ? value : pathText(value, homeDir)),
+    binary_path: (value, { homeDir }) =>
+      value === "claude (PATH)" ? value : pathText(value, homeDir),
     auth_status: oneOf("authenticated", "unauthenticated", "unknown"),
-    quota_supported: bool,
     quota_source: oneOf(
       "claude-auth-status-json",
       "claude-credentials-oauth-api",
@@ -896,13 +889,14 @@ const DEBUG_DETAILS: Readonly<Record<CanonicalQuotaProviderId, DebugRules>> = {
   },
   copilot: {
     pat_state: oneOf("absent", "invalid", "valid"),
-    pat_path: pathList,
+    ...each(pathList, "pat_path", "pat_checked_paths"),
     pat_token_kind: oneOf("github_pat", "ghp", "ghu", "ghs", "other"),
     pat_tier: oneOf("free", "student", "pro", "pro+", "max", "business", "enterprise"),
+    ...each(setOrNot, "pat_organization", "pat_enterprise"),
     billing_model: oneOf("ai_credits", "legacy_premium_requests"),
     deployment: oneOf("github.com", "ghe.com", "invalid", "none"),
-    api_host: oneOf("api.github.com"),
-    enterprise_host_source: oneOf("pat", "oauth", "none"),
+    api_host: (value) => (value === "api.github.com" ? value : "github enterprise (custom host)"),
+    ...each(oneOf("pat", "oauth", "none"), "enterprise_host_source", "effective_source"),
     billing_mode: oneOf("user_quota", "organization_usage", "enterprise_usage", "none"),
     billing_scope: oneOf("user", "organization", "enterprise", "none"),
     quota_api: oneOf(
@@ -921,12 +915,11 @@ const DEBUG_DETAILS: Readonly<Record<CanonicalQuotaProviderId, DebugRules>> = {
       "reported_by_copilot_internal_user",
       "unavailable",
     ),
-    pat_checked_paths: pathList,
+    billing_period: month,
     oauth_configured: fields(
       { key: oneOf(...COPILOT_AUTH_KEYS), refresh: bool, access: bool, enterprise_host: bool },
       bool,
     ),
-    effective_source: oneOf("pat", "oauth", "none"),
     oauth_accounting_state: oneOf(
       "available_via_copilot_internal_user",
       "invalid_enterprise_host",
@@ -941,96 +934,61 @@ const DEBUG_DETAILS: Readonly<Record<CanonicalQuotaProviderId, DebugRules>> = {
     token_status: oneOf("api key", "failed", "expired", "valid"),
     token_expires_at: time,
   },
-  openrouter: API_KEY_DETAILS,
-  kilo: {
-    ...API_KEY_DETAILS,
-    accounting_mode: oneOf("kilo_pass", "gateway_balance"),
-    reset_at: time,
-  },
+  kilo: { accounting_mode: oneOf("kilo_pass", "gateway_balance"), reset_at: time },
   cursor: {
     plan: oneOf("Pro", "Pro Plus", "Ultra", "none"),
-    billing_cycle_start_day: (value) => (value === "(calendar month)" ? value : count(value, "")),
+    billing_cycle_start_day: (value, context) =>
+      value === "(calendar month)" ? value : whole(1, 31)(value, context),
     auth_state: oneOf("missing", "present", "invalid"),
     auth_error: present,
     auth_selected_path: keySource,
-    auth_present_paths: pathList,
-    auth_candidate_paths: pathList,
-    plugin_enabled: bool,
+    ...each(pathList, "auth_present_paths", "auth_candidate_paths"),
+    ...each(pathList, "config_matches", "config_checked_paths"),
+    ...each(bool, "plugin_enabled", "provider_configured"),
     canonical_plugin_package: oneOf(CURSOR_CANONICAL_PLUGIN_PACKAGE),
-    provider_configured: bool,
-    config_matches: pathList,
-    config_checked_paths: pathList,
     cycle_source: oneOf("configured_day", "calendar_month"),
     cycle_reset_at: time,
     unknown_cursor_models: count,
   },
   "alibaba-coding-plan": {
-    ...API_KEY_LOGIN_DETAILS,
-    "alibaba auth configured": bool,
+    ...each(bool, "alibaba auth configured", "local_state_exists"),
     alibaba_api_key_source: keySource,
-    alibaba_api_key_checked_paths: pathList,
+    ...each(pathList, "alibaba_api_key_checked_paths", "local_state_path"),
     alibaba_api_key_credential_database_paths: pathList,
     alibaba_coding_plan: oneOf("lite", "pro", "invalid"),
-    local_state_path: pathList,
-    local_state_exists: bool,
     local_state_health: oneOf(...STATE_HEALTH),
     local_state_version: count,
     local_state_last_update: time,
   },
   "alibaba-token-plan": {
     cli_available: bool,
-    platform: oneOf(...NODE_PLATFORMS),
+    // The provider writes the platform this report runs on.
+    platform: oneOf(process.platform),
     windows: listOf(["5h", "weekly"]),
-    failure_kind: oneOf(
-      "unsupported_platform",
-      "executable_not_found",
-      "shell_launcher_rejected",
-      "workspace_path_rejected",
-      "spawn_failed",
-      "timeout",
-      "output_truncated",
-      "nonzero_exit",
-      "not_authenticated",
-      "invalid_json",
-      "invalid_schema",
-      "no_data",
-    ),
+    failure_kind: oneOf(...Object.keys(ALIBABA_TOKEN_PLAN_ERRORS)),
   },
-  synthetic: API_KEY_SUMMARY_DETAILS,
-  chutes: API_KEY_SUMMARY_DETAILS,
+  synthetic: { api_key_diagnostics: KEY_SUMMARY },
+  chutes: { api_key_diagnostics: KEY_SUMMARY },
   "google-gemini-cli": GOOGLE_DETAILS,
   "google-agy": GOOGLE_DETAILS,
-  zai: API_KEY_LOGIN_DETAILS,
-  zhipu: API_KEY_LOGIN_DETAILS,
   nanogpt: {
-    ...API_KEY_DETAILS,
-    subscription_active: bool,
-    enforce_daily_limit: bool,
-    billing_period_end: time,
-    grace_until: time,
+    ...each(bool, "subscription_active", "enforce_daily_limit"),
+    subscription_state: oneOf("active", "grace", "inactive"),
+    ...each(time, "billing_period_end", "grace_until"),
+    ...each(present, "live_error_usage", "live_error_balance"),
   },
-  "minimax-coding-plan": {
-    ...API_KEY_LOGIN_DETAILS,
-    api_endpoint: oneOf("international", "china"),
-  },
-  "minimax-china-coding-plan": {
-    ...API_KEY_LOGIN_DETAILS,
-    api_endpoint: oneOf("international", "china"),
-  },
-  "kimi-code-plan-global": { ...API_KEY_LOGIN_DETAILS, api_endpoint: oneOf("global", "cn") },
-  "kimi-code-plan-cn": { ...API_KEY_LOGIN_DETAILS, api_endpoint: oneOf("global", "cn") },
-  deepseek: API_KEY_DETAILS,
-  xai: {},
+  "minimax-coding-plan": { api_endpoint: oneOf("international", "china") },
+  "minimax-china-coding-plan": { api_endpoint: oneOf("international", "china") },
+  "kimi-code-plan-global": { api_endpoint: oneOf("global", "cn") },
+  "kimi-code-plan-cn": { api_endpoint: oneOf("global", "cn") },
   xiaomi: {
     config_state: oneOf("none", "configured", "invalid"),
     config_source: keySource,
     config_checked_paths: pathList,
   },
   "opencode-go": {
-    ...API_KEY_LOGIN_DETAILS,
     auth_source: keySource,
-    auth_checked_paths: pathList,
-    credential_database_paths: pathList,
+    ...each(pathList, "auth_checked_paths", "credential_database_paths"),
     console_auth_state: oneOf(...CONSOLE_AUTH_STATES),
     console_error: present,
     go_source: oneOf("console", "legacy_key"),
@@ -1043,8 +1001,6 @@ const DEBUG_DETAILS: Readonly<Record<CanonicalQuotaProviderId, DebugRules>> = {
     auto_reload: bool,
     live_fetch_error: present,
   },
-  "ollama-cloud": API_KEY_DETAILS,
-  "quota-providers": {},
 };
 
 /** Every section may show whether OpenCode lists the provider ("yes found=openai"). */
@@ -1096,12 +1052,14 @@ function debugRows(
   customs: ReadonlyMap<string, number>,
   homeDir: string,
 ): ReportKvRow[] {
+  const id = provider.providerId;
+  const envNames = Object.hasOwn(KEY_VENDORS, id) ? (KEY_VENDORS[id]?.envVars ?? []) : [];
   const rules: DebugRules = {
     ...SETUP_DETAILS,
-    ...(PROVIDER_IDS.has(provider.providerId)
-      ? DEBUG_DETAILS[provider.providerId as CanonicalQuotaProviderId]
-      : {}),
+    ...(envNames.length > 0 ? API_KEY_DETAILS : {}),
+    ...(PROVIDER_IDS.has(id) ? DEBUG_DETAILS[id as CanonicalQuotaProviderId] : {}),
   };
+  const context: DetailContext = { homeDir, envNames };
   const rows: ReportKvRow[] = [];
   let hidden = 0;
   for (const item of provider.debug) {
@@ -1111,7 +1069,7 @@ function debugRows(
       : Object.hasOwn(rules, item.key)
         ? rules[item.key]
         : undefined;
-    const value = ruleValue(rule, item.value, homeDir);
+    const value = ruleValue(rule, item.value, context);
     if (value === undefined) hidden += 1;
     else rows.push({ key: customKey ?? item.key, value });
   }
@@ -1219,13 +1177,6 @@ const PRICING_SOURCE_NAMES: Readonly<Record<string, string>> = {
   bundled: "bundled",
   runtime: "downloaded",
 };
-const REFRESH_RESULTS = new Set([
-  "success",
-  "not_modified",
-  "skipped_fresh",
-  "skipped_throttled",
-  "failed",
-]);
 const PRICING_SELECTIONS = new Set(["auto", "bundled", "runtime"]);
 
 /** The active price list as fixed words: where it came from, its date and its units. */
@@ -1286,8 +1237,8 @@ async function pricingSection(
     },
   );
   if (refreshState) {
-    const lastResult = refreshState.lastResult;
-    const result = lastResult && REFRESH_RESULTS.has(lastResult) ? lastResult : "(none)";
+    // The reader keeps only the results it knows.
+    const result = refreshState.lastResult ?? "(none)";
     rows.push({
       key: "refresh",
       value: `last_attempt_at=${isoText(refreshState.lastAttemptAt)} last_success_at=${isoText(refreshState.lastSuccessAt)} last_failure_at=${isoText(refreshState.lastFailureAt)} last_result=${result}`,

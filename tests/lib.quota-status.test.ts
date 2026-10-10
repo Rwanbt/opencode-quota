@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -23,8 +23,10 @@ import type { QuotaProviderDefinition } from "../src/lib/quota-providers.js";
 import {
   buildQuotaStatusReport,
   buildQuotaStatusReportDocument,
+  KNOWN_ABSOLUTE_PATHS,
+  KNOWN_FILE_NAMES,
+  KNOWN_PATH_PARTS,
   type QuotaStatusReportParams,
-  REPORT_ROW_KEYS,
 } from "../src/lib/quota-status.js";
 import { getPackageVersion } from "../src/lib/version.js";
 import { chutesProvider } from "../src/providers/chutes.js";
@@ -168,6 +170,293 @@ function remoteDefinition(
   } as QuotaProviderDefinition;
 }
 
+/** Splits a printed line into its words; a path, a row id or a sentence is several. */
+const WORD_SPLIT = /[\s,|=:()/\\;.…"'`{}<>$+[\]]+/u;
+/** Any ISO-shaped time, also one before 2000 or after 2099. */
+const ANY_ISO_TIME = /[+-]?\d{4,6}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z/gu;
+/** A secret of digits only: no number the report prints may hold it. */
+const DIGITS = "987654321098765";
+/** Texts that look like a time but are none the report may print. */
+const DATE_LIKE = [
+  "987654",
+  "20261011",
+  "2026-13-45",
+  "+275760-09-13T00:00:00.000Z",
+  "1999-12-31T23:59:59.999Z",
+  "2100-01-01T00:00:00.000Z",
+];
+/** Secrets that are also words of the report: each may show only where that word belongs. */
+const KNOWN_WORD_SECRETS = [
+  "anthropic",
+  "opencode",
+  "present",
+  "true",
+  "set",
+  "five_hour",
+  "settings.jsonc",
+  "OPENROUTER_API_KEY",
+];
+
+/** The report's own fixed words: its keys, states, codes and the words of its sentences. */
+const REPORT_WORDS: readonly string[] = `
+  - Couldn Local Provider Rate a account account_count active age_ms and api_host
+  api_key_checked_paths api_key_diagnostics api_key_source are arg at auth_selected_path
+  auth_source auth_state auto auto_refresh_days billing_cycle_start_day binary_path bundled
+  bundled_only check checked_at checked_commands checked_paths cli_version code config_source
+  configured conversion conversion_converted conversion_dropped conversion_invalid
+  conversion_notes converted credential_source currency currentModel custom_provider
+  cycle_reset_at data date debug details downloaded dropped enabledProviders enterprise env
+  error exists experimental expired failures false file files found from future generated_at
+  github global history home_frequency host http http_error http_status id in integration
+  internal invalid jsonc_used_over_json left limited line list list_error live_error_usage
+  local_state_path local_tool maintainer_announcements matchesCurrentModel max_age_ms memory
+  missing models more network no none not not_read number oauth_configured of ok on
+  opencode-integration-api opencode_db opencode_dirs opencode_provider other out outcome part
+  partial pat_enterprise pat_organization pat_path paths per present price pricing_snapshot
+  project-scope project_settings provider provider_error quotaProviders quotaToast range
+  rate_limited read refresh refresh_failed refresh_policy refresh_state remote-api resets
+  retry row rows runtime_paths selected_windows selection set settings_file settings_issue
+  shown snapshot stale staleness success syntax t text the token token_expires_at tokens tool
+  true unbound unit units unknown unpriced unpriced_30d usage v5 value window workspace_root
+  written yes yet ~
+`.split(/\s+/u);
+
+/**
+ * Every word the report may print: the members of the sets it reads (provider ids and labels,
+ * OpenCode's ids, row keys, setting keys, env variable names, path parts, windows, currencies,
+ * login keys) and the report's own fixed words. A provider's text, a label or a path never is one.
+ */
+function reportVocabulary(): Set<string> {
+  const members = [
+    ...Object.keys(QUOTA_PROVIDER_CATALOG),
+    ...Object.values(QUOTA_PROVIDER_CATALOG).map((entry) => entry.label),
+    ...Object.values(QUOTA_PROVIDER_RUNTIME_IDS).flat(),
+    ...Object.keys(SETTINGS_SCHEMA),
+    ...[...Object.values(API_KEY_VENDORS), ...Object.values(API_KEY_LOGIN_VENDORS)].flatMap(
+      (vendor) => vendor.envVars,
+    ),
+    "OPENROUTER_API_KEY",
+    "CURSOR_API_KEY",
+    "MIMO_USAGE_COOKIE",
+    ...Object.values(PROVIDER_ROW_KEYS).flat(),
+    ...KNOWN_PATH_PARTS,
+    ...KNOWN_FILE_NAMES,
+    ...KNOWN_ABSOLUTE_PATHS,
+    ...COPILOT_AUTH_KEYS,
+    ...AGY_AUTH_KEYS,
+    ...GEMINI_CLI_AUTH_KEYS,
+    ...OPENAI_AUTH_SOURCE_KEYS,
+    CURSOR_CANONICAL_PLUGIN_PACKAGE,
+    ...Object.keys(WINDOWS),
+    ...Intl.supportedValuesOf("currency"),
+    KNOWN_MODEL,
+    ...REPORT_WORDS,
+  ];
+  return new Set(members.flatMap((text) => text.split(WORD_SPLIT)));
+}
+
+const DATE = String.raw`20\d\d-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z`;
+const TIME = String.raw`(?:${DATE}|\(none\)|\(invalid date\))`;
+/** A whole number this report counts: rows, accounts, parts, details, keys. */
+const SMALL = String.raw`\d{1,3}`;
+const RANGED = String.raw`(?:${SMALL}|\(out of range\))`;
+/** Three significant digits at most, then K, M, B or T. */
+const AMOUNT = String.raw`(?:-?\d{1,3}(?:\.\d{1,2})?[KMBT]?|-?0\.0*[1-9]\d{0,2}|\(not a number\)|\(out of range\))`;
+const UNIT = String.raw`(?:[\w-]+|\((?:custom unit|currency|unit)\))`;
+const ROW_FACT = String.raw`(?:window=\S+|${SMALL}% left|percent \(out of range\)|${AMOUNT}/${AMOUNT} ${UNIT}|${AMOUNT} ${UNIT}|yes|no|text not shown|resets ${TIME})`;
+const ROW_ID = String.raw`(?:\(other row\)|[\w-]+(?:\.(?:[\w-]+|\((?:part|custom) ${SMALL}\)|\(other row\)))*)`;
+
+/**
+ * Every form of a line that has a number, by its field: each number is one this report
+ * formats, in that field's range. A line with any other number is a leak.
+ */
+const NUMBER_LINES: readonly RegExp[] = [
+  String.raw`- settings_issue: \S+: syntax error on line ${RANGED}`,
+  String.raw`- settings_issue: ${SMALL} unknown keys?`,
+  String.raw`- conversion: from .+ \(${SMALL} converted, ${SMALL} dropped, ${SMALL} invalid\); .+`,
+  String.raw`- conversion_\w+: .*\(\+${SMALL} unknown keys?\)|- conversion_\w+: ${SMALL} unknown keys?`,
+  String.raw`- enabledProviders: .+ \(\+${SMALL} unknown ids?\)`,
+  String.raw`- custom_provider: custom ${SMALL} (?:off .+|\([\w-]+, (?:${SMALL} models?|all models)(?:, tunes [\w-]+)?\))`,
+  String.raw`- (?:active|future|expired): ${SMALL}`,
+  String.raw`- (?:checked_at|token_expires_at|cycle_reset_at|reset_at|billing_period_end|grace_until|local_state_last_update): ${TIME}(?: \(rows from ${TIME}\))?`,
+  String.raw`- (?:list_error|failures): .*`,
+  String.raw`- state: (?:error|partial): [^()]*\((?:[\w ]+|[\w_]+, http \d{3})\)`,
+  String.raw`- rows: ${SMALL}`,
+  String.raw`  - ${ROW_ID}(?: \(account ${SMALL}\))?: ${ROW_FACT}(?:, ${ROW_FACT})*`,
+  String.raw`  - … \(${SMALL} more\)`,
+  String.raw`- ${SMALL} other details? not shown`,
+  String.raw`- (?:account_count|valid_account_count|unknown_cursor_models|local_state_version): ${RANGED}`,
+  String.raw`- billing_cycle_start_day: (?:\d{1,2}|\(out of range\))`,
+  String.raw`- cli_version: (?:${SMALL}\.${SMALL}\.${SMALL}|\(out of range\))`,
+  String.raw`- billing_period: (?:20\d\d-\d\d|\(invalid date\))`,
+  String.raw`- custom ${SMALL} check: .*`,
+  String.raw`- pricing: source=\w+ generated_at=${TIME} units=(?:USD per 1M tokens|\(other units\))`,
+  String.raw`- staleness: age_ms=[\d,]+ max_age_ms=[\d,]+ stale=(?:true|false)`,
+  String.raw`- refresh_policy: auto_refresh_days=\d{1,4}`,
+  String.raw`- refresh: last_attempt_at=${TIME} last_success_at=${TIME} last_failure_at=${TIME} last_result=\S+`,
+  String.raw`- providers: \d{1,4}`,
+  String.raw`- unpriced_30d: \d{1,3}\.\d% of ${AMOUNT} tokens`,
+  String.raw`  - [\w.-]+/[\w.-]+: ${AMOUNT} tokens`,
+  String.raw`  - … \(${SMALL} more unpriced models?\)`,
+].map((form) => new RegExp(`^(?:${form})$`, "u"));
+
+const NO_VALUE = String.raw`\(none\)|\(unknown\)|unknown`;
+const PATH = String.raw`(?:~(?:/[^\s/|]+)*|\(custom path\)(?:/[^\s/|]+)?)`;
+
+/**
+ * Lines whose whole form is fixed, number or not: which lines, and the form. A secret that is
+ * also a known word shows in none of these fields.
+ */
+const FIELD_FORMS: ReadonlyArray<readonly [RegExp, RegExp]> = (
+  [
+    [
+      /^ {2}- /u,
+      String.raw`  - ${ROW_ID}(?: \(account ${SMALL}\))?: ${ROW_FACT}(?:, ${ROW_FACT})*|  - … \(${SMALL} more\)|  - [\w.-]+/[\w.-]+: ${AMOUNT} tokens|  - … \(${SMALL} more unpriced models?\)`,
+    ],
+    [
+      /^- custom_provider: /u,
+      String.raw`- custom_provider: custom ${SMALL} (?:off \(switch on in /quota_settings → Providers\)|\((?:remote-api|local-estimate), (?:${SMALL} models?|all models)(?:, tunes [\w-]+)?\))`,
+    ],
+    [
+      /^- currentModel: /u,
+      String.raw`- currentModel: (?:gpt-4\.1|\((?:a model not in the price list|error: session\.get returned no modelID|no session available|unknown)\))`,
+    ],
+    [/^- settings_file: /u, String.raw`- settings_file: ${PATH} \((?:exists|missing; .+)\)`],
+    [/^- workspace_root: /u, String.raw`- workspace_root: ${PATH}`],
+    [/^- pat_(?:organization|enterprise): /u, String.raw`- pat_\w+: (?:set|not set|${NO_VALUE})`],
+    [
+      /^- api_host: /u,
+      String.raw`- api_host: (?:api\.github\.com|github enterprise \(custom host\)|${NO_VALUE})`,
+    ],
+    [
+      /^- deployment: /u,
+      String.raw`- deployment: (?:github\.com|ghe\.com|invalid|none|${NO_VALUE})`,
+    ],
+    [
+      /^- auth_state: /u,
+      String.raw`- auth_state: (?:none|configured|invalid|missing|present|${NO_VALUE})`,
+    ],
+    [
+      /^- subscription_state: /u,
+      String.raw`- subscription_state: (?:active|grace|inactive|${NO_VALUE})`,
+    ],
+  ] as const
+).map(([lines, form]) => [lines, new RegExp(`^(?:${form})$`, "u")] as const);
+
+/**
+ * What a printed text breaks of the closed vocabulary: words that are no member, numbers in a
+ * line of no number form, times outside 2000 to 2099, and fields not in their fixed form.
+ * The heading is checked as the exact line it must be.
+ */
+function vocabularyProblems(
+  lines: readonly string[],
+  vocabulary: ReadonlySet<string>,
+  numberLines: readonly RegExp[],
+): string[] {
+  const problems: string[] = [];
+  for (const line of lines) {
+    for (const time of line.match(ANY_ISO_TIME) ?? []) {
+      if (!new RegExp(`^${DATE}$`, "u").test(time)) problems.push(`time ${time} in: ${line}`);
+    }
+    const words = line.replace(ANY_ISO_TIME, " ").split(WORD_SPLIT);
+    const unknown = words.filter((word) => word !== "" && !vocabulary.has(word));
+    const numbers = unknown.filter((word) => /\d/u.test(word));
+    for (const word of unknown) {
+      if (!/^-?\d+[%KMBTmh]?$/u.test(word)) problems.push(`word ${word} in: ${line}`);
+    }
+    if (numbers.length > 0 && !numberLines.some((form) => form.test(line))) {
+      problems.push(`numbers ${numbers.join(" ")} in: ${line}`);
+    }
+    for (const [which, form] of FIELD_FORMS) {
+      if (which.test(line) && !form.test(line)) problems.push(`form of: ${line}`);
+    }
+  }
+  return problems;
+}
+
+/** Each env variable a provider section names is one that provider reads, or `env:(other)`. */
+function envProblems(text: string): string[] {
+  const vendors: Record<string, { envVars: readonly string[] }> = {
+    ...API_KEY_VENDORS,
+    ...API_KEY_LOGIN_VENDORS,
+    openrouter: { envVars: ["OPENROUTER_API_KEY"] },
+    cursor: { envVars: ["CURSOR_API_KEY"] },
+    xiaomi: { envVars: ["MIMO_USAGE_COOKIE"] },
+  };
+  return text.split("\n\n").flatMap((block) => {
+    const id = (block.split("\n")[0] ?? "").replace(/:$/u, "");
+    const allowed = ["(other)", ...(vendors[id]?.envVars ?? [])];
+    return [...block.matchAll(/env:(\S+?)(?=$|[\s|,])/gmu)]
+      .map((match) => match[1] ?? "")
+      .filter((name) => !allowed.includes(name))
+      .map((name) => `env:${name} in ${id}`);
+  });
+}
+
+/** The leaves of a JSON value as `path: value` lines. */
+function jsonLines(value: unknown, path = ""): string[] {
+  if (value !== null && typeof value === "object") {
+    return Object.entries(value).flatMap(([key, item]) => jsonLines(item, `${path}${key}.`));
+  }
+  return [`${path.slice(0, -1)}: ${String(value)}`];
+}
+
+/** A small seeded random source, so a failure can be run again. */
+function randomSource(seed: number): () => number {
+  let state = seed;
+  return () => {
+    state = (state + 0x6d2b79f5) | 0;
+    let t = Math.imul(state ^ (state >>> 15), 1 | state);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/**
+ * Random text for every free field: words with "zq" in them in many shapes (paths, env names,
+ * URLs, terminal escapes, `name=value` lists), 40-character hex tokens (kept to look for), the
+ * digit-only secret, date-like texts and secrets that are also words of the report.
+ */
+function garbageSource(seed: number) {
+  const random = randomSource(seed);
+  const pick = <T>(items: readonly T[]): T => items[Math.floor(random() * items.length)] as T;
+  const chars = (alphabet: string, length: number) =>
+    Array.from({ length }, () => pick([...alphabet])).join("");
+  const hex: string[] = [];
+  const word = () => `zq${chars("abcdefghijklmnopqrstuvwxyz0123456789", (4 + random() * 12) | 0)}`;
+  const garbage = (): string => {
+    const w = word();
+    const forms = [
+      () => w,
+      () => w.toUpperCase(),
+      () => `SK-${w}`,
+      () => `env:${w.toUpperCase()}_KEY`,
+      () => `env:${pick(["ZAI_API_KEY", "OPENROUTER_API_KEY", "MIMO_USAGE_COOKIE"])}`,
+      () => `~/${w}/opencode.db`,
+      () => join(root, w, "settings.jsonc"),
+      () => join(root, ".config", w, "auth.json"),
+      () => `${w}@example.com`,
+      () => `\u001b[31m${w}\u001b[0m`,
+      () => `https://${w}.example/v1?key=${w}`,
+      () => `outcome=success checked_paths=${w}`,
+      () => `yes found=openai,${w}`,
+      () => `true key=${w}`,
+      () => `${w} ${w}`,
+      () => DIGITS,
+      () => `${DIGITS}.1.2`,
+      () => pick(DATE_LIKE),
+      () => pick(KNOWN_WORD_SECRETS),
+      () => {
+        const token = chars("0123456789abcdef", 40);
+        hex.push(token);
+        return token;
+      },
+    ];
+    return pick(forms)();
+  };
+  return { random, pick, word, garbage, hex };
+}
+
 describe("buildQuotaStatusReport", () => {
   it("starts with the command, version and time; the dialog gets them as its subtitle", async () => {
     const version = await getPackageVersion();
@@ -250,10 +539,6 @@ describe("buildQuotaStatusReport", () => {
         "- expired: 1",
       ].join("\n"),
     );
-  });
-
-  it("has the row key ledger the provider tests check every adapter against", () => {
-    expect(REPORT_ROW_KEYS).toEqual(PROVIDER_ROW_KEYS);
   });
 
   it("shows a path made of known folders under the home dir as ~, and every other path as (custom path)", async () => {
@@ -702,7 +987,7 @@ describe("buildQuotaStatusReport", () => {
     {
       name: "an unknown window and reset time",
       canary: "lowercasecanary",
-      shows: "  - openai.weekly: window=(other), resets (none)",
+      shows: "  - openai.weekly: window=(other), resets (invalid date)",
       overrides: {
         providers: [
           snapshot("openai", {
@@ -754,7 +1039,7 @@ describe("buildQuotaStatusReport", () => {
     {
       name: "v5 source files, notes and a write failure",
       canary: "lowercasecanary",
-      shows: "- conversion_notes: 1 not shown",
+      shows: "- conversion_notes: (other)",
       overrides: {
         conversion: conversion({
           sources: ["/lowercasecanary/opencode.json (experimental.quotaToast)"],
@@ -801,111 +1086,30 @@ describe("buildQuotaStatusReport", () => {
     expect(text).not.toContain("secretcanary");
   });
 
-  /** Splits a printed value into its words; a path, a row id or a sentence is several. */
-  const WORD_SPLIT = /[\s,|=:()/\\;.…"'`{}<>$+[\]]+/u;
-  const ISO_TIME = /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z/gu;
-  const NUMBER = /^-?\d+(?:e\d+)?[%KMBmh]?$/u;
-
   /**
-   * Every word the report may print: the words of the files that build it, and of the tables
-   * they read (provider ids and labels, setting keys, env variable names, windows, currencies,
-   * the shipped price list's ids). A provider's text, a label or a path never is one.
-   */
-  function reportVocabulary(): Set<string> {
-    const files = [
-      "../src/lib/quota-status.ts",
-      "../src/core/errors.ts",
-      "../src/settings/convert.ts",
-      "../src/data/modelsdev-pricing.min.json",
-    ];
-    const tables = [
-      ...files.map((file) => readFileSync(new URL(file, import.meta.url), "utf8")),
-      ...Object.keys(QUOTA_PROVIDER_CATALOG),
-      ...Object.values(QUOTA_PROVIDER_CATALOG).map((entry) => entry.label),
-      ...Object.values(QUOTA_PROVIDER_RUNTIME_IDS).flat(),
-      ...Object.keys(SETTINGS_SCHEMA),
-      ...[...Object.values(API_KEY_VENDORS), ...Object.values(API_KEY_LOGIN_VENDORS)].flatMap(
-        (vendor) => vendor.envVars,
-      ),
-      ...COPILOT_AUTH_KEYS,
-      ...AGY_AUTH_KEYS,
-      ...GEMINI_CLI_AUTH_KEYS,
-      ...OPENAI_AUTH_SOURCE_KEYS,
-      CURSOR_CANONICAL_PLUGIN_PACKAGE,
-      ...Object.keys(WINDOWS),
-      ...Intl.supportedValuesOf("currency"),
-    ];
-    return new Set(["-", "~", ...tables.flatMap((text) => text.split(WORD_SPLIT))]);
-  }
-
-  /** The words of the report's lines (not its heading) that are no member and no number. */
-  function wordsOutsideVocabulary(output: string, vocabulary: ReadonlySet<string>): string[] {
-    return output
-      .split("\n")
-      .slice(1)
-      .flatMap((line) => line.replace(ISO_TIME, " ").split(WORD_SPLIT))
-      .filter((word) => word !== "" && !vocabulary.has(word) && !NUMBER.test(word));
-  }
-
-  /** A small seeded random source, so a failure can be run again. */
-  function randomSource(seed: number): () => number {
-    let state = seed;
-    return () => {
-      state = (state + 0x6d2b79f5) | 0;
-      let t = Math.imul(state ^ (state >>> 15), 1 | state);
-      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-    };
-  }
-
-  /**
-   * A big report where every free field holds random text: ids, labels, accounts, messages,
-   * paths, env names, model ids, setting keys, debug keys and values. Every random word has
-   * "zq" in it, and the 40-character hex tokens are kept to look for.
+   * A big report where every free field holds random text, and every number and time field a
+   * random, digit-only or out-of-range value: ids, labels, accounts, messages, paths, env names,
+   * model ids, setting keys, debug keys and values, amounts, percents, counts and times.
    */
   function fuzzedParams(seed: number): { params: QuotaStatusReportParams; hex: string[] } {
-    const random = randomSource(seed);
-    const pick = <T>(items: readonly T[]): T => items[Math.floor(random() * items.length)] as T;
-    const chars = (alphabet: string, length: number) =>
-      Array.from({ length }, () => pick([...alphabet])).join("");
-    const hex: string[] = [];
-    const word = () =>
-      `zq${chars("abcdefghijklmnopqrstuvwxyz0123456789", (4 + random() * 12) | 0)}`;
-    const garbage = (): string => {
-      const w = word();
-      const forms = [
-        () => w,
-        () => w.toUpperCase(),
-        () => `SK-${w}`,
-        () => `env:${w.toUpperCase()}_KEY`,
-        () => `~/${w}/opencode.db`,
-        () => join(root, w, "settings.jsonc"),
-        () => join(root, ".config", w, "auth.json"),
-        () => `${w}@example.com`,
-        () => `\u001b[31m${w}\u001b[0m`,
-        () => `https://${w}.example/v1?key=${w}`,
-        () => `outcome=success checked_paths=${w}`,
-        () => `yes found=openai,${w}`,
-        () => `true key=${w}`,
-        () => `${w} ${w}`,
-        () => {
-          const token = chars("0123456789abcdef", 40);
-          hex.push(token);
-          return token;
-        },
-      ];
-      return pick(forms)();
-    };
+    const { random, pick, word, garbage, hex } = garbageSource(seed);
+    const huge = Number(DIGITS);
     const validValues = [
       "true",
       "false",
       "configured",
       "present",
+      "active",
       "github.com",
+      "api.acme.ghe.com",
       "(none)",
       "2",
+      "12",
+      "2026-10",
+      "1.2.3",
       RESET,
       "env:ZAI_API_KEY",
+      "env:NANOGPT_API_KEY",
       "opencode.db",
       join(root, ".config", "opencode", "opencode.json"),
       "yes found=openai,codex",
@@ -922,14 +1126,24 @@ describe("buildQuotaStatusReport", () => {
       "checked_commands",
       "cli_version",
       "pat_path",
+      "pat_organization",
+      "pat_enterprise",
       "deployment",
       "api_host",
+      "billing_period",
       "opencode_provider",
       "oauth_configured",
       "api_key_diagnostics",
       "selected_windows",
       "token_expires_at",
+      "cycle_reset_at",
+      "account_count",
+      "unknown_cursor_models",
+      "billing_cycle_start_day",
+      "local_state_version",
       "local_state_path",
+      "subscription_state",
+      "live_error_usage",
       "config_source",
       "auth_selected_path",
       "error",
@@ -945,11 +1159,14 @@ describe("buildQuotaStatusReport", () => {
     );
     const providers = [...providerIds, garbage()].map((providerId) =>
       snapshot(providerId, {
-        checkedAtMs: NOW,
+        checkedAtMs: pick([NOW, huge, -1]),
         okAtMs: NOW - 1_000,
         error: pick([
           undefined,
           { code: "provider_error", status: 503, detail: garbage() },
+          { code: "provider_error", status: huge, detail: garbage() },
+          { code: "rate_limited", retryAtMs: NOW + huge },
+          { code: "rate_limited", retryAtMs: NOW + 90 * 60_000 },
           { code: garbage() as "internal", status: 999, detail: garbage() },
           { code: "local_tool", tool: garbage(), missing: true },
         ]),
@@ -959,9 +1176,15 @@ describe("buildQuotaStatusReport", () => {
             label: garbage(),
             text: garbage(),
             window: pick(["week", garbage()]) as "week",
-            percentRemaining: random() * 100,
-            used: { decimal: "1.5", unit: { kind: "count", unit: pick(["request", garbage()]) } },
-            limit: { decimal: "10", unit: { kind: "currency", code: pick(["USD", "ZQZ"]) } },
+            percentRemaining: pick([random() * 100, huge, -5, 250]),
+            used: {
+              decimal: pick(["1.5", DIGITS]),
+              unit: { kind: "count", unit: pick(["request", garbage()]) },
+            },
+            limit: {
+              decimal: pick(["10", DIGITS]),
+              unit: { kind: "currency", code: pick(["USD", "ZQZ"]) },
+            },
             amount: { decimal: garbage(), unit: { kind: "custom", symbol: garbage() } },
             resetsAt: pick([RESET, garbage()]),
           }),
@@ -989,7 +1212,7 @@ describe("buildQuotaStatusReport", () => {
             { key: garbage(), message: garbage() },
             { key: "providers.enabled", message: `unknown provider id(s): ${garbage()}` },
             { key: "words.percent", message: `expected ${garbage()}` },
-            { key: "$file", message: `syntax error on line 3: ${garbage()}` },
+            { key: "$file", message: `syntax error on line ${pick(["3", DIGITS])}: ${garbage()}` },
           ],
           notRead: [garbage(), garbage()],
         },
@@ -1001,7 +1224,10 @@ describe("buildQuotaStatusReport", () => {
             { key: garbage(), reason: garbage() },
           ],
           invalid: [{ key: `quotaProviders[0].${garbage()}`, reason: garbage() }],
-          notes: [garbage()],
+          notes: [
+            garbage(),
+            `${garbage()} was not converted: v5 used ${garbage()} when both exist`,
+          ],
           notWrittenReason: garbage(),
         }),
         workspaceRoot: garbage(),
@@ -1018,7 +1244,7 @@ describe("buildQuotaStatusReport", () => {
         credentialSource: {
           state: "bound",
           kind: "opencode-integration-api",
-          lastListError: { at: NOW, detail: garbage() },
+          lastListError: { at: pick([NOW, huge]), detail: garbage() },
           failures: [
             {
               integrationId: garbage(),
@@ -1026,15 +1252,15 @@ describe("buildQuotaStatusReport", () => {
               label: garbage(),
               category: "refresh_failed",
               detail: garbage(),
-              at: NOW,
+              at: pick([NOW, huge]),
             },
           ],
         },
         usage: {
-          totals: { tokens: { processed: 9_000 }, unpricedShare: 0.5 },
+          totals: { tokens: { processed: pick([9_000, huge]) }, unpricedShare: 0.5 },
           models: [
             { providerID: "openai", modelID: KNOWN_MODEL, priced: false, unpricedTokens: 3_000 },
-            { providerID: garbage(), modelID: garbage(), priced: false, unpricedTokens: 3_000 },
+            { providerID: garbage(), modelID: garbage(), priced: false, unpricedTokens: huge },
             { providerID: "openai", modelID: garbage(), priced: false, unpricedTokens: 3_000 },
           ],
         } as unknown as UsageReport,
@@ -1042,21 +1268,32 @@ describe("buildQuotaStatusReport", () => {
     };
   }
 
+  /** The exact first line: the report's title, this version and the generation time. */
+  async function headingLine(): Promise<string> {
+    const version = await getPackageVersion();
+    return `# Quota Status (opencode-quota v${version}) (/quota_status) ${formatLocalCallTimestamp(NOW)}`;
+  }
+
   it.each([
     { seed: 1 },
     { seed: 2 },
     { seed: 3 },
     { seed: 4 },
-  ])("prints only words of its own vocabulary, numbers and times (seed $seed)", async ({
+    { seed: 5 },
+    { seed: 6 },
+  ])("prints only words of its own vocabulary, and numbers and times in their field's form (seed $seed)", async ({
     seed,
   }) => {
-    const vocabulary = reportVocabulary();
     const { params: fuzzed, hex } = fuzzedParams(seed);
 
     const output = await buildQuotaStatusReport(fuzzed);
 
-    expect(wordsOutsideVocabulary(output, vocabulary)).toEqual([]);
+    const [heading, ...lines] = output.split("\n");
+    expect(heading).toBe(await headingLine());
+    expect.soft(vocabularyProblems(lines, reportVocabulary(), NUMBER_LINES)).toEqual([]);
+    expect.soft(envProblems(output)).toEqual([]);
     expect(output.toLowerCase()).not.toContain("zq");
+    expect(output.replaceAll(",", "")).not.toContain(DIGITS.slice(0, 8));
     for (const token of hex) expect(output).not.toContain(token);
     // The report still has its facts: known model, row ids, custom numbers.
     expect(output).toContain(`- currentModel: `);
@@ -1285,16 +1522,94 @@ describe("buildQuotaStatusReport", () => {
         "- alibaba auth configured: true\n- local_state_health: healthy",
       ],
     },
+    {
+      name: "a Copilot organization, enterprise, GHE host and month, and NanoGPT's subscription, in fixed words",
+      overrides: {
+        providers: [
+          snapshot("copilot", {
+            debug: [
+              { key: "pat_organization", value: "acme-private-org" },
+              { key: "pat_enterprise", value: "acme-private-ent" },
+              { key: "api_host", value: "api.acme-private.ghe.com" },
+              { key: "billing_period", value: "2026-10" },
+            ],
+          }),
+          snapshot("nanogpt", {
+            debug: [
+              { key: "subscription_state", value: "grace" },
+              { key: "live_error_usage", value: "HTTP 500 for alice" },
+              { key: "live_error_balance", value: "timeout" },
+            ],
+          }),
+        ],
+      },
+      title: "",
+      lines: [
+        "- pat_organization: set\n- pat_enterprise: set\n- api_host: github enterprise (custom host)",
+        "- billing_period: 2026-10",
+        "- subscription_state: grace\n- live_error_usage: (text not shown)\n- live_error_balance: (text not shown)",
+      ],
+      absent: ["acme", "alice"],
+    },
+    {
+      name: "numbers and times only in their range, and env variables only of their provider",
+      overrides: {
+        providers: [
+          snapshot("google-agy", { debug: [{ key: "account_count", value: DIGITS }] }),
+          snapshot("anthropic", { debug: [{ key: "cli_version", value: `${DIGITS}.1.2` }] }),
+          snapshot("cursor", { debug: [{ key: "billing_cycle_start_day", value: "45" }] }),
+          snapshot("copilot", { debug: [{ key: "billing_period", value: "1999-12" }] }),
+          snapshot("openai", {
+            checkedAtMs: NOW,
+            error: { code: "rate_limited", retryAtMs: NOW + Number(DIGITS) },
+            rows: [
+              row("openai.five_hour", {
+                percentRemaining: 250,
+                used: { decimal: DIGITS, unit: { kind: "count", unit: "request" } },
+                limit: { decimal: "1234.5", unit: { kind: "currency", code: "USD" } },
+                resetsAt: "987654",
+              }),
+            ],
+            debug: [{ key: "token_expires_at", value: "2100-01-01T00:00:00.000Z" }],
+          }),
+          snapshot("nanogpt", {
+            debug: [
+              { key: "api_key_source", value: "env:ZAI_API_KEY" },
+              { key: "api_key_checked_paths", value: "env:NANOGPT_API_KEY | env:ZAI_API_KEY" },
+            ],
+          }),
+        ],
+      },
+      title: "",
+      lines: [
+        "- account_count: (out of range)",
+        "- cli_version: (out of range)",
+        "- billing_cycle_start_day: (out of range)",
+        "- billing_period: (invalid date)",
+        "- state: partial: Rate limited (rate_limited)",
+        "  - openai.five_hour: percent (out of range), 988T/1.23K USD, resets (invalid date)",
+        "- token_expires_at: (invalid date)",
+        "- api_key_source: env:(other)\n- api_key_checked_paths: env:NANOGPT_API_KEY | env:(other)",
+      ],
+      absent: ["98765", "ZAI_API_KEY"],
+    },
   ] as Array<{
     name: string;
     overrides: Partial<QuotaStatusReportParams>;
     title: string;
     lines: string[];
-  }>)("still shows the facts a maintainer needs: $name", async ({ overrides, title, lines }) => {
+    absent?: string[];
+  }>)("still shows the facts a maintainer needs: $name", async ({
+    overrides,
+    title,
+    lines,
+    absent = [],
+  }) => {
     const output = await report(overrides);
     const text = title ? section(output, title) : output;
 
     for (const line of lines) expect(text).toContain(line);
+    for (const word of absent) expect(text).not.toContain(word);
     expect(text).not.toContain("other detail");
   });
 
@@ -1454,7 +1769,13 @@ describe("buildQuotaStatusReport", () => {
             { key: "myOwnKey", reason: "not a v5 setting" },
           ],
           invalid: [{ key: "minIntervalMs", reason: "expected a number" }],
-          notes: ["the project files are not read"],
+          notes: [
+            "/cfg/a.json does not parse as a JSON object, so it was not converted",
+            "/cfg/quota-toast.json was not converted: v5 used /cfg/quota-toast.jsonc when both exist",
+            "experimental.quotaToast in /cfg/opencode.json was not converted: v5 ignored it while /cfg/quota-toast.jsonc exists",
+            "/cfg/opencode.jsonc does not parse, so its experimental.quotaToast was not converted",
+            "the project files are not read",
+          ],
         }),
       },
       lines: [
@@ -1462,9 +1783,9 @@ describe("buildQuotaStatusReport", () => {
         "- conversion_converted: enabledProviders, percentDisplayMode",
         "- conversion_dropped: debug (+1 unknown key)",
         "- conversion_invalid: minIntervalMs",
-        "- conversion_notes: 1 not shown",
+        "- conversion_notes: file_not_a_json_object, jsonc_used_over_json, quota_toast_block_ignored, config_not_parsed, (other)",
       ],
-      absent: ["myOwnKey", "the TUI shows it", "project files"],
+      absent: ["myOwnKey", "the TUI shows it", "project files", "/cfg/a.json"],
     },
     {
       name: "the v5 settings converted in memory while settings.jsonc is missing",
@@ -1509,7 +1830,7 @@ describe("buildQuotaStatusReport", () => {
       credentialSource: {
         state: "bound",
         kind: "opencode-integration-api",
-        lastListError: { at: 1, detail: "Invalid credential value CANARY" },
+        lastListError: { at: NOW + 1, detail: "Invalid credential value CANARY" },
         failures: [
           {
             integrationId: "openai",
@@ -1517,7 +1838,7 @@ describe("buildQuotaStatusReport", () => {
             label: "work.CANARY@example.com",
             category: "refresh_failed",
             detail: "HTTP 401 CANARY",
-            at: 2,
+            at: NOW + 2,
           },
           {
             integrationId: "xai",
@@ -1525,14 +1846,14 @@ describe("buildQuotaStatusReport", () => {
             label: "",
             category: "active_failed",
             detail: "database is locked CANARY",
-            at: 3,
+            at: NOW + 3,
           },
         ],
       },
       lines: [
         "- source: opencode-integration-api",
-        "- list_error: bad_response at 1970-01-01T00:00:00.001Z",
-        "- failures: openai: refresh_failed at 1970-01-01T00:00:00.002Z | xai: active_failed at 1970-01-01T00:00:00.003Z",
+        "- list_error: bad_response at 2026-10-10T12:00:00.001Z",
+        "- failures: openai: refresh_failed at 2026-10-10T12:00:00.002Z | xai: active_failed at 2026-10-10T12:00:00.003Z",
       ],
     },
     {
@@ -1684,6 +2005,95 @@ describe("buildStatusReportData", () => {
     });
     return { data, text: data.output, onDetectedProviderIds };
   }
+
+  /** The forms of the JSON fields that hold a number: the version and two times. */
+  const JSON_NUMBER_LINES: readonly RegExp[] = [
+    String.raw`version: \d+\.\d+\.\d+[\w.-]*`,
+    String.raw`generatedAt: ${DATE}`,
+    String.raw`pricing\.snapshot\.generatedAt: ${TIME}`,
+  ].map((form) => new RegExp(`^(?:${form})$`, "u"));
+
+  it.each([
+    { seed: 11 },
+    { seed: 12 },
+    { seed: 13 },
+  ])("prints only its own vocabulary in the text and in `status --json` (seed $seed)", async ({
+    seed,
+  }) => {
+    const { pick, word, garbage, hex } = garbageSource(seed);
+    const configHome = join(root, word());
+    const cacheHome = join(root, pick([word(), ".cache"]));
+    vi.stubEnv("XDG_CONFIG_HOME", configHome);
+    vi.stubEnv("XDG_CACHE_HOME", cacheHome);
+    const settingsDir = join(configHome, "opencode", "opencode-quota");
+    mkdirSync(settingsDir, { recursive: true });
+    writeFileSync(
+      join(settingsDir, "settings.jsonc"),
+      JSON.stringify({ providers: { enabled: ["synthetic", garbage(), garbage()] } }),
+    );
+    const pricingDir = join(cacheHome, "opencode", "opencode-quota");
+    mkdirSync(pricingDir, { recursive: true });
+    writeFileSync(
+      join(pricingDir, "modelsdev-pricing.runtime.min.json"),
+      JSON.stringify({
+        _meta: { source: garbage(), generatedAt: pick([NOW, Number(DIGITS)]), units: garbage() },
+        providers: { [garbage()]: { [garbage()]: { input: 1, output: 2 } } },
+      }),
+    );
+    __resetPricingSnapshotForTests();
+    registry.providers = [
+      fakeProvider("synthetic", true, {
+        attempted: true,
+        entries: [
+          {
+            accounting: {
+              resultType: "quota",
+              acquisitionMethod: "remote_api",
+              ownership: "maintained",
+              authority: "provider_reported",
+            },
+            name: garbage(),
+            group: garbage(),
+            label: garbage(),
+            percentRemaining: pick([84, Number(DIGITS)]),
+            resetTimeIso: pick([RESET, ...DATE_LIKE]),
+          },
+        ],
+        errors: [{ label: garbage(), message: garbage() }],
+        statusDetails: [
+          { key: "api_key_source", value: garbage() },
+          { key: "api_key_checked_paths", value: garbage() },
+          { key: garbage(), value: garbage() },
+        ],
+      }),
+    ];
+
+    const { data, text } = await statusData();
+
+    const json = JSON.stringify(data.payload);
+    const leaves = jsonLines(JSON.parse(json));
+    const [, ...lines] = text.split("\n");
+    const vocabulary = reportVocabulary();
+    expect.soft(vocabularyProblems(lines, vocabulary, NUMBER_LINES)).toEqual([]);
+    expect.soft(envProblems(text)).toEqual([]);
+    const values = leaves.map((line) => line.slice(line.indexOf(": ") + 2));
+    expect(vocabularyProblems(values, vocabulary, [/^\S+$/u])).toEqual([]);
+    expect(
+      leaves.filter(
+        (line) =>
+          /\d/u.test(line.slice(line.indexOf(": "))) &&
+          !JSON_NUMBER_LINES.some((form) => form.test(line)),
+      ),
+    ).toEqual([]);
+    for (const output of [text, json]) {
+      expect(output.toLowerCase()).not.toContain("zq");
+      expect(output.replaceAll(",", "")).not.toContain(DIGITS.slice(0, 8));
+      expect(output).not.toContain(root);
+      for (const token of hex) expect(output).not.toContain(token);
+    }
+    expect(data.payload.config.settingsPath).toBe("(custom path)/settings.jsonc");
+    expect(data.payload.config.enabledProviders).toContain("synthetic");
+  });
 
   it("checks every enabled provider through a store and shows what it returned, secrets hidden", async () => {
     const syntheticProvider = synthetic();
