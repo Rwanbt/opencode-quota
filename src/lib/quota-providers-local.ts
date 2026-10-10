@@ -1,16 +1,19 @@
 import { readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
+import type { Amount } from "../core/types.js";
+import { accountingDecimalFromNumber } from "../providers/accounting-decimal.js";
+import type { ProviderRow } from "../providers/contract.js";
 import { writeJsonAtomic } from "./atomic-json.js";
-import type { FixedWindowProjectionEvidence, QuotaToastEntry } from "./entries.js";
 import { asRecord, isRecord } from "./json-guards.js";
 import { lookupCost } from "./modelsdev-pricing.js";
 import type { OpencodeRuntimeDirs } from "./opencode-runtime-paths.js";
 import { getOpencodeRuntimeDirs } from "./opencode-runtime-paths.js";
 import type { OpenCodeMessage } from "./opencode-storage.js";
 import { iterCompletedAssistantMessages } from "./opencode-storage.js";
-import type {
-  LocalEstimateQuotaProviderDefinition,
-  LocalEstimateWindow,
+import {
+  customRow,
+  type LocalEstimateQuotaProviderDefinition,
+  type LocalEstimateWindow,
 } from "./quota-providers.js";
 import { resolvePricingKey } from "./quota-stats.js";
 import { type TokenBuckets, tokenBucketsFromMessage } from "./token-buckets.js";
@@ -53,7 +56,8 @@ export interface LocalQuotaProviderStateDiagnostics {
 }
 
 export interface LocalEstimateResult {
-  entries: QuotaToastEntry[];
+  /** Each key is the part of the row id after `custom.<definition id>.`. */
+  rows: ProviderRow[];
   state: LocalQuotaProviderStateV1;
   unpricedMessageCount: number;
 }
@@ -223,8 +227,16 @@ function resolveMessageCost(
   return rates ? calculateUsdFromTokenBuckets(rates, message.tokens) : null;
 }
 
-function formatUsd(value: number): string {
-  return `$${value.toFixed(2)}`;
+function requestCount(count: number): Amount {
+  return { decimal: accountingDecimalFromNumber(count), unit: { kind: "count", unit: "request" } };
+}
+
+/** Dollars to the cent. */
+function usdAmount(value: number): Amount {
+  return {
+    decimal: accountingDecimalFromNumber(Number(value.toFixed(2))),
+    unit: { kind: "currency", code: "USD" },
+  };
 }
 
 function clampedPercentRemaining(used: number, limit: number): number {
@@ -238,17 +250,8 @@ export function computeLocalQuotaProviderEstimate(params: {
 }): LocalEstimateResult {
   const { definition, state } = params;
   const nowMs = params.nowMs ?? Date.now();
-  const entries: QuotaToastEntry[] = [];
+  const rows: ProviderRow[] = [];
   let totalUnpriced = 0;
-
-  const accounting = (resultType: "rate_limit" | "budget"): QuotaToastEntry["accounting"] => ({
-    resultType,
-    acquisitionMethod: "local_estimation",
-    ownership: "user_configured",
-    authority: "locally_derived",
-    sourceId: definition.id,
-    observedAtIso: new Date(state.updatedAt).toISOString(),
-  });
 
   for (const window of definition.windows) {
     const sinceMs = windowStart(window, nowMs);
@@ -257,35 +260,33 @@ export function computeLocalQuotaProviderEstimate(params: {
     );
 
     let resetTimeIso: string | undefined;
-    let fixedWindow: FixedWindowProjectionEvidence | undefined;
+    let windowStartedAt: string | undefined;
     if (window.type === "utc-day") {
       const endsAtMs = sinceMs + DAY_MS;
       resetTimeIso = new Date(endsAtMs).toISOString();
       // The count covers the whole UTC day only when the state was saved inside that day.
       if (sinceMs < state.updatedAt && state.updatedAt < endsAtMs) {
-        fixedWindow = {
-          kind: "fixed_window",
-          startedAtIso: new Date(sinceMs).toISOString(),
-          observedAtIso: new Date(state.updatedAt).toISOString(),
-          endsAtIso: resetTimeIso,
-          fullReset: true,
-        };
+        windowStartedAt = new Date(sinceMs).toISOString();
       }
     } else if (messages[0]) {
       resetTimeIso = new Date(messages[0].atMs + window.durationMinutes! * MINUTE_MS).toISOString();
     }
+    const started = windowStartedAt ? { windowStartedAt } : {};
 
-    entries.push({
-      accounting: accounting("rate_limit"),
-      kind: "percent",
-      name: `${definition.label} ${window.label}`,
-      group: definition.label,
-      label: `${window.label}:`,
-      rowKey: window.id,
-      right: `${messages.length}/${window.requestLimit}`,
-      percentRemaining: clampedPercentRemaining(messages.length, window.requestLimit),
-      ...(resetTimeIso ? { resetTimeIso } : {}),
-      ...(fixedWindow ? { fixedWindow } : {}),
+    rows.push({
+      ...customRow({
+        key: window.id,
+        name: window.label,
+        resultType: "rate_limit",
+        method: "local_estimation",
+        value: {
+          percentRemaining: clampedPercentRemaining(messages.length, window.requestLimit),
+        },
+        resetsAt: resetTimeIso,
+      }),
+      used: requestCount(messages.length),
+      limit: requestCount(window.requestLimit),
+      ...started,
     });
 
     if (window.usdBudget === undefined) continue;
@@ -299,34 +300,34 @@ export function computeLocalQuotaProviderEstimate(params: {
     }
     totalUnpriced += unpriced;
 
-    const budgetCommon = {
-      accounting: accounting("budget"),
-      name: `${definition.label} ${window.label} budget`,
-      group: definition.label,
-      label: `${window.label} budget:`,
-      // Window ids are kebab-case, so "_budget" can't collide with another window's id.
-      rowKey: `${window.id}_budget`,
-      ...(resetTimeIso ? { resetTimeIso } : {}),
-    };
+    const budgetRow = (value: { percentRemaining: number } | { text: string }): ProviderRow =>
+      customRow({
+        // Window ids are kebab-case, so "_budget" can't collide with another window's id.
+        key: `${window.id}_budget`,
+        name: `${window.label} budget`,
+        resultType: "budget",
+        method: "local_estimation",
+        value,
+        resetsAt: resetTimeIso,
+      });
     // A partial sum would understate spend, so any unpriced request hides the budget percent.
     if (unpriced > 0) {
-      entries.push({
-        ...budgetCommon,
-        kind: "value",
-        value: `Unavailable (${unpriced} unpriced request${unpriced === 1 ? "" : "s"})`,
-      });
+      rows.push(
+        budgetRow({
+          text: `Unavailable (${unpriced} unpriced request${unpriced === 1 ? "" : "s"})`,
+        }),
+      );
     } else {
-      entries.push({
-        ...budgetCommon,
-        kind: "percent",
-        right: `${formatUsd(costUsd)}/${formatUsd(window.usdBudget)}`,
-        percentRemaining: clampedPercentRemaining(costUsd, window.usdBudget),
-        ...(fixedWindow ? { fixedWindow } : {}),
+      rows.push({
+        ...budgetRow({ percentRemaining: clampedPercentRemaining(costUsd, window.usdBudget) }),
+        used: usdAmount(costUsd),
+        limit: usdAmount(window.usdBudget),
+        ...started,
       });
     }
   }
 
-  return { entries, state, unpricedMessageCount: totalUnpriced };
+  return { rows, state, unpricedMessageCount: totalUnpriced };
 }
 
 export async function collectLocalQuotaProviderEstimate(

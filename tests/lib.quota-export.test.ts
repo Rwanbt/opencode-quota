@@ -35,24 +35,29 @@ vi.mock("../src/lib/atomic-json.js", () => ({
 
 // --------------- imports ---------------
 
+import { rowsFromProviderResult } from "../src/core/rows.js";
+import type { ProviderFetch } from "../src/core/store.js";
+import type { ProviderSnapshot, QuotaRow } from "../src/core/types.js";
 import { writeJsonAtomic } from "../src/lib/atomic-json.js";
-import type { QuotaProviderResult } from "../src/lib/entries.js";
 import {
   buildQuotaExportFromSnapshot,
-  exportProviderFromResult,
+  exportProviderFromCheck,
   resolveExportPath,
   writeQuotaExport,
 } from "../src/lib/quota-export.js";
 import type { QuotaExport } from "../src/lib/quota-export-types.js";
 import type { QuotaProviderDefinition } from "../src/lib/quota-providers.js";
-import {
-  accountingContractExport,
-  accountingContractResult,
-} from "./fixtures/accounting-contract.js";
+import type { AccountResult, ProviderFetchResult, ProviderRow } from "../src/providers/contract.js";
+import { customAccount } from "../src/providers/quota-providers.js";
 
 // --------------- helpers ---------------
 
-type Check = { result: QuotaProviderResult; checkedAtMs: number };
+type Check = {
+  fetched: ProviderFetch;
+  checkedAtMs: number;
+  label?: string;
+  accounts?: AccountResult[];
+};
 
 /** The export document after each provider's last check; `undefined`: never checked. */
 function exportAfter(
@@ -61,12 +66,22 @@ function exportAfter(
 ): QuotaExport {
   const providers = Object.entries(checks).map(([providerId, check]) => ({
     providerId,
-    label: providerId,
+    label: check?.label ?? providerId,
     rows: [],
     refreshing: false,
     debug: [],
     ...(check
-      ? { exportPart: exportProviderFromResult({ providerId, ...check, customDefinitions }) }
+      ? {
+          exportPart: exportProviderFromCheck({
+            providerId,
+            label: check.label ?? providerId,
+            rows: check.fetched.rows,
+            ...(check.fetched.error ? { error: check.fetched.error } : {}),
+            checkedAtMs: check.checkedAtMs,
+            customDefinitions,
+            accounts: check.accounts ?? [],
+          }),
+        }
       : {}),
   }));
   const generatedAtMs = Date.now();
@@ -76,7 +91,55 @@ function exportAfter(
   );
 }
 
-const QUOTA_ACCOUNTING = {
+/** The custom providers' check: their rows and each definition's account. */
+function customCheck(result: ProviderFetchResult, checkedAtMs: number): Check {
+  return {
+    fetched: rowsFromProviderResult("quota-providers", result, checkedAtMs),
+    checkedAtMs,
+    label: "Quota providers",
+    accounts: result.accounts,
+  };
+}
+
+/** A remote custom quota row, keyed by its name like the adapters key it. */
+function customQuota(key: string, percentRemaining: number): ProviderRow {
+  return {
+    key,
+    label: key,
+    type: "quota",
+    method: "remote_api",
+    authority: "provider_reported",
+    prominence: "primary",
+    percentRemaining,
+  };
+}
+
+/** A remote, provider-reported quota row of `providerId`. */
+function row(
+  providerId: string,
+  key: string,
+  label: string,
+  fields: Partial<QuotaRow> = {},
+): QuotaRow {
+  return {
+    id: `${providerId}.${key}`,
+    providerId,
+    label,
+    type: "quota",
+    method: "remote_api",
+    authority: "provider_reported",
+    prominence: "primary",
+    ...fields,
+  };
+}
+
+function usd(decimal: string) {
+  return { decimal, unit: { kind: "currency" as const, code: "USD" } };
+}
+
+const unix = (iso: string) => Math.floor(Date.parse(iso) / 1000);
+
+const REMOTE = {
   resultType: "quota",
   acquisitionMethod: "remote_api",
   ownership: "maintained",
@@ -127,358 +190,292 @@ describe("the export of each provider's last check", () => {
     vi.useRealTimers();
   });
 
-  it("returns status ok and maps the checked entries into export rows", () => {
-    const check: Check = {
-      result: {
-        attempted: true,
-        entries: [
-          {
-            accounting: QUOTA_ACCOUNTING,
-            name: "Copilot",
-            percentRemaining: 75,
-            resetTimeIso: "2026-07-01T00:00:00.000Z",
-            label: "Monthly:",
-            fixedWindow: {
-              kind: "fixed_window",
-              startedAtIso: "2026-06-01T00:00:00.000Z",
-              observedAtIso: "2026-06-01T11:00:00.000Z",
-              endsAtIso: "2026-07-01T00:00:00.000Z",
-              fullReset: true,
-            },
-            runway: {
-              kind: "before_reset",
-              projectedAtIso: "2026-06-15T00:00:00.000Z",
-            },
-          },
-          {
-            accounting: QUOTA_ACCOUNTING,
-            name: "OpenCode Go",
-            kind: "value",
-            value: "$42.50",
-            label: "Weekly:",
-          },
-          {
-            accounting: QUOTA_ACCOUNTING,
-            name: "Custom Metric",
-            percentRemaining: 100,
-            label: "Arbitrary:",
-          },
-          // Name matches a window keyword ("Monthly") but the label does not:
-          // window must be derived from label only, so this stays undefined.
-          {
-            accounting: QUOTA_ACCOUNTING,
-            name: "Monthly Premium Requests",
-            percentRemaining: 40,
-            label: "Usage:",
-          },
-        ],
-        errors: [],
+  it("returns status ok and writes each row as an entry", () => {
+    const checkedAtMs = Date.parse("2026-06-01T11:00:00.000Z");
+    const exportData = exportAfter({
+      copilot: {
+        label: "Copilot",
+        checkedAtMs,
+        fetched: {
+          rows: [
+            row("copilot", "allowance", "Premium requests", {
+              account: "pro",
+              window: "month",
+              percentRemaining: 75,
+              resetsAt: "2026-07-01T00:00:00.000Z",
+              windowStartedAt: "2026-06-01T00:00:00.000Z",
+              used: { decimal: "75", unit: { kind: "count", unit: "request" } },
+            }),
+            row("copilot", "additional_budget", "Budget", {
+              type: "budget",
+              authority: "locally_derived",
+              prominence: "supplementary",
+              used: usd("2.5"),
+              limit: usd("10"),
+            }),
+          ],
+          debug: [],
+        },
       },
-      checkedAtMs: new Date("2026-06-01T11:00:00.000Z").getTime(),
-    };
+    });
 
-    const exportData = exportAfter({ copilot: check });
-
-    expect(exportData.version).toBe(2);
+    expect(exportData.version).toBe(3);
     expect(exportData.fromCache).toBe(true);
     expect(exportData.exportedAt).toBe(Math.floor(Date.now() / 1000));
-
-    const provider = exportData.providers.copilot;
-    expect(provider).toBeDefined();
-    expect(provider.status).toBe("ok");
-
-    if (provider.status === "ok") {
-      expect(provider.entries).toEqual([
+    expect(exportData.cacheAgeSeconds).toBe(3600);
+    expect(exportData.providers.copilot).toEqual({
+      status: "ok",
+      fetchedAt: unix("2026-06-01T11:00:00.000Z"),
+      entries: [
         {
-          name: "Copilot",
-          ...QUOTA_ACCOUNTING,
+          id: "copilot.allowance",
+          name: "Copilot (pro) Premium requests",
+          account: "pro",
+          ...REMOTE,
+          window: "Monthly",
+          resetAt: unix("2026-07-01T00:00:00.000Z"),
           renderType: "percent",
           percentRemaining: 75,
-          resetAt: Math.floor(new Date("2026-07-01T00:00:00.000Z").getTime() / 1000),
-          window: "Monthly",
         },
         {
-          name: "OpenCode Go",
-          ...QUOTA_ACCOUNTING,
+          id: "copilot.additional_budget",
+          name: "Copilot Budget",
+          ...REMOTE,
+          resultType: "budget",
+          authority: "locally_derived",
           renderType: "value",
-          value: "$42.50",
-          window: "Weekly",
-        },
-        {
-          name: "Custom Metric",
-          ...QUOTA_ACCOUNTING,
-          renderType: "percent",
-          percentRemaining: 100,
-        },
-        {
-          name: "Monthly Premium Requests",
-          ...QUOTA_ACCOUNTING,
-          renderType: "percent",
-          percentRemaining: 40,
-        },
-      ]);
-    }
-  });
-
-  it("exports semantic availability booleans with generic wording and the raw name", () => {
-    const check: Check = {
-      result: {
-        attempted: true,
-        entries: [
-          {
-            accounting: { ...QUOTA_ACCOUNTING, resultType: "status" },
-            kind: "boolean",
-            name: "Raw provider availability",
-            value: false,
-            semantic: {
-              metric: { kind: "named", name: "Availability" },
-              prominence: "primary",
-            },
-          },
-        ],
-        errors: [],
-      },
-      checkedAtMs: Date.now(),
-    };
-
-    const exportData = exportAfter({ availability: check });
-
-    const provider = exportData.providers.availability;
-    expect(provider).toBeDefined();
-    if (provider.status === "ok") {
-      expect(provider.entries).toEqual([
-        {
-          name: "Raw provider availability",
-          resultType: "status",
-          acquisitionMethod: "remote_api",
-          ownership: "maintained",
-          authority: "provider_reported",
-          renderType: "value",
-          value: "Disabled",
-        },
-      ]);
-      expect(provider.entries[0]).not.toHaveProperty("semantic");
-    }
-  });
-
-  it("preserves raw family names when display projections suppress them", () => {
-    const check: Check = {
-      result: {
-        attempted: true,
-        entries: [
-          {
-            accounting: { ...QUOTA_ACCOUNTING, sourceId: "alice@example.com" },
-            name: "Example (ali…): Claude",
-            percentRemaining: 0,
-          },
-          {
-            accounting: { ...QUOTA_ACCOUNTING, resultType: "usage" },
-            name: "Copilot",
-            kind: "value",
-            value: "Used 100 | Included 80 | Billed 20",
-          },
-        ],
-        errors: [{ label: "bob…", message: "Unauthorized" }],
-        presentation: {
-          classicStrategy: "preserve",
-          redundantQuotaFamily: "Claude",
-        },
-      },
-      checkedAtMs: Date.now(),
-    };
-
-    const actual = exportAfter({ "example-family": check });
-    const provider = actual.providers["example-family"];
-    expect(provider).toMatchObject({
-      status: "partial",
-      entries: [
-        {
-          name: "Example (ali…): Claude",
-          sourceId: "alice@example.com",
-          renderType: "percent",
-          percentRemaining: 0,
-        },
-        {
-          name: "Copilot",
-          renderType: "value",
-          value: "Used 100 | Included 80 | Billed 20",
+          value: "$2.50/$10.00",
         },
       ],
-      errors: [{ label: "bob…", message: "Unauthorized" }],
     });
   });
 
-  it("exports Kilo Pass raw accounting details without adding them to human entries", async () => {
-    const rawDetails = [
-      { key: "base_credits_usd", value: "$10.00" },
-      { key: "usage_usd", value: "$12.00" },
-      { key: "bonus_credits_usd", value: "$0.00" },
-      { key: "remaining_usd", value: "$0.00" },
-      { key: "overage_usd", value: "$2.00" },
-      { key: "reset_at", value: "2026-07-01T00:00:00.000Z" },
-    ];
-    const check: Check = {
-      result: {
-        attempted: true,
-        entries: [
-          {
-            accounting: { ...QUOTA_ACCOUNTING, authority: "locally_derived" },
-            name: "Kilo Gateway Credits",
-            percentRemaining: 0,
-            resetTimeIso: "2026-07-01T00:00:00.000Z",
-          },
-          {
-            accounting: { ...QUOTA_ACCOUNTING, authority: "locally_derived" },
-            kind: "value",
-            name: "Kilo Gateway Remaining Credits",
-            value: "$0.00",
-          },
-        ],
-        errors: [],
-        rawDetails,
+  it("writes amounts, flags and texts with the words the TUI shows", () => {
+    const exportData = exportAfter({
+      opencode: {
+        label: "OpenCode Zen",
+        checkedAtMs: Date.now(),
+        fetched: {
+          rows: [
+            row("opencode", "balance", "Balance", { type: "balance", amount: usd("42.5") }),
+            row("opencode", "auto_reload", "Auto reload", { type: "status", flag: true }),
+            row("opencode", "spent", "Spent", {
+              type: "usage",
+              method: "local_estimation",
+              authority: "locally_derived",
+              amount: usd("1.25"),
+            }),
+            row("opencode", "status", "Status", { type: "status", text: "Unavailable for key" }),
+            row("opencode", "tokens", "Tokens", {
+              type: "usage",
+              amount: { decimal: "12345", unit: { kind: "count", unit: "token" } },
+            }),
+            row("opencode", "requests", "Requests", {
+              type: "usage",
+              amount: { decimal: "1", unit: { kind: "count", unit: "request" } },
+            }),
+          ],
+          debug: [],
+        },
       },
-      checkedAtMs: Date.now(),
-    };
-
-    const actual = exportAfter({ kilo: check });
-
-    const provider = actual.providers.kilo;
-    expect(provider).toMatchObject({
-      status: "ok",
-      rawDetails,
-      entries: [
-        { name: "Kilo Gateway Credits", percentRemaining: 0 },
-        { name: "Kilo Gateway Remaining Credits", value: "$0.00" },
-      ],
     });
-    if (provider?.status === "ok") {
-      expect(JSON.stringify(provider.entries)).not.toContain("$2.00");
-      expect(JSON.stringify(provider.entries)).not.toContain("overage");
-    }
+
+    const provider = exportData.providers.opencode;
+    expect(provider?.status === "ok" ? provider.entries : []).toEqual([
+      expect.objectContaining({ resultType: "balance", renderType: "value", value: "$42.50 left" }),
+      expect.objectContaining({ resultType: "status", value: "Enabled" }),
+      expect.objectContaining({
+        name: "OpenCode Zen Spent",
+        resultType: "usage",
+        acquisitionMethod: "local_estimation",
+        authority: "locally_derived",
+        value: "$1.25 used",
+      }),
+      expect.objectContaining({ name: "OpenCode Zen Status", value: "Unavailable for key" }),
+      expect.objectContaining({ name: "OpenCode Zen Tokens", value: "12,345 tokens used" }),
+      expect.objectContaining({ name: "OpenCode Zen Requests", value: "1 request used" }),
+    ]);
   });
 
-  it("omits OpenRouter API-key diagnostics from export data", async () => {
+  it("keeps debug details out of the export: they stay in /quota_status", () => {
     const secretCanary = "sk-or-export-secret-canary";
-    const check: Check = {
-      result: {
-        attempted: true,
-        entries: [
-          {
-            accounting: {
-              resultType: "budget",
-              acquisitionMethod: "remote_api",
-              ownership: "maintained",
-              authority: "provider_reported",
-            },
-            name: "OpenRouter budget",
-            percentRemaining: 80,
-          },
-        ],
-        errors: [],
-        statusDetails: [
-          { key: "api_key_configured", value: "true" },
-          { key: "api_key_source", value: "env" },
-          { key: "api_key_checked_paths", value: "env:OPENROUTER_API_KEY" },
-          { key: "api_key_credential_database_paths", value: "/tmp/opencode.db" },
-          { key: "secret_canary", value: secretCanary },
-        ],
+    const exportData = exportAfter({
+      openrouter: {
+        label: "OpenRouter",
+        checkedAtMs: Date.now(),
+        fetched: {
+          rows: [row("openrouter", "key", "Budget", { type: "budget", percentRemaining: 80 })],
+          error: { code: "provider_error", status: 503, detail: secretCanary },
+          debug: [
+            { key: "api_key_source", value: "env" },
+            { key: "api_key_checked_paths", value: "env:OPENROUTER_API_KEY" },
+            { key: "error", value: `OpenRouter: ${secretCanary}` },
+          ],
+        },
       },
-      checkedAtMs: Date.now(),
-    };
-
-    const actual = exportAfter({ openrouter: check });
-
-    expect(actual.providers.openrouter).toMatchObject({
-      status: "ok",
-      entries: [{ name: "OpenRouter budget", percentRemaining: 80 }],
     });
-    const serialized = JSON.stringify(actual);
+
+    expect(exportData.providers.openrouter).toEqual({
+      status: "partial",
+      fetchedAt: Math.floor(Date.now() / 1000),
+      entries: [expect.objectContaining({ name: "OpenRouter Budget", percentRemaining: 80 })],
+      errors: [{ label: "OpenRouter", message: "Provider error 503" }],
+    });
+    const serialized = JSON.stringify(exportData);
     expect(serialized).not.toContain("api_key_");
-    expect(serialized).not.toContain("statusDetails");
     expect(serialized).not.toContain(secretCanary);
-    expect(actual.providers.openrouter).not.toHaveProperty("statusDetails");
   });
 
-  it("matches the v2 all-result-types JSON golden", async () => {
-    vi.setSystemTime(new Date("2026-07-11T00:00:00.000Z"));
-    const check: Check = {
-      result: accountingContractResult,
-      checkedAtMs: new Date("2026-07-10T23:59:00.000Z").getTime(),
-    };
+  it("returns status error with the error's words when the check gave no rows", () => {
+    const checkedAtMs = Date.parse("2026-06-01T11:00:00.000Z");
+    const exportData = exportAfter({
+      broken: {
+        label: "Broken\u001b[31m",
+        checkedAtMs,
+        fetched: { rows: [], error: { code: "network", detail: "ECONNRESET" }, debug: [] },
+      },
+      limited: {
+        checkedAtMs,
+        fetched: {
+          rows: [],
+          error: { code: "rate_limited", retryAtMs: checkedAtMs + 120_000 },
+          debug: [],
+        },
+      },
+    });
 
-    const actual = exportAfter({ fixture: check });
+    expect(exportData.providers.broken).toEqual({
+      status: "error",
+      fetchedAt: unix("2026-06-01T11:00:00.000Z"),
+      error: "Can't reach Broken",
+    });
+    // The wait counts from the check, as the file shows that check.
+    expect(exportData.providers.limited).toMatchObject({
+      status: "error",
+      error: "Rate limited, retry in 2m",
+    });
+  });
+
+  it("returns status unavailable for a provider that is not set up or never checked", () => {
+    const exportData = exportAfter({
+      chutes: {
+        checkedAtMs: Date.now(),
+        fetched: { rows: [], error: { code: "not_configured" }, debug: [] },
+      },
+      ghost: undefined,
+    });
+
+    expect(exportData.providers.chutes).toEqual({ status: "unavailable" });
+    expect(exportData.providers.ghost).toEqual({ status: "unavailable" });
+    expect(exportData.cacheAgeSeconds).toBe(0);
+  });
+
+  it("omits an invalid reset time instead of exporting NaN", () => {
+    const exportData = exportAfter({
+      fixture: {
+        checkedAtMs: Date.now(),
+        fetched: {
+          rows: [
+            row("fixture", "weekly", "Weekly", { percentRemaining: 50, resetsAt: "not-a-date" }),
+          ],
+          debug: [],
+        },
+      },
+    });
+
+    expect(exportData.providers.fixture).toMatchObject({
+      status: "ok",
+      entries: [{ name: "fixture Weekly", renderType: "percent", percentRemaining: 50 }],
+    });
+    expect(JSON.stringify(exportData)).not.toContain("resetAt");
+  });
+
+  it("matches the all-result-types JSON golden", () => {
+    vi.setSystemTime(new Date("2026-07-11T00:00:00.000Z"));
+    const provider = (key: string, label: string, fields: Partial<QuotaRow>) =>
+      row("fixture", key, label, fields);
+    const actual = exportAfter({
+      fixture: {
+        label: "Fixture",
+        checkedAtMs: Date.parse("2026-07-10T23:59:00.000Z"),
+        fetched: {
+          rows: [
+            provider("quota", "Quota", {
+              window: "month",
+              percentRemaining: 75,
+              resetsAt: "2026-08-01T00:00:00.000Z",
+              remaining: { decimal: "7500", unit: { kind: "count", unit: "token" } },
+            }),
+            provider("rpm", "Requests", {
+              window: "rpm",
+              percentRemaining: 50,
+              resetsAt: "2026-07-11T00:01:00.000Z",
+            }),
+            provider("budget", "Budget", {
+              type: "budget",
+              window: "week",
+              percentRemaining: 60,
+              limit: usd("100"),
+            }),
+            provider("usage", "Usage", {
+              type: "usage",
+              method: "local_estimation",
+              authority: "locally_derived",
+              amount: { decimal: "12345", unit: { kind: "count", unit: "token" } },
+            }),
+            provider("spend", "Spend", {
+              type: "usage",
+              method: "dashboard_scrape",
+              amount: usd("42.5"),
+            }),
+            provider("balance", "Balance", {
+              type: "balance",
+              method: "local_cli",
+              prominence: "supplementary",
+              amount: usd("10"),
+            }),
+            provider("auto_reload", "Auto-reload", { type: "status", flag: true }),
+          ],
+          debug: [{ key: "plan", value: "max" }],
+        },
+      },
+    });
     const golden = JSON.parse(
       readFileSync(
-        new URL("./fixtures/quota-export-v2-all-result-types.json", import.meta.url),
+        new URL("./fixtures/quota-export-all-result-types.json", import.meta.url),
         "utf8",
       ),
     );
 
-    expect(actual).toEqual(accountingContractExport);
     expect(actual).toEqual(golden);
-
-    const provider = actual.providers.fixture;
-    expect(provider.status).toBe("ok");
-    if (provider.status === "ok") {
-      expect(provider.entries[0]).toMatchObject({ renderType: "value", value: "USD 10.00" });
-      expect(provider.entries).toContainEqual(
-        expect.objectContaining({ name: "Auto-reload", renderType: "value", value: "Enabled" }),
-      );
-      const allowedKeys = new Set([
-        "name",
-        "resultType",
-        "acquisitionMethod",
-        "ownership",
-        "authority",
-        "sourceId",
-        "observedAt",
-        "window",
-        "resetAt",
-        "renderType",
-        "percentRemaining",
-        "value",
-      ]);
-      expect(
-        provider.entries.every((entry) => Object.keys(entry).every((key) => allowedKeys.has(key))),
-      ).toBe(true);
-      expect(JSON.stringify(provider.entries)).not.toMatch(
-        /"(?:semantic|prominence|basis|quantity)"/u,
-      );
+    const entries =
+      actual.providers.fixture?.status === "ok" ? actual.providers.fixture.entries : [];
+    expect(new Set(entries.map((entry) => entry.resultType))).toEqual(
+      new Set(["quota", "budget", "usage", "balance", "status"]),
+    );
+    expect(new Set(entries.map((entry) => entry.acquisitionMethod))).toEqual(
+      new Set(["remote_api", "dashboard_scrape", "local_cli", "local_estimation"]),
+    );
+    const allowedKeys = new Set([
+      "id",
+      "name",
+      "account",
+      "resultType",
+      "acquisitionMethod",
+      "ownership",
+      "authority",
+      "window",
+      "resetAt",
+      "renderType",
+      "percentRemaining",
+      "value",
+    ]);
+    for (const entry of entries) {
+      expect(Object.keys(entry).filter((key) => !allowedKeys.has(key))).toEqual([]);
     }
   });
 
-  it("omits invalid optional timestamps instead of exporting NaN", () => {
-    const check: Check = {
-      result: {
-        attempted: true,
-        entries: [
-          {
-            accounting: { ...QUOTA_ACCOUNTING, observedAtIso: "not-a-date" },
-            name: "Invalid timestamps",
-            percentRemaining: 50,
-            resetTimeIso: "also-not-a-date",
-          },
-        ],
-        errors: [],
-      },
-      checkedAtMs: Date.now(),
-    };
-
-    const actual = exportAfter({ fixture: check });
-    expect(actual.providers.fixture).toMatchObject({
-      status: "ok",
-      entries: [
-        {
-          name: "Invalid timestamps",
-          ...QUOTA_ACCOUNTING,
-          renderType: "percent",
-          percentRemaining: 50,
-        },
-      ],
-    });
-  });
-
-  it("exports flat quota-provider definition entry identity and ordered coarse source statuses", async () => {
+  it("lists each custom definition with a coarse status, never its URL, key, format or files", () => {
     const definitions: QuotaProviderDefinition[] = [
       {
         id: "same-label-one",
@@ -515,62 +512,45 @@ describe("the export of each provider's last check", () => {
         format: "quota-v1",
       },
     ];
-    const check: Check = {
-      result: {
+    const [one, two] = definitions as [QuotaProviderDefinition, QuotaProviderDefinition];
+    const check = customCheck(
+      {
         attempted: true,
-        entries: [
-          {
-            accounting: {
-              ...QUOTA_ACCOUNTING,
-              ownership: "user_configured",
-              sourceId: "same-label-one",
-            },
-            name: "Same label",
-            percentRemaining: 25,
-          },
+        accounts: [
+          customAccount(one, [customQuota("Remaining", 25)], []),
+          customAccount(two, [], ["secondary source unavailable"]),
         ],
-        errors: [{ label: "Same label", message: "secondary source unavailable" }],
-        diagnostics: [
+        debug: [
           {
-            sourceId: "same-label-one",
-            providerId: "gateway-one",
-            format: "json-v1",
-            modelIds: null,
-            apiKeyEnv: "GATEWAY_ONE_KEY",
-            selected: true,
-            attempted: true,
-            credentialSource: "explicit_env",
-            outcome: "success",
-            entryCount: 1,
-            checkedPaths: ["env:GATEWAY_ONE_KEY"],
-            credentialDatabasePaths: ["/trusted/opencode.db"],
+            key: "custom_same-label-one_check",
+            value:
+              "outcome=success credential_source=explicit_env checked_paths=env:GATEWAY_ONE_KEY | /trusted/opencode.db",
           },
           {
-            sourceId: "same-label-two",
-            providerId: "gateway-two",
-            format: "quota-v1",
-            modelIds: null,
-            apiKeyEnv: null,
-            selected: true,
-            attempted: true,
-            credentialSource: "opencode_db",
-            outcome: "invalid_json",
-            entryCount: 0,
-            checkedPaths: ["/trusted/opencode.json"],
-            credentialDatabasePaths: ["/trusted/opencode.db"],
+            key: "custom_same-label-two_check",
+            value:
+              "outcome=invalid_json credential_source=opencode_db checked_paths=/trusted/opencode.json | /trusted/opencode.db",
           },
         ],
       },
-      checkedAtMs: Date.now(),
-    };
+      Date.now(),
+    );
 
     const actual = exportAfter({ "quota-providers": check }, definitions);
 
-    expect(actual.version).toBe(2);
+    expect(actual.version).toBe(3);
     expect(actual.providers["quota-providers"]).toMatchObject({
       status: "partial",
-      entries: [expect.objectContaining({ sourceId: "same-label-one", percentRemaining: 25 })],
-      errors: [{ label: "Same label", message: "secondary source unavailable" }],
+      entries: [
+        {
+          // The id names the definition the row came from.
+          id: "quota-providers.custom.same-label-one.Remaining",
+          name: "Quota providers (Same label) Remaining",
+          ownership: "user_configured",
+          percentRemaining: 25,
+        },
+      ],
+      errors: [{ label: "Quota providers", message: "Nothing reported" }],
       sources: [
         { id: "same-label-one", providerId: "gateway-one", status: "ok", entryCount: 1 },
         { id: "same-label-two", providerId: "gateway-two", status: "error", entryCount: 0 },
@@ -598,7 +578,7 @@ describe("the export of each provider's last check", () => {
     expect(json).not.toContain("/trusted/opencode.db");
   });
 
-  it("lists every custom definition as unavailable when the custom providers could not be asked", async () => {
+  it("lists every custom definition as unavailable when the custom providers could not be asked", () => {
     const definitions: QuotaProviderDefinition[] = [
       {
         id: "first",
@@ -617,10 +597,7 @@ describe("the export of each provider's last check", () => {
         format: "quota-v1",
       },
     ];
-    const check: Check = {
-      result: { attempted: false, entries: [], errors: [] },
-      checkedAtMs: Date.now(),
-    };
+    const check = customCheck({ attempted: false, accounts: [], debug: [] }, Date.now());
 
     const actual = exportAfter({ "quota-providers": check }, definitions);
 
@@ -633,7 +610,7 @@ describe("the export of each provider's last check", () => {
     });
   });
 
-  it("marks a switched-off definition, so it is told apart from an unavailable one", async () => {
+  it("says a switched-off definition is off instead of giving it a status", () => {
     const definition: QuotaProviderDefinition = {
       id: "first",
       providerId: "gateway-one",
@@ -642,95 +619,111 @@ describe("the export of each provider's last check", () => {
       url: "https://one.example/accounting",
       format: "quota-v1",
     };
-    const diagnostic = {
-      providerId: "gateway-one",
-      mode: "remote-api",
-      format: "quota-v1",
-      modelIds: null,
-      apiKeyEnv: null,
-      selected: true,
-      attempted: true,
-      credentialSource: "opencode_db",
-      outcome: "success",
-      entryCount: 1,
-      checkedPaths: [],
-      credentialDatabasePaths: [],
-    } as const;
+    const second = { ...definition, id: "second", label: "Second" };
     // A result from before the user switched "second" off.
-    const check: Check = {
-      result: {
+    const check = customCheck(
+      {
         attempted: true,
-        entries: [],
-        errors: [],
-        diagnostics: [
-          { ...diagnostic, sourceId: "first", outcome: "network_error", entryCount: 0 },
-          { ...diagnostic, sourceId: "second" },
+        accounts: [
+          customAccount(definition, [], ["Failed to read accounting data"]),
+          customAccount(second, [customQuota("Monthly", 50)], []),
         ],
+        debug: [],
       },
-      checkedAtMs: Date.now(),
-    };
+      Date.now(),
+    );
 
     const actual = exportAfter({ "quota-providers": check }, [
       definition,
-      { ...definition, id: "second", enabled: false },
+      { ...second, enabled: false },
     ]);
 
-    expect(actual.providers["quota-providers"].sources).toEqual([
+    expect(actual.providers["quota-providers"].sources).toStrictEqual([
       { id: "first", providerId: "gateway-one", status: "error", entryCount: 0 },
-      {
-        id: "second",
-        providerId: "gateway-one",
-        status: "unavailable",
-        entryCount: 0,
-        enabled: false,
-      },
+      { id: "second", providerId: "gateway-one", entryCount: 0, enabled: false },
     ]);
   });
 
-  it("returns status unavailable for a provider never checked", async () => {
-    const exportData = exportAfter({ ghost: undefined });
-
-    expect(exportData.providers.ghost).toEqual({ status: "unavailable" });
-  });
-
-  it("returns status error with a sanitized message when the check found only errors", () => {
-    const check: Check = {
-      result: {
-        attempted: true,
-        entries: [],
-        // Includes an ANSI escape + control chars + newline that must be stripped.
-        errors: [{ label: "Fetch", message: "Request failed\n\u001b[31mwith 429\u0007" }],
-      },
-      checkedAtMs: new Date("2026-06-01T11:00:00.000Z").getTime(),
-    };
-
-    const exportData = exportAfter({ broken: check });
-
-    expect(exportData.providers.broken).toEqual({
-      status: "error",
-      fetchedAt: Math.floor(new Date("2026-06-01T11:00:00.000Z").getTime() / 1000),
-      error: "Request failed with 429",
-    });
-  });
-
-  it("computes cacheAgeSeconds from oldest fetchedAt across ok/error providers", async () => {
+  it("computes cacheAgeSeconds from the oldest fetchedAt across ok and error providers", () => {
     const exportData = exportAfter({
       a: {
-        result: {
-          attempted: true,
-          entries: [{ accounting: QUOTA_ACCOUNTING, name: "A", percentRemaining: 90 }],
-          errors: [],
-        },
-        checkedAtMs: new Date("2026-06-01T10:00:00.000Z").getTime(), // 2h old
+        checkedAtMs: Date.parse("2026-06-01T10:00:00.000Z"), // 2h old
+        fetched: { rows: [row("a", "daily", "Daily", { percentRemaining: 90 })], debug: [] },
       },
       b: {
-        result: { attempted: true, entries: [], errors: [{ label: "E", message: "err" }] },
-        checkedAtMs: new Date("2026-06-01T11:30:00.000Z").getTime(), // 30m old
+        checkedAtMs: Date.parse("2026-06-01T11:30:00.000Z"), // 30m old
+        fetched: { rows: [], error: { code: "internal" }, debug: [] },
       },
     });
 
     // Oldest is "a" at 10:00, now is 12:00 → 2h = 7200s
     expect(exportData.cacheAgeSeconds).toBe(7200);
+  });
+});
+
+describe("the export of a provider without a check in this server", () => {
+  const NOW_MS = Date.parse("2026-06-01T12:00:00.000Z");
+
+  function snapshotExport(provider: Partial<ProviderSnapshot>) {
+    const snapshotProvider: ProviderSnapshot = {
+      providerId: "copilot",
+      label: "Copilot",
+      rows: [],
+      refreshing: false,
+      debug: [{ key: "api_key_source", value: "env" }],
+      ...provider,
+    };
+    return buildQuotaExportFromSnapshot(
+      {
+        version: 6,
+        providers: [snapshotProvider],
+        resetNotices: [],
+        generatedAtMs: NOW_MS,
+        serverId: "test",
+        revision: 1,
+      },
+      NOW_MS,
+    ).providers.copilot;
+  }
+
+  it("writes the snapshot's rows, dated when they came", () => {
+    expect(
+      snapshotExport({
+        rows: [row("copilot", "allowance", "Premium requests", { percentRemaining: 40 })],
+        okAtMs: NOW_MS - 60_000,
+        checkedAtMs: NOW_MS - 1_000,
+      }),
+    ).toEqual({
+      status: "ok",
+      fetchedAt: Math.floor((NOW_MS - 60_000) / 1000),
+      entries: [
+        expect.objectContaining({ name: "Copilot Premium requests", percentRemaining: 40 }),
+      ],
+    });
+  });
+
+  it("writes kept rows with the last error as partial, and only an error without rows", () => {
+    const allowance = row("copilot", "allowance", "Premium requests", { percentRemaining: 40 });
+    expect(
+      snapshotExport({
+        rows: [allowance],
+        okAtMs: NOW_MS - 60_000,
+        checkedAtMs: NOW_MS - 1_000,
+        error: { code: "login_expired" },
+      }),
+    ).toMatchObject({
+      status: "partial",
+      errors: [{ label: "Copilot", message: "Sign in again" }],
+    });
+    expect(snapshotExport({ checkedAtMs: NOW_MS - 1_000, error: { code: "timeout" } })).toEqual({
+      status: "error",
+      fetchedAt: Math.floor((NOW_MS - 1_000) / 1000),
+      error: "Timed out",
+    });
+  });
+
+  it("writes unavailable before the provider first answered", () => {
+    expect(snapshotExport({ refreshing: true })).toEqual({ status: "unavailable" });
   });
 });
 
@@ -740,7 +733,7 @@ describe("writeQuotaExport", () => {
   });
 
   it("calls writeJsonAtomic with the resolved path and trailing newline", async () => {
-    const exportData: any = { version: 2, providers: {} };
+    const exportData: any = { version: 3, providers: {} };
     await writeQuotaExport(exportData, testPaths.explicitExport);
 
     expect(writeJsonAtomic).toHaveBeenCalledWith(testPaths.explicitExport, exportData, {

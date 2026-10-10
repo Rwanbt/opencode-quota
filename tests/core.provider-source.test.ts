@@ -7,10 +7,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { keyedLogins, loadProviderSource } from "../src/core/provider-source.js";
 import { createQuotaStore } from "../src/core/store.js";
 import type { QuotaRow } from "../src/core/types.js";
-import type { QuotaProvider, QuotaProviderResult } from "../src/lib/entries.js";
+import type { QuotaProvider } from "../src/lib/entries.js";
 import { buildQuotaExportFromSnapshot } from "../src/lib/quota-export.js";
 import { __resetResolvedAuthIdentityForTests } from "../src/lib/resolved-auth-identity.js";
+import type { ProviderFetchResult } from "../src/providers/contract.js";
 import { defaultSettings } from "../src/settings/index.js";
+import { answer, percentRow } from "./helpers/fake-answers.js";
 
 const runtime = vi.hoisted(() => ({ root: "" }));
 const registry = vi.hoisted(() => ({ providers: [] as unknown[] }));
@@ -107,27 +109,21 @@ describe("export after a failed check", () => {
   });
 
   it("shows the provider's last failure, not its kept rows, until a check works again", async () => {
-    const accounting = {
-      resultType: "quota",
-      acquisitionMethod: "remote_api",
-      ownership: "maintained",
-      authority: "provider_reported",
-    } as const;
-    const left = (percentRemaining: number): QuotaProviderResult => ({
-      attempted: true,
-      entries: [{ accounting, name: "Claude", label: "Weekly:", percentRemaining }],
-      errors: [],
-    });
-    const answers: QuotaProviderResult[] = [
+    const left = (percentRemaining: number) =>
+      answer({
+        name: "Claude",
+        rows: [percentRow("weekly", "Weekly", percentRemaining, { window: "week" })],
+      });
+    const answers: ProviderFetchResult[] = [
       left(80),
-      { attempted: true, entries: [], errors: [{ label: "Claude", message: "HTTP 503" }] },
+      answer({ name: "Claude", errors: ["HTTP 503"] }),
       left(70),
     ];
     const provider: QuotaProvider = {
       id: "anthropic",
       cachePolicy: { kind: "account-neutral" },
       isAvailable: async () => true,
-      fetch: async () => answers.shift() as QuotaProviderResult,
+      fetch: async () => answers.shift() as ProviderFetchResult,
     };
     registry.providers = [provider];
     const loaded = {
@@ -151,9 +147,12 @@ describe("export after a failed check", () => {
 
     expect(await checkThenExport()).toMatchObject({
       status: "ok",
-      entries: [{ name: "Claude", window: "Weekly", percentRemaining: 80 }],
+      entries: [{ name: "Anthropic Weekly", window: "Weekly", percentRemaining: 80 }],
     });
-    expect(await checkThenExport()).toMatchObject({ status: "error", error: "HTTP 503" });
+    expect(await checkThenExport()).toMatchObject({
+      status: "error",
+      error: "Provider error 503",
+    });
     expect(await checkThenExport()).toMatchObject({
       status: "ok",
       entries: [{ percentRemaining: 70 }],
@@ -163,5 +162,120 @@ describe("export after a failed check", () => {
     // The part stays in memory: the snapshot file, which the terminal command reads, has rows.
     const saved = await readFile(join(runtime.root, "state", "snapshot-v6.json"), "utf8");
     expect(saved).not.toContain("exportPart");
+  });
+});
+
+describe("export of a check and of the saved snapshot", () => {
+  beforeEach(async () => {
+    runtime.root = await mkdtemp(join(tmpdir(), "opencode-quota-export-reload-"));
+  });
+
+  afterEach(async () => {
+    registry.providers = [];
+    await rm(runtime.root, { recursive: true, force: true });
+  });
+
+  /** A store over `provider`, saving to this test's snapshot file. */
+  function storeFor(provider: QuotaProvider) {
+    registry.providers = [provider];
+    const loaded = {
+      path: "settings.jsonc",
+      exists: true,
+      settings: defaultSettings(),
+      issues: [],
+      fromFile: [],
+      notRead: [],
+    };
+    const host = { client: {} as never, workspaceRoot: runtime.root, settings: () => loaded };
+    return createQuotaStore({
+      source: () => loadProviderSource(host),
+      file: join(runtime.root, "state", "snapshot-v6.json"),
+      log: () => {},
+    });
+  }
+
+  /** `provider`'s part of the export after a check, and after a restart reads the file. */
+  async function checkThenReload(provider: QuotaProvider) {
+    const nowMs = Date.now();
+    const checking = storeFor(provider);
+    const checked = await checking.refresh({ reason: "manual" });
+    await checking.dispose();
+    const reading = storeFor(provider);
+    const reloaded = await reading.snapshot({ refresh: false });
+    await reading.dispose();
+    return [checked, reloaded].map(
+      (snapshot) => buildQuotaExportFromSnapshot(snapshot, nowMs).providers[provider.id],
+    );
+  }
+
+  it("numbers two accounts with one name alike in the check's export and after a reload", async () => {
+    const plan = (login: string, percentRemaining: number) => ({
+      name: "Copilot (pro)",
+      login,
+      rows: [percentRow("allowance", "Premium requests", percentRemaining, { window: "month" })],
+    });
+    const [checked, reloaded] = await checkThenReload({
+      id: "copilot",
+      cachePolicy: { kind: "account-neutral" },
+      isAvailable: async () => true,
+      fetch: async () => answer(plan("alice-id", 80), plan("bob-id", 40)),
+    });
+
+    expect(reloaded).toEqual(checked);
+    const entries = checked?.status === "ok" ? checked.entries : [];
+    expect(entries.map((entry) => entry.id)).toEqual(["copilot.allowance", "copilot.allowance"]);
+    expect(new Set(entries.map((entry) => entry.account))).toEqual(new Set(["pro", "pro 2"]));
+    expect(new Set(entries.map((entry) => entry.name))).toEqual(
+      new Set(["Copilot (pro) Premium requests", "Copilot (pro 2) Premium requests"]),
+    );
+  });
+
+  it("keeps an account's number in the check's export while the other login fails", async () => {
+    const plan = (login: string, percentRemaining: number) => ({
+      name: "Copilot (pro)",
+      login,
+      rows: [percentRow("allowance", "Premium requests", percentRemaining, { window: "month" })],
+    });
+    const answers = [answer(plan("alice-id", 80), plan("bob-id", 40))];
+    const store = storeFor({
+      id: "copilot",
+      cachePolicy: { kind: "account-neutral" },
+      isAvailable: async () => true,
+      fetch: async () => answers.shift() as ProviderFetchResult,
+    });
+    const checkThenExport = async () => {
+      const snapshot = await store.refresh({ reason: "manual" });
+      const part = buildQuotaExportFromSnapshot(snapshot).providers.copilot;
+      return part?.status === "ok" || part?.status === "partial" ? part.entries : [];
+    };
+
+    const first = await checkThenExport();
+    // The login numbered "pro 2" answers again; the other one fails, so its rows are kept.
+    const second = first.find((entry) => entry.account === "pro 2");
+    const secondLogin =
+      second?.renderType === "percent" && second.percentRemaining === 80 ? "alice-id" : "bob-id";
+    const otherLogin = secondLogin === "alice-id" ? "bob-id" : "alice-id";
+    answers.push(
+      answer(
+        { name: "Copilot (pro)", login: otherLogin, errors: ["HTTP 503"] },
+        plan(secondLogin, 5),
+      ),
+    );
+    const failed = await checkThenExport();
+    await store.dispose();
+
+    expect(failed).toEqual([{ ...second, percentRemaining: 5 }]);
+  });
+
+  it("writes a check that reported nothing as the same error after a reload", async () => {
+    const [checked, reloaded] = await checkThenReload({
+      id: "anthropic",
+      cachePolicy: { kind: "account-neutral" },
+      isAvailable: async () => true,
+      fetch: async () => answer({ name: "Claude" }),
+    });
+
+    expect(checked).toMatchObject({ status: "error", error: "Nothing reported" });
+    expect(reloaded).toEqual(checked);
   });
 });

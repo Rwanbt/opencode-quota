@@ -1,33 +1,26 @@
 /**
- * The export file (version 2) for scripts and status bars, and `opencode-quota show --json`.
- * Each check gives its provider's part of the file as v5 wrote it (`exportProviderFromResult`),
- * and the server keeps that part, in memory only, next to the provider's snapshot. A provider
- * without one (in the terminal command, or before its first check since the server started)
- * is written from its snapshot rows.
+ * The export file (version 3) for scripts and status bars, and `opencode-quota show --json`,
+ * written from quota rows. Each check gives its provider's part of the file
+ * (`exportProviderFromCheck`, from the check's rows as the snapshot shows them): the server
+ * keeps that part, in memory only, next to the provider's snapshot, so the file shows the last
+ * check, a failed one too. A provider without one (in the terminal command, or before its first
+ * check since the server started) is written from its snapshot.
  */
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { describeError } from "../core/errors.js";
-import type { ProviderSnapshot, QuotaRow, QuotaSnapshot } from "../core/types.js";
-import { classifyWindow, WINDOWS } from "../core/windows.js";
+import type { CheckForExport } from "../core/store.js";
+import type { ProviderSnapshot, QuotaRow, QuotaSnapshot, QuotaWindow } from "../core/types.js";
+import type { AccountResult } from "../providers/contract.js";
 import { rowValueText } from "../view/format.js";
-import { formatAccountingQuantity } from "./accounting-format.js";
 import { writeJsonAtomic } from "./atomic-json.js";
-import { sanitizeDisplayText, sanitizeSingleLineDisplaySnippet } from "./display-sanitize.js";
-import type {
-  AccountingWindow,
-  QuotaPercentEntry,
-  QuotaProviderDiagnostic,
-  QuotaProviderResult,
-  QuotaToastEntry,
-} from "./entries.js";
+import { sanitizeSingleLineDisplaySnippet } from "./display-sanitize.js";
 import { getOpencodeRuntimeDirs } from "./opencode-runtime-paths.js";
 import type {
   QuotaExport,
   QuotaExportEntry,
   QuotaExportError,
   QuotaExportProvider,
-  QuotaExportRawDetail,
   QuotaExportSource,
 } from "./quota-export-types.js";
 import {
@@ -39,10 +32,11 @@ import {
 /** Max length for an exported provider error message after sanitization. */
 const EXPORT_ERROR_MAX_LENGTH = 240;
 
-const EXPORT_WINDOW_LABELS: Readonly<Record<AccountingWindow, string>> = {
+const EXPORT_WINDOW_LABELS: Readonly<Record<QuotaWindow, string>> = {
   rpm: "RPM",
   hour: "Hourly",
   five_hour: "5h",
+  session: "Session",
   day: "Daily",
   week: "Weekly",
   month: "Monthly",
@@ -86,163 +80,49 @@ function toExportError(error: { label: string; message: string }): QuotaExportEr
   };
 }
 
-function toExportRawDetail(detail: { key: string; value: string }): QuotaExportRawDetail {
-  return {
-    key: sanitizeSingleLineDisplaySnippet(detail.key, EXPORT_ERROR_MAX_LENGTH),
-    value: sanitizeSingleLineDisplaySnippet(detail.value, EXPORT_ERROR_MAX_LENGTH),
-  };
-}
-
-function exportWindow(entry: QuotaToastEntry): string | undefined {
-  if (entry.semantic) {
-    return entry.semantic.metric.kind === "window"
-      ? EXPORT_WINDOW_LABELS[entry.semantic.metric.window]
-      : undefined;
-  }
-  // Without semantics the window comes only from the row label. The entry name is display
-  // text and is never parsed here.
-  const window = classifyWindow(entry.label ?? "");
-  return window && window !== "session" ? EXPORT_WINDOW_LABELS[window] : undefined;
-}
-
-/** A value entry's text; a yes/no entry reads "Enabled" or "Disabled". */
-function entryValueText(entry: Exclude<QuotaToastEntry, QuotaPercentEntry>): string {
-  if (entry.kind === "value") return entry.value;
-  if (entry.kind === "quantity") return formatAccountingQuantity(entry.quantity);
-  return entry.value ? "Enabled" : "Disabled";
-}
-
-/** One entry as v5 exported it; provider text loses terminal escapes and control characters. */
-function toExportEntry(entry: QuotaToastEntry): QuotaExportEntry {
-  const window = exportWindow(entry);
-  const resetAt = unixSecondsFromIso(entry.resetTimeIso);
-  const { sourceId } = entry.accounting;
-  const observedAt = unixSecondsFromIso(entry.accounting.observedAtIso);
-  const base = {
-    name: sanitizeDisplayText(entry.name),
-    resultType: entry.accounting.resultType,
-    acquisitionMethod: entry.accounting.acquisitionMethod,
-    ownership: entry.accounting.ownership,
-    authority: entry.accounting.authority,
-    ...(sourceId ? { sourceId: sanitizeDisplayText(sourceId) } : {}),
-    ...(observedAt !== undefined ? { observedAt } : {}),
-    ...(window ? { window } : {}),
-    ...(resetAt !== undefined ? { resetAt } : {}),
-  };
-  if (entry.kind === "value" || entry.kind === "quantity" || entry.kind === "boolean") {
-    return { ...base, renderType: "value", value: sanitizeDisplayText(entryValueText(entry)) };
-  }
-  return { ...base, renderType: "percent", percentRemaining: entry.percentRemaining };
-}
-
-/** The entries as v5 exported them; one that can't be read (a bad amount) is left out. */
-function exportEntries(entries: readonly QuotaToastEntry[]): QuotaExportEntry[] {
-  return entries.flatMap((entry) => {
-    try {
-      return [toExportEntry(entry)];
-    } catch {
-      return [];
-    }
-  });
-}
-
-/** Each custom definition's status in its configured order, never its URL, key or format. */
+/**
+ * Each custom definition in its configured order, never its URL, key or format. Its account in
+ * this check (the definition id is the account's login) gives its status: "error" when it gave
+ * only errors, "ok" otherwise, and "unavailable" when it was not checked. A switched-off
+ * definition is never checked: it says `enabled: false` instead.
+ */
 function customSourceStatuses(
   definitions: readonly QuotaProviderDefinition[],
-  diagnostics: readonly QuotaProviderDiagnostic[] = [],
+  accounts: readonly AccountResult[],
 ): QuotaExportSource[] {
-  const diagnosticsBySource = new Map(
-    diagnostics.map((diagnostic) => [diagnostic.sourceId, diagnostic] as const),
-  );
   return definitions
     .filter((source) => !(MAINTAINED_LOCAL_ESTIMATE_IDS as readonly string[]).includes(source.id))
-    .map((source) => {
-      // A switched-off definition is never fetched, so any result for it is old.
-      const diagnostic = source.enabled === false ? undefined : diagnosticsBySource.get(source.id);
-      return {
-        id: source.id,
-        providerId: source.providerId,
-        status: !diagnostic ? "unavailable" : diagnostic.outcome === "success" ? "ok" : "error",
-        entryCount: diagnostic?.entryCount ?? 0,
-        ...(source.enabled === false ? { enabled: false as const } : {}),
-      };
+    .map((source): QuotaExportSource => {
+      const identity = { id: source.id, providerId: source.providerId };
+      if (source.enabled === false) return { ...identity, entryCount: 0, enabled: false };
+      const account = accounts.find((candidate) => candidate.login === source.id);
+      if (!account) return { ...identity, status: "unavailable", entryCount: 0 };
+      const failed = account.rows.length === 0 && account.errors.length > 0;
+      return { ...identity, status: failed ? "error" : "ok", entryCount: account.rows.length };
     });
 }
 
-/**
- * A provider's part of the export file from one check, as v5 wrote it: "ok" or "partial" with
- * its entries, "error" when the check found no entries, and "unavailable" when the provider
- * could not be asked (it is not set up). The custom providers also list each definition.
- */
-export function exportProviderFromResult(params: {
-  providerId: string;
-  result: QuotaProviderResult;
-  checkedAtMs: number;
-  customDefinitions: readonly QuotaProviderDefinition[];
-}): QuotaExportProvider {
-  const { result } = params;
-  const withSources =
-    params.providerId === QUOTA_PROVIDERS_AGGREGATE_ID
-      ? {
-          sources: customSourceStatuses(
-            params.customDefinitions,
-            result.attempted ? result.diagnostics : undefined,
-          ),
-        }
-      : {};
-  if (!result.attempted) return { status: "unavailable", ...withSources };
-
-  const withRawDetails = result.rawDetails?.length
-    ? { rawDetails: result.rawDetails.map(toExportRawDetail) }
-    : {};
-  const fetchedAt = Math.floor(params.checkedAtMs / 1000);
-  if (result.entries.length > 0 && result.errors.length > 0) {
-    return {
-      status: "partial",
-      fetchedAt,
-      entries: exportEntries(result.entries),
-      errors: result.errors.map(toExportError),
-      ...withSources,
-      ...withRawDetails,
-    };
-  }
-  if (result.errors.length > 0) {
-    return {
-      status: "error",
-      fetchedAt,
-      error: sanitizeSingleLineDisplaySnippet(result.errors[0].message, EXPORT_ERROR_MAX_LENGTH),
-      ...withSources,
-      ...withRawDetails,
-    };
-  }
-  return {
-    status: "ok",
-    fetchedAt,
-    entries: exportEntries(result.entries),
-    ...withSources,
-    ...withRawDetails,
-  };
-}
-
-function snapshotEntry(provider: ProviderSnapshot, row: QuotaRow): QuotaExportEntry {
+/** One row as an export entry; provider text loses terminal escapes and control characters. */
+function rowEntry(providerId: string, providerLabel: string, row: QuotaRow): QuotaExportEntry {
   const account = row.account ? ` (${row.account})` : "";
-  const window = row.window
-    ? (EXPORT_WINDOW_LABELS[row.window as AccountingWindow] ?? WINDOWS[row.window].label)
-    : undefined;
   const resetAt = unixSecondsFromIso(row.resetsAt);
   const base = {
+    id: row.id,
     name: sanitizeSingleLineDisplaySnippet(
-      `${provider.label}${account} ${row.label}`,
+      `${providerLabel}${account} ${row.label}`,
       EXPORT_ERROR_MAX_LENGTH,
     ),
+    ...(row.account
+      ? { account: sanitizeSingleLineDisplaySnippet(row.account, EXPORT_ERROR_MAX_LENGTH) }
+      : {}),
     resultType: row.type,
     acquisitionMethod: row.method,
     ownership:
-      provider.providerId === QUOTA_PROVIDERS_AGGREGATE_ID
+      providerId === QUOTA_PROVIDERS_AGGREGATE_ID
         ? ("user_configured" as const)
         : ("maintained" as const),
     authority: row.authority,
-    ...(window ? { window } : {}),
+    ...(row.window ? { window: EXPORT_WINDOW_LABELS[row.window] } : {}),
     ...(resetAt !== undefined ? { resetAt } : {}),
   };
   if (row.percentRemaining !== undefined) {
@@ -255,30 +135,67 @@ function snapshotEntry(provider: ProviderSnapshot, row: QuotaRow): QuotaExportEn
   };
 }
 
-/** A provider's part written from its snapshot rows; "unavailable" until it first answered. */
+/**
+ * What a provider's part is written from: its rows and its error. Debug details stay in
+ * /quota_status: they name files, logins and key sources that scripts don't need.
+ */
+type ExportedProvider = Pick<ProviderSnapshot, "providerId" | "label" | "rows" | "error">;
+
+/**
+ * A provider's part: "ok" or "partial" with its rows, "error" when it has no rows, and
+ * "unavailable" when it is not set up. `answeredAtMs` is when the rows or the error came.
+ */
+function exportProvider(
+  provider: ExportedProvider,
+  answeredAtMs: number,
+  nowMs: number,
+): QuotaExportProvider {
+  if (provider.error?.code === "not_configured" && provider.rows.length === 0) {
+    return { status: "unavailable" };
+  }
+  const fetchedAt = Math.floor(answeredAtMs / 1000);
+  const entries = provider.rows.map((row) => rowEntry(provider.providerId, provider.label, row));
+  if (!provider.error) return { status: "ok", fetchedAt, entries };
+  const error = sanitizeSingleLineDisplaySnippet(
+    describeError(provider.error, provider.label, nowMs),
+    EXPORT_ERROR_MAX_LENGTH,
+  );
+  if (entries.length === 0) return { status: "error", fetchedAt, error };
+  return {
+    status: "partial",
+    fetchedAt,
+    entries,
+    errors: [toExportError({ label: provider.label, message: error })],
+  };
+}
+
+/**
+ * A provider's part of the export file from one check: this check's rows as the snapshot
+ * shows them, or its error. The custom providers also list each definition, from this check's
+ * `accounts`.
+ */
+export function exportProviderFromCheck(
+  params: CheckForExport & {
+    providerId: string;
+    label: string;
+    customDefinitions: readonly QuotaProviderDefinition[];
+    accounts: readonly AccountResult[];
+  },
+): QuotaExportProvider {
+  const { providerId, label, rows, error, checkedAtMs } = params;
+  const part = exportProvider({ providerId, label, rows, error }, checkedAtMs, checkedAtMs);
+  if (providerId !== QUOTA_PROVIDERS_AGGREGATE_ID) return part;
+  return { ...part, sources: customSourceStatuses(params.customDefinitions, params.accounts) };
+}
+
+/** A provider's part written from its snapshot; "unavailable" until it first answered. */
 function exportProviderFromSnapshot(
   provider: ProviderSnapshot,
   nowMs: number,
 ): QuotaExportProvider {
   const answeredAtMs = provider.okAtMs ?? provider.checkedAtMs;
   if (answeredAtMs === undefined) return { status: "unavailable" };
-  const fetchedAt = Math.floor(answeredAtMs / 1000);
-  const withRawDetails =
-    provider.debug.length > 0 ? { rawDetails: provider.debug.map(toExportRawDetail) } : {};
-  const entries = provider.rows.map((row) => snapshotEntry(provider, row));
-  if (!provider.error) return { status: "ok", fetchedAt, entries, ...withRawDetails };
-  const error = sanitizeSingleLineDisplaySnippet(
-    describeError(provider.error, provider.label, nowMs),
-    EXPORT_ERROR_MAX_LENGTH,
-  );
-  if (entries.length === 0) return { status: "error", fetchedAt, error, ...withRawDetails };
-  return {
-    status: "partial",
-    fetchedAt,
-    entries,
-    errors: [toExportError({ label: provider.label, message: error })],
-    ...withRawDetails,
-  };
+  return exportProvider(provider, answeredAtMs, nowMs);
 }
 
 /** Builds the export document from the quota snapshot; no provider is asked again. */
@@ -295,7 +212,7 @@ export function buildQuotaExportFromSnapshot(
   }
   const exportedAt = Math.floor(nowMs / 1000);
   return {
-    version: 2,
+    version: 3,
     exportedAt,
     fromCache: true,
     cacheAgeSeconds: fetchedAtValues.length > 0 ? exportedAt - Math.min(...fetchedAtValues) : 0,

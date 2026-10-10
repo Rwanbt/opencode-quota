@@ -1,5 +1,6 @@
 // The OpenAI provider through the real credential reader; only the network is faked.
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { rowsFromProviderResult } from "../src/core/rows.js";
 import {
   bindCredentialSource,
   createIntegrationCredentialSource,
@@ -59,7 +60,10 @@ describe("openai provider with an empty connection list", () => {
     );
     vi.stubGlobal("fetch", fetchMock);
 
-    const out = await openaiProvider.fetch({ config: {} } as never);
+    const fetched = rowsFromProviderResult(
+      "openai",
+      await openaiProvider.fetch({ config: {} } as never),
+    );
 
     expect(fetchMock).toHaveBeenCalledWith(
       "https://chatgpt.com/backend-api/wham/usage",
@@ -67,13 +71,14 @@ describe("openai provider with an empty connection list", () => {
         headers: expect.objectContaining({ Authorization: "Bearer a.b.c" }),
       }),
     );
-    expect(out).toMatchObject({
-      attempted: true,
-      errors: [],
-      presentation: { singleWindowDisplayName: "OpenAI (Plus)" },
-    });
-    expect(out.entries.map((entry) => [entry.group, entry.percentRemaining])).toEqual([
-      ["OpenAI (Plus)", 80],
+    expect(fetched.error).toBeUndefined();
+    expect(fetched.rows).toEqual([
+      expect.objectContaining({
+        id: "openai.five_hour",
+        account: "Plus",
+        percentRemaining: 80,
+        windowStartedAt: expect.any(String),
+      }),
     ]);
   });
 
@@ -92,11 +97,12 @@ describe("openai provider with an empty connection list", () => {
 
     const pending = openaiProvider.fetch({ config: { requestTimeoutMs: 12_000 } } as never);
     await vi.advanceTimersByTimeAsync(12_000);
+    const fetched = rowsFromProviderResult("openai", await pending);
 
-    await expect(pending).resolves.toMatchObject({
-      attempted: true,
-      entries: [],
-      errors: [{ label: "OpenAI", message: "Request timeout after 12s" }],
+    expect(fetched).toMatchObject({ rows: [], error: { code: "timeout" } });
+    expect(fetched.debug).toContainEqual({
+      key: "error",
+      value: "OpenAI: Request timeout after 12s",
     });
   });
 });

@@ -1,405 +1,363 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { QuotaProviderContext } from "../src/lib/entries.js";
-import { expectNotAttempted } from "./helpers/provider-assertions.js";
-
-const mocks = vi.hoisted(() => ({
-  queryOpenCodeZenQuota: vi.fn(),
-  resolveOpenCodeConsoleAuth: vi.fn(),
-}));
-
-vi.mock("../src/lib/opencode-zen.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../src/lib/opencode-zen.js")>()),
-  queryOpenCodeZenQuota: mocks.queryOpenCodeZenQuota,
-}));
-
-vi.mock("../src/lib/opencode-console-auth.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../src/lib/opencode-console-auth.js")>()),
-  resolveOpenCodeConsoleAuth: mocks.resolveOpenCodeConsoleAuth,
-}));
-
+import {
+  bindCredentialSource,
+  createIntegrationCredentialSource,
+} from "../src/lib/opencode-auth.js";
 import { opencodeZenProvider } from "../src/providers/opencode-zen.js";
+import type { CredentialDatabaseRow } from "./helpers/credential-database.js";
+import { createFakeIntegration } from "./helpers/fake-integration.js";
+import {
+  fakeHttp,
+  fetchRows,
+  requestHeader,
+  rowSummary,
+  useProviderWorld,
+} from "./helpers/provider-fetch.js";
 
+const CONSOLE_API = "https://opencode.ai/console/api";
+const NOW = Date.parse("2026-09-25T12:00:00.000Z");
 const LOGIN_HINT = "Run `opencode auth login opencode`.";
-const USD = { kind: "currency", code: "USD" } as const;
-const balanceAccounting = {
-  resultType: "balance",
-  acquisitionMethod: "remote_api",
-  ownership: "maintained",
-  authority: "provider_reported",
-} as const;
+const SESSION_ERROR =
+  "OpenCode Console session expired or invalid. Run `opencode auth login opencode` to sign in again.";
+const EXPLICIT = { enabledProviders: ["opencode"] };
 
-const consoleCredential = {
-  accessToken: "st_secret-token",
-  orgId: "wrk_123",
-  orgName: "Acme",
+/** A stored Console sign-in (`opencode auth login opencode`); `value` fields replace the defaults. */
+function consoleLogin(value: Record<string, unknown> = {}): CredentialDatabaseRow {
+  return {
+    id: "cred_console",
+    integrationId: "opencode",
+    active: 1,
+    updated: 1,
+    value: {
+      type: "oauth",
+      access: "st_secret-token",
+      refresh: "console-refresh",
+      expires: NOW + 3_600_000,
+      metadata: { orgID: "wrk_abc", orgName: "Acme" },
+      ...value,
+    },
+  };
+}
+
+/** A funded account without a monthly limit: $42.50 balance, auto reload off. */
+const ROUTES: Record<string, unknown> = {
+  "billing/status": { balanceMicroCents: "4250000000" },
+  "billing/account": { creditLimitMicroCents: null },
+  "billing/auto-recharge": { enabled: false, thresholdDollars: 5, rechargeAmountDollars: 20 },
+  "budgets/org": null,
+  "usage/cost-by-day": [],
 };
 
-function balanceEntry(prominence: "primary" | "supplementary") {
-  return {
-    accounting: balanceAccounting,
-    kind: "quantity",
-    name: "zen-current-balance",
-    group: "OpenCode Zen",
-    semantic: {
-      metric: { kind: "component", component: "current_balance" },
-      prominence,
-    },
-    quantity: { decimal: "42.5", unit: USD },
-  } as const;
-}
-
-function autoReloadEntry(value = false) {
-  return {
-    accounting: { ...balanceAccounting, resultType: "status" },
-    kind: "boolean",
-    name: "zen-auto-reload",
-    group: "OpenCode Zen",
-    semantic: {
-      metric: { kind: "component", component: "auto_reload" },
-      prominence: "supplementary",
-    },
-    value,
-  } as const;
-}
-
-function budgetEntry(
-  options: {
-    percentRemaining?: number;
-    used?: string;
-    limit?: string;
-    remaining?: string;
-    limitAuthority?: "provider_reported" | "user_configured";
-    resetTimeIso?: string;
-  } = {},
-) {
-  return {
-    accounting: { ...balanceAccounting, resultType: "budget", authority: "locally_derived" },
-    name: "zen-monthly-budget",
-    group: "OpenCode Zen",
-    percentRemaining: options.percentRemaining ?? 94.25,
-    ...(options.resetTimeIso ? { resetTimeIso: options.resetTimeIso } : {}),
-    semantic: {
-      metric: { kind: "window", window: "month" },
-      prominence: "primary",
-    },
-    basis: {
-      used: {
-        quantity: { decimal: options.used ?? "5.75", unit: USD },
-        authority: "provider_reported",
-      },
-      limit: {
-        quantity: { decimal: options.limit ?? "100", unit: USD },
-        authority: options.limitAuthority ?? "provider_reported",
-      },
-      remaining: {
-        quantity: { decimal: options.remaining ?? "94.25", unit: USD },
-        authority: "locally_derived",
-      },
-    },
-  } as const;
-}
-
-const userBudgetEntry = budgetEntry({
-  percentRemaining: 97.125,
-  limit: "200",
-  remaining: "194.25",
-  limitAuthority: "user_configured",
-});
-
-function success(overrides: Record<string, unknown> = {}, errors: string[] = []): void {
-  mocks.queryOpenCodeZenQuota.mockResolvedValueOnce({
-    success: true,
-    errors,
-    data: {
-      balance: 4_250_000_000,
-      monthlyLimit: null,
-      monthlyUsage: null,
-      lastPayment: null,
-      reload: false,
-      reloadAmount: null,
-      reloadTrigger: null,
-      budgetResetIso: null,
-      budgetSource: "credit_limit",
-      ...overrides,
-    },
+/**
+ * Answers each Console route with its `ROUTES` reply, or with `overrides[route]`: a JSON body,
+ * or a function that builds the Response.
+ */
+function consoleHttp(overrides: Record<string, unknown> = {}, consoleApi = CONSOLE_API) {
+  const replies = { ...ROUTES, ...overrides };
+  return fakeHttp((url) => {
+    const route = url.slice(`${consoleApi}/`.length);
+    if (!url.startsWith(`${consoleApi}/`) || !(route in replies)) {
+      throw new Error(`unexpected url ${url}`);
+    }
+    const reply = replies[route];
+    return typeof reply === "function" ? reply() : reply;
   });
 }
 
-function context(config: Record<string, unknown> = {}): QuotaProviderContext {
-  return { config } as unknown as QuotaProviderContext;
+const serverError = () => new Response("server error", { status: 500 });
+const NO_SPEND_ROW = ["opencode.monthly", null, "Monthly", "month", "0 USD", null];
+const BALANCE_ROW = ["opencode.balance", null, "Balance", null, "42.5 USD", null];
+const RELOAD_OFF_ROW = ["opencode.auto_reload", null, "Auto reload", null, false, null];
+
+function errorDebug(fetched: { debug: Array<{ key: string; value: string }> }): string[] {
+  return fetched.debug.filter((item) => item.key === "error").map((item) => item.value);
 }
 
-describe("opencode Zen provider", () => {
+describe("OpenCode Zen provider", () => {
+  const world = useProviderWorld();
+
   beforeEach(() => {
-    vi.clearAllMocks();
-    mocks.resolveOpenCodeConsoleAuth.mockResolvedValue({
-      state: "configured",
-      credential: consoleCredential,
-    });
+    vi.useFakeTimers({ now: NOW, toFake: ["Date"] });
   });
 
   it.each([
-    [{ state: "configured", credential: consoleCredential }, "auto", true],
-    [{ state: "expired", credential: consoleCredential }, "auto", true],
-    [{ state: "invalid", error: "refresh_failed: boom" }, "auto", true],
-    [{ state: "none" }, "auto", false],
-    [{ state: "none" }, ["opencode"], true],
-    [{ state: "none" }, ["openai"], false],
-    [{ state: "none", reason: "not_oauth" }, "auto", false],
-    [{ state: "none", reason: "not_oauth" }, ["opencode"], true],
-  ])("reports availability for %j with enabledProviders %j -> %j", async (resolution, enabledProviders, expected) => {
-    mocks.resolveOpenCodeConsoleAuth.mockResolvedValueOnce(resolution);
-    await expect(opencodeZenProvider.isAvailable(context({ enabledProviders }))).resolves.toBe(
-      expected,
+    ["no Console sign-in", []],
+    [
+      "only an API key under opencode",
+      [{ ...consoleLogin(), value: { type: "api", key: "sk-workspace" } }],
+    ],
+  ])("is not configured with %s in auto mode", async (_name, logins) => {
+    world.storeLogins(logins);
+    const http = consoleHttp();
+
+    await expect(fetchRows(opencodeZenProvider)).resolves.toEqual({
+      rows: [],
+      error: { code: "not_configured" },
+      debug: [{ key: "console_auth_state", value: "none" }],
+    });
+    expect(http).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [
+      "no sign-in while opencode is listed in enabledProviders",
+      [],
+      "none",
+      "internal",
+      `No OpenCode Console sign-in found. ${LOGIN_HINT}`,
+    ],
+    [
+      "a sign-in without an access token",
+      [consoleLogin({ access: " " })],
+      "invalid",
+      "not_configured",
+      `OpenCode Console sign-in failed: OpenCode Console credential has no access token. ${LOGIN_HINT}`,
+    ],
+    [
+      "an expired sign-in",
+      [consoleLogin({ expires: NOW - 1 })],
+      "expired",
+      "login_expired",
+      `OpenCode Console sign-in failed: the sign-in expired. ${LOGIN_HINT}`,
+    ],
+  ])("reports %s without asking the Console", async (_name, logins, authState, code, message) => {
+    world.storeLogins(logins);
+    const http = consoleHttp();
+
+    const fetched = await fetchRows(opencodeZenProvider, EXPLICIT);
+
+    expect(fetched.rows).toEqual([]);
+    expect(fetched.error?.code).toBe(code);
+    expect(fetched.debug).toEqual([
+      { key: "console_auth_state", value: authState },
+      { key: "error", value: `OpenCode Zen: ${message}` },
+    ]);
+    expect(http).not.toHaveBeenCalled();
+  });
+
+  it("reports a sign-in OpenCode could not refresh, with its token redacted", async () => {
+    const integration = createFakeIntegration([
+      {
+        integrationId: "opencode",
+        id: "cred_console",
+        label: "default",
+        registered: true,
+        method: "oauth",
+        value: consoleLogin().value as Record<string, unknown>,
+        resolveError: `HTTP 401 for token ${"a".repeat(40)}`,
+      },
+    ]);
+    const unbind = bindCredentialSource(createIntegrationCredentialSource(integration as never));
+
+    try {
+      const fetched = await fetchRows(opencodeZenProvider);
+
+      expect(fetched.error?.code).toBe("login_expired");
+      expect(errorDebug(fetched)).toEqual([
+        `OpenCode Zen: OpenCode Console sign-in failed: refresh_failed: HTTP 401 for token [redacted]. ${LOGIN_HINT}`,
+      ]);
+    } finally {
+      unbind();
+    }
+  });
+
+  it("asks the sign-in's Console server for each route with its token and org", async () => {
+    world.storeLogins([
+      consoleLogin({ metadata: { orgID: "wrk_abc", server: "https://console.example.test" } }),
+    ]);
+    const http = consoleHttp({}, "https://console.example.test/api");
+
+    const fetched = await fetchRows(opencodeZenProvider);
+
+    expect(rowSummary(fetched.rows)).toEqual([NO_SPEND_ROW, BALANCE_ROW, RELOAD_OFF_ROW]);
+    expect(http.mock.calls.map(([url]) => url).sort()).toEqual(
+      [
+        "billing/account",
+        "billing/auto-recharge",
+        "billing/status",
+        "budgets/org",
+        "usage/cost-by-day",
+      ].map((route) => `https://console.example.test/api/${route}`),
     );
+    for (const [, init] of http.mock.calls) {
+      expect(requestHeader(init, "Authorization")).toBe("Bearer st_secret-token");
+      expect(requestHeader(init, "x-org-id")).toBe("wrk_abc");
+    }
+    expect(fetched.debug).toEqual(
+      expect.arrayContaining([
+        { key: "console_server", value: "https://console.example.test" },
+        { key: "console_org", value: "wrk_abc" },
+      ]),
+    );
+  });
+
+  it.each([
+    [
+      "this month's spend when there is no limit (string micro-cents, older months left out)",
+      {
+        "usage/cost-by-day": [
+          { date: "2026-08-31", totalCostMicroCents: "900000000" },
+          { date: "2026-09-01", totalCostMicroCents: "1100000000" },
+          { date: "2026-09-24", totalCostMicroCents: 82_020_000 },
+        ],
+      },
+      {},
+      [
+        ["opencode.monthly", null, "Monthly", "month", "11.8202 USD", null],
+        BALANCE_ROW,
+        RELOAD_OFF_ROW,
+      ],
+    ],
+    [
+      "the credit limit as the monthly budget, with auto reload on",
+      {
+        "billing/account": { creditLimitMicroCents: "10000000000" },
+        "billing/auto-recharge": { enabled: true, thresholdDollars: 5, rechargeAmountDollars: 20 },
+        "usage/cost-by-day": [{ date: "2026-09-24", totalCostMicroCents: "575000000" }],
+      },
+      {},
+      [
+        ["opencode.monthly", null, "Monthly", "month", "94.25 (5.75 USD of 100 USD)", null],
+        BALANCE_ROW,
+        ["opencode.auto_reload", null, "Auto reload", null, true, null],
+      ],
+    ],
+    [
+      "the org budget before the credit limit, with its reset time",
+      {
+        "billing/account": { creditLimitMicroCents: "10000000000" },
+        "budgets/org": {
+          limitMicroCents: "6000000000",
+          spentMicroCents: "1500000000",
+          resetsAt: "2026-10-01T00:00:00Z",
+        },
+        "usage/cost-by-day": [{ date: "2026-09-24", totalCostMicroCents: "575000000" }],
+      },
+      {},
+      [
+        [
+          "opencode.monthly",
+          null,
+          "Monthly",
+          "month",
+          "75 (15 USD of 60 USD)",
+          "2026-10-01T00:00:00.000Z",
+        ],
+        BALANCE_ROW,
+        RELOAD_OFF_ROW,
+      ],
+    ],
+    [
+      "the configured opencodeMonthlyLimit over the credit limit",
+      {
+        "billing/account": { creditLimitMicroCents: "10000000000" },
+        "usage/cost-by-day": [{ date: "2026-09-24", totalCostMicroCents: "575000000" }],
+      },
+      { opencodeMonthlyLimit: 200 },
+      [
+        ["opencode.monthly", null, "Monthly", "month", "97.125 (5.75 USD of 200 USD)", null],
+        BALANCE_ROW,
+        RELOAD_OFF_ROW,
+      ],
+    ],
+  ])("shows %s", async (_name, overrides, config, rows) => {
+    world.storeLogins([consoleLogin()]);
+    consoleHttp(overrides);
+
+    const fetched = await fetchRows(opencodeZenProvider, config);
+
+    expect(rowSummary(fetched.rows)).toEqual(rows);
+    expect(fetched.error).toBeUndefined();
+  });
+
+  it.each([
+    [
+      "failed auto reload and usage routes",
+      { "billing/auto-recharge": serverError, "usage/cost-by-day": serverError },
+      [BALANCE_ROW],
+      "provider_error",
+      [
+        "OpenCode Console billing/auto-recharge error 500",
+        "OpenCode Console usage/cost-by-day error 500",
+      ],
+    ],
+    [
+      "a malformed org budget",
+      { "budgets/org": { limitMicroCents: "abc", spentMicroCents: "0" } },
+      [NO_SPEND_ROW, BALANCE_ROW, RELOAD_OFF_ROW],
+      "bad_response",
+      ["Could not parse OpenCode Console budgets/org response"],
+    ],
+  ])("keeps the balance and reports %s", async (_name, overrides, rows, code, messages) => {
+    world.storeLogins([consoleLogin()]);
+    consoleHttp(overrides);
+
+    const fetched = await fetchRows(opencodeZenProvider);
+
+    expect(rowSummary(fetched.rows)).toEqual(rows);
+    expect(fetched.error?.code).toBe(code);
+    expect(errorDebug(fetched)).toEqual(messages.map((message) => `OpenCode Zen: ${message}`));
+  });
+
+  it.each([
+    [
+      "an expired session on any route",
+      { "budgets/org": () => new Response("unauthorized", { status: 401 }) },
+      "login_expired",
+      SESSION_ERROR,
+    ],
+    [
+      "a redirect to the sign-in page",
+      {
+        "billing/status": () =>
+          new Response(null, { status: 302, headers: { location: "/login" } }),
+      },
+      "login_expired",
+      SESSION_ERROR,
+    ],
+    [
+      "a failed balance route",
+      { "billing/status": serverError },
+      "provider_error",
+      "OpenCode Console billing/status error 500",
+    ],
+    [
+      "an unreadable balance",
+      { "billing/status": { balanceMicroCents: "lots" } },
+      "bad_response",
+      "Could not parse OpenCode Console billing/status response",
+    ],
+  ])("shows no rows for %s", async (_name, overrides, code, message) => {
+    world.storeLogins([consoleLogin()]);
+    consoleHttp(overrides);
+
+    const fetched = await fetchRows(opencodeZenProvider);
+
+    expect(fetched.rows).toEqual([]);
+    expect(fetched.error?.code).toBe(code);
+    expect(errorDebug(fetched)).toEqual([`OpenCode Zen: ${message}`]);
+    expect(JSON.stringify(fetched)).not.toContain("st_secret-token");
+  });
+
+  it.each([
+    ["a sign-in", [consoleLogin()], "auto", true],
+    ["an expired sign-in", [consoleLogin({ expires: NOW - 1 })], "auto", true],
+    ["no sign-in", [], "auto", false],
+    ["no sign-in while opencode is listed in enabledProviders", [], ["opencode"], true],
+  ])("is available with %s", async (_name, logins, enabledProviders, expected) => {
+    world.storeLogins(logins);
+
+    await expect(
+      opencodeZenProvider.isAvailable({ config: { enabledProviders } } as never),
+    ).resolves.toBe(expected);
   });
 
   it.each([
     ["opencode/gpt-5", true],
-    ["opencode-zen/claude-opus", true],
     ["OPENCODE/gemini", true],
-    ["openai/gpt-5", false],
     ["opencode-go/model", false],
-  ])("matchesCurrentModel(%s) -> %s", (model, expected) => {
+  ])("matches model %s: %s", (model, expected) => {
     expect(opencodeZenProvider.matchesCurrentModel?.(model)).toBe(expected);
-  });
-
-  it("returns attempted:false in auto mode without a Console sign-in", async () => {
-    mocks.resolveOpenCodeConsoleAuth.mockResolvedValueOnce({ state: "none" });
-
-    const result = await opencodeZenProvider.fetch(context({ enabledProviders: "auto" }));
-
-    expectNotAttempted(result);
-    expect(result.statusDetails).toEqual([{ key: "console_auth_state", value: "none" }]);
-    expect(mocks.queryOpenCodeZenQuota).not.toHaveBeenCalled();
-  });
-
-  it.each([
-    [
-      "no sign-in while Zen is explicitly enabled",
-      { state: "none", reason: "not_oauth" },
-      `No OpenCode Console sign-in found. ${LOGIN_HINT}`,
-      "none",
-    ],
-    [
-      "a failed sign-in, with the scrubbed reason",
-      { state: "invalid", error: `refresh_failed: token ${"a".repeat(40)} was rejected` },
-      `OpenCode Console sign-in failed: refresh_failed: token [redacted] was rejected. ${LOGIN_HINT}`,
-      "invalid",
-    ],
-    [
-      "an expired sign-in",
-      { state: "expired", credential: consoleCredential },
-      `OpenCode Console sign-in failed: the sign-in expired. ${LOGIN_HINT}`,
-      "expired",
-    ],
-  ])("shows %s as an attempted error", async (_name, resolution, message, authState) => {
-    mocks.resolveOpenCodeConsoleAuth.mockResolvedValueOnce(resolution);
-
-    const result = await opencodeZenProvider.fetch(context({ enabledProviders: ["opencode"] }));
-
-    expect(result).toEqual({
-      attempted: true,
-      entries: [],
-      errors: [{ label: "OpenCode Zen", message }],
-      statusDetails: [{ key: "console_auth_state", value: authState }],
-    });
-    expect(JSON.stringify(result)).not.toContain("a".repeat(40));
-    expect(JSON.stringify(result)).not.toContain("st_secret-token");
-    expect(mocks.queryOpenCodeZenQuota).not.toHaveBeenCalled();
-  });
-
-  it("projects Console failures as attempted errors with the server and org, never the token", async () => {
-    mocks.resolveOpenCodeConsoleAuth.mockResolvedValueOnce({
-      state: "configured",
-      credential: { accessToken: "st_secret-token", server: "https://console.self-hosted.example" },
-    });
-    const error =
-      "OpenCode Console session expired or invalid. Run `opencode auth login opencode` to sign in again.";
-    mocks.queryOpenCodeZenQuota.mockResolvedValueOnce({ success: false, error });
-
-    const result = await opencodeZenProvider.fetch(context());
-
-    expect(result).toEqual({
-      attempted: true,
-      entries: [],
-      errors: [{ label: "OpenCode Zen", message: error }],
-      statusDetails: [
-        { key: "console_auth_state", value: "configured" },
-        { key: "console_server", value: "https://console.self-hosted.example" },
-        { key: "console_org", value: "(none)" },
-        { key: "live_fetch_error", value: error },
-      ],
-    });
-    expect(JSON.stringify(result)).not.toContain("st_secret-token");
-  });
-
-  it.each([
-    ["no monthly budget", {}],
-    ["a last payment, which is never a monthly limit", { lastPayment: 50 }],
-    ["no monthly usage", { monthlyLimit: 100, monthlyUsage: null }],
-    ["a zero page limit, instead of emitting NaN", { monthlyLimit: 0 }],
-  ])("makes the structured balance primary with %s", async (_name, data) => {
-    success(data);
-
-    const result = await opencodeZenProvider.fetch(context());
-
-    expect(result.attempted).toBe(true);
-    expect(result.entries).toEqual([balanceEntry("primary"), autoReloadEntry()]);
-    expect(result.errors).toEqual([]);
-    expect(result.presentation).toBeUndefined();
-    expect(result.statusDetails).toEqual(
-      expect.arrayContaining([
-        { key: "auto_reload", value: "false" },
-        { key: "auto_reload_amount_raw", value: "(none)" },
-        { key: "auto_reload_trigger_raw", value: "(none)" },
-      ]),
-    );
-    expect(JSON.stringify(result)).not.toContain("NaN");
-    expect(JSON.stringify(result)).not.toContain("last_payment_usd");
-  });
-
-  it("shows current-month spend next to the balance when there is no monthly limit", async () => {
-    success({ monthlyLimit: null, monthlyUsage: 1_182_020_000 });
-
-    const result = await opencodeZenProvider.fetch(context());
-
-    expect(result.entries).toEqual([
-      {
-        accounting: { ...balanceAccounting, resultType: "spend" },
-        kind: "quantity",
-        name: "zen-monthly-spend",
-        group: "OpenCode Zen",
-        semantic: {
-          metric: { kind: "window", window: "month" },
-          prominence: "primary",
-        },
-        quantity: { decimal: "11.8202", unit: USD },
-      },
-      balanceEntry("primary"),
-      autoReloadEntry(),
-    ]);
-    expect(result.statusDetails).toContainEqual({
-      key: "monthly_usage_usd",
-      value: "USD 11.8202",
-    });
-  });
-
-  it("calculates monthly-limit remaining from monthly usage, with only the reload boolean as an entry", async () => {
-    success({
-      monthlyLimit: 100,
-      monthlyUsage: 575_000_000,
-      reload: true,
-      reloadAmount: 20,
-      reloadTrigger: 5,
-    });
-
-    const result = await opencodeZenProvider.fetch(context());
-
-    expect(result.errors).toEqual([]);
-    expect(result.entries).toEqual([
-      budgetEntry(),
-      balanceEntry("supplementary"),
-      autoReloadEntry(true),
-    ]);
-    // The ambiguous reload amount and trigger stay diagnostic.
-    expect(result.statusDetails).toEqual([
-      { key: "console_auth_state", value: "configured" },
-      { key: "console_server", value: "https://opencode.ai/console" },
-      { key: "console_org", value: "Acme" },
-      { key: "balance_usd", value: "USD 42.5" },
-      { key: "monthly_limit_usd", value: "USD 100" },
-      { key: "monthly_usage_usd", value: "USD 5.75" },
-      { key: "budget_source", value: "credit_limit" },
-      { key: "auto_reload", value: "true" },
-      { key: "auto_reload_amount_raw", value: "20" },
-      { key: "auto_reload_trigger_raw", value: "5" },
-    ]);
-  });
-
-  it.each([
-    [
-      "the org budget reset date",
-      {
-        monthlyLimit: 60,
-        monthlyUsage: 617_355_570,
-        budgetResetIso: "2026-10-01T00:00:00.000Z",
-        budgetSource: "org_budget",
-      },
-      {},
-      budgetEntry({
-        percentRemaining: Math.min(100, ((60 - 6.1735557) / 60) * 100),
-        used: "6.1735557",
-        limit: "60",
-        remaining: "53.8264443",
-        resetTimeIso: "2026-10-01T00:00:00.000Z",
-      }),
-    ],
-    [
-      "the positive plugin monthly-limit override",
-      { monthlyLimit: 100, monthlyUsage: 575_000_000 },
-      { opencodeMonthlyLimit: 200 },
-      userBudgetEntry,
-    ],
-    [
-      "the plugin monthly limit when the Console credit-limit request fails",
-      { monthlyLimit: null, monthlyUsage: 575_000_000 },
-      { opencodeMonthlyLimit: 200 },
-      userBudgetEntry,
-    ],
-    [
-      "monthly usage above the limit clamped to zero remaining",
-      { monthlyLimit: 100, monthlyUsage: 20_000_000_000 },
-      {},
-      budgetEntry({ percentRemaining: 0, used: "200", remaining: "0" }),
-    ],
-  ])("builds the monthly budget from %s", async (_name, data, config, expectedBudget) => {
-    success(data);
-
-    const result = await opencodeZenProvider.fetch(context(config));
-
-    expect(result.entries).toEqual([
-      expectedBudget,
-      balanceEntry("supplementary"),
-      autoReloadEntry(),
-    ]);
-  });
-
-  it("keeps the balance and reports failed optional Console routes", async () => {
-    success({ reload: null }, [
-      "OpenCode Console billing/auto-recharge error 500",
-      "OpenCode Console usage/cost-by-day error 500",
-    ]);
-
-    const result = await opencodeZenProvider.fetch(context());
-
-    expect(result.attempted).toBe(true);
-    expect(result.entries).toEqual([balanceEntry("primary")]);
-    expect(result.errors).toEqual([
-      { label: "OpenCode Zen", message: "OpenCode Console billing/auto-recharge error 500" },
-      { label: "OpenCode Zen", message: "OpenCode Console usage/cost-by-day error 500" },
-    ]);
-    expect(result.statusDetails).toContainEqual({ key: "auto_reload", value: "(unknown)" });
-    expect(result.statusDetails).toContainEqual({
-      key: "live_fetch_error",
-      value:
-        "OpenCode Console billing/auto-recharge error 500 | OpenCode Console usage/cost-by-day error 500",
-    });
-  });
-
-  it.each([
-    [true, 7_654],
-    [false, undefined],
-  ])("passes the timeout only when the user configured it (%s)", async (requestTimeoutMsConfigured, requestTimeoutMs) => {
-    success();
-
-    await opencodeZenProvider.fetch(
-      context({ requestTimeoutMs: 7_654, requestTimeoutMsConfigured }),
-    );
-
-    expect(mocks.queryOpenCodeZenQuota).toHaveBeenCalledWith(consoleCredential, {
-      requestTimeoutMs,
-    });
   });
 });

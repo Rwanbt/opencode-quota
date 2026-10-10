@@ -187,7 +187,7 @@ describe("view format", () => {
     {
       name: "a count",
       value: row("x.a", {
-        remaining: { decimal: "1200", unit: { kind: "count", unit: "requests" } },
+        remaining: { decimal: "1200", unit: { kind: "count", unit: "request" } },
       }),
       expected: "1,200 requests left",
     },
@@ -224,6 +224,20 @@ describe("view format", () => {
 
   it("shows exact amounts without float noise", () => {
     expect(amountText({ decimal: "0.1", unit: { kind: "count", unit: "unit" } })).toBe("0.1");
+  });
+
+  it.each([
+    { decimal: "0", expected: "0 tokens used" },
+    { decimal: "1", expected: "1 token used" },
+    { decimal: "1.5", expected: "1.5 tokens used" },
+    { decimal: "12345", expected: "12,345 tokens used" },
+    { decimal: "-1", expected: "-1 token used" },
+  ])("names a count of $decimal in the plural unless it is one", ({ decimal, expected }) => {
+    const used = row("x.a", {
+      type: "usage",
+      amount: { decimal, unit: { kind: "count", unit: "token" } },
+    });
+    expect(rowValueText(used)).toBe(expected);
   });
 });
 

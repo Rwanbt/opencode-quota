@@ -15,6 +15,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parse as parseJsonc } from "jsonc-parser";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { ProviderRow } from "../src/providers/contract.js";
+import { answer, percentRow } from "./helpers/fake-answers.js";
 import { createFakeIntegration } from "./helpers/fake-integration.js";
 import {
   createAlibabaAuthModuleMock,
@@ -73,12 +75,6 @@ vi.mock("../src/lib/opencode-runtime-paths.js", () => ({
   }),
 }));
 
-const ACCOUNTING = {
-  resultType: "quota",
-  acquisitionMethod: "remote_api",
-  ownership: "maintained",
-  authority: "provider_reported",
-} as const;
 // Resets in 2h 14m (the 30 s margin keeps the minute while the test runs).
 const RESET = new Date(Date.now() + 134 * 60_000 - 30_000).toISOString();
 
@@ -119,16 +115,8 @@ const CUSTOM_SOURCES = [
 ];
 
 /** Copilot without a billing token shows only its plan; MiniMax is past its 5h quota. */
-function fakeProvider(id: string, entries: Array<Record<string, unknown>>) {
-  return {
-    id,
-    isAvailable: async () => true,
-    fetch: async () => ({
-      attempted: true,
-      entries: entries.map((entry) => ({ accounting: ACCOUNTING, ...entry })),
-      errors: [],
-    }),
-  };
+function fakeProvider(id: string, name: string, rows: ProviderRow[]) {
+  return { id, isAvailable: async () => true, fetch: async () => answer({ name, rows }) };
 }
 
 function httpFetch(url: string, init?: RequestInit): Response {
@@ -586,10 +574,10 @@ describe("v6 surfaces on the quota snapshot", () => {
     });
     const { quotaProvidersProvider } = await import("../src/providers/quota-providers.js");
     mocks.getProviders.mockReturnValue([
-      fakeProvider("copilot", [{ name: "Copilot", group: "Copilot (pro)", percentRemaining: 81 }]),
-      fakeProvider("minimax-coding-plan", [
-        { name: "minimax-token-plan-5h", label: "5h:", percentRemaining: -5, resetTimeIso: RESET },
-        { name: "minimax-token-plan-week", label: "Weekly:", percentRemaining: 40 },
+      fakeProvider("copilot", "Copilot (pro)", [percentRow("allowance", "Plan", 81)]),
+      fakeProvider("minimax-coding-plan", "MiniMax Token Plan", [
+        percentRow("five_hour", "5h", -5, { window: "five_hour", resetsAt: RESET }),
+        percentRow("weekly", "Weekly", 40, { window: "week" }),
       ]),
       quotaProvidersProvider,
     ]);
@@ -775,7 +763,7 @@ describe("v6 surfaces on the quota snapshot", () => {
       "Quota · 7 days · $4.50 · 1.50M tokens",
     ]);
 
-    // The export file (version 2) and the gauges follow the snapshot without asking a provider
+    // The export file (version 3) and the gauges follow the snapshot without asking a provider
     // again.
     const exportPath = join(mocks.root, "quota-export.json");
     const exported = await vi.waitFor(async () => {
@@ -790,19 +778,19 @@ describe("v6 surfaces on the quota snapshot", () => {
         provider.entries.map((entry: any) => [entry.name, entry.percentRemaining]),
       ]),
     ).toEqual([
-      ["copilot", "ok", [["Copilot", 81]]],
+      ["copilot", "ok", [["Copilot (pro) Plan", 81]]],
       [
         "minimax-coding-plan",
         "ok",
         [
-          ["minimax-token-plan-5h", -5],
-          ["minimax-token-plan-week", 40],
+          ["MiniMax Token Plan 5h", -5],
+          ["MiniMax Token Plan Weekly", 40],
         ],
       ],
-      ["quota-providers", "partial", [["Team Monthly", 64]]],
+      ["quota-providers", "partial", [["Quota providers (Team) Monthly", 64]]],
     ]);
     expect(exported.providers["quota-providers"]).toMatchObject({
-      entries: [{ sourceId: "team-accounting", window: "Monthly" }],
+      entries: [{ window: "Monthly", ownership: "user_configured" }],
       sources: [
         { id: "team-accounting", status: "ok", entryCount: 1 },
         { id: "failing-accounting", status: "error", entryCount: 0 },

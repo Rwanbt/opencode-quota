@@ -196,24 +196,23 @@ describe("local quota provider state", () => {
       state,
       nowMs: NOW,
     });
-    const dailyEntry = result.entries.find((entry) => entry.label === "Daily:");
-    const rollingEntry = result.entries.find((entry) => entry.label === "Rolling:");
-    expect(dailyEntry).toMatchObject({
-      right: "1/10",
-      resetTimeIso: "2026-07-17T00:00:00.000Z",
-      fixedWindow: {
-        kind: "fixed_window",
-        startedAtIso: "2026-07-16T00:00:00.000Z",
-        observedAtIso: "2026-07-16T12:00:00.000Z",
-        endsAtIso: "2026-07-17T00:00:00.000Z",
-        fullReset: true,
-      },
+    const requests = (decimal: string) => ({ decimal, unit: { kind: "count", unit: "request" } });
+    const dailyRow = result.rows.find((row) => row.key === "daily");
+    const rollingRow = result.rows.find((row) => row.key === "rolling");
+    expect(dailyRow).toMatchObject({
+      label: "Daily",
+      used: requests("1"),
+      limit: requests("10"),
+      resetsAt: "2026-07-17T00:00:00.000Z",
+      windowStartedAt: "2026-07-16T00:00:00.000Z",
     });
-    expect(rollingEntry).toMatchObject({
-      right: "1/5",
-      resetTimeIso: new Date(NOW - 30_000 + 60 * 60 * 1000).toISOString(),
+    expect(rollingRow).toMatchObject({
+      label: "Rolling",
+      used: requests("1"),
+      limit: requests("5"),
+      resetsAt: new Date(NOW - 30_000 + 60 * 60 * 1000).toISOString(),
     });
-    expect(rollingEntry).not.toHaveProperty("fixedWindow");
+    expect(rollingRow).not.toHaveProperty("windowStartedAt");
   });
 
   it("writes the same complete snapshot when two sessions sync at once", async () => {
@@ -297,8 +296,8 @@ describe("local quota provider state", () => {
       ]),
       nowMs: NOW,
     });
-    const budget = result.entries.find((entry) => entry.accounting.resultType === "budget");
-    expect(budget?.kind).toBe("percent");
+    const budget = result.rows.find((row) => row.type === "budget");
+    expect(budget?.percentRemaining).toBeTypeOf("number");
     expect(result.unpricedMessageCount).toBe(0);
   });
 
@@ -317,12 +316,19 @@ describe("local quota provider state", () => {
       ]),
       nowMs: NOW,
     });
-    const request = result.entries.find((entry) => entry.accounting.resultType === "rate_limit");
-    const budget = result.entries.find((entry) => entry.accounting.resultType === "budget");
-    expect(request).toMatchObject({ kind: "percent", right: "1/10" });
-    expect(budget).toMatchObject({
-      kind: "value",
-      value: "Unavailable (1 unpriced request)",
+    const request = result.rows.find((row) => row.type === "quota");
+    const budget = result.rows.find((row) => row.type === "budget");
+    expect(request).toMatchObject({ percentRemaining: 90, used: { decimal: "1" } });
+    expect(budget).toEqual({
+      key: "daily_budget",
+      label: "Daily budget",
+      type: "budget",
+      method: "local_estimation",
+      authority: "locally_derived",
+      prominence: "primary",
+      window: "day",
+      text: "Unavailable (1 unpriced request)",
+      resetsAt: expect.any(String),
     });
     expect(result.unpricedMessageCount).toBe(1);
   });
@@ -348,18 +354,18 @@ describe("local quota provider state", () => {
       ),
       nowMs: NOW,
     });
-    expect(result.entries).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          accounting: expect.objectContaining({ resultType: "rate_limit" }),
-          right: "2/1",
-          percentRemaining: 0,
-        }),
-        expect.objectContaining({
-          accounting: expect.objectContaining({ resultType: "budget" }),
-          percentRemaining: 0,
-        }),
-      ]),
-    );
+    expect(result.rows).toEqual([
+      expect.objectContaining({
+        type: "quota",
+        used: { decimal: "2", unit: { kind: "count", unit: "request" } },
+        limit: { decimal: "1", unit: { kind: "count", unit: "request" } },
+        percentRemaining: 0,
+      }),
+      expect.objectContaining({
+        type: "budget",
+        limit: { decimal: "0", unit: { kind: "currency", code: "USD" } },
+        percentRemaining: 0,
+      }),
+    ]);
   });
 });

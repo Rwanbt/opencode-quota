@@ -1,4 +1,5 @@
-import type { QuotaProvider, QuotaToastEntry } from "../lib/entries.js";
+import { classifyWindow } from "../core/windows.js";
+import type { QuotaProvider } from "../lib/entries.js";
 import {
   GEMINI_CLI_AUTH_KEYS,
   hasGeminiCliQuotaRuntimeAvailable,
@@ -8,11 +9,12 @@ import {
 } from "../lib/google-gemini-cli.js";
 import { parseProviderModelRef } from "../lib/provider-model-matching.js";
 import type { GeminiCliQuotaBucket } from "../lib/types.js";
+import { keySlug, type ProviderRow, quotaRow } from "./contract.js";
 import {
   fetchGoogleProviderQuota,
   type GoogleProviderFlavor,
-  googleQuotaAccounting,
   isGoogleRuntimeAvailable,
+  remainingCount,
 } from "./google-oauth-provider.js";
 
 function isGeminiCliModel(model: string): boolean {
@@ -25,33 +27,37 @@ function isGeminiCliModel(model: string): boolean {
   );
 }
 
-/** "1,234 left", plus the token type unless it is the usual REQUESTS. */
-function formatRight(bucket: GeminiCliQuotaBucket): string {
-  const parsedRemaining = bucket.remainingAmount
-    ? Number.parseInt(bucket.remainingAmount, 10)
-    : Number.NaN;
-  const remainingAmount = bucket.remainingAmount
-    ? `${Number.isFinite(parsedRemaining) ? parsedRemaining.toLocaleString("en-US") : bucket.remainingAmount} left`
-    : undefined;
-  const tokenType = bucket.tokenType?.trim().toUpperCase();
-  return [remainingAmount, tokenType && tokenType !== "REQUESTS" ? tokenType : undefined]
-    .filter(Boolean)
-    .join(" ");
-}
+const GEMINI_TIER_KEYS: Readonly<Record<string, string>> = {
+  "Gemini Pro": "pro",
+  "Gemini Flash": "flash",
+  "Gemini Flash Lite": "flash_lite",
+};
 
-function geminiCliEntry(
-  bucket: GeminiCliQuotaBucket,
-  names: { name: string; group: string; sourceId: string | undefined },
-): QuotaToastEntry {
-  const right = formatRight(bucket);
+/** Gemini's token types as count units; a type it does not name counts plain units. */
+const GEMINI_TOKEN_UNITS: Readonly<Record<string, string>> = {
+  REQUESTS: "request",
+  TOKENS: "token",
+};
+
+/**
+ * The quality tiers keep fixed keys; other models are keyed `model.<name>`. The row has the
+ * remaining count when Gemini gives one.
+ */
+function geminiCliRow(bucket: GeminiCliQuotaBucket): ProviderRow | undefined {
+  const model = bucket.displayName.replace(/:+$/u, "").trim();
+  if (!model) return undefined;
+  const short = model.replace(/^Gemini\s+/u, "") || model;
+  const unit = GEMINI_TOKEN_UNITS[bucket.tokenType?.trim().toUpperCase() ?? ""] ?? "unit";
+  const remaining = remainingCount(bucket.remainingAmount, unit);
   return {
-    accounting: googleQuotaAccounting(names.sourceId),
-    name: names.name,
-    group: names.group,
-    label: `${bucket.displayName}:`,
-    ...(right ? { right } : {}),
-    percentRemaining: bucket.percentRemaining,
-    resetTimeIso: bucket.resetTimeIso,
+    ...quotaRow({
+      key: GEMINI_TIER_KEYS[model] ?? `model.${keySlug(short)}`,
+      label: short,
+      window: classifyWindow(model),
+      percentRemaining: bucket.percentRemaining,
+      resetsAt: bucket.resetTimeIso,
+    }),
+    ...(remaining ? { remaining } : {}),
   };
 }
 
@@ -63,15 +69,11 @@ const GEMINI_CLI_PROVIDER: GoogleProviderFlavor<GeminiCliQuotaBucket> = {
   query: queryGeminiCliQuota,
   failedLoginError: (resolveError) =>
     `Gemini CLI sign-in could not be refreshed: ${resolveError}. Run \`opencode auth login google\`.`,
-  presentation: { singleWindowDisplayName: "Gemini CLI", singleWindowShowRight: true },
-  loginEntry: (bucket, { group, sourceId }) =>
-    geminiCliEntry(bucket, { name: `${group} ${bucket.displayName}`, group, sourceId }),
-  accountEntry: (bucket, accountLabel = "Unknown") =>
-    geminiCliEntry(bucket, {
-      name: `${bucket.displayName} (${accountLabel})`,
-      group: `Gemini CLI (${accountLabel})`,
-      sourceId: bucket.accountEmail,
-    }),
+  row: geminiCliRow,
+  defaultAccount: (bucket, accountLabel = "Unknown") => ({
+    name: `Gemini CLI (${accountLabel})`,
+    login: bucket.accountEmail,
+  }),
 };
 
 export const googleGeminiCliProvider: QuotaProvider = {

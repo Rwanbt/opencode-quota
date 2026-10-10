@@ -190,7 +190,8 @@ describe("a switched-off custom provider in the plugin", () => {
     expect(variableReads).toContain("ON_GATEWAY_KEY");
     expect(variableReads).not.toContain("OFF_GATEWAY_KEY");
     expect(loginReads.flat()).not.toContain("off-gateway");
-    expect(result.diagnostics?.map((diagnostic) => diagnostic.sourceId)).toEqual(["on-gateway"]);
+    expect(result.accounts.map((account) => account.login)).toEqual(["on-gateway"]);
+    expect(result.debug.map((item) => item.key)).toEqual(["custom_on-gateway_check"]);
     // A local estimate that ran would have written its state file.
     expect(existsSync(join(root, "state", "opencode", "opencode-quota", "quota-providers"))).toBe(
       false,

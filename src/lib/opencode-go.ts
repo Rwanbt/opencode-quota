@@ -33,10 +33,6 @@ function contractError(message: string): OpenCodeGoResult {
   return { success: false, error: `Invalid OpenCode Go API response: ${message}` };
 }
 
-function isRetryableHttpStatus(status: number): boolean {
-  return status === 408 || status === 425 || status === 429 || status >= 500;
-}
-
 /** A real calendar date and time with `Z` or a `±HH:MM` offset. */
 function isValidOffsetIsoTimestamp(value: string): boolean {
   const match = OFFSET_ISO_TIMESTAMP.exec(value);
@@ -148,7 +144,6 @@ export async function queryOpenCodeGoQuota(
             return {
               success: false,
               error: `OpenCode Go API error ${response.status}: ${errorMessage(error, accessToken)}`,
-              retryable: isRetryableHttpStatus(response.status),
             };
           }
           if (isNotSubscribedResponse(response.status, text)) {
@@ -156,13 +151,11 @@ export async function queryOpenCodeGoQuota(
               success: false,
               error: "OpenCode Go not subscribed (403 EntitlementError)",
               notSubscribed: true,
-              retryable: false,
             };
           }
           return {
             success: false,
             error: `OpenCode Go API error ${response.status}: ${sanitizeMessage(text, accessToken)}`,
-            retryable: isRetryableHttpStatus(response.status),
           };
         }
 
@@ -182,7 +175,7 @@ export async function queryOpenCodeGoQuota(
       },
     });
   } catch (error) {
-    return { success: false, error: errorMessage(error, accessToken), retryable: true };
+    return { success: false, error: errorMessage(error, accessToken) };
   }
 }
 
@@ -259,7 +252,6 @@ export async function queryOpenCodeGoConsoleStatus(
           return {
             success: false,
             error: `OpenCode Console API error ${response.status} (/api/go/status)`,
-            retryable: isRetryableHttpStatus(response.status),
           };
         }
 
@@ -294,6 +286,6 @@ export async function queryOpenCodeGoConsoleStatus(
       },
     });
   } catch (error) {
-    return { success: false, error: errorMessage(error, credential.accessToken), retryable: true };
+    return { success: false, error: errorMessage(error, credential.accessToken) };
   }
 }

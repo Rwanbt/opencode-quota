@@ -6,6 +6,7 @@ import { resolveAnthropicAuthIdentity } from "../lib/anthropic.js";
 import {
   API_KEY_LOGIN_VENDORS,
   API_KEY_VENDORS,
+  type ApiKeyLoginSpec,
   resolveApiKey,
   resolveApiKeyLogin,
 } from "../lib/api-key-resolver.js";
@@ -13,12 +14,10 @@ import { resolveCopilotAuthIdentity } from "../lib/copilot.js";
 import type { QuotaProviderCachePolicy } from "../lib/entries.js";
 import { resolveGoogleAgyAuthIdentity } from "../lib/google-agy.js";
 import { resolveGeminiCliAuthIdentity } from "../lib/google-gemini-cli.js";
-import { resolveKimiCnAuthCached, resolveKimiGlobalAuthCached } from "../lib/kimi-auth.js";
 import {
   DEFAULT_MIMO_CONFIG_CACHE_MAX_AGE_MS,
   resolveMimoConfigCached,
 } from "../lib/mimo-config.js";
-import { resolveMiniMaxAuthCached, resolveMiniMaxChinaAuthCached } from "../lib/minimax-auth.js";
 import { resolveOpenAIAuthIdentity } from "../lib/openai.js";
 import { consoleBaseUrl, resolveOpenCodeConsoleAuth } from "../lib/opencode-console-auth.js";
 import { resolveOpenRouterAuthIdentity } from "../lib/openrouter.js";
@@ -81,14 +80,13 @@ function apiKeyLoginPolicy(providerId: "zai" | "zhipu" | "opencode-go"): QuotaPr
 /** A key bound to one regional endpoint; the endpoint is part of the identity. */
 function regionalKeyPolicy(
   providerId: CanonicalQuotaProviderId,
-  resolve: () => Promise<
-    { state: "none" | "invalid" } | { state: "configured"; apiKey: string; endpoint: string }
-  >,
+  spec: ApiKeyLoginSpec,
+  endpoint: string,
 ): QuotaProviderCachePolicy {
   return resolvedCredentialPolicy(providerId, async () => {
-    const resolved = await resolve();
+    const resolved = await resolveApiKeyLogin(spec);
     return resolved.state === "configured"
-      ? { credential: resolved.apiKey, qualifiers: [resolved.endpoint] }
+      ? { credential: resolved.apiKey, qualifiers: [endpoint] }
       : null;
   });
 }
@@ -173,13 +171,26 @@ export const PROVIDER_CACHE_POLICIES = {
   zai: apiKeyLoginPolicy("zai"),
   zhipu: apiKeyLoginPolicy("zhipu"),
   nanogpt: apiKeyPolicy("nanogpt"),
-  "minimax-coding-plan": regionalKeyPolicy("minimax-coding-plan", resolveMiniMaxAuthCached),
+  "minimax-coding-plan": regionalKeyPolicy(
+    "minimax-coding-plan",
+    API_KEY_LOGIN_VENDORS["minimax-coding-plan"],
+    "international",
+  ),
   "minimax-china-coding-plan": regionalKeyPolicy(
     "minimax-china-coding-plan",
-    resolveMiniMaxChinaAuthCached,
+    API_KEY_LOGIN_VENDORS["minimax-china-coding-plan"],
+    "china",
   ),
-  "kimi-code-plan-global": regionalKeyPolicy("kimi-code-plan-global", resolveKimiGlobalAuthCached),
-  "kimi-code-plan-cn": regionalKeyPolicy("kimi-code-plan-cn", resolveKimiCnAuthCached),
+  "kimi-code-plan-global": regionalKeyPolicy(
+    "kimi-code-plan-global",
+    API_KEY_LOGIN_VENDORS["kimi-code-plan-global"],
+    "global",
+  ),
+  "kimi-code-plan-cn": regionalKeyPolicy(
+    "kimi-code-plan-cn",
+    API_KEY_LOGIN_VENDORS["kimi-code-plan-cn"],
+    "cn",
+  ),
   deepseek: apiKeyPolicy("deepseek"),
   xai: {
     kind: "resolved-auth",

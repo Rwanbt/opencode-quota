@@ -1,7 +1,6 @@
 /**
- * Anthropic Claude provider wrapper.
- *
- * Normalizes Claude CLI-exposed quota windows into generic toast entries.
+ * Anthropic Claude: the 5h, weekly, Usage Credits and Fable weekly windows of each Claude login
+ * stored in OpenCode, or of the login the Claude CLI or its credentials file holds.
  */
 
 import {
@@ -13,29 +12,20 @@ import {
 } from "../lib/anthropic.js";
 import { resolveAnthropicOAuth } from "../lib/anthropic-auth.js";
 import { sanitizeDisplayText } from "../lib/display-sanitize.js";
-import type {
-  QuotaPercentEntry,
-  QuotaProvider,
-  QuotaProviderContext,
-  QuotaProviderResult,
-  QuotaToastEntry,
-} from "../lib/entries.js";
-import {
-  credentialRowAuthEntry,
-  formatCredentialDisplayNames,
-  readCredentialRows,
-} from "../lib/opencode-auth.js";
+import type { QuotaProvider, QuotaProviderContext } from "../lib/entries.js";
+import { credentialRowAuthEntry, readCredentialRows } from "../lib/opencode-auth.js";
 import { isCanonicalProviderAvailable } from "../lib/provider-availability.js";
 import type { AuthData } from "../lib/types.js";
 import {
-  attemptedErrorResult,
-  attemptedResult,
-  notAttemptedResult,
-  statusDetailsFromRecord,
-  withStatusDetails,
-} from "./result-helpers.js";
-
-type AcquisitionMethod = QuotaToastEntry["accounting"]["acquisitionMethod"];
+  FIVE_HOUR,
+  failedAccount,
+  fetchEachLogin,
+  type ProviderFetchResult,
+  type ProviderRow,
+  quotaRow,
+  WEEKLY,
+} from "./contract.js";
+import { statusDetailsFromRecord } from "./result-helpers.js";
 
 function formatWindowDetail(
   window: { percentRemaining: number; resetTimeIso?: string } | undefined,
@@ -45,58 +35,42 @@ function formatWindowDetail(
     : undefined;
 }
 
-/** The 5h, Weekly, Usage Credits and Fable weekly rows for one Claude account. */
-function quotaEntries(
-  quota: AnthropicQuotaResult,
-  group: string,
-  acquisitionMethod: AcquisitionMethod,
-  sourceId?: string,
-): QuotaToastEntry[] {
-  const rows: Omit<QuotaPercentEntry, "accounting">[] = [
-    {
-      name: `${group} 5h`,
-      group,
-      label: "5h:",
+/** The 5h, Weekly, Usage Credits and Fable weekly rows of one Claude account. */
+function quotaRows(quota: AnthropicQuotaResult, method: ProviderRow["method"]): ProviderRow[] {
+  const rows = [
+    quotaRow({
+      ...FIVE_HOUR,
       percentRemaining: quota.five_hour.percentRemaining,
-      resetTimeIso: quota.five_hour.resetTimeIso,
-    },
-    {
-      name: `${group} Weekly`,
-      group,
-      label: "Weekly:",
+      resetsAt: quota.five_hour.resetTimeIso,
+    }),
+    quotaRow({
+      ...WEEKLY,
       percentRemaining: quota.seven_day.percentRemaining,
-      resetTimeIso: quota.seven_day.resetTimeIso,
-    },
+      resetsAt: quota.seven_day.resetTimeIso,
+    }),
   ];
   if (quota.extra_usage) {
-    rows.push({
-      name: `${group} Usage Credits`,
-      group: `${group} Usage Credits`,
-      label: "Monthly:",
-      percentRemaining: quota.extra_usage.percentRemaining,
-    });
+    rows.push(
+      quotaRow({
+        key: "extra_usage",
+        label: "Extra usage",
+        window: "month",
+        percentRemaining: quota.extra_usage.percentRemaining,
+      }),
+    );
   }
   if (quota.fable_weekly) {
-    rows.push({
-      name: `${group} Fable Weekly`,
-      group,
-      label: "Fable:",
-      semantic: { metric: { kind: "named", name: "Fable weekly" }, prominence: "primary" },
-      percentRemaining: quota.fable_weekly.percentRemaining,
-      resetTimeIso: quota.fable_weekly.resetTimeIso,
-    });
+    rows.push(
+      quotaRow({
+        key: "weekly_fable",
+        label: "Fable",
+        window: "week",
+        percentRemaining: quota.fable_weekly.percentRemaining,
+        resetsAt: quota.fable_weekly.resetTimeIso,
+      }),
+    );
   }
-
-  return rows.map((row) => ({
-    accounting: {
-      resultType: "quota",
-      acquisitionMethod,
-      ownership: "maintained",
-      authority: "provider_reported",
-      ...(sourceId === undefined ? {} : { sourceId }),
-    },
-    ...row,
-  }));
+  return rows.map((row) => ({ ...row, method }));
 }
 
 export const anthropicProvider: QuotaProvider = {
@@ -119,28 +93,28 @@ export const anthropicProvider: QuotaProvider = {
     return model.toLowerCase().startsWith("anthropic/");
   },
 
-  async fetch(ctx: QuotaProviderContext): Promise<QuotaProviderResult> {
+  async fetch(ctx: QuotaProviderContext): Promise<ProviderFetchResult> {
     const options = {
       binaryPath: ctx.config?.anthropicBinaryPath,
       requestTimeoutMs: ctx.config?.requestTimeoutMs,
     };
-    let statusDetails;
-    let acquisitionMethod: AcquisitionMethod = "local_cli";
-    // A failed login stays in the list so it shows as its own error row.
-    const databaseCredentials = (
-      await readCredentialRows(["anthropic"], { methods: ["oauth"] })
-    ).flatMap((row) => {
-      if (row.integrationId !== "anthropic") return [];
-      const auth = resolveAnthropicOAuth({ anthropic: credentialRowAuthEntry(row) } as AuthData);
-      return auth.state === "configured" || auth.state === "failed" ? [{ row, auth }] : [];
-    });
+    let debug;
+    let method: ProviderRow["method"] = "local_cli";
+    // A failed login stays in the list so it shows as its own error.
+    const logins = (await readCredentialRows(["anthropic"], { methods: ["oauth"] })).flatMap(
+      (row) => {
+        if (row.integrationId !== "anthropic") return [];
+        const auth = resolveAnthropicOAuth({ anthropic: credentialRowAuthEntry(row) } as AuthData);
+        return auth.state === "configured" || auth.state === "failed" ? [{ row, auth }] : [];
+      },
+    );
     try {
       const diagnostics = await getAnthropicDiagnostics(options);
       const quota = diagnostics.quotaSupported ? diagnostics.quota : undefined;
       if (diagnostics.quotaSupported && diagnostics.quotaSource !== "claude-auth-status-json") {
-        acquisitionMethod = "remote_api";
+        method = "remote_api";
       }
-      statusDetails = statusDetailsFromRecord({
+      debug = statusDetailsFromRecord({
         cli_installed: diagnostics.installed ? "true" : "false",
         cli_version: diagnostics.version ?? "(none)",
         binary_path: diagnostics.binaryPath ?? "(none)",
@@ -155,50 +129,41 @@ export const anthropicProvider: QuotaProvider = {
         fable_weekly_remaining: formatWindowDetail(quota?.fable_weekly),
       });
     } catch (error) {
-      statusDetails = statusDetailsFromRecord({
+      debug = statusDetailsFromRecord({
         cli_installed: "false",
         message: `failed to probe Claude CLI: ${sanitizeDisplayText(error instanceof Error ? error.message : String(error))}`,
       });
     }
 
-    if (databaseCredentials.length > 0) {
-      const results = await Promise.all(
-        databaseCredentials.map(async ({ row, auth }) => ({
-          row,
-          result:
+    if (logins.length > 0) {
+      const accounts = await fetchEachLogin({
+        providerName: "Claude",
+        logins,
+        async fetchLogin({ auth }) {
+          const result =
             auth.state === "failed"
               ? {
                   success: false as const,
                   error: `Anthropic sign-in could not be read: ${auth.error}. Run \`opencode auth login anthropic\`.`,
                 }
-              : await queryAnthropicQuotaWithOAuth(auth.accessToken, options.requestTimeoutMs),
-        })),
-      );
-      const names = formatCredentialDisplayNames(
-        "Claude",
-        results.map(({ row }) => ({ row, fallbackName: "Claude" })),
-      );
-      const entries: QuotaToastEntry[] = [];
-      const errors: QuotaProviderResult["errors"] = [];
-      for (const [index, { row, result }] of results.entries()) {
-        const group = names[index] ?? "Claude";
-        if (!result?.success) {
-          if (result) errors.push({ label: group, message: result.error });
-          continue;
-        }
-        entries.push(...quotaEntries(result, group, "remote_api", row.id));
-      }
-      return withStatusDetails(attemptedResult(entries, errors), statusDetails);
+              : await queryAnthropicQuotaWithOAuth(auth.accessToken, options.requestTimeoutMs);
+          if (!result) return null;
+          if (!result.success) return { rows: [], errors: [{ message: result.error }] };
+          return { rows: quotaRows(result, "remote_api"), errors: [] };
+        },
+      });
+      return { attempted: true, accounts, debug };
     }
 
     const result = await queryAnthropicQuota(options);
-    if (!result) return withStatusDetails(notAttemptedResult(), statusDetails);
+    if (!result) return { attempted: false, accounts: [], debug };
     if (!result.success) {
-      return withStatusDetails(attemptedErrorResult("Claude", result.error), statusDetails);
+      return { attempted: true, accounts: [failedAccount("Claude", result.error)], debug };
     }
-    return withStatusDetails(
-      attemptedResult(quotaEntries(result, "Claude", acquisitionMethod)),
-      statusDetails,
-    );
+    return {
+      attempted: true,
+      accounts: [{ name: "Claude", rows: quotaRows(result, method), errors: [] }],
+      debug,
+    };
   },
 };

@@ -1,47 +1,10 @@
 import { readFile } from "fs/promises";
-
+import type { DebugDetail } from "../core/types.js";
 import { sanitizeDisplayText } from "../lib/display-sanitize.js";
-import type {
-  AccountingMetadata,
-  FixedWindowProjectionEvidence,
-  QuotaProviderPresentation,
-  QuotaProviderResult,
-  QuotaProviderStatusDetail,
-  QuotaToastEntry,
-  QuotaToastError,
-} from "../lib/entries.js";
-
-export function notAttemptedResult(): QuotaProviderResult {
-  return { attempted: false, entries: [], errors: [] };
-}
-
-export function attemptedResult(
-  entries: QuotaToastEntry[],
-  errors: QuotaToastError[] = [],
-  presentation?: QuotaProviderPresentation,
-): QuotaProviderResult {
-  return {
-    attempted: true,
-    entries,
-    errors,
-    ...(presentation ? { presentation } : {}),
-  };
-}
-
-export function attemptedErrorResult(
-  label: string,
-  message: string,
-  options: { retryable?: boolean } = {},
-): QuotaProviderResult {
-  return attemptedResult(
-    [],
-    [{ label, message, ...(options.retryable === true ? { retryable: true } : {}) }],
-  );
-}
 
 export function statusDetailsFromRecord(
   values: Readonly<Record<string, string | undefined>>,
-): QuotaProviderStatusDetail[] {
+): DebugDetail[] {
   return Object.entries(values).flatMap(([key, value]) =>
     value === undefined ? [] : [{ key, value }],
   );
@@ -53,7 +16,7 @@ export function configStatusDetails(diagnostics: {
   checkedPaths: readonly string[];
   missing?: string | null;
   error?: string | null;
-}): QuotaProviderStatusDetail[] {
+}): DebugDetail[] {
   return statusDetailsFromRecord({
     config_state: diagnostics.state,
     config_source: diagnostics.source ?? "(none)",
@@ -68,7 +31,7 @@ export function simpleApiKeyStatusDetails(diagnostics: {
   source: string | null;
   checkedPaths: readonly string[];
   credentialDatabasePaths: readonly string[];
-}): QuotaProviderStatusDetail[] {
+}): DebugDetail[] {
   return statusDetailsFromRecord({
     api_key_configured: diagnostics.configured ? "true" : "false",
     api_key_source: diagnostics.source ?? "(none)",
@@ -83,7 +46,7 @@ export function apiKeyStatusDetails(diagnostics: {
   checkedPaths: readonly string[];
   credentialDatabasePaths: readonly string[];
   error?: string;
-}): QuotaProviderStatusDetail[] {
+}): DebugDetail[] {
   return statusDetailsFromRecord({
     auth_state: diagnostics.state,
     api_key_configured: diagnostics.state === "configured" ? "true" : "false",
@@ -92,16 +55,6 @@ export function apiKeyStatusDetails(diagnostics: {
     api_key_credential_database_paths: diagnostics.credentialDatabasePaths.join(" | ") || "(none)",
     auth_error: diagnostics.error ? sanitizeDisplayText(diagnostics.error) : undefined,
   });
-}
-
-export function withStatusDetails(
-  result: QuotaProviderResult,
-  statusDetails: readonly QuotaProviderStatusDetail[],
-): QuotaProviderResult {
-  return {
-    ...result,
-    statusDetails: statusDetails.map((detail) => ({ ...detail })),
-  };
 }
 
 export async function inspectGeneratedCounterFile(
@@ -146,65 +99,4 @@ export async function inspectGeneratedCounterFile(
     }
     return { exists: true, health: "malformed", version: null, lastUpdatedAt: null };
   }
-}
-
-export function mapNullableProviderResult<
-  TResult extends { success: true } | { success: false; error: string; retryable?: boolean } | null,
->(
-  result: TResult,
-  params: {
-    errorLabel: string;
-    onSuccess: (result: Extract<TResult, { success: true }>) => QuotaProviderResult;
-  },
-): QuotaProviderResult {
-  if (!result) {
-    return notAttemptedResult();
-  }
-
-  if (!result.success) {
-    return attemptedErrorResult(params.errorLabel, result.error, { retryable: result.retryable });
-  }
-
-  return params.onSuccess(result as Extract<TResult, { success: true }>);
-}
-
-export function groupedPercentWindowEntries(params: {
-  group: string;
-  accounting: AccountingMetadata;
-  windows: Array<{
-    window?: {
-      percentRemaining: number;
-      resetTimeIso?: string;
-      fixedWindow?: FixedWindowProjectionEvidence;
-    };
-    suffix: string;
-    label: string;
-  }>;
-  fallbackWhenEmpty?: boolean;
-}): QuotaToastEntry[] {
-  const entries: QuotaToastEntry[] = [];
-
-  for (const { window, suffix, label } of params.windows) {
-    if (!window) continue;
-
-    entries.push({
-      accounting: { ...params.accounting },
-      name: `${params.group} ${suffix}`,
-      group: params.group,
-      label,
-      percentRemaining: window.percentRemaining,
-      resetTimeIso: window.resetTimeIso,
-      ...(window.fixedWindow ? { fixedWindow: { ...window.fixedWindow } } : {}),
-    });
-  }
-
-  if (entries.length === 0 && params.fallbackWhenEmpty !== false) {
-    entries.push({
-      accounting: { ...params.accounting },
-      name: params.group,
-      percentRemaining: 0,
-    });
-  }
-
-  return entries;
 }

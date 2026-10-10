@@ -6,7 +6,7 @@ Copy this folder when adding a provider that should use the README wording:
 Existing OpenCode auth, global config, or env
 ```
 
-This template is intentionally outside `src/` and is not published to npm. `package.json` only publishes `dist`, `README.md`, and `LICENSE`.
+This template is outside `src/` and is not published to npm. `package.json` only publishes `dist`, `README.md`, and `LICENSE`.
 
 ## Who this is for
 
@@ -22,18 +22,19 @@ Auth is one table entry, not a new file: add the provider to `API_KEY_VENDORS` i
 
 ## Copy targets
 
-| Template file      | Copy to                              | Purpose                                                  |
-| ------------------ | ------------------------------------ | -------------------------------------------------------- |
-| `provider.ts`      | `src/providers/<provider>.ts`        | Register availability, model matching, and result types. |
-| `provider.test.ts` | `tests/providers.<provider>.test.ts` | Prove provider wrapper behavior.                         |
+| Template file      | Copy to                              | Purpose                                               |
+| ------------------ | ------------------------------------ | ----------------------------------------------------- |
+| `provider.ts`      | `src/providers/<provider>.ts`        | Register availability, model matching, and the rows.  |
+| `provider.test.ts` | `tests/providers.<provider>.test.ts` | Prove the rows, the error and availability.           |
 
 Also update:
 
 - `src/lib/api-key-resolver.ts` (`API_KEY_VENDORS`) and its test table
 - `src/lib/provider-registration.ts` with the provider metadata and display order
 - `src/providers/registry.ts` with the provider singleton binding
+- `tests/helpers/provider-assertions.ts` (`PROVIDER_ROW_KEYS`) with the provider's row keys
+- `tests/helpers/provider-fetch.ts` (`PROVIDER_ENV_NAMES`) with the provider's env var names
 - `README.md`
-- `/quota_status` diagnostics when the provider exposes auth-source details
 
 ## Replacement checklist
 
@@ -50,16 +51,12 @@ Before coding, replace these placeholders everywhere:
 
 Use `Existing OpenCode auth, global config, or env` only after tests prove all three paths work. Do not leave copied template tests skipped, todo-only, or unresolved. If one path is missing, use provider-specific wording instead.
 
-In provider ledgers, use `Data from` rather than `Source`. These are friendly labels, not exact internal result types: use `Quota` as the umbrella for quota and rate-limit windows, join other multiple results with `and`, and use `Quota and usage` in that order. Keep exact internal `resultType` values in code and JSON/export documentation.
+In provider ledgers, use `Data from` rather than `Source`. These are friendly labels, not exact internal result types: use `Quota` as the umbrella for quota and rate-limit windows, join other multiple results with `and`, and use `Quota and usage` in that order. Keep exact internal `type` values in code and JSON/export documentation.
 
-## Accounting row rule
+## Row rule
 
-The copied `provider.ts` intentionally demonstrates a simple percentage-only row. Keep that shape when the provider only has a percentage, but preserve the required `AccountingMetadata` and make `resultType`, acquisition, ownership, and authority match the real source.
+A provider returns the row contract in `src/providers/contract.ts`: per account, its rows and its errors, plus debug details for `/quota_status`. The copied `provider.ts` shows one remote quota row with the percent left (`quotaRow`). Keep that shape when the provider only reports a percentage.
 
-If the provider exposes richer accounting facts, follow `CONTRIBUTING.md` instead of formatting them into the simple example:
+Each row's `key` becomes its id (`example-provider.daily`), which users' hide, rename and order settings use, so a key never changes once released. List every key in `PROVIDER_ROW_KEYS`; `fetchRows` in the provider tests fails on a key that is not listed.
 
-- Numeric money/count data becomes a typed quantity or percentage basis fact; booleans become typed boolean rows.
-- Every rich row has a complete semantic metric and explicit `primary` or `supplementary` prominence.
-- Basis `used`, `limit`, and `remaining` values keep their literal meanings and individual authorities.
-- Named metrics contain no values, units, reset text, or layout punctuation.
-- Do not use financial `right` strings or `barValue`; shared formatting owns labels and values.
+If the provider reports more than a percentage, follow `CONTRIBUTING.md`: amounts as typed `used`, `limit`, `remaining` or `amount` values, yes/no as `flag`, never pre-formatted money strings.

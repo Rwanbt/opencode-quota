@@ -53,18 +53,6 @@ import {
   resolveApiKeyFromEnvAndConfig,
   resolveApiKeyLogin,
 } from "../src/lib/api-key-resolver.js";
-import {
-  resolveKimiCnAuth,
-  resolveKimiCnAuthWithDiagnosticsCached,
-  resolveKimiGlobalAuth,
-  resolveKimiGlobalAuthWithDiagnosticsCached,
-} from "../src/lib/kimi-auth.js";
-import {
-  getMiniMaxChinaAuthDiagnostics,
-  resolveMiniMaxAuthCached,
-  resolveMiniMaxChinaAuth,
-  resolveMiniMaxChinaAuthCached,
-} from "../src/lib/minimax-auth.js";
 
 const CONFIG_DIR = join(homedir(), ".config", "opencode");
 const TRUSTED = {
@@ -539,50 +527,23 @@ describe("API key login vendors (a broken stored login is reported, not skipped)
 });
 
 describe("per-vendor differences", () => {
-  it("binds each Kimi region to its endpoint and gives the legacy aliases to CN", async () => {
+  it("gives the legacy Kimi aliases to CN and keeps each region's key apart", async () => {
     const legacy = { kimi: { type: "api", key: "legacy-cn" } };
-    expect(resolveKimiCnAuth(legacy)).toEqual({
+    expect(parseApiKeyLogin(API_KEY_LOGIN_VENDORS["kimi-code-plan-cn"], legacy)).toEqual({
       state: "configured",
       apiKey: "legacy-cn",
-      endpoint: "cn",
     });
-    expect(resolveKimiGlobalAuth(legacy)).toEqual({ state: "none" });
+    expect(parseApiKeyLogin(API_KEY_LOGIN_VENDORS["kimi-code-plan-global"], legacy)).toEqual({
+      state: "none",
+    });
 
-    process.env.KIMI_GLOBAL_API_KEY = "global-env";
-    mocks.readAuthFileCached.mockResolvedValue({
-      "kimi-code-plan-cn": { type: "api", key: "cn-db" },
-    });
-    const global = await resolveKimiGlobalAuthWithDiagnosticsCached();
-    const cn = await resolveKimiCnAuthWithDiagnosticsCached();
-    expect(global.auth).toEqual({ state: "configured", apiKey: "global-env", endpoint: "global" });
-    expect(global.diagnostics).toMatchObject({
-      source: "env:KIMI_GLOBAL_API_KEY",
-      endpoint: "global",
-    });
-    expect(cn.auth).toEqual({ state: "configured", apiKey: "cn-db", endpoint: "cn" });
-    expect(cn.diagnostics).toMatchObject({ source: "opencode.db", endpoint: "cn" });
-  });
-
-  it("keeps the MiniMax China key away from the international plan", async () => {
     process.env.MINIMAX_CHINA_CODING_PLAN_API_KEY = "china-key";
-    await expect(resolveMiniMaxAuthCached()).resolves.toEqual({ state: "none" });
-    await expect(resolveMiniMaxChinaAuthCached()).resolves.toEqual({
-      state: "configured",
-      apiKey: "china-key",
-      endpoint: "china",
-    });
-    await expect(getMiniMaxChinaAuthDiagnostics()).resolves.toMatchObject({
-      state: "configured",
-      source: "env:MINIMAX_CHINA_CODING_PLAN_API_KEY",
-      endpoint: "china",
-    });
-    expect(
-      resolveMiniMaxChinaAuth({ "minimax-cn-coding-plan": { type: "api", key: "db-key" } }),
-    ).toEqual({
-      state: "configured",
-      apiKey: "db-key",
-      endpoint: "china",
-    });
+    await expect(resolveApiKeyLogin(API_KEY_LOGIN_VENDORS["minimax-coding-plan"])).resolves.toEqual(
+      { state: "none" },
+    );
+    await expect(
+      resolveApiKeyLogin(API_KEY_LOGIN_VENDORS["minimax-china-coding-plan"]),
+    ).resolves.toEqual({ state: "configured", apiKey: "china-key" });
   });
 
   it.each([

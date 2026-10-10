@@ -8,7 +8,7 @@ import { WINDOWS } from "../src/core/windows.js";
 import { API_KEY_LOGIN_VENDORS, API_KEY_VENDORS } from "../src/lib/api-key-resolver.js";
 import { COPILOT_AUTH_KEYS } from "../src/lib/copilot.js";
 import { CURSOR_CANONICAL_PLUGIN_PACKAGE } from "../src/lib/cursor-detection.js";
-import type { QuotaProviderContext, QuotaProviderResult } from "../src/lib/entries.js";
+import type { QuotaProviderContext } from "../src/lib/entries.js";
 import { formatLocalCallTimestamp } from "../src/lib/format-utils.js";
 import { AGY_AUTH_KEYS } from "../src/lib/google-agy.js";
 import { GEMINI_CLI_AUTH_KEYS } from "../src/lib/google-gemini-cli.js";
@@ -30,6 +30,7 @@ import {
 } from "../src/lib/quota-status.js";
 import { getPackageVersion } from "../src/lib/version.js";
 import { chutesProvider } from "../src/providers/chutes.js";
+import type { ProviderFetchResult } from "../src/providers/contract.js";
 import { syntheticProvider } from "../src/providers/synthetic.js";
 import {
   defaultSettings,
@@ -37,6 +38,7 @@ import {
   SETTINGS_SCHEMA,
   type V5Conversion,
 } from "../src/settings/index.js";
+import { answer, percentRow } from "./helpers/fake-answers.js";
 import { PROVIDER_ROW_KEYS } from "./helpers/provider-assertions.js";
 
 const registry = vi.hoisted(() => ({ providers: [] as unknown[] }));
@@ -1950,37 +1952,25 @@ describe("buildStatusReportData", () => {
   function fakeProvider(
     id: string,
     available: boolean | ((ctx: QuotaProviderContext) => boolean),
-    result?: QuotaProviderResult,
+    result?: ProviderFetchResult,
   ) {
     return {
       id,
       isAvailable: vi.fn(async (ctx: QuotaProviderContext) =>
         typeof available === "function" ? available(ctx) : available,
       ),
-      fetch: vi.fn(async () => result ?? { attempted: true, entries: [], errors: [] }),
+      fetch: vi.fn(async () => result ?? answer()),
     };
   }
 
   const synthetic = () =>
     fakeProvider("synthetic", true, {
-      attempted: true,
-      entries: [
-        {
-          accounting: {
-            resultType: "quota",
-            acquisitionMethod: "remote_api",
-            ownership: "maintained",
-            authority: "provider_reported",
-          },
-          name: "Synthetic 5h",
-          group: "Synthetic",
-          label: "5h:",
-          percentRemaining: 84,
-          resetTimeIso: RESET,
-        },
-      ],
-      errors: [{ label: "Synthetic", message: `Weekly HTTP 503 Bearer ${SECRET}` }],
-      statusDetails: [
+      ...answer({
+        name: "Synthetic",
+        rows: [percentRow("five_hour", "5h", 84, { window: "five_hour", resetsAt: RESET })],
+        errors: [`Weekly HTTP 503 Bearer ${SECRET}`],
+      }),
+      debug: [
         { key: "api_key_source", value: "env:SYNTHETIC_API_KEY" },
         { key: "access_token", value: SECRET },
       ],
@@ -2043,24 +2033,16 @@ describe("buildStatusReportData", () => {
     __resetPricingSnapshotForTests();
     registry.providers = [
       fakeProvider("synthetic", true, {
-        attempted: true,
-        entries: [
-          {
-            accounting: {
-              resultType: "quota",
-              acquisitionMethod: "remote_api",
-              ownership: "maintained",
-              authority: "provider_reported",
-            },
-            name: garbage(),
-            group: garbage(),
-            label: garbage(),
-            percentRemaining: pick([84, Number(DIGITS)]),
-            resetTimeIso: pick([RESET, ...DATE_LIKE]),
-          },
-        ],
-        errors: [{ label: garbage(), message: garbage() }],
-        statusDetails: [
+        ...answer({
+          name: garbage(),
+          rows: [
+            percentRow("five_hour", garbage(), pick([84, Number(DIGITS)]), {
+              resetsAt: pick([RESET, ...DATE_LIKE]),
+            }),
+          ],
+          errors: [garbage()],
+        }),
+        debug: [
           { key: "api_key_source", value: garbage() },
           { key: "api_key_checked_paths", value: garbage() },
           { key: garbage(), value: garbage() },

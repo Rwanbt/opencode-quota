@@ -91,10 +91,6 @@ const USER_AGENT = "OpenCode-Quota-Toast/1.0";
 const NANOGPT_USAGE_URL = "https://nano-gpt.com/api/subscription/v1/usage";
 const NANOGPT_BALANCE_URL = "https://nano-gpt.com/api/check-balance";
 
-function isRetryableHttpStatus(status: number): boolean {
-  return status === 408 || status === 425 || status === 429 || status >= 500;
-}
-
 function isRecord(value: unknown): value is NanoGptRecord {
   return Boolean(value) && typeof value === "object";
 }
@@ -227,7 +223,7 @@ function parseNanoGptBalance(payload: unknown): {
   return { balance, fieldErrors };
 }
 
-type NanoGptEndpointFailure = { success: false; message: string; retryable: boolean };
+type NanoGptEndpointFailure = { success: false; message: string };
 
 async function fetchNanoGptEndpoint<T extends object>(
   url: string,
@@ -251,7 +247,6 @@ async function fetchNanoGptEndpoint<T extends object>(
           return {
             success: false as const,
             message: `NanoGPT API error ${response.status}: ${sanitizeDisplaySnippet(text, 120)}`,
-            retryable: isRetryableHttpStatus(response.status),
           };
         }
 
@@ -262,7 +257,6 @@ async function fetchNanoGptEndpoint<T extends object>(
     return {
       success: false,
       message: sanitizeDisplayText(err instanceof Error ? err.message : String(err)),
-      retryable: true,
     };
   }
 }
@@ -313,7 +307,6 @@ export async function queryNanoGptQuota(
       error: endpointErrors
         .map((entry) => `${entry.endpoint === "usage" ? "Usage" : "Balance"}: ${entry.message}`)
         .join("; "),
-      retryable: usageResult.retryable || balanceResult.retryable,
     };
   }
 

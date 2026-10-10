@@ -73,13 +73,9 @@ function nested(levels: number): unknown {
   return body;
 }
 
-function remoteAccounting(resultType: string) {
-  return {
-    resultType,
-    acquisitionMethod: "remote_api",
-    ownership: "user_configured",
-    authority: "provider_reported",
-  };
+/** A remote custom row: provider-reported over the API, shown in the sidebar. */
+function remoteRow(fields: Record<string, unknown>) {
+  return { method: "remote_api", authority: "provider_reported", prominence: "primary", ...fields };
 }
 
 function abortError(): Error {
@@ -184,7 +180,7 @@ describe("quota provider remote transport", () => {
 });
 
 describe("quota-v1", () => {
-  it("maps strict percent and value rows with local metadata and grouping", async () => {
+  it("maps strict percent and value rows keyed by their names, accepting `right` and `observedAtIso`", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       jsonResponse({
         version: "quota-v1",
@@ -196,6 +192,7 @@ describe("quota-v1", () => {
             percentRemaining: -8,
             label: "Remaining:",
             right: "108/100",
+            observedAtIso: "2026-01-01T00:00:00.000Z",
           },
           { kind: "value", name: "Balance", resultType: "balance", value: "$12.00" },
         ],
@@ -205,23 +202,15 @@ describe("quota-v1", () => {
 
     await expect(fetchRemoteQuotaProvider(source(), "secret")).resolves.toEqual({
       success: true,
-      entries: [
-        {
-          accounting: remoteAccounting("quota"),
-          kind: "percent",
-          name: "Source One Monthly",
-          group: "Source One",
-          label: "Remaining:",
-          right: "108/100",
+      rows: [
+        remoteRow({
+          key: "Monthly",
+          label: "Remaining",
+          type: "quota",
+          window: "month",
           percentRemaining: -8,
-        },
-        {
-          accounting: remoteAccounting("balance"),
-          kind: "value",
-          name: "Source One Balance",
-          group: "Source One",
-          value: "$12.00",
-        },
+        }),
+        remoteRow({ key: "Balance", label: "Balance", type: "balance", text: "$12.00" }),
       ],
     });
 
@@ -249,13 +238,8 @@ describe("quota-v1", () => {
         },
       ],
     });
-    expect(result.success && result.entries[0]).toEqual(
-      expect.objectContaining({
-        name: "Source One Usage",
-        label: "Used:",
-        right: "12/100",
-        value: "12 tokens",
-      }),
+    expect(result.success && result.rows[0]).toEqual(
+      expect.objectContaining({ key: "Usage", label: "Used", text: "12 tokens" }),
     );
   });
 
@@ -283,7 +267,7 @@ describe("quota-v1", () => {
     ["exact display bounds", [exactBoundsRow]],
   ])("accepts %s", async (_name, entries) => {
     const result = await fetchBody({ version: "quota-v1", entries });
-    expect(result.success && result.entries).toHaveLength(entries.length);
+    expect(result.success && result.rows).toHaveLength(entries.length);
   });
 
   const quotaV1 = (...entries: unknown[]) => ({ version: "quota-v1", entries });
@@ -313,46 +297,28 @@ describe("openrouter-key-v1", () => {
       fetchBody({ data: { usage: 2, limit: 10, limit_remaining: 8 } }, OPENROUTER),
     ).resolves.toEqual({
       success: true,
-      entries: [
-        {
-          accounting: remoteAccounting("budget"),
-          kind: "percent",
-          name: "Source One budget",
-          group: "Source One",
-          label: "Budget:",
-          right: "$2.00/$10.00",
-          percentRemaining: 80,
-        },
-      ],
+      rows: [remoteRow({ key: "budget", label: "Budget", type: "budget", percentRemaining: 80 })],
     });
   });
 
   it.each([
     [
-      "limit-window usage when lifetime usage exceeds it",
+      "the limit window's remaining when lifetime usage exceeds it",
       { usage: 140.7, limit: 100, limit_remaining: 87.459170905 },
-      { right: "$12.54/$100.00", percentRemaining: 87.459170905 },
+      87.459170905,
     ],
-    [
-      "lifetime usage when no limit window is reported",
-      { usage: 13, limit: 100 },
-      { right: "$13.00/$100.00" },
-    ],
-    ["derived remaining", { usage: 2, limit: 10 }, { percentRemaining: 80 }],
+    ["lifetime usage when no limit window is reported", { usage: 13, limit: 100 }, 87],
+    ["derived remaining", { usage: 2, limit: 10 }, 80],
     [
       "explicit negative remaining without clamping",
       { usage: 12, limit: 10, limit_remaining: -2 },
-      { right: "$12.00/$10.00", percentRemaining: -20 },
+      -20,
     ],
-    [
-      "derived negative remaining without clamping",
-      { usage: 12, limit: 10 },
-      { right: "$12.00/$10.00", percentRemaining: -20 },
-    ],
-  ])("shows %s in the budget row", async (_name, data, expected) => {
+    ["derived negative remaining without clamping", { usage: 12, limit: 10 }, -20],
+  ])("shows %s in the budget row", async (_name, data, percentRemaining) => {
     await expect(fetchBody({ data }, OPENROUTER)).resolves.toEqual({
       success: true,
-      entries: [expect.objectContaining({ kind: "percent", ...expected })],
+      rows: [expect.objectContaining({ key: "budget", percentRemaining })],
     });
   });
 
@@ -364,16 +330,7 @@ describe("openrouter-key-v1", () => {
   ])("maps %j to a spend value", async (data, value) => {
     await expect(fetchBody({ data }, OPENROUTER)).resolves.toEqual({
       success: true,
-      entries: [
-        {
-          accounting: remoteAccounting("spend"),
-          kind: "value",
-          name: "Source One spend",
-          group: "Source One",
-          label: "Spend:",
-          value,
-        },
-      ],
+      rows: [remoteRow({ key: "spend", label: "Spend", type: "usage", text: value })],
     });
   });
 
@@ -412,26 +369,22 @@ describe("json-v1", () => {
     const result = await fetchBody(NEURALWATT_LIKE_RESPONSE, jsonSource());
     if (!result.success) throw new Error(result.error);
 
-    expect(result.entries).toHaveLength(21);
-    expect(result.entries).toEqual(
+    expect(result.rows).toHaveLength(21);
+    expect(result.rows).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({
-          name: "JSON Source Tokens",
+        remoteRow({
+          key: "Tokens",
+          label: "Used",
+          type: "quota",
           percentRemaining: 100,
-          right: "0/10 tokens",
-          resetTimeIso: "2026-07-31T22:00:00.000Z",
-          accounting: expect.objectContaining({
-            observedAtIso: new Date(1_784_678_400_000).toISOString(),
-          }),
+          resetsAt: "2026-07-31T22:00:00.000Z",
         }),
-        expect.objectContaining({ name: "JSON Source Used percent", percentRemaining: -25 }),
-        expect.objectContaining({
-          name: "JSON Source Spend budget",
-          percentRemaining: -20,
-          right: "$30/$25",
-        }),
-        expect.objectContaining({ name: "JSON Source Balance", value: "$-3.5" }),
-        expect.objectContaining({ name: "JSON Source Status", value: "Ready" }),
+        expect.objectContaining({ key: "Used_percent", type: "budget", percentRemaining: -25 }),
+        expect.objectContaining({ key: "Spend_budget", percentRemaining: -20 }),
+        expect.objectContaining({ key: "Balance", type: "balance", text: "$-3.5" }),
+        expect.objectContaining({ key: "Spend", type: "usage" }),
+        expect.objectContaining({ key: "Requests", type: "quota" }),
+        expect.objectContaining({ key: "Status", type: "status", text: "Ready" }),
       ]),
     );
     expect(result.rowErrors).toHaveLength(15);
@@ -482,12 +435,12 @@ describe("json-v1", () => {
       ],
     ]) {
       const result = await fetchBody(body, jsonSource(adapter));
-      expect(result.success && result.entries.slice(0, 5)).toEqual([
-        expect.objectContaining({ value: "0" }),
-        expect.objectContaining({ value: "10" }),
-        expect.objectContaining({ value: "-2" }),
-        expect.objectContaining({ percentRemaining: -5, resetTimeIso: "1970-01-01T00:00:00.000Z" }),
-        expect.objectContaining({ value: "Ready" }),
+      expect(result.success && result.rows.slice(0, 5)).toEqual([
+        expect.objectContaining({ text: "0" }),
+        expect.objectContaining({ text: "10" }),
+        expect.objectContaining({ text: "-2" }),
+        expect.objectContaining({ percentRemaining: -5, resetsAt: "1970-01-01T00:00:00.000Z" }),
+        expect.objectContaining({ text: "Ready" }),
       ]);
     }
   });
@@ -539,9 +492,9 @@ describe("json-v1", () => {
       fetchBody({ balance, total_used: totalUsed }, jsonSource(adapter)),
     ).resolves.toEqual({
       success: true,
-      entries: [
-        expect.objectContaining({ name: "JSON Source Balance", value: expected[0] }),
-        expect.objectContaining({ name: "JSON Source Spend", value: expected[1] }),
+      rows: [
+        expect.objectContaining({ key: "Balance", text: expected[0] }),
+        expect.objectContaining({ key: "Spend", text: expected[1] }),
       ],
     });
   });
@@ -563,7 +516,7 @@ describe("json-v1", () => {
     const body = [{ used: 0 }, ...Array.from({ length: 99 }, () => null)];
     const result = await fetchBody(body, jsonSource(mappings(usedValue())));
     if (!result.success) throw new Error(result.error);
-    expect(result.entries).toHaveLength(1);
+    expect(result.rows).toHaveLength(1);
     expect(result.rowErrors).toHaveLength(17);
     expect(result.rowErrors?.at(-1)).toBe("Additional json-v1 mapping errors omitted");
   });
@@ -583,7 +536,7 @@ describe("json-v1", () => {
     ],
   ])("accepts %s", async (_name, adapter, body, count) => {
     const result = await fetchBody(body, jsonSource(adapter));
-    expect(result.success && result.entries).toHaveLength(count);
+    expect(result.success && result.rows).toHaveLength(count);
   });
 
   const rowsAt = (...rowsPath: string[]) => ({

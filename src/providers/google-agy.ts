@@ -1,5 +1,4 @@
-import { sanitizeDisplayText } from "../lib/display-sanitize.js";
-import type { QuotaProvider, QuotaToastEntry } from "../lib/entries.js";
+import type { QuotaProvider } from "../lib/entries.js";
 import {
   AGY_AUTH_KEYS,
   compareAgyBuckets,
@@ -10,11 +9,12 @@ import {
 } from "../lib/google-agy.js";
 import { parseProviderModelRef } from "../lib/provider-model-matching.js";
 import type { GoogleAgyQuotaBucket } from "../lib/types.js";
+import { FIVE_HOUR, keySlug, type ProviderRow, quotaRow, WEEKLY } from "./contract.js";
 import {
   fetchGoogleProviderQuota,
   type GoogleProviderFlavor,
-  googleQuotaAccounting,
   isGoogleRuntimeAvailable,
+  remainingCount,
 } from "./google-oauth-provider.js";
 
 function formatFamilyLabel(family: string): string {
@@ -23,30 +23,25 @@ function formatFamilyLabel(family: string): string {
   return family;
 }
 
-function formatRemainingAmount(value: string | undefined): string | undefined {
-  const normalized = value?.trim();
-  if (!normalized) return undefined;
-  const parsed = Number(normalized);
-  const display = Number.isFinite(parsed)
-    ? parsed.toLocaleString("en-US")
-    : sanitizeDisplayText(normalized);
-  return `${display} left`;
-}
-
-function agyEntry(
-  bucket: GoogleAgyQuotaBucket,
-  names: { name: string; group: string; sourceId: string },
-): QuotaToastEntry {
-  const right = formatRemainingAmount(bucket.remainingAmount);
+/**
+ * `<family>.<window>`, for example `claude_gpt.weekly`, labelled "Claude/GPT Weekly", with the
+ * remaining count when AGY gives one (AGY does not name its unit).
+ */
+function agyRow(bucket: GoogleAgyQuotaBucket): ProviderRow | undefined {
+  const family = formatFamilyLabel(bucket.family);
+  const familyKey = keySlug(family);
+  if (!familyKey) return undefined;
+  const slot = bucket.window === "weekly" ? WEEKLY : FIVE_HOUR;
+  const remaining = remainingCount(bucket.remainingAmount, "unit");
   return {
-    accounting: googleQuotaAccounting(names.sourceId),
-    name: names.name,
-    group: names.group,
-    label: `${bucket.windowLabel}:`,
-    sortPriority: bucket.window === "weekly" ? 0 : 1,
-    ...(right ? { right } : {}),
-    percentRemaining: bucket.percentRemaining,
-    resetTimeIso: bucket.resetTimeIso,
+    ...quotaRow({
+      key: `${familyKey}.${slot.key}`,
+      label: `${family} ${slot.label}`,
+      window: slot.window,
+      percentRemaining: bucket.percentRemaining,
+      resetsAt: bucket.resetTimeIso,
+    }),
+    ...(remaining ? { remaining } : {}),
   };
 }
 
@@ -57,21 +52,11 @@ const AGY_PROVIDER: GoogleProviderFlavor<GoogleAgyQuotaBucket> = {
   inspectCompanion: inspectAgyCompanionPresence,
   query: queryGoogleAgyQuota,
   compareBuckets: compareAgyBuckets,
-  presentation: { singleWindowShowRight: true },
-  loginEntry: (bucket, { group, sourceId }) =>
-    agyEntry(bucket, {
-      name: `${group} ${formatFamilyLabel(bucket.family)} ${bucket.windowLabel}`,
-      group,
-      sourceId,
-    }),
-  accountEntry: (bucket, accountLabel) => {
-    const account = accountLabel ?? `Account ${bucket.accountIndex + 1}`;
-    return agyEntry(bucket, {
-      name: `${bucket.family} (${account})`,
-      group: `AGY (${account}): ${formatFamilyLabel(bucket.family)}`,
-      sourceId: `account-${bucket.accountIndex + 1}`,
-    });
-  },
+  row: agyRow,
+  defaultAccount: (bucket, accountLabel) => ({
+    name: `AGY (${accountLabel ?? `Account ${bucket.accountIndex + 1}`})`,
+    login: `account-${bucket.accountIndex + 1}`,
+  }),
 };
 
 export const googleAgyProvider: QuotaProvider = {
