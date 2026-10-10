@@ -209,22 +209,20 @@ function definitionSecretIssues(definition: Record<string, unknown>): SettingsIs
 }
 
 /**
- * Every key the plugin can read: variables named like keys or named by a custom provider; keys
- * in the global opencode.json(c); and API-key logins saved in OpenCode for the providers
- * OpenCode has. OAuth tokens are not read (that could refresh them); `SECRET_PATTERNS` covers
- * their shape. A definition in the tool's input counts as saved already, so the answer that
- * saves it hides its key too; the keys of the providers it replaces stay in.
+ * Every key the plugin can read: variables named like keys or named by a switched-on custom
+ * provider; keys in the global opencode.json(c); and API-key logins saved in OpenCode for the
+ * providers OpenCode has. OAuth tokens are not read (that could refresh them); `SECRET_PATTERNS`
+ * covers their shape. The key of a switched-off provider (and of one a tool saves, always
+ * switched off) is never read: until the user switches it on, nothing touches it.
  */
-async function credentialValues(host: QuotaAgentToolsHost, input: unknown): Promise<string[]> {
-  const incoming = isRecord(input) && isRecord(input.definition) ? input.definition : {};
-  // Each provider's key variable and OpenCode provider (its id when providerId is left out).
-  const sources: Array<{ variable: unknown; providerId: unknown }> = [
-    ...(await loadSettings()).settings.providers.custom.map((definition) => ({
+async function credentialValues(host: QuotaAgentToolsHost): Promise<string[]> {
+  // Each provider's key variable and OpenCode provider.
+  const sources = (await loadSettings()).settings.providers.custom
+    .filter((definition) => definition.enabled !== false)
+    .map((definition) => ({
       variable: definition.mode === "remote-api" ? definition.apiKeyEnv : undefined,
       providerId: definition.providerId,
-    })),
-    { variable: incoming.apiKeyEnv, providerId: incoming.providerId ?? incoming.id },
-  ];
+    }));
   const variables = new Set(
     Object.keys(process.env).filter((name) => KEY_VARIABLE_NAME.test(name)),
   );
@@ -247,7 +245,7 @@ async function credentialValues(host: QuotaAgentToolsHost, input: unknown): Prom
 
   const providerIds = new Set([
     ...(await host.openCodeProviderIds()),
-    ...sources.flatMap(({ providerId }) => (typeof providerId === "string" ? [providerId] : [])),
+    ...sources.map(({ providerId }) => providerId),
   ]);
   const logins = await readCredentialRows([...providerIds], { methods: ["key"] });
   values.push(...logins.map((row) => row.value.key));
@@ -261,11 +259,9 @@ async function credentialValues(host: QuotaAgentToolsHost, input: unknown): Prom
  * Replaces, in one string, each key the plugin can read and each known key format. A key under
  * LONG_KEY_LENGTH counts only as a whole token (letters, digits, `_` and `-`).
  */
-async function credentialRedactor(host: QuotaAgentToolsHost, input: unknown): Promise<Redact> {
+async function credentialRedactor(host: QuotaAgentToolsHost): Promise<Redact> {
   // Longest first, so a key that contains another is replaced whole.
-  const values = [...new Set(await credentialValues(host, input))].sort(
-    (a, b) => b.length - a.length,
-  );
+  const values = [...new Set(await credentialValues(host))].sort((a, b) => b.length - a.length);
   const long = values.filter((value) => value.length >= LONG_KEY_LENGTH);
   const short = values
     .filter((value) => value.length < LONG_KEY_LENGTH)
@@ -650,7 +646,7 @@ function tool(
     async execute(input) {
       let redact: Redact;
       try {
-        redact = await credentialRedactor(host, input);
+        redact = await credentialRedactor(host);
       } catch {
         const message =
           "Nothing was done: the saved keys to hide from the answer could not be read.";

@@ -2,17 +2,18 @@
 /**
  * The quota window. `/quota_usage`, `/quota_status` and `/quota_settings` (and u and s in the
  * `/quota` quick look) open it above the message box of a session, where it covers the chat
- * with the same size on every tab: Limits, Usage, Notices, Status, and Settings. Settings is a
- * placeholder. While it is focused (it is after opening; click it to give it the keyboard again)
- * its keys work: ↑↓ select or scroll, space/enter use a line, ←/→ change it, tab switches tabs,
- * esc closes. Closing gives the keyboard back to whatever had it before. Notices asks the server
- * again every 15 seconds while it shows, so a new notice or a change made in another window
- * appears.
+ * with the same size on every tab: Limits, Usage, Notices, Status and the Settings tabs
+ * (`settings.tsx`). While it is focused (it is after opening; click it to give it the keyboard
+ * again) its keys work: ↑↓ select or scroll, space/enter use a line, ←/→ change it, tab switches
+ * tabs, esc closes. Closing gives the keyboard back to whatever had it before. Notices asks the
+ * server again every 15 seconds while it shows, so a new notice or a change made in another
+ * window appears.
  */
+import type { Plugin } from "@opencode/plugin/tui";
 import {
   type BoxRenderable,
   type Renderable,
-  RGBA,
+  type RGBA,
   type ScrollBoxRenderable,
   TextAttributes,
 } from "@opentui/core";
@@ -25,15 +26,27 @@ import {
   type QuotaRpcDownloadPricesOutput,
   type QuotaRpcNoticeListInput,
   type QuotaRpcNoticeListOutput,
+  type QuotaRpcSaveSettingsInput,
+  type QuotaRpcSaveSettingsOutput,
+  type QuotaRpcSettingsInput,
+  type QuotaRpcSettingsOutput,
   type QuotaRpcStatusInput,
   type QuotaRpcStatusOutput,
   type QuotaRpcUsageInput,
   type QuotaRpcUsageOutput,
 } from "../../rpc.js";
 import { rpcErrorMessage } from "../client.js";
+import type { SettingsTab } from "../display.js";
 import type { SurfaceHost } from "../sidebar.js";
 import type { Theme } from "../theme.js";
 import { type NoticeBoard, noticeOptions } from "./notices.js";
+import {
+  isSettingsTab,
+  type OptionLine,
+  OptionRow,
+  SETTINGS_TABS,
+  type SettingsEditor,
+} from "./settings.js";
 import { createUsageTab, type UsageChoice } from "./usage.js";
 import { LimitsView, NoticesView, type StatusReport, StatusView } from "./views.js";
 
@@ -42,48 +55,33 @@ const NOTICE_POLL_MS = 15_000;
 /** Columns inside the window until it knows its real width. */
 const DEFAULT_WIDTH = 120;
 
-export type WindowTab = "limits" | "usage" | "notices" | "status" | "settings";
+export type WindowTab = "limits" | "usage" | "notices" | "status" | SettingsTab;
 
-/** The view tabs, then the Settings group after a │ in the tab bar. */
-const TABS: ReadonlyArray<{
-  tab: WindowTab;
-  title: string;
-  note: string;
-  group: "view" | "settings";
-}> = [
+/** The view tabs; the Settings tabs (`SETTINGS_TABS`) follow them after a │ in the tab bar. */
+const TABS: ReadonlyArray<{ tab: WindowTab; title: string; note: string }> = [
   {
     tab: "limits",
     title: "Limits",
     note: "Every limit, with its reset. The │ in a bar is where you'd be if you used it evenly: left of it = you use it faster than it refills.",
-    group: "view",
   },
   {
     tab: "usage",
     title: "Usage",
     note: "Tokens and what they would cost at API prices, from OpenCode's history. c/t cost or tokens · ←/→ range · m/d by model or day · ↑↓ pick a model, enter its details.",
-    group: "view",
   },
   {
     tab: "notices",
     title: "Notices",
     note: "Short notes from the OpenCode Quota maintainer (a provider changed its limits, a new version).",
-    group: "view",
   },
   {
     tab: "status",
     title: "Status",
     note: "What quota found and when it last checked. Copy it into a bug report.",
-    group: "view",
-  },
-  {
-    tab: "settings",
-    title: "Settings",
-    note: "How the sidebar, the status line, the toasts and /quota look.",
-    group: "settings",
   },
 ];
-/** The body of a tab that is not built yet. */
-const PLACEHOLDER_TABS: ReadonlySet<WindowTab> = new Set(["settings"]);
+/** Every tab in the order tab and shift+tab go through them. */
+const ALL_TABS: readonly WindowTab[] = [...TABS, ...SETTINGS_TABS].map((item) => item.tab);
 
 /** The theme tokens the window reads, besides the surfaces' ones (OpenCode's `ResolvedTheme`). */
 export type WindowTheme = Theme & {
@@ -92,12 +90,6 @@ export type WindowTheme = Theme & {
   border: { base: RGBA };
 };
 
-type Toast = {
-  variant?: "info" | "success" | "warning" | "error";
-  title?: string;
-  message: string;
-  duration?: number;
-};
 /** Returning false lets the key continue to the next layer. */
 export type WindowKey = {
   bind: string;
@@ -118,72 +110,40 @@ export type WindowRpc = {
     input: QuotaRpcDownloadPricesInput,
     options: CallOptions,
   ): Promise<QuotaRpcDownloadPricesOutput>;
+  settings(input: QuotaRpcSettingsInput, options: CallOptions): Promise<QuotaRpcSettingsOutput>;
+  saveSettings(
+    input: QuotaRpcSaveSettingsInput,
+    options: CallOptions,
+  ): Promise<QuotaRpcSaveSettingsOutput>;
 };
 
-/** What the window needs from OpenCode's TUI context. */
-export type WindowHost = {
+/** What the window needs from OpenCode's TUI context (its theme and client types aren't installed). */
+export type WindowHost = Pick<Plugin.Context, "keymap" | "renderer" | "themeMode" | "ui"> & {
   location?: { directory: string };
   theme: WindowTheme;
   client: { rpc: (definition: typeof QuotaRpc) => WindowRpc };
   data: { location?: { default: () => { directory: string } } };
-  renderer: {
-    root: {
-      on(event: "layout-changed", listener: () => void): void;
-      off(event: "layout-changed", listener: () => void): void;
-    };
-    on(event: "resize", listener: () => void): void;
-    off(event: "resize", listener: () => void): void;
-    currentFocusedRenderable: Renderable | null;
-    copyToClipboardOSC52(text: string): boolean;
-  };
-  keymap: {
-    /**
-     * A layer with a target works only while that renderable has the keyboard; a "modal" one
-     * only while a dialog is open.
-     */
-    layer(
-      build: () => {
-        mode?: "modal";
-        target?: () => Renderable | undefined;
-        priority?: number;
-        commands: WindowKey[];
-      },
-    ): void;
-  };
-  ui: {
-    router: { current(): { type: string; sessionID?: string } };
-    toast: { show(toast: Toast): void };
-    dialog: {
-      show(render: () => JSX.Element, onClose?: () => void): void;
-      set(options: { size: "large" }): void;
-      clear(): void;
-    };
-  };
 };
 
-/** A line above a tab's body that ↑↓ can select: a switch (‹ on ›) or a button (▸). */
-type WindowOption = {
-  id: string;
-  title: string;
-  value: string;
-  note?: string;
-  kind: "switch" | "button";
-  run: () => void;
-};
-
-const TRANSPARENT = RGBA.fromInts(0, 0, 0, 0);
 const KEYS = "Quota window";
 
 export type QuotaWindow = {
-  /** Opens the window on a tab, or switches to it. On Home it only says to open a session. */
-  open(tab: WindowTab): void;
+  /**
+   * Opens the window on a tab, or switches to it; "settings" is the first Settings tab. On Home
+   * it only says to open a session.
+   */
+  open(tab: WindowTab | "settings"): void;
   /** Opens the window on its Usage tab, on `choice`. */
   openUsage(choice: UsageChoice): void;
   /** The `session.composer.top` slot. */
   Slot(props: { sessionID: string }): JSX.Element;
 };
 
-export function createQuotaWindow(api: WindowHost, host: SurfaceHost): QuotaWindow {
+export function createQuotaWindow(
+  api: WindowHost,
+  host: SurfaceHost,
+  settings: SettingsEditor,
+): QuotaWindow {
   const [tab, setTab] = createSignal<WindowTab>();
   const [selected, setSelected] = createSignal("");
   const [board, setBoard] = createSignal<NoticeBoard>();
@@ -284,7 +244,10 @@ export function createQuotaWindow(api: WindowHost, host: SurfaceHost): QuotaWind
 
   /** Each tab asks the server again when it shows: Limits a refresh, the others their data. */
   function showTab(next: WindowTab): void {
+    settings.setTab(next);
     setTab(next);
+    // A Settings line may have had the keyboard; it is gone with its tab.
+    windowBox?.focus();
     const sessionID = routeSessionID();
     stopNoticePoll();
     if (next === "limits") void host.quota.refresh("manual", sessionID);
@@ -315,17 +278,12 @@ export function createQuotaWindow(api: WindowHost, host: SurfaceHost): QuotaWind
     });
   }
 
-  function tabOptions(): WindowOption[] {
+  /** The lines above a tab's body that ↑↓ can select: switches (‹ on ›) and buttons (▸). */
+  function tabOptions(): OptionLine[] {
     if (tab() === "status") {
+      const note = () => "then paste it into a GitHub issue";
       return [
-        {
-          id: "copy",
-          title: "Copy this report",
-          value: "copy",
-          note: "then paste it into a GitHub issue",
-          kind: "button",
-          run: copyReport,
-        },
+        { id: "copy", title: "Copy this report", value: () => "copy", run: copyReport, note },
       ];
     }
     const current = board();
@@ -336,10 +294,15 @@ export function createQuotaWindow(api: WindowHost, host: SurfaceHost): QuotaWind
       home: () => changeOnce("home", { home: !current.home }),
       readAll: () => changeOnce("readAll", { read: unreadIds }),
     };
-    return noticeOptions(current).map((option) => ({ ...option, run: runs[option.id] }));
+    return noticeOptions(current).map(({ id, title, value, kind }) => ({
+      id,
+      title,
+      value: () => value,
+      ...(kind === "switch" ? { cycle: runs[id] } : { run: runs[id] }),
+    }));
   }
 
-  function open(next: WindowTab): void {
+  function open(next: WindowTab | "settings"): void {
     if (!routeSessionID()) {
       api.ui.toast.show({
         variant: "info",
@@ -349,12 +312,15 @@ export function createQuotaWindow(api: WindowHost, host: SurfaceHost): QuotaWind
       return;
     }
     if (tab() === undefined) focusBefore = api.renderer.currentFocusedRenderable;
-    showTab(next);
+    showTab(next === "settings" ? "sidebar" : next);
     // The command leaves the message box focused; take the keyboard once it has settled.
     setTimeout(() => windowBox?.focus(), 50);
   }
 
+  /** Esc or Close. With unsaved settings the bottom bar asks first. */
   function close(): void {
+    if (settings.askBeforeClose()) return;
+    settings.setTab(undefined);
     setTab(undefined);
     stopNoticePoll();
     // Answers still on their way belong to the closed window.
@@ -367,8 +333,8 @@ export function createQuotaWindow(api: WindowHost, host: SurfaceHost): QuotaWind
   }
 
   function switchTab(delta: number): void {
-    const index = TABS.findIndex((item) => item.tab === tab());
-    showTab(TABS[(index + delta + TABS.length) % TABS.length].tab);
+    const index = ALL_TABS.indexOf(tab() ?? "limits");
+    showTab(ALL_TABS[(index + delta + ALL_TABS.length) % ALL_TABS.length] as WindowTab);
   }
 
   /** ↑↓ select the next line; past the first or last one (or with none) they scroll. */
@@ -379,65 +345,16 @@ export function createQuotaWindow(api: WindowHost, host: SurfaceHost): QuotaWind
     else setSelected(ids[next]);
   }
 
-  function useSelected(kind: "switch" | "any"): void {
-    const option = tabOptions().find((item) => item.id === selected());
-    if (option && (kind === "any" || option.kind === "switch")) option.run();
+  /** Space or enter use any line; ←/→ only flip a switch. */
+  function useLine(option: OptionLine | undefined, anyKind: boolean): void {
+    if (option?.cycle) option.cycle(1);
+    else if (anyKind) option?.run?.();
   }
-
-  function Button(props: { label: string; primary?: boolean; run: () => void }): JSX.Element {
-    const theme = () => api.theme;
-    return (
-      <box
-        paddingLeft={2}
-        paddingRight={2}
-        backgroundColor={
-          props.primary ? theme().background.action.primary.focused : theme().background.raised.high
-        }
-        onMouseUp={props.run}
-      >
-        <text
-          fg={props.primary ? theme().text.action.primary.focused : theme().text.base}
-          selectable={false}
-        >
-          {props.label}
-        </text>
-      </box>
+  const useSelected = (anyKind: boolean) =>
+    useLine(
+      tabOptions().find((item) => item.id === selected()),
+      anyKind,
     );
-  }
-
-  function OptionLine(props: { option: WindowOption }): JSX.Element {
-    const theme = () => api.theme;
-    const active = () => selected() === props.option.id;
-    const fg = () => (active() ? theme().text.action.primary.focused : theme().text.base);
-    const arrow = () => (active() ? fg() : theme().text.action.primary.selected);
-    const isSwitch = props.option.kind === "switch";
-    return (
-      <box
-        flexDirection="row"
-        backgroundColor={active() ? theme().background.action.primary.focused : TRANSPARENT}
-        onMouseDown={() => setSelected(props.option.id)}
-        onMouseUp={props.option.run}
-      >
-        <text fg={fg()} wrapMode="none" selectable={false}>
-          {`   ${props.option.title.padEnd(28)} `}
-        </text>
-        <text fg={arrow()} wrapMode="none" selectable={false}>
-          {isSwitch ? "‹ " : "  "}
-        </text>
-        <text fg={fg()} wrapMode="none" selectable={false}>
-          {props.option.value.padEnd(isSwitch ? 3 : 9)}
-        </text>
-        <text fg={arrow()} wrapMode="none" selectable={false}>
-          {isSwitch ? " ›" : " ▸"}
-        </text>
-        <Show when={props.option.note}>
-          <text fg={active() ? fg() : theme().text.muted} wrapMode="none" selectable={false}>
-            {`   ${props.option.note}`}
-          </text>
-        </Show>
-      </box>
-    );
-  }
 
   function Window(props: { sessionID: string }): JSX.Element {
     const theme = () => api.theme;
@@ -496,6 +413,8 @@ export function createQuotaWindow(api: WindowHost, host: SurfaceHost): QuotaWind
     api.keymap.layer(() => ({
       target: () => windowBox,
       priority: 10,
+      // While a Settings line takes typed text, the keys go to its input.
+      enabled: () => !settings.typing(),
       commands: [
         { bind: "up", title: "Previous line", group: KEYS, run: () => select(-1) },
         { bind: "down", title: "Next line", group: KEYS, run: () => select(1) },
@@ -511,10 +430,10 @@ export function createQuotaWindow(api: WindowHost, host: SurfaceHost): QuotaWind
           group: KEYS,
           run: () => scroll?.scrollBy(scroll.height || 1),
         },
-        { bind: "space", title: "Use the line", group: KEYS, run: () => useSelected("any") },
-        { bind: "return", title: "Use the line", group: KEYS, run: () => useSelected("any") },
-        { bind: "left", title: "Change the line", group: KEYS, run: () => useSelected("switch") },
-        { bind: "right", title: "Change the line", group: KEYS, run: () => useSelected("switch") },
+        { bind: "space", title: "Use the line", group: KEYS, run: () => useSelected(true) },
+        { bind: "return", title: "Use the line", group: KEYS, run: () => useSelected(true) },
+        { bind: "left", title: "Change the line", group: KEYS, run: () => useSelected(false) },
+        { bind: "right", title: "Change the line", group: KEYS, run: () => useSelected(false) },
         { bind: "tab", title: "Next tab", group: KEYS, run: () => switchTab(1) },
         { bind: "shift+tab", title: "Previous tab", group: KEYS, run: () => switchTab(-1) },
         { bind: "escape", title: "Close", group: KEYS, run: close },
@@ -522,12 +441,30 @@ export function createQuotaWindow(api: WindowHost, host: SurfaceHost): QuotaWind
     }));
 
     const current = () => TABS.find((item) => item.tab === tab()) ?? TABS[0];
+    const settingsTab = () => {
+      const shown = tab();
+      return isSettingsTab(shown) ? shown : undefined;
+    };
     const hint = () =>
       tab() === "usage" && usage.typingDate()
         ? "Typing a date: enter next date, then apply · tab other date · esc back to the window"
-        : hasKeyboard()
-          ? "↑↓ select or scroll · space/enter or click to use a line · ‹ › (or ←/→) to change · tab next tab · esc close"
-          : "The keyboard is somewhere else (the message box, a dialog). Click this box to use ↑↓ space tab esc here.";
+        : (settings.hint(tab() ?? "", hasKeyboard()) ??
+          (hasKeyboard()
+            ? "↑↓ select or scroll · space/enter or click to use a line · ‹ › (or ←/→) to change · tab next tab · esc close"
+            : "The keyboard is somewhere else (the message box, a dialog). Click this box to use ↑↓ space tab esc here."));
+    const tabTitle = (item: { tab: WindowTab; title: string }) => (
+      <text
+        fg={item.tab === tab() ? theme().text.action.primary.selected : theme().text.muted}
+        attributes={
+          item.tab === tab() ? TextAttributes.BOLD | TextAttributes.UNDERLINE : TextAttributes.NONE
+        }
+        wrapMode="none"
+        selectable={false}
+        onMouseUp={settings.click(() => showTab(item.tab))}
+      >
+        {item.title}
+      </text>
+    );
 
     return (
       <box
@@ -563,7 +500,10 @@ export function createQuotaWindow(api: WindowHost, host: SurfaceHost): QuotaWind
         borderColor={hasKeyboard() ? theme().text.action.primary.selected : theme().border.base}
         paddingLeft={1}
         paddingRight={1}
-        onMouseDown={() => windowBox?.focus()}
+        onMouseDown={() => {
+          settings.pressed();
+          if (!settings.typing()) windowBox?.focus();
+        }}
         onSizeChange={function (this: BoxRenderable) {
           // Inside the border and the padding.
           const measured = this.width - 4;
@@ -574,37 +514,31 @@ export function createQuotaWindow(api: WindowHost, host: SurfaceHost): QuotaWind
           <text fg={theme().text.base} wrapMode="none" selectable={false}>
             <b>Quota</b>
           </text>
-          {TABS.map((item) => [
-            item.group === "settings" ? (
-              <text fg={theme().border.base} wrapMode="none" selectable={false}>
-                │
-              </text>
-            ) : null,
-            <text
-              fg={item.tab === tab() ? theme().text.action.primary.selected : theme().text.muted}
-              attributes={
-                item.tab === tab()
-                  ? TextAttributes.BOLD | TextAttributes.UNDERLINE
-                  : TextAttributes.NONE
-              }
-              wrapMode="none"
-              selectable={false}
-              onMouseUp={() => showTab(item.tab)}
-            >
-              {item.title}
-            </text>,
-          ])}
+          {TABS.map(tabTitle)}
+          <text fg={theme().text.muted} wrapMode="none" selectable={false}>
+            │ Settings:
+          </text>
+          {SETTINGS_TABS.map(tabTitle)}
           <box flexGrow={1} />
-          <text fg={theme().text.muted} selectable={false} onMouseUp={close}>
+          <text fg={theme().text.muted} selectable={false} onMouseUp={settings.click(close)}>
             esc
           </text>
         </box>
-        {/* Padding instead of leading spaces, so a note that wraps stays indented. */}
-        <box paddingLeft={3} marginTop={1} flexShrink={0}>
-          <text fg={theme().text.muted} wrapMode="word" selectable={false}>
-            {current().note}
-          </text>
-        </box>
+        <Show
+          when={settingsTab()}
+          fallback={
+            // Padding instead of leading spaces, so a note that wraps stays indented.
+            <box paddingLeft={3} marginTop={1} flexShrink={0}>
+              <text fg={theme().text.muted} wrapMode="word" selectable={false}>
+                {current().note}
+              </text>
+            </box>
+          }
+        >
+          {(shown: () => SettingsTab) => (
+            <settings.Header tab={shown()} refocus={() => windowBox?.focus()} />
+          )}
+        </Show>
         <scrollbox
           ref={(element: ScrollBoxRenderable) => {
             scroll = element;
@@ -617,7 +551,15 @@ export function createQuotaWindow(api: WindowHost, host: SurfaceHost): QuotaWind
           marginTop={1}
         >
           {tabOptions().map((option) => (
-            <OptionLine option={option} />
+            <OptionRow
+              line={option}
+              theme={theme()}
+              active={selected() === option.id}
+              click={settings.click}
+              press={() => setSelected(option.id)}
+              use={() => useLine(option, true)}
+              valueWidth={option.cycle ? 3 : 9}
+            />
           ))}
           <Show when={tab() === "limits"}>
             <LimitsView host={host} sessionID={props.sessionID} nowMs={nowMs()} width={width()} />
@@ -637,14 +579,26 @@ export function createQuotaWindow(api: WindowHost, host: SurfaceHost): QuotaWind
           <Show when={tab() === "status"}>
             <StatusView theme={theme()} report={status()} />
           </Show>
-          <Show when={PLACEHOLDER_TABS.has(tab() ?? "limits")}>
-            <text fg={theme().text.muted} selectable={false}>
-              {"   This tab is not built yet."}
-            </text>
+          <Show when={settingsTab()}>
+            {(shown: () => SettingsTab) => (
+              <settings.Body
+                tab={shown()}
+                host={host}
+                sessionID={props.sessionID}
+                box={() => windowBox}
+                scroll={() => scroll}
+              />
+            )}
           </Show>
         </scrollbox>
         <box flexDirection="row" gap={2} marginTop={1} flexShrink={0}>
-          <Button label="Close" primary run={close} />
+          <settings.Buttons
+            tab={tab() ?? ""}
+            host={host}
+            sessionID={props.sessionID}
+            box={() => windowBox}
+            close={close}
+          />
         </box>
         {/* Two lines tall either way, so the box doesn't move when the hint changes. */}
         <text

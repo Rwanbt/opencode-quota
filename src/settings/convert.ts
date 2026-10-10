@@ -35,6 +35,7 @@ export type DisplayImport = {
   window?: Record<string, string>;
   statusLine?: { detail?: "one"; home?: boolean };
   sidebar?: { sessionTokens?: boolean };
+  runsOut?: Partial<Record<DisplaySurface, boolean>>;
   toast?: {
     afterReply?: "off" | "always";
     afterQuestion?: boolean;
@@ -358,7 +359,13 @@ function mapV5Values(values: ReadonlyMap<string, unknown>): {
     if (decimals !== undefined) server["words.resetDecimals"] = decimals;
   }
 
-  if (has("quotaProjection")) toServer("quotaProjection", "words.runsOut", true);
+  // "runway", its only value, turns on every runs-out estimate: the web and CLI text's, and
+  // each TUI place's.
+  if (has("quotaProjection")) {
+    toServer("quotaProjection", "words.runsOut", true);
+    for (const name of SURFACES) setPath(display, `runsOut.${name}`, true);
+    toDisplay("quotaProjection", "runsOut.*");
+  }
 
   if (has("opencodeZenDisplay")) {
     const zen = values.get("opencodeZenDisplay");

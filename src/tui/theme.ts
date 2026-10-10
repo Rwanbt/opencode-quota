@@ -13,12 +13,16 @@ export type Theme = {
   text: {
     base: RGBA;
     muted: RGBA;
+    /** The label of the line the Settings tabs have selected, on a surface. */
+    action: { primary: { selected: RGBA } };
     feedback: Record<"success" | "warning" | "error" | "info", { base: RGBA }>;
   };
+  /** Behind the line the Settings tabs have selected, on a surface. */
+  background: { raised: { high: RGBA } };
   hue: { accent: Record<number, RGBA> };
 };
 
-function namedColor(theme: Theme, name: ColorName): RGBA {
+export function namedColor(theme: Theme, name: ColorName): RGBA {
   switch (name) {
     case "text":
       return theme.text.base;

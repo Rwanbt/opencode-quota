@@ -85,8 +85,11 @@ async function releaseLock(lock: string, mine: string): Promise<void> {
   if ((await readFile(lock, "utf8").catch(() => "")) === mine) await rm(lock, { force: true });
 }
 
-/** The lock was taken over while its work ran: nothing was written, and the work runs again. */
-class LockLostError extends Error {}
+/**
+ * The lock was taken over, or what the work read changed, while it ran: nothing was written, and
+ * the work runs again.
+ */
+export class LockLostError extends Error {}
 
 /**
  * Throws when the lock no longer holds our token. Call it right before the write that commits
