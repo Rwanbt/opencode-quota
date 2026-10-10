@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { Plugin } from "@opencode/plugin";
 import {
   loadProviderSource,
+  loadQuotaExport,
   loadServerSettings,
   type ProviderSourceHost,
 } from "./core/provider-source.js";
@@ -260,6 +261,7 @@ export const QuotaToastPlugin = Plugin.define({
     // The export file and the gauges follow the snapshot; neither asks a provider again.
     const publisher = createSnapshotPublisher({
       loadSettings: () => loadServerSettings(sourceHost),
+      buildExport: () => loadQuotaExport(sourceHost),
       log: (message, error) => console.warn(`[opencode-quota] ${message}: ${logReason(error)}`),
     });
     const unsubscribeStore = store.subscribe((snapshot) => {

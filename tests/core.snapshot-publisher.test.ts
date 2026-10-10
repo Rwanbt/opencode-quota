@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createSnapshotPublisher } from "../src/core/snapshot-publisher.js";
 import type { ProviderSnapshot, QuotaSnapshot } from "../src/core/types.js";
-import { buildQuotaExportFromSnapshot } from "../src/lib/quota-export.js";
+import type { QuotaExport } from "../src/lib/quota-export-types.js";
 
 const NOW = Date.parse("2026-10-10T12:00:00.000Z");
 
@@ -36,53 +36,8 @@ function provider(fields: Partial<ProviderSnapshot> = {}): ProviderSnapshot {
 }
 
 function snapshot(providers: ProviderSnapshot[], generatedAtMs = NOW): QuotaSnapshot {
-  return { version: 6, providers, resetNotices: [], generatedAtMs };
+  return { version: 6, providers, resetNotices: [], generatedAtMs, revision: generatedAtMs };
 }
-
-describe("export built from the quota snapshot", () => {
-  it.each([
-    { name: "ok", given: provider(), status: "ok" },
-    { name: "partial", given: provider({ error: { code: "timeout" } }), status: "partial" },
-    {
-      name: "error",
-      given: provider({ rows: [], okAtMs: undefined, error: { code: "login_expired" } }),
-      status: "error",
-    },
-    {
-      name: "unavailable",
-      given: provider({ rows: [], okAtMs: undefined, checkedAtMs: undefined }),
-      status: "unavailable",
-    },
-  ])("marks a provider $name", ({ given, status }) => {
-    expect(buildQuotaExportFromSnapshot(snapshot([given]), NOW).providers.copilot?.status).toBe(
-      status,
-    );
-  });
-
-  it("writes each row as an entry in the v2 export shape", () => {
-    const exported = buildQuotaExportFromSnapshot(
-      snapshot([provider({ error: { code: "timeout" } })]),
-      NOW,
-    );
-    expect(exported).toMatchObject({ version: 2, fromCache: true, cacheAgeSeconds: 30 });
-    expect(exported.providers.copilot).toEqual({
-      status: "partial",
-      fetchedAt: Math.floor((NOW - 30_000) / 1000),
-      entries: [
-        expect.objectContaining({
-          name: "Copilot (pro) Premium requests",
-          resultType: "quota",
-          acquisitionMethod: "remote_api",
-          ownership: "maintained",
-          window: "Monthly",
-          percentRemaining: 80,
-          resetAt: Date.parse("2026-11-01T00:00:00.000Z") / 1000,
-        }),
-      ],
-      errors: [{ label: "Copilot", message: "Timed out" }],
-    });
-  });
-});
 
 describe("snapshot publisher", () => {
   let root = "";
@@ -99,22 +54,33 @@ describe("snapshot publisher", () => {
       export: { enabled: exportEnabled, path },
       telemetry: false,
     }));
+    let exports = 0;
+    const buildExport = vi.fn(async (): Promise<QuotaExport> => {
+      exports += 1;
+      return {
+        version: 2,
+        exportedAt: exports,
+        fromCache: true,
+        cacheAgeSeconds: 0,
+        providers: { copilot: { status: "ok", fetchedAt: 1, entries: [] } },
+      };
+    });
     const log = vi.fn();
-    const publisher = createSnapshotPublisher({ loadSettings, log });
+    const publisher = createSnapshotPublisher({ loadSettings, buildExport, log });
     const written = async () => JSON.parse(await readFile(path, "utf8"));
-    return { publisher, loadSettings, log, written, path };
+    return { publisher, loadSettings, buildExport, log, written, path };
   }
 
-  it("writes the export after a change, and only the newest of the waiting snapshots", async () => {
-    const { publisher, loadSettings, written } = start(true);
+  it("writes the export after a change, and once more for all the snapshots that waited", async () => {
+    const { publisher, loadSettings, buildExport, written } = start(true);
     publisher.publish(snapshot([provider()], NOW - 2));
     publisher.publish(snapshot([provider({ label: "Older" })], NOW - 1));
     publisher.publish(snapshot([provider({ label: "Newest" })], NOW));
     await publisher.idle();
 
     expect(loadSettings).toHaveBeenCalledTimes(2);
-    const exported = await written();
-    expect(exported.providers.copilot.entries[0].name).toBe("Newest (pro) Premium requests");
+    expect(buildExport).toHaveBeenCalledTimes(2);
+    expect(await written()).toMatchObject({ version: 2, exportedAt: 2 });
   });
 
   it("writes nothing when the export is off, and nothing after dispose", async () => {
@@ -122,6 +88,7 @@ describe("snapshot publisher", () => {
     off.publisher.publish(snapshot([provider()]));
     await off.publisher.idle();
     await expect(readFile(off.path)).rejects.toThrow();
+    expect(off.buildExport).not.toHaveBeenCalled();
 
     const disposed = start(true);
     disposed.publisher.dispose();

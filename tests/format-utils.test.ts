@@ -1,8 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
-  DISPLAYED_PERCENT_LABEL_WIDTH,
-  displayedPercentLabelWidth,
   formatDisplayedPercentLabel,
   formatQuotaModeHeading,
   formatResetCountdown,
@@ -13,9 +11,8 @@ describe("formatResetCountdown", () => {
     vi.useRealTimers();
   });
 
-  it("preserves the configured missing value without fabricating a countdown", () => {
+  it("returns nothing without a reset time", () => {
     expect(formatResetCountdown()).toBe("");
-    expect(formatResetCountdown(undefined, { missing: "-" })).toBe("-");
   });
 
   it("returns one reset marker for expired timestamps", () => {
@@ -44,19 +41,6 @@ describe("formatResetCountdown", () => {
     expect(formatResetCountdown("2026-01-15T10:14:00.000Z", { spaced: true })).toBe("14m");
     expect(formatResetCountdown("2026-01-15T12:14:01.000Z", { spaced: true })).toBe("2h 15m");
   });
-
-  it("keeps resetTimeDecimals output unchanged when spacing is enabled", () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-01-15T10:00:00.000Z"));
-
-    expect(
-      formatResetCountdown("2026-01-17T15:14:00.000Z", {
-        compactRounded: true,
-        decimals: 1,
-        spaced: true,
-      }),
-    ).toBe("2.2d");
-  });
 });
 
 describe("percent labels", () => {
@@ -65,12 +49,6 @@ describe("percent labels", () => {
     expect(formatDisplayedPercentLabel(81, "used")).toBe("19% used");
     expect(formatDisplayedPercentLabel(81, "remaining", "bare")).toBe("81%");
     expect(formatDisplayedPercentLabel(81, "used", "bare")).toBe("19%");
-  });
-
-  it("reserves only the bare percentage width when requested", () => {
-    expect(displayedPercentLabelWidth()).toBe(DISPLAYED_PERCENT_LABEL_WIDTH);
-    expect(displayedPercentLabelWidth("full")).toBe(DISPLAYED_PERCENT_LABEL_WIDTH);
-    expect(displayedPercentLabelWidth("bare")).toBe("100%".length);
   });
 
   it("names the report-level percentage mode", () => {

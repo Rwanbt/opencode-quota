@@ -1,10 +1,6 @@
 /**
- * Shared formatting utilities for quota display.
- *
- * These primitives are used by:
- * - format.ts (classic toast)
- * - toast-format-grouped.ts (grouped toast)
- * - quota-command-format.ts (/quota command)
+ * Shared formatting primitives: the `/quota` report (quota-command-format.ts, quota-columns.ts),
+ * provider percentages and amounts, and the resetTimeDecimals setting check.
  */
 
 import type { PercentDisplayMode, PercentLabelStyle } from "./types.js";
@@ -103,12 +99,6 @@ export function formatDisplayedPercentLabel(
   return style === "bare" ? percent : `${percent} ${mode === "used" ? "used" : "left"}`;
 }
 
-export const DISPLAYED_PERCENT_LABEL_WIDTH = "100% used".length;
-
-export function displayedPercentLabelWidth(style: PercentLabelStyle = "full"): number {
-  return style === "bare" ? "100%".length : DISPLAYED_PERCENT_LABEL_WIDTH;
-}
-
 export function formatQuotaModeHeading(mode: PercentDisplayMode = "remaining"): string {
   return `Quota [${mode === "used" ? "Used" : "Remaining"}]`;
 }
@@ -135,11 +125,7 @@ export function formatTokenCount(count: number): string {
   return String(count);
 }
 
-/**
- * Shorten model name for compact display.
- *
- * Removes common prefixes/suffixes before truncating with ellipsis.
- */
+/** A dollar amount with two decimals ("$12.50"); "$0.00" for a non-finite number. */
 export function fmtUsdAmount(n: number): string {
   if (!Number.isFinite(n)) return "$0.00";
   return `$${n.toFixed(2)}`;
@@ -159,48 +145,19 @@ export function abbreviateDisplayedModelName(name: string): string {
   return name.replace(/antigravity/gi, "agy");
 }
 
-export function shortenModelName(name: string, maxLen: number): string {
-  const abbreviated = abbreviateDisplayedModelName(name);
-  if (abbreviated.length <= maxLen) return abbreviated;
-  // Remove common suffixes before truncating.
-  const s = abbreviated.replace(/-thinking$/i, "").replace(/-preview$/i, "");
-  if (s.length <= maxLen) return s;
-  // Truncate with ellipsis
-  return s.slice(0, maxLen - 1) + "\u2026";
-}
-
 export interface FormatResetCountdownOptions {
-  /**
-   * String to return when ISO timestamp is missing/undefined.
-   * - Classic toast uses "-"
-   * - Grouped toast uses ""
-   */
-  missing?: string;
-  /**
-   * Opt into the legacy compact display instead of the default exact-to-minute
-   * countdown.
-   */
-  compactRounded?: boolean;
-  /**
-   * When set with compactRounded, render the largest active unit with this
-   * many decimal places.
-   */
-  decimals?: number;
   /** Join exact compound countdown units with spaces. */
   spaced?: boolean;
 }
 
-const MS_PER_DAY = 86_400_000;
-const MS_PER_HOUR = 3_600_000;
-
 /**
- * Format a reset countdown for toast display.
+ * Format a reset countdown for the `/quota` report.
  *
- * Returns a precise-to-minute value like "2d 5h 14m", "3h 45m", or "14m".
+ * Returns a precise-to-minute value like "2d 5h 14m", "3h 45m", or "14m"; "" without a time.
  * When reset time is in the past or invalid, returns "reset".
  */
 export function formatResetCountdown(iso?: string, opts?: FormatResetCountdownOptions): string {
-  if (!iso) return opts?.missing ?? "";
+  if (!iso) return "";
   const resetDate = new Date(iso);
   const now = new Date();
   const diffMs = resetDate.getTime() - now.getTime();
@@ -211,22 +168,6 @@ export function formatResetCountdown(iso?: string, opts?: FormatResetCountdownOp
   const days = Math.floor(diffMinutes / 1440);
   const hours = Math.floor((diffMinutes % 1440) / 60);
   const minutes = diffMinutes % 60;
-
-  if (opts?.compactRounded) {
-    const decimals = opts.decimals;
-    if (isResetTimeDecimals(decimals)) {
-      if (days > 0) return `${(diffMs / MS_PER_DAY).toFixed(decimals)}d`;
-      const formattedHours = (diffMs / MS_PER_HOUR).toFixed(decimals);
-      if (Number(formattedHours) > 0) return `${formattedHours}h`;
-      return `${Math.max(1, Math.ceil(diffMs / 60_000))}m`;
-    }
-
-    if (days > 0) return `${days}d`;
-    const halfHours = Math.ceil(diffMinutes / 30);
-    const h = Math.floor(halfHours / 2);
-    if (h > 0) return halfHours % 2 === 1 ? `${h}.5h` : `${h}h`;
-    return `0.5h`;
-  }
 
   const separator = opts?.spaced ? " " : "";
   if (days > 0) return [`${days}d`, `${hours}h`, `${minutes}m`].join(separator);

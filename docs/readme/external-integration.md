@@ -155,14 +155,14 @@ A percentage entry uses `renderType: "percent"` and `percentRemaining`. A value 
 - Version 2 does not expose internal metrics, row prominence, used/limit/remaining basis facts, or per-fact authority.
 - Threshold checks use percentage rows only.
 
-Optional entry fields include `window`, `resetAt`, `observedAt`, and `sourceId`. A provider can also include `rawDetails`: curated, safe provider facts that stay out of normal quota displays. In `show --json`, custom `quotaProviders` rows include `sourceId`, and the `quota-providers` result has a `sources` list so tools can match each row to its definition. The export file is built from the server's quota snapshot instead: its rows have no `sourceId` or `observedAt`, their `resultType` is `quota`, `usage`, `budget`, `balance`, or `status`, and there is no `sources` list. Treat `status: "partial"` as incomplete.
+Optional entry fields include `window`, `resetAt`, `observedAt`, and `sourceId`. A provider can also include `rawDetails`: curated, safe provider facts that stay out of normal quota displays. Custom `quotaProviders` rows include `sourceId`, and the `quota-providers` result has a `sources` list so tools can match each row to its definition. Treat `status: "partial"` as incomplete.
 
 Secrets, credentials, URLs, checked paths, and raw provider responses remain excluded from public JSON. Use `/quota_status` for live diagnostics.
 
 <details>
 <summary><strong>Configured source details</strong></summary>
 
-In `show --json`, rows from a configured `quotaProviders` definition appear under `providers["quota-providers"]` and keep their stable `sourceId`:
+Rows from a configured `quotaProviders` definition appear under `providers["quota-providers"]` and keep their stable `sourceId`:
 
 ```json
 {

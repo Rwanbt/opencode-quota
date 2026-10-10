@@ -101,6 +101,7 @@ export async function buildCliShowText(params: {
     })),
     resetNotices: [],
     generatedAtMs: nowMs,
+    revision: nowMs,
   };
   const words: Words = {
     ...DEFAULT_WORDS,

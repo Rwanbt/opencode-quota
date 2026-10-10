@@ -4,11 +4,11 @@
  * session sidebar, the status line under the message box (and on Home when turned on), and
  * the toasts. It reads only the quota RPC (`snapshot`, `refresh`, `notices`, the `changed`
  * event) and the display settings in OpenCode's plugin storage. The report dialogs of the
- * slash commands live in `legacy-dialogs.tsx` until the quota window replaces them.
+ * slash commands live in `legacy-dialogs.tsx`.
  */
 import { Plugin } from "@opencode/plugin/tui";
 import type { JSX } from "@opentui/solid";
-import { Show } from "solid-js";
+import { onCleanup, Show } from "solid-js";
 import { type ClientHost, createQuotaClient, reportFailure } from "./client.js";
 import { type DisplaySettings, type DisplayStorage, loadDisplaySettings } from "./display.js";
 import {
@@ -95,7 +95,7 @@ const plugin = Plugin.define({
       render: () => {
         // OpenCode mounts this slot again when it reconnects to its server, which can also
         // happen right after it starts. Leaving a mount drops its keymap layers and event
-        // listeners, so each mount replaces the listeners and registers everything again.
+        // listeners, so each mount stops the last one's and registers everything again.
         disposeMount?.();
         const stopQuota = quota.start();
         registerQuotaCommands(api);
@@ -128,11 +128,17 @@ const plugin = Plugin.define({
             void showPostedQuotaReport(api, event).catch(reportFailure);
           }),
         ];
-        disposeMount = () => {
+        let disposed = false;
+        const dispose = () => {
+          if (disposed) return;
+          disposed = true;
+          if (disposeMount === dispose) disposeMount = undefined;
           stopQuota();
           for (const stop of listeners) stop();
           questionToolCalls.clear();
         };
+        disposeMount = dispose;
+        onCleanup(dispose);
         return null;
       },
     });

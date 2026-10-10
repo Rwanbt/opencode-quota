@@ -37,7 +37,7 @@ Strict `.json` files also work. Not sure which file is active? Run `/quota_statu
 
 If the setting is missing, the default is `singleWindow`.
 
-These settings shape `/quota` and terminal `show`. The TUI sidebar, status line and toasts have their own built-in look for now; see [TUI surfaces](#tui-surfaces).
+These settings shape `/quota` and terminal `show`. The TUI sidebar, status line and toasts have their own built-in look; see [TUI surfaces](#tui-surfaces).
 
 Example:
 
@@ -79,7 +79,7 @@ Everything else (rolling windows, RPM, balance, status, unlimited rows) is left 
 
 ### Notify when quota becomes available again
 
-The server notices when a quota window resets, from data already fetched. The TUI popup for it is off for now and comes back with the TUI display settings; `resetNotifications` is no longer read.
+The server notices when a quota window resets, from data already fetched. The TUI popup for it is off, and `resetNotifications` is not read.
 
 ### Include subagent session tokens
 
@@ -89,7 +89,7 @@ Session totals count only the current session by default. `sessionTokenScope: "t
 
 - Reset countdowns are exact and spaced by default, such as `6d 1h 17m`, `2h 14m`, or `37m`. Partial minutes round up.
 - `resetTimeSpaced: false` writes `2d5h14m` instead of `2d 5h 14m`. Minute-only values, `reset`, and rounding stay the same. It applies to `/quota`.
-- `resetTimeDecimals` (`0` to `4`) shows the largest unit as a decimal, such as `5.7d` or `1.4h`. It is not read for now; the TUI display settings bring it back.
+- `resetTimeDecimals` (`0` to `4`) is not read: countdowns never show decimals.
 - `percentLabelStyle: "bare"` shows `81%` instead of `81% left` (or `19%` instead of `19% used`) in `/quota`, which then shows `Quota [Remaining]` or `Quota [Used]` as the heading.
 
 ## Custom providers
@@ -191,7 +191,7 @@ Provider credentials (API keys, cookies, tokens) are never set here. See [API ke
 
 ### TUI surfaces
 
-The sidebar, the status line and toasts draw the server's last quota snapshot with a built-in look for now (kept in OpenCode's plugin storage). They no longer read `tuiSidebarPanel`, `tuiCompactStatus`, `tuiPromptBar`, `enableToast`, `toastDurationMs`, `showOnIdle`, `showOnQuestion`, `showOnCompact`, `showOnBothFail`, `layout`, `debug`, or `resetNotifications`.
+The sidebar, the status line and toasts draw the server's last quota snapshot with a built-in look (kept in OpenCode's plugin storage). They don't read `tuiSidebarPanel`, `tuiCompactStatus`, `tuiPromptBar`, `enableToast`, `toastDurationMs`, `showOnIdle`, `showOnQuestion`, `showOnCompact`, `showOnBothFail`, `layout`, `debug`, or `resetNotifications`.
 
 - **Sidebar:** the `Quota` panel of each session, with a bar per row and the session tokens. Click its title to collapse it to one line per provider; OpenCode remembers the choice.
 - **Status line:** under the message box, in the room OpenCode's footer leaves free. Each provider shows its lowest window with as much detail as fits; when not all fit, scroll with the mouse wheel or click `‹` and `+N ›`.

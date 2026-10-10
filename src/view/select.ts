@@ -62,15 +62,22 @@ function ordered<T>(items: readonly T[], idOf: (item: T) => string, order: reado
     .map(({ item }) => item);
 }
 
-/** A provider's rows, one group per account in the order the accounts first appear. */
+/**
+ * A provider's rows, one group per account in the order the accounts first appear. With one
+ * account, the provider's last error shows on its group; with several, it can't be told which
+ * account it belongs to (a custom source that failed has none), so it shows once, on a line of
+ * its own after the accounts.
+ */
 function groupsOf(provider: ProviderSnapshot, rows: VisibleRow[], hadRows: boolean): Group[] {
   const accounts = [...new Set(provider.rows.map((row) => row.account))];
   if (accounts.length === 0) accounts.push(undefined);
   const several = accounts.length > 1;
-  return accounts.flatMap((account): Group[] => {
+  const ownError = !several && provider.error ? { error: provider.error } : {};
+  const unchecked = provider.checkedAtMs === undefined && provider.rows.length === 0;
+  const groups = accounts.flatMap((account): Group[] => {
     const own = rows.filter((item) => item.row.account === account);
     // A provider whose rows are all hidden is left out, unless it has an error to show.
-    if (hadRows && own.length === 0 && !provider.error) return [];
+    if (hadRows && own.length === 0 && !ownError.error) return [];
     const title = account ? `${provider.label} (${account})` : provider.label;
     return [
       {
@@ -80,11 +87,23 @@ function groupsOf(provider: ProviderSnapshot, rows: VisibleRow[], hadRows: boole
         name: provider.label,
         ...(account === undefined ? {} : { account }),
         rows: own,
-        ...(provider.error ? { error: provider.error } : {}),
-        unchecked: provider.checkedAtMs === undefined && provider.rows.length === 0,
+        ...ownError,
+        unchecked,
       },
     ];
   });
+  if (several && provider.error) {
+    groups.push({
+      id: `${provider.providerId} (error)`,
+      providerId: provider.providerId,
+      title: provider.label,
+      name: provider.label,
+      rows: [],
+      error: provider.error,
+      unchecked,
+    });
+  }
+  return groups;
 }
 
 /** The providers and rows `surface` shows, in order, with your row names. */

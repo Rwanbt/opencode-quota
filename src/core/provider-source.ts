@@ -14,6 +14,8 @@ import {
   getQuotaProviderDisplayLabel,
   isLiveLocalUsageProviderId,
 } from "../lib/provider-metadata.js";
+import { buildQuotaExport, createExportProviderContext } from "../lib/quota-export.js";
+import type { QuotaExport } from "../lib/quota-export-types.js";
 import {
   QUOTA_PROVIDERS_AGGREGATE_ID,
   selectEligibleQuotaProviderDefinitions,
@@ -24,6 +26,7 @@ import {
   type QuotaRuntimeContext,
   resolveQuotaRuntimeContext,
 } from "../lib/quota-runtime-context.js";
+import { fetchQuotaProviderResult } from "../lib/quota-state.js";
 import { deriveResolvedAuthIdentity } from "../lib/resolved-auth-identity.js";
 import type {
   MaintainerAnnouncementHomeFrequency,
@@ -158,7 +161,8 @@ function storeProvider(
         : { key: `${account}\u001f${settingsKey}`, persist: true };
     },
     async fetch() {
-      const result = await provider.fetch(ctx, await cacheContextFor(provider, ctx));
+      // Through the legacy cache, which the export file and `show --json` read back.
+      const result = await fetchQuotaProviderResult({ provider, ctx, ttlMs: 0 });
       const fetched = rowsFromLegacyResult(provider.id, result);
       if (!fetched.rowLogins) return fetched;
       return { ...fetched, rowLogins: await keyedLogins(provider.id, fetched.rowLogins) };
@@ -246,4 +250,15 @@ export async function loadServerSettings(host: ProviderSourceHost): Promise<Serv
     export: { enabled: config.enabled && config.export.enabled, path: config.export.path },
     telemetry: config.enabled && config.telemetry.enabled,
   };
+}
+
+/** The export document (version 2), read from the results the store's fetches left in the cache. */
+export async function loadQuotaExport(host: ProviderSourceHost): Promise<QuotaExport> {
+  const runtime = await loadRuntime(host);
+  return buildQuotaExport({
+    providers: runtime.providers,
+    ctx: createExportProviderContext(runtime),
+    ttlMs: runtime.config.minIntervalMs,
+    fromCache: true,
+  });
 }

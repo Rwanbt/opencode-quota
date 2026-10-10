@@ -194,6 +194,10 @@ describe("view format", () => {
     { text: "Claude", width: 9, expected: "Claude   " },
     { text: "OpenRouter", width: 9, expected: "OpenRout…" },
     { text: "Copilot (pro)", width: 9, expected: "Copilot… " },
+    // Wide characters take two columns; a letter with its accent is never split.
+    { text: "日本語プロバイダ", width: 9, expected: "日本語プ…" },
+    { text: "日本語", width: 7, expected: "日本語 " },
+    { text: "e\u0301e\u0301e\u0301e\u0301", width: 3, expected: "e\u0301e\u0301…" },
   ])("fits $text in $width columns", ({ text, width, expected }) => {
     expect(fitToWidth(text, width)).toBe(expected);
   });
@@ -276,6 +280,25 @@ describe("view select", () => {
       ["copilot (work)", "Copilot (work)"],
       ["copilot (home)", "Copilot (home)"],
     ]);
+  });
+
+  it("shows the error of a provider with several accounts once, after its accounts", () => {
+    const copilot = provider(
+      "copilot",
+      "Copilot",
+      [
+        row("copilot.allowance", { account: "work", label: "Plan", percentRemaining: 40 }),
+        row("copilot.allowance", { account: "home", label: "Plan", percentRemaining: 90 }),
+      ],
+      { error: { code: "timeout" } },
+    );
+    const groups = visibleGroups(snapshot([copilot]), settings(), "sidebar", words());
+    expect(groups.map((group) => [group.title, group.rows.length, group.error?.code])).toEqual([
+      ["Copilot (work)", 1, undefined],
+      ["Copilot (home)", 1, undefined],
+      ["Copilot", 0, "timeout"],
+    ]);
+    expect(collapsedTitle(groups)).toBe("▶ Quota (1 provider, 1 error)");
   });
 
   it.each([
@@ -368,6 +391,39 @@ describe("view text", () => {
     ]);
   });
 
+  it("shows the error next to the rows kept from before, collapsed and on the status line", () => {
+    const expired = { ...CLAUDE, error: { code: "login_expired" } } as const;
+    const collapsed = collapsedLines({
+      groups: groups("collapsed", [expired]),
+      layout: display.layout,
+      words: DEFAULT_WORDS,
+      nowMs: NOW,
+      width: 50,
+      window: {},
+    });
+    expect(collapsed.map(lineText)).toEqual(["Claude    7d   █░░░░░░░  12%  Sign in again"]);
+    const status = statusInput([expired]);
+    expect(
+      ["full", "numbers"].map((level) =>
+        lineText(statusLayout(status, 200, 0, level as "full").shown[0]!),
+      ),
+    ).toEqual(["Claude █░░░░ 12% Sign in again", "Claude 12% ⚠"]);
+    expect(lineText(bigStatusLine(status)!)).toBe("Claude 7d █░░░░░░░░░ 12% left · Sign in again");
+  });
+
+  it("cuts the first provider short when it does not fit, so the arrows stay", () => {
+    const layout = statusLayout(statusInput(), 14, 0, "auto");
+    expect([layout.shown.map(lineText), layout.hiddenAfter]).toEqual([["Clau… 12%"], 2]);
+  });
+
+  it("measures the status line in terminal columns", () => {
+    const wide = provider("kimi", "月之暗面", [
+      row("kimi.week", { window: "week", percentRemaining: 70 }),
+    ]);
+    const layout = statusLayout(statusInput([wide, CLAUDE]), 24, 0, "numbers");
+    expect([layout.shown.map(lineText), layout.hiddenAfter]).toEqual([["月之暗面 70%"], 1]);
+  });
+
   it.each([
     { room: 200, level: "full", first: "Claude █░░░░ 12% 3d 4h", shown: 3 },
     { room: 75, level: "bar", first: "Claude █░░░░ 12%", shown: 3 },
@@ -411,7 +467,9 @@ describe("view text", () => {
 
   it("draws the one-provider status line with a big bar", () => {
     expect(lineText(bigStatusLine(statusInput())!)).toBe("Claude 7d █░░░░░░░░░ 12% left · 3d 4h");
-    expect(bigStatusLine(statusInput([ROUTER]))).toBeUndefined();
+    // Without a percent row it shows the error (or value) instead of a bar.
+    expect(lineText(bigStatusLine(statusInput([ROUTER]))!)).toBe("OpenRouter Sign in again");
+    expect(bigStatusLine(statusInput([]))).toBeUndefined();
   });
 
   it("writes plain lines for toasts and the CLI, errors and session tokens last", () => {

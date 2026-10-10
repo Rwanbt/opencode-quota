@@ -4,6 +4,7 @@
  */
 import type { Amount, QuotaRow, ResetStyle, SessionTokens, Words } from "../core/types.js";
 import { formatTokenCount } from "../lib/format-utils.js";
+import { columnsOf, padEndColumns, sliceColumns } from "./columns.js";
 
 /** The words until the server sends its own (docs/v6-build.local.md §5). */
 export const DEFAULT_WORDS: Words = {
@@ -140,9 +141,12 @@ export function sessionTokensText(tokens: SessionTokens): string {
   return `${formatTokenCount(tokens.input)} in · ${formatTokenCount(tokens.output)} out`;
 }
 
-/** `text` cut to `width` with "…" ("Copilot…", not "Copilot …"), else padded to it. */
+/**
+ * `text` cut to `width` terminal columns with "…" ("Copilot…", not "Copilot …"), else padded
+ * to it. Wide characters count two columns and are never split.
+ */
 export function fit(text: string, width: number): string {
   if (width <= 0) return "";
-  const cut = text.length > width ? `${text.slice(0, width - 1).trimEnd()}…` : text;
-  return cut.padEnd(width);
+  const cut = columnsOf(text) > width ? `${sliceColumns(text, width - 1).trimEnd()}…` : text;
+  return padEndColumns(cut, width);
 }

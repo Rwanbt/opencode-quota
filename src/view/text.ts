@@ -5,6 +5,7 @@
 import { describeError } from "../core/errors.js";
 import type { SessionTokens, Words } from "../core/types.js";
 import { WINDOWS } from "../core/windows.js";
+import { columnsOf } from "./columns.js";
 import {
   type BarShape,
   barParts,
@@ -67,22 +68,32 @@ function barSegments(shape: BarShape, percent: number, width: number): Segment[]
   ];
 }
 
+/** The words for a group's last error ("Sign in again"); undefined when its last check worked. */
+function errorWords(group: Group, nowMs: number): Segment | undefined {
+  return group.error
+    ? { text: describeError(group.error, group.name, nowMs), role: "error" }
+    : undefined;
+}
+
 /** The words after a group's title: its error, or "not checked yet" before the first check. */
 function groupState(group: Group, nowMs: number): Segment | undefined {
-  if (group.error) return { text: describeError(group.error, group.name, nowMs), role: "error" };
+  if (group.error) return errorWords(group, nowMs);
   if (group.unchecked) return { text: "not checked yet", role: "value" };
   return undefined;
 }
 
-/** Cuts the segments so their text fits in `width` columns. */
+/** Marks rows kept from an earlier check when there is no room for the error's words. */
+const ERROR_MARK = "⚠";
+
+/** Cuts the segments so their text fits in `width` terminal columns. */
 function clip(segments: Segment[], width: number): Segment[] {
   const clipped: Segment[] = [];
   let room = width;
   for (const segment of segments) {
     if (room <= 0) break;
-    const text = segment.text.length > room ? fit(segment.text, room) : segment.text;
+    const text = columnsOf(segment.text) > room ? fit(segment.text, room) : segment.text;
     clipped.push({ ...segment, text });
-    room -= text.length;
+    room -= columnsOf(text);
   }
   return clipped;
 }
@@ -174,10 +185,12 @@ export function sidebarLines(input: SidebarInput): Line[] {
   return lines;
 }
 
-/** §4.2: the collapsed panel's title. */
+/** §4.2: the collapsed panel's title. A provider with several accounts counts once. */
 export function collapsedTitle(groups: Group[]): string {
-  const errors = groups.filter((group) => group.error).length;
-  const providers = `${groups.length} ${groups.length === 1 ? "provider" : "providers"}`;
+  const count = new Set(groups.map((group) => group.providerId)).size;
+  const errors = new Set(groups.filter((group) => group.error).map((group) => group.providerId))
+    .size;
+  const providers = `${count} ${count === 1 ? "provider" : "providers"}`;
   return `▶ Quota (${providers}${errors ? `, ${errors} ${errors === 1 ? "error" : "errors"}` : ""})`;
 }
 
@@ -196,7 +209,10 @@ export type CollapsedInput = {
   window: Record<string, WindowChoice>;
 };
 
-/** §4.2: one line per provider with its preferred window. */
+/**
+ * §4.2: one line per provider with its preferred window. When the last check failed, the
+ * error's words take the place of the reset time next to the rows kept from before.
+ */
 export function collapsedLines(input: CollapsedInput): Line[] {
   const { layout, words, nowMs } = input;
   const barWidth = layout.bar === "none" ? 0 : Math.min(layout.barWidth, 10);
@@ -212,6 +228,7 @@ export function collapsedLines(input: CollapsedInput): Line[] {
       };
       return { id: group.providerId, segments: clip([name, value], input.width) };
     }
+    const error = errorWords(group, nowMs);
     return {
       id: group.providerId,
       segments: clip(
@@ -224,7 +241,9 @@ export function collapsedLines(input: CollapsedInput): Line[] {
             role: "percent",
             percent,
           },
-          { text: resetText(picked.row, nowMs, words).padStart(8), role: "reset", percent },
+          error
+            ? { ...error, text: `  ${error.text}` }
+            : { text: resetText(picked.row, nowMs, words).padStart(8), role: "reset", percent },
         ],
         input.width,
       ),
@@ -252,7 +271,11 @@ function statusName(input: StatusInput, group: Group): string {
   return accounts > 1 ? group.title : group.name;
 }
 
-/** One provider's status line segment at a level of detail (without the separator). */
+/**
+ * One provider's status line segment at a level of detail (without the separator). When the
+ * last check failed, the error's words take the place of the reset time next to the rows kept
+ * from before, or "⚠" where the level shows no reset time.
+ */
 export function statusSegment(input: StatusInput, group: Group, level: StatusLevel): Line {
   const { layout, words, nowMs } = input;
   const picked = pickRow(group, input.window[group.providerId]);
@@ -264,7 +287,14 @@ export function statusSegment(input: StatusInput, group: Group, level: StatusLev
     return { id: group.providerId, segments: [name, { ...value, text: ` ${value.text}` }] };
   }
   const withBar = layout.bar !== "none" && (level === "full" || level === "bar");
-  const reset = level === "full" || level === "reset" ? resetText(picked.row, nowMs, words) : "";
+  const withReset = level === "full" || level === "reset";
+  const error = errorWords(group, nowMs);
+  const reset = withReset ? resetText(picked.row, nowMs, words) : "";
+  const after: Segment | undefined = error
+    ? { ...error, text: ` ${withReset ? error.text : ERROR_MARK}` }
+    : reset
+      ? { text: ` ${reset}`, role: "reset", percent }
+      : undefined;
   return {
     id: group.providerId,
     segments: [
@@ -280,7 +310,7 @@ export function statusSegment(input: StatusInput, group: Group, level: StatusLev
         role: "percent",
         percent,
       },
-      ...(reset ? [{ text: ` ${reset}`, role: "reset" as const, percent }] : []),
+      ...(after ? [after] : []),
     ],
   };
 }
@@ -294,10 +324,19 @@ export type StatusLayout = {
   hiddenAfter: number;
 };
 
+/** Cuts the name (the first segment) so the rest still fits in `width`; else cuts the end. */
+function shortenName(segments: Segment[], width: number): Segment[] {
+  const [name, ...rest] = segments;
+  const nameWidth = width - columnsOf(rest.map((segment) => segment.text).join(""));
+  if (!name || nameWidth < 2) return clip(segments, width);
+  return [{ ...name, text: fit(name.text, nameWidth) }, ...rest];
+}
+
 /**
  * §4.3 "all" mode: the most detail that fits every group in `room` columns ("% only" when
  * nothing else fits), then the groups that fit from `start`, keeping room for the "‹ " and
- * " +N ›" markers. `level` fixes the detail instead of "auto".
+ * " +N ›" markers. When not even the first of them fits, its name is cut short, so the
+ * markers stay. `level` fixes the detail instead of "auto".
  */
 export function statusLayout(
   input: StatusInput,
@@ -309,10 +348,10 @@ export function statusLayout(
   const separator = input.layout.separator;
   const widthAt = (candidate: StatusLevel) =>
     groups.reduce(
-      (sum, group) => sum + lineText(statusSegment(input, group, candidate)).length,
+      (sum, group) => sum + columnsOf(lineText(statusSegment(input, group, candidate))),
       0,
     ) +
-    Math.max(0, groups.length - 1) * separator.length;
+    Math.max(0, groups.length - 1) * columnsOf(separator);
   const chosen =
     level !== "auto"
       ? level
@@ -320,31 +359,49 @@ export function statusLayout(
   const first = Math.max(0, Math.min(start, groups.length - 1));
   const shown: Line[] = [];
   let used = first > 0 ? 2 : 0;
+  const markerWidth = (index: number) =>
+    index < groups.length - 1 ? columnsOf(` +${groups.length - index} ›`) : 0;
   for (let index = first; index < groups.length; index++) {
     const segment = statusSegment(input, groups[index] as Group, chosen);
-    const width = lineText(segment).length + (shown.length > 0 ? separator.length : 0);
-    const marker = index < groups.length - 1 ? ` +${groups.length - index} ›`.length : 0;
-    if (used + width + marker > room) break;
+    const width = columnsOf(lineText(segment)) + (shown.length > 0 ? columnsOf(separator) : 0);
+    if (used + width + markerWidth(index) > room) break;
     shown.push(segment);
     used += width;
+  }
+  const firstGroup = groups[first];
+  const left = room - used - markerWidth(first);
+  if (shown.length === 0 && firstGroup && left > 0) {
+    const segment = statusSegment(input, firstGroup, chosen);
+    shown.push({ ...segment, segments: shortenName(segment.segments, left) });
   }
   return { level: chosen, start: first, shown, hiddenAfter: groups.length - first - shown.length };
 }
 
-/** §4.3 "one provider, big bar" (v5's prompt bar): the first group with a 10-cell bar. */
+/**
+ * §4.3 "one provider, big bar" (v5's prompt bar): the first group with a 10-cell bar. The
+ * error's words take the place of the reset time; without a percent row the line shows the
+ * group's error or value instead of a bar.
+ */
 export function bigStatusLine(input: StatusInput): Line | undefined {
   const group = input.groups[0];
-  const picked = group ? pickRow(group, input.window[group.providerId]) : undefined;
+  if (!group) return undefined;
+  const picked = pickRow(group, input.window[group.providerId]);
   const percent = picked?.row.percentRemaining;
-  if (!group || !picked || percent === undefined) return undefined;
+  if (!picked || percent === undefined) return statusSegment(input, group, "full");
+  const error = errorWords(group, input.nowMs);
   const reset = resetText(picked.row, input.nowMs, input.words);
+  const after: Segment | undefined = error
+    ? { ...error, text: ` · ${error.text}` }
+    : reset
+      ? { text: ` · ${reset}`, role: "reset", percent }
+      : undefined;
   return {
     id: group.providerId,
     segments: [
       { text: `${statusName(input, group)} ${shortWindow(picked)} `, role: "statusName", percent },
       ...barSegments(input.layout.bar, percent, 10),
       { text: ` ${percentText(input.words, percent, true)}`, role: "percent", percent },
-      ...(reset ? [{ text: ` · ${reset}`, role: "reset" as const, percent }] : []),
+      ...(after ? [after] : []),
     ],
   };
 }

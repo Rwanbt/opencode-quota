@@ -7,6 +7,15 @@ import { createToasts, type TurnEnd } from "../src/tui/toasts.js";
 
 const NOW = Date.parse("2026-10-10T12:00:00.000Z");
 
+/** The cleanups the TUI registers with Solid (on the server build they never run by themselves). */
+const cleanups = vi.hoisted(() => [] as Array<() => void>);
+vi.mock("solid-js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("solid-js")>()),
+  onCleanup: (cleanup: () => void) => {
+    cleanups.push(cleanup);
+  },
+}));
+
 function provider(label: string, percentRemaining?: number): ProviderSnapshot {
   const providerId = label.toLowerCase();
   return {
@@ -37,7 +46,7 @@ function provider(label: string, percentRemaining?: number): ProviderSnapshot {
 }
 
 function snapshot(providers: ProviderSnapshot[], resetNotices: ResetNotice[] = []): QuotaSnapshot {
-  return { version: 6, providers, resetNotices, generatedAtMs: NOW };
+  return { version: 6, providers, resetNotices, generatedAtMs: NOW, revision: NOW };
 }
 
 function startToasts(answer: QuotaSnapshot | undefined, change: (d: DisplaySettings) => void) {
@@ -153,11 +162,16 @@ describe("quota toasts", () => {
     {
       setting: "all",
       expected: [
-        "Weekly quota reset: Claude (work) Weekly is available again (100% left).",
-        "5h quota reset: Claude 5h is available again (97% left).",
+        [
+          "Weekly quota reset: Claude (work) Weekly is available again (100% left).",
+          "5h quota reset: Claude 5h is available again (97% left).",
+        ].join("\n"),
       ],
     },
-  ] as const)("shows new reset notices once with the $setting setting", ({ setting, expected }) => {
+  ] as const)("shows new reset notices once, in one toast, with the $setting setting", ({
+    setting,
+    expected,
+  }) => {
     const notice = (id: string, fields: Partial<ResetNotice>): ResetNotice => ({
       id,
       rowId: "claude.weekly",
@@ -186,6 +200,45 @@ describe("quota toasts", () => {
     toasts.showResetNotices(snapshot([provider("Claude", 100)], notices));
     expect(show.mock.calls.map(([toast]) => toast.message)).toEqual(expected);
   });
+
+  it("shows a reset notice that comes during a turn after the turn's toast", async () => {
+    let answer: (snapshot: QuotaSnapshot) => void = () => {};
+    const show = vi.fn();
+    const toasts = createToasts({
+      show,
+      display: () => {
+        const display = defaultDisplaySettings();
+        display.toast.resetNotice = "all";
+        return display;
+      },
+      quota: {
+        refresh: () =>
+          new Promise<QuotaSnapshot>((resolve) => {
+            answer = resolve;
+          }),
+      } as unknown as QuotaClient,
+      isChildSession: () => false,
+      now: () => NOW,
+    });
+    const turn = toasts.afterTurn("compaction", "ses_1");
+    const notice: ResetNotice = {
+      id: "weekly",
+      rowId: "claude.weekly",
+      providerId: "claude",
+      label: "Weekly",
+      window: "week",
+      percentRemaining: 100,
+      atMs: NOW,
+    };
+    toasts.showResetNotices(snapshot([provider("Claude", 100)], [notice]));
+    expect(show).not.toHaveBeenCalled();
+    answer(OK);
+    await turn;
+    expect(show.mock.calls.map(([toast]) => toast.title)).toEqual([
+      "OpenCode Quota",
+      "Quota available",
+    ]);
+  });
 });
 
 describe("turn events of the TUI plugin", () => {
@@ -202,6 +255,7 @@ describe("turn events of the TUI plugin", () => {
 
   beforeEach(() => {
     handlers.clear();
+    cleanups.length = 0;
     for (const mock of [rpc.snapshot, rpc.notices, session.get, toast]) mock.mockReset();
     rpc.refresh.mockReset().mockResolvedValue({ snapshot: OK });
     plugin.setup({
@@ -251,6 +305,13 @@ describe("turn events of the TUI plugin", () => {
     emit(end, { sessionID: "ses_1", id: "call-2" });
     expect(rpc.refresh).not.toHaveBeenCalled();
     expect(session.get).not.toHaveBeenCalled();
+  });
+
+  it("stops listening when OpenCode unmounts the app slot", () => {
+    for (const cleanup of cleanups.splice(0)) cleanup();
+    emit("session.step.ended", { sessionID: "ses_1" });
+    expect(handlers.size).toBe(0);
+    expect(rpc.refresh).not.toHaveBeenCalled();
   });
 
   it("refreshes after each step of a session, never of a subagent", () => {
