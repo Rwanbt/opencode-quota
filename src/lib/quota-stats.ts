@@ -5,6 +5,7 @@ import {
   resolveCursorModel,
 } from "./cursor-pricing.js";
 import {
+  type CostBuckets,
   hasCost,
   hasModel,
   hasProvider,
@@ -474,17 +475,44 @@ export function resolvePricingKey(source: {
   };
 }
 
-function calculateCostUsd(params: {
-  provider: string;
-  model: string;
-  tokens: TokenBuckets;
-}): { ok: true; costUsd: number } | { ok: false } {
-  const cost =
-    params.provider === "cursor"
-      ? lookupCursorLocalCost(params.model)
-      : lookupCost(params.provider, params.model);
-  if (!cost) return { ok: false };
-  return { ok: true, costUsd: calculateUsdFromTokenBuckets(cost, params.tokens) };
+/**
+ * How an OpenCode source model is priced: its rates, a known model without a price
+ * ("unpriced"), or no usable match ("unknown").
+ */
+export type ModelPricing =
+  | { kind: "priced"; key: PricedKey; rates: CostBuckets }
+  | { kind: "unpriced"; key: PricedKey; reason: string }
+  | { kind: "unknown"; unknown: UnknownKey };
+
+export function resolveModelPricing(source: {
+  providerID?: string;
+  modelID?: string;
+}): ModelPricing {
+  const mapping = resolvePricingKey(source);
+  if (!mapping.ok) return { kind: "unknown", unknown: mapping.unknown };
+
+  const rates =
+    mapping.key.provider === "cursor"
+      ? lookupCursorLocalCost(mapping.key.model)
+      : lookupCost(mapping.key.provider, mapping.key.model);
+  if (rates) return { kind: "priced", key: mapping.key, rates };
+
+  const classification = classifyMissingPricing({
+    mappedProvider: mapping.key.provider,
+    mappedModel: mapping.key.model,
+  });
+  if (classification.kind === "unpriced") {
+    return { kind: "unpriced", key: mapping.key, reason: classification.reason };
+  }
+  return {
+    kind: "unknown",
+    unknown: {
+      sourceProviderID: source.providerID ?? "unknown",
+      sourceModelID: source.modelID ?? "unknown",
+      mappedProvider: mapping.key.provider,
+      mappedModel: mapping.key.model,
+    },
+  };
 }
 
 function classifyMissingPricing(params: {
@@ -619,7 +647,7 @@ export async function aggregateUsage(params: {
   let unknownTotals = emptyTokenBuckets();
   let unpricedTotals = emptyTokenBuckets();
   let costTotal = 0;
-  const resolutionCache = new Map<string, PricingResolution>();
+  const pricingCache = new Map<string, ModelPricing>();
 
   for (const msg of messages) {
     const tokens = tokenBucketsFromMessage(msg);
@@ -640,76 +668,48 @@ export async function aggregateUsage(params: {
     }
 
     const cacheKey = `${msg.providerID ?? ""}|||${msg.modelID ?? ""}`;
-    const cached = resolutionCache.get(cacheKey);
-    const mapping =
-      cached ?? resolvePricingKey({ providerID: msg.providerID, modelID: msg.modelID });
-    if (!cached) resolutionCache.set(cacheKey, mapping);
+    let pricing = pricingCache.get(cacheKey);
+    if (!pricing) {
+      pricing = resolveModelPricing({ providerID: msg.providerID, modelID: msg.modelID });
+      pricingCache.set(cacheKey, pricing);
+    }
 
-    if (!mapping.ok) {
+    if (pricing.kind === "unknown") {
       unknownTotals = addTokenBuckets(unknownTotals, tokens);
-      const k = JSON.stringify(mapping.unknown);
+      const k = JSON.stringify(pricing.unknown);
       const row = unknown.get(k);
       if (row) {
         row.tokens = addTokenBuckets(row.tokens, tokens);
         row.messageCount += 1;
       } else {
-        unknown.set(k, { key: mapping.unknown, tokens, messageCount: 1 });
+        unknown.set(k, { key: pricing.unknown, tokens, messageCount: 1 });
       }
       continue;
     }
 
-    const priced = calculateCostUsd({
-      provider: mapping.key.provider,
-      model: mapping.key.model,
-      tokens,
-    });
-    if (!priced.ok) {
-      const classification = classifyMissingPricing({
-        mappedProvider: mapping.key.provider,
-        mappedModel: mapping.key.model,
-      });
-
-      if (classification.kind === "unpriced") {
-        unpricedTotals = addTokenBuckets(unpricedTotals, tokens);
-        const rowKey: UnpricedKey = {
-          sourceProviderID: msg.providerID ?? "unknown",
-          sourceModelID: msg.modelID ?? "unknown",
-          mappedProvider: mapping.key.provider,
-          mappedModel: mapping.key.model,
-          reason: classification.reason,
-        };
-        const k = JSON.stringify(rowKey);
-        const row = unpriced.get(k);
-        if (row) {
-          row.tokens = addTokenBuckets(row.tokens, tokens);
-          row.messageCount += 1;
-        } else {
-          unpriced.set(k, { key: rowKey, tokens, messageCount: 1 });
-        }
-        continue;
-      }
-
-      // Mapping succeeded but pricing missing.
-      unknownTotals = addTokenBuckets(unknownTotals, tokens);
-      const unk: UnknownKey = {
+    if (pricing.kind === "unpriced") {
+      unpricedTotals = addTokenBuckets(unpricedTotals, tokens);
+      const rowKey: UnpricedKey = {
         sourceProviderID: msg.providerID ?? "unknown",
         sourceModelID: msg.modelID ?? "unknown",
-        mappedProvider: mapping.key.provider,
-        mappedModel: mapping.key.model,
+        mappedProvider: pricing.key.provider,
+        mappedModel: pricing.key.model,
+        reason: pricing.reason,
       };
-      const k = JSON.stringify(unk);
-      const row = unknown.get(k);
+      const k = JSON.stringify(rowKey);
+      const row = unpriced.get(k);
       if (row) {
         row.tokens = addTokenBuckets(row.tokens, tokens);
         row.messageCount += 1;
       } else {
-        unknown.set(k, { key: unk, tokens, messageCount: 1 });
+        unpriced.set(k, { key: rowKey, tokens, messageCount: 1 });
       }
       continue;
     }
 
+    const costUsd = calculateUsdFromTokenBuckets(pricing.rates, tokens);
     pricedTotals = addTokenBuckets(pricedTotals, tokens);
-    costTotal += priced.costUsd;
+    costTotal += costUsd;
 
     // Tokscale-style: key by OpenCode source provider + source model id.
     const srcProviderID = msg.providerID ?? "unknown";
@@ -718,14 +718,14 @@ export async function aggregateUsage(params: {
     const sm = bySourceModel.get(srcModelKey);
     if (sm) {
       sm.tokens = addTokenBuckets(sm.tokens, tokens);
-      sm.costUsd += priced.costUsd;
+      sm.costUsd += costUsd;
       sm.messageCount += 1;
     } else {
       bySourceModel.set(srcModelKey, {
         sourceProviderID: srcProviderID,
         sourceModelID: srcModelID,
         tokens,
-        costUsd: priced.costUsd,
+        costUsd,
         messageCount: 1,
       });
     }
@@ -734,35 +734,35 @@ export async function aggregateUsage(params: {
     const src = bySourceProvider.get(srcProvider);
     if (src) {
       src.tokens = addTokenBuckets(src.tokens, tokens);
-      src.costUsd += priced.costUsd;
+      src.costUsd += costUsd;
       src.messageCount += 1;
     } else {
       bySourceProvider.set(srcProvider, {
         providerID: srcProvider,
         tokens,
-        costUsd: priced.costUsd,
+        costUsd,
         messageCount: 1,
       });
     }
 
-    const modelKey = `${mapping.key.provider}/${mapping.key.model}`;
+    const modelKey = `${pricing.key.provider}/${pricing.key.model}`;
     const existing = byModel.get(modelKey);
     if (existing) {
       existing.tokens = addTokenBuckets(existing.tokens, tokens);
-      existing.costUsd += priced.costUsd;
+      existing.costUsd += costUsd;
       existing.messageCount += 1;
     } else {
       byModel.set(modelKey, {
-        key: mapping.key,
+        key: pricing.key,
         tokens,
-        costUsd: priced.costUsd,
+        costUsd,
         messageCount: 1,
       });
     }
 
     const s = bySession.get(sid);
     if (s) {
-      s.costUsd += priced.costUsd;
+      s.costUsd += costUsd;
     }
   }
 

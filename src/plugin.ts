@@ -12,8 +12,13 @@ import {
 } from "./core/provider-source.js";
 import { createQuotaStore } from "./core/store.js";
 import type { SessionModel } from "./core/types.js";
+import { usageReport } from "./core/usage.js";
 import { resolveOpenCodeLocationRoots } from "./lib/config-file-utils.js";
 import { sanitizeDisplayText } from "./lib/display-sanitize.js";
+import {
+  setPricingSnapshotAutoRefresh,
+  setPricingSnapshotSelection,
+} from "./lib/modelsdev-pricing.js";
 import {
   bindCredentialSource,
   createIntegrationCredentialSource,
@@ -26,7 +31,7 @@ import {
   QUOTA_DIALOG_COMMANDS,
   type QuotaDialogCommandId,
 } from "./lib/quota-dialog-command-specs.js";
-import { buildQuotaDialogCommandOutput } from "./lib/quota-dialog-commands.js";
+import { buildQuotaDialogCommandOutput, kickPricingRefresh } from "./lib/quota-dialog-commands.js";
 import {
   containsQuotaReport,
   formatQuotaReportMessage,
@@ -213,6 +218,21 @@ export const QuotaToastPlugin = Plugin.define({
           const model = await sessionModel(input.sessionID);
           const options = { reason: input.reason, providerIds: input.providerIds, model };
           return { snapshot: await store.refresh(options) };
+        }),
+      usage: (input) =>
+        logRpcFailure("usage", async () => {
+          // Use the configured price list. As the token reports do, give a due price
+          // download up to 0.75 s to finish first.
+          const { pricing } = await loadModelProviderSettings(sourceHost);
+          setPricingSnapshotAutoRefresh(pricing.autoRefresh);
+          setPricingSnapshotSelection(pricing.source);
+          await kickPricingRefresh({
+            reason: "tokens",
+            maxWaitMs: 750,
+            snapshotSelection: pricing.source,
+          });
+          const { range, sessionID, from, to } = input;
+          return { report: await usageReport({ range, sessionID, from, to }) };
         }),
     });
     const unsubscribeStore = store.subscribe((snapshot) => {

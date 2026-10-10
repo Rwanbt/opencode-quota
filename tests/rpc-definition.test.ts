@@ -33,7 +33,7 @@ async function expectRejected(schema: StandardSchema, value: unknown, message: s
 const methods = QuotaRpc.methods;
 
 describe("quota RPC definition", () => {
-  it("defines the plain RPC id, the changed event and six methods", () => {
+  it("defines the plain RPC id, the changed event and seven methods", () => {
     expect(QUOTA_RPC_ID).toBe("slkiser.opencode-quota");
     expect(QuotaRpc.id).toBe(QUOTA_RPC_ID);
     expect(Object.keys(QuotaRpc.events)).toEqual(["changed"]);
@@ -44,6 +44,7 @@ describe("quota RPC definition", () => {
       "command",
       "snapshot",
       "refresh",
+      "usage",
     ]);
   });
 
@@ -170,6 +171,47 @@ describe("quota RPC definition", () => {
       { reason: "poll", sessionID: false },
       "sessionID must be a string",
     );
+  });
+
+  it("validates usage input", async () => {
+    for (const range of ["today", "7d", "30d", "90d", "all"]) {
+      await expectAccepted(methods.usage.input, { range });
+    }
+    await expectAccepted(methods.usage.input, { range: "session", sessionID: "ses_1" });
+    await expectAccepted(methods.usage.input, { range: "session_tree", sessionID: "ses_1" });
+    await expectAccepted(methods.usage.input, {
+      range: "between",
+      from: "2026-01-01",
+      to: "2026-01-01",
+    });
+
+    const rangeIssue =
+      "range must be one of today, 7d, 30d, 90d, all, session, session_tree, between";
+    const cases: Array<[unknown, string]> = [
+      [null, "input must be an object"],
+      [{}, rangeIssue],
+      [{ range: "1y" }, rangeIssue],
+      [{ range: "toString" }, rangeIssue],
+      [{ range: "all", sessionID: 1 }, "sessionID must be a string"],
+      [{ range: "session" }, "sessionID is required for range session"],
+      [{ range: "session_tree", sessionID: "" }, "sessionID is required for range session_tree"],
+      [{ range: "between", to: "2026-01-01" }, "from must be a date like 2026-01-31"],
+      [
+        { range: "between", from: "2026-01-01", to: "1/2/2026" },
+        "to must be a date like 2026-01-31",
+      ],
+      [{ range: "between", from: "2026-01-02", to: "2026-01-01" }, "to must not be before from"],
+    ];
+    for (const [input, issue] of cases) {
+      await expectRejected(methods.usage.input, input, issue);
+    }
+  });
+
+  it("requires a report in usage output", async () => {
+    await expectAccepted(methods.usage.output, { report: { range: "all" } });
+    for (const value of [undefined, {}, { report: null }, { report: [] }]) {
+      await expectRejected(methods.usage.output, value, "output must carry a report");
+    }
   });
 
   it("requires every v5 output to be an object", async () => {

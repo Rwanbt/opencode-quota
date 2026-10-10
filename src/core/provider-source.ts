@@ -23,6 +23,7 @@ import {
   type QuotaRuntimeContext,
   resolveQuotaRuntimeContext,
 } from "../lib/quota-runtime-context.js";
+import type { PricingSnapshotConfig } from "../lib/types.js";
 import { rowsFromLegacyResult } from "./rows.js";
 import { matchesQuotaProviderCurrentSelection } from "./selection.js";
 import type { ProviderIdentity, StoreProvider, StoreSource } from "./store.js";
@@ -33,6 +34,8 @@ export type ProviderSourceHost = { client: QuotaRuntimeClient; roots: RuntimeCon
 /** The settings the server reads besides the providers themselves. */
 export type ModelProviderSettings = {
   waitForQuotaReset: boolean;
+  /** Which price list the usage report uses and how often it is downloaded again. */
+  pricing: PricingSnapshotConfig;
   /** The enabled providers that serve `model`. */
   providerIdsForModel: (model: SessionModel) => string[];
   /** The custom definitions (rows `quota-providers.custom.<id>.*`) that serve `model`. */
@@ -179,6 +182,7 @@ export async function loadModelProviderSettings(
   }
   return {
     waitForQuotaReset: config.waitForQuotaReset,
+    pricing: config.pricingSnapshot,
     providerIdsForModel: (model) => providerIdsForModel(runtime, model),
     customDefinitionIdsForModel: (model) =>
       selectEligibleQuotaProviderDefinitions({

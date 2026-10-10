@@ -166,7 +166,8 @@ async function fetchQuotaCommandData(params: {
   return quotaResult;
 }
 
-async function kickPricingRefresh(params: {
+/** Starts a models.dev price refresh when due and waits for it at most `maxWaitMs`. */
+export async function kickPricingRefresh(params: {
   reason: "init" | "tokens" | "status";
   maxWaitMs?: number;
   snapshotSelection: PricingSnapshotSource;

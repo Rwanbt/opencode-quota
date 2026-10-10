@@ -1,9 +1,10 @@
 import { existsSync, mkdtempSync } from "node:fs";
-import { readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import type { QuotaSnapshot } from "../src/core/types.js";
+import type { UsageReport } from "../src/core/usage.js";
 import {
   messageDocument,
   type ReportDocument,
@@ -21,6 +22,7 @@ import {
   makeQuotaToastTestConfig,
   seedDefaultPluginBootstrapMocks,
 } from "./helpers/plugin-test-harness.js";
+import { writeSessionDatabase } from "./helpers/session-database.js";
 
 // A fresh folder per run, so test runs in sibling checkouts never share it.
 const TEST_RUNTIME_ROOT = mkdtempSync(join(tmpdir(), "opencode-quota-plugin-rpc-"));
@@ -50,7 +52,11 @@ vi.mock("../src/lib/config.js", () => createConfigModuleMock(mocks.loadConfig));
 vi.mock("../src/providers/registry.js", () =>
   createProvidersRegistryModuleMock(mocks.getProviders),
 );
-vi.mock("../src/lib/modelsdev-pricing.js", () => createPricingModuleMock(mocks));
+// Price lookups stay real (bundled price list) for the usage report; refreshes are faked.
+vi.mock("../src/lib/modelsdev-pricing.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/lib/modelsdev-pricing.js")>()),
+  ...createPricingModuleMock(mocks),
+}));
 vi.mock("../src/lib/session-tokens.js", () =>
   createSessionTokensModuleMock(mocks.fetchSessionTokensForDisplay),
 );
@@ -164,7 +170,7 @@ describe("server quota RPC", () => {
     await rm(TEST_RUNTIME_ROOT, { recursive: true, force: true });
   });
 
-  it("registers the quota RPC with its six methods during setup", async () => {
+  it("registers the quota RPC with its seven methods during setup", async () => {
     const { QuotaRpc } = await import("../src/rpc.js");
     const { definition, handlers } = await setupServer();
 
@@ -177,6 +183,7 @@ describe("server quota RPC", () => {
       "command",
       "snapshot",
       "refresh",
+      "usage",
     ]);
     expect(Object.keys(handlers)).toEqual(Object.keys(definition.methods));
   });
@@ -192,6 +199,59 @@ describe("server quota RPC", () => {
     expect(mocks.loadConfig).not.toHaveBeenCalled();
     expect(fetch).not.toHaveBeenCalled();
     expect(existsSync(SNAPSHOT_FILE)).toBe(false);
+  });
+
+  it("reports usage from OpenCode's history over the usage method", async () => {
+    const databaseDir = await mkdtemp(join(tmpdir(), "opencode-quota-usage-rpc-"));
+    onTestFinished(() => rm(databaseDir, { recursive: true, force: true }));
+    const databasePath = join(databaseDir, "opencode.db");
+    vi.stubEnv("OPENCODE_DB", databasePath);
+    const now = Date.now();
+    writeSessionDatabase(databasePath, {
+      sessions: [
+        { id: "ses_root", created: now - 120_000 },
+        { id: "ses_subagent", parentID: "ses_root", created: now - 90_000 },
+      ],
+      messages: [
+        {
+          id: "msg_1",
+          sessionID: "ses_root",
+          created: now - 60_000,
+          completed: now - 59_000,
+          providerID: "anthropic",
+          modelID: "claude-sonnet-4-5",
+          tokens: { input: 1_000 },
+        },
+        {
+          id: "msg_2",
+          sessionID: "ses_subagent",
+          created: now - 30_000,
+          completed: now - 29_000,
+          providerID: "acme",
+          modelID: "mystery-1",
+          tokens: { output: 500 },
+        },
+      ],
+    });
+    const { call } = await setupServer();
+
+    const today = (await call("usage", { range: "today" })) as { report: UsageReport };
+    expect(today.report.totals).toMatchObject({ sessions: 1, unpricedTokens: 500 });
+    expect(today.report.totals.costUsd).toBeGreaterThan(0);
+    expect(today.report.models.map((model) => [model.modelID, model.priced])).toEqual([
+      ["claude-sonnet-4-5", true],
+      ["mystery-1", false],
+    ]);
+
+    const session = (await call("usage", { range: "session", sessionID: "ses_root" })) as {
+      report: UsageReport;
+    };
+    expect(session.report.sessionID).toBe("ses_root");
+    expect(session.report.totals.tokens.processed).toBe(1_000);
+    const tree = (await call("usage", { range: "session_tree", sessionID: "ses_root" })) as {
+      report: UsageReport;
+    };
+    expect(tree.report.totals.tokens.processed).toBe(1_500);
   });
 
   it("serves v6 rows from the store, saves them and emits changed", async () => {
