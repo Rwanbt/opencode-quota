@@ -341,7 +341,7 @@ describe("view text", () => {
       "OpenCode Zen",
       " Balance  $1,240.50 left",
       "OpenRouter  Sign in again",
-      "Session  12K in · 2.1K out",
+      "Session  12.3K in · 2.10K out",
     ]);
     // The bar of the row with 12% left is drawn in the "low" level color.
     const weekly = lines.find((line) => line.id === "anthropic.weekly");
@@ -485,7 +485,7 @@ describe("view text", () => {
       "Claude Weekly       12% left      3d 4h",
       "OpenCode Zen Balan… $1,240.50 left",
       "OpenRouter          Sign in again",
-      "Session  12K in · 2.1K out",
+      "Session  12.3K in · 2.10K out",
     ]);
   });
 });

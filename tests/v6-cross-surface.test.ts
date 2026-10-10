@@ -409,7 +409,7 @@ describe("v6 surfaces on the quota snapshot", () => {
         "Plan ██████░░ 81% left",
         "5h ░░░░░░░░ 0% left 2h 14m",
         "Quota providers (Team) Provider er…",
-        "Session 1.2K in · 45 out",
+        "Session 1.20K in · 45 out",
       ]),
     );
     const barColor = (start: string) => {
@@ -444,7 +444,7 @@ describe("v6 surfaces on the quota snapshot", () => {
     await vi.waitFor(() => expect(tui.toast).toHaveBeenCalledOnce());
     const toast = tui.toast.mock.calls[0]?.[0];
     expect(toast).toMatchObject({ variant: "info", title: "OpenCode Quota" });
-    expect(toast.message).toContain("Quota providers (T… Provider error 503\nSession  1.2K in");
+    expect(toast.message).toContain("Quota providers (T… Provider error 503\nSession  1.20K in");
 
     // /quota still builds its report on the server and opens it in a dialog.
     await tui.command("quota").run();
