@@ -48,8 +48,8 @@ The TUI, Web, and Desktop get their numbers from OpenCode's background service. 
 | Sidebar is missing                                          | Open a session: the `Quota` panel is in its sidebar. A collapsed panel opens when you click its title.   |
 | Status line is missing                                      | It uses only the free room in the footer under the message box. Widen the terminal.                      |
 | TUI toast is missing                                        | Toasts show after compaction and when every provider fails. Toasts appear only in the TUI.               |
-| Token reports are empty                                     | Start OpenCode once so it creates `opencode.db`, then use a model.                                       |
-| Pricing looks old                                           | Run `/pricing_refresh`.                                                                                  |
+| `/quota_usage` is empty                                     | Start OpenCode once so it creates `opencode.db`, then use a model.                                       |
+| Pricing looks old                                           | Click **Download new prices** in the `/quota_usage` tab.                                                 |
 | Web report columns do not line up                           | Expected: Web uses a proportional font. Use the TUI or `npx @slkiser/opencode-quota show`.               |
 | Terminal shows a sign-in as expired but OpenCode shows data | The terminal never refreshes tokens. Open OpenCode (or use that provider in it) once, then retry.        |
 
@@ -127,7 +127,7 @@ Check `copilot_quota_auth`, `deployment`, `api_host`, `enterprise_host_source`, 
 | Cursor login missing                      | Run `/connect` → **Cursor** in OpenCode, or set `CURSOR_API_KEY`. |
 | Quota shows but no remaining percentage   | Set `cursorPlan` or `cursorIncludedApiUsd`. |
 | Billing cycle looks wrong                 | Set `cursorBillingCycleStartDay` to your billing day. |
-| Unknown Cursor pricing                    | Run `/pricing_refresh`. If still unknown, check `/quota_status` for unknown model ids. Cursor `auto`, `composer*`, and `grok-4.5`–`grok-4.7` use bundled Cursor pricing. |
+| Unknown Cursor pricing                    | Click **Download new prices** in the `/quota_usage` tab. If still unknown, check `/quota_status` for unknown model ids. Cursor `auto`, `composer*`, and `grok-4.5`–`grok-4.7` use bundled Cursor pricing. |
 
 </details>
 
@@ -252,14 +252,14 @@ Check the `opencode_zen` section. `console_auth_state` shows whether OpenCode re
 </details>
 
 <details>
-<summary><strong>Token reports</strong></summary>
+<summary><strong>Usage and pricing</strong></summary>
 
 Check the pricing snapshot health and the `opencode.db` path.
 
 | Symptom                                | Fix |
 | -------------------------------------- | --- |
-| `/tokens_*` is empty                   | Start OpenCode once so it creates `opencode.db`, then use a model. |
-| Pricing looks stale                    | Run `/pricing_refresh`. |
+| `/quota_usage` is empty                | Start OpenCode once so it creates `opencode.db`, then use a model. |
+| Pricing looks stale                    | Click **Download new prices** in the `/quota_usage` tab. |
 | Runtime pricing does not change output | Check `pricingSnapshot.source`; `bundled` keeps the packaged pricing. |
 
 </details>

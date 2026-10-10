@@ -113,17 +113,14 @@ describe("usage report ranges", () => {
     message({ created: at(-7, 23, 59, 59, 999), tokens: { output: 8 } }),
     message({ created: at(-29, 0), tokens: { output: 16 } }),
     message({ created: at(-30, 12), tokens: { output: 32 } }),
-    message({ created: at(-89, 0), tokens: { output: 64 } }),
-    message({ created: at(-90, 12), tokens: { output: 128 } }),
   ];
 
   const cases: Array<{ query: UsageQuery; tokens: number; days: [string, string, number] }> = [
     { query: { range: "today" }, tokens: 1, days: ["2026-03-15", "2026-03-15", 1] },
     { query: { range: "7d" }, tokens: 1 + 2 + 4, days: ["2026-03-09", "2026-03-15", 7] },
     { query: { range: "30d" }, tokens: 31, days: ["2026-02-14", "2026-03-15", 30] },
-    { query: { range: "90d" }, tokens: 127, days: ["2025-12-16", "2026-03-15", 90] },
     // All time runs from the first to the last message.
-    { query: { range: "all" }, tokens: 255, days: ["2025-12-15", "2026-03-15", 91] },
+    { query: { range: "all" }, tokens: 63, days: ["2026-02-13", "2026-03-15", 31] },
     {
       query: { range: "between", from: "2026-03-08", to: "2026-03-14" },
       tokens: 2 + 4 + 8,
@@ -142,6 +139,23 @@ describe("usage report ranges", () => {
     expect(report.days[0]?.date).toBe(firstDay);
     expect(report.days.at(-1)?.date).toBe(lastDay);
     expect(sum(report.days, "tokens")).toBe(item.tokens);
+  });
+
+  it("counts the rolling last 24 hours for 24h, not calendar days", async () => {
+    writeHistory([
+      message({ created: at(-1, 11, 59, 59, 999), tokens: { output: 1 } }),
+      message({ created: at(-1, 12), tokens: { output: 2 } }),
+      message({ created: at(0, 11), tokens: { output: 4 } }),
+    ]);
+
+    const report = await usageReport({ range: "24h" }, NOW);
+
+    expect(report).toMatchObject({ sinceMs: at(-1, 12), untilMs: NOW });
+    expect(report.totals.tokens.processed).toBe(2 + 4);
+    expect(report.days.map(({ date, tokens }) => [date, tokens])).toEqual([
+      ["2026-03-14", 2],
+      ["2026-03-15", 4],
+    ]);
   });
 
   it("puts each message on its local day across midnight", async () => {
@@ -171,6 +185,7 @@ describe("usage report ranges", () => {
       costUsd: 0,
       sessions: 0,
       tokens: { processed: 0, cachedInput: 0, uncachedInput: 0, output: 0 },
+      tokensByType: { input: 0, cacheRead: 0, cacheWrite: 0, output: 0 },
       costByType: { input: 0, cacheRead: 0, cacheWrite: 0, output: 0 },
       cacheSavingsUsd: 0,
       unpricedTokens: 0,
@@ -443,7 +458,7 @@ describe("usage report cost", () => {
       { providerID: "anthropic", sessions: 1, ...row(2, M, 0) },
       { providerID: "acme", sessions: 1, ...row(0, 3 * M, 3 * M) },
     ]);
-    expect(report.models).toEqual([
+    expect(report.models).toMatchObject([
       { providerID: "github-copilot", modelID: "claude-test", priced: true, ...row(10, M, 0) },
       { providerID: "anthropic", modelID: "claude-test", priced: true, ...row(2, M, 0) },
       { providerID: "acme", modelID: "mystery-1", priced: false, ...row(0, 3 * M, 3 * M) },
@@ -484,7 +499,7 @@ describe("usage report cost", () => {
       }),
     ]);
 
-    const { totals } = await usageReport({ range: "today" }, NOW);
+    const { totals, models } = await usageReport({ range: "today" }, NOW);
 
     expect(totals.tokens).toEqual({
       processed: 5 * M,
@@ -492,15 +507,43 @@ describe("usage report cost", () => {
       uncachedInput: 2 * M,
       output: 2 * M,
     });
+    const tokensByType = { input: M, cacheRead: M, cacheWrite: M, output: 2 * M };
     const { input, cacheRead, cacheWrite, output } = item.costByType;
-    expect(totals.costByType).toEqual({
+    const costByType = {
       input: expect.closeTo(input, 10),
       cacheRead: expect.closeTo(cacheRead, 10),
       cacheWrite: expect.closeTo(cacheWrite, 10),
       output: expect.closeTo(output, 10),
-    });
+    };
+    // The report and its one model split the same way.
+    for (const split of [totals, models[0]]) {
+      expect(split?.tokensByType).toEqual(tokensByType);
+      expect(split?.costByType).toEqual(costByType);
+    }
     expect(totals.costUsd).toBeCloseTo(input + cacheRead + cacheWrite + output, 10);
     expect(totals.cacheSavingsUsd).toBeCloseTo(item.cacheSavingsUsd, 10);
+  });
+
+  it("lists each model's own days with usage", async () => {
+    writeHistory([
+      message({ created: at(-3, 8), tokens: { input: M } }),
+      message({ created: at(0, 8), tokens: { input: M } }),
+      message({ created: at(0, 9), tokens: { output: M } }),
+      message({ modelID: "claude-plain", created: at(-1, 8), tokens: { input: M } }),
+    ]);
+
+    const report = await usageReport({ range: "7d" }, NOW);
+
+    expect(report.models.map(({ modelID, days }) => [modelID, days])).toEqual([
+      [
+        "claude-test",
+        [
+          { date: "2026-03-12", costUsd: expect.closeTo(2, 10), tokens: M },
+          { date: "2026-03-15", costUsd: expect.closeTo(2 + 10, 10), tokens: 2 * M },
+        ],
+      ],
+      ["claude-plain", [{ date: "2026-03-14", costUsd: expect.closeTo(1, 10), tokens: M }]],
+    ]);
   });
 
   const mixedHistory = () => [

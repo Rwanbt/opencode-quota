@@ -1,7 +1,7 @@
 /** @jsxImportSource @opentui/solid */
 /**
  * The quota window. `/quota` opens it above the message box of a session, where it covers the
- * chat with the same size on every tab: Limits, Notices and Status. While it is focused (it is
+ * chat with the same size on every tab: Limits, Usage, Notices and Status. While it is focused (it is
  * after opening; click it to give it the keyboard again) its keys work: ↑↓ select or scroll,
  * space/enter use a line, ←/→ change it, tab switches tabs, esc closes. Closing gives the
  * keyboard back to whatever had it before.
@@ -18,28 +18,38 @@ import { createSignal, onCleanup, onMount, Show } from "solid-js";
 import { sanitizeDisplayText } from "../../lib/display-sanitize.js";
 import {
   QuotaRpc,
+  type QuotaRpcDownloadPricesInput,
+  type QuotaRpcDownloadPricesOutput,
   type QuotaRpcNoticeListInput,
   type QuotaRpcNoticeListOutput,
   type QuotaRpcStatusInput,
   type QuotaRpcStatusOutput,
+  type QuotaRpcUsageInput,
+  type QuotaRpcUsageOutput,
 } from "../../rpc.js";
 import { rpcErrorMessage } from "../client.js";
 import type { SurfaceHost } from "../sidebar.js";
 import type { Theme } from "../theme.js";
 import { type NoticeBoard, noticeOptions } from "./notices.js";
+import { createUsageTab } from "./usage.js";
 import { LimitsView, NoticesView, type StatusReport, StatusView } from "./views.js";
 
 const RPC_TIMEOUT_MS = 60_000;
 /** Columns inside the window until it knows its real width. */
 const DEFAULT_WIDTH = 120;
 
-export type WindowTab = "limits" | "notices" | "status";
+export type WindowTab = "limits" | "usage" | "notices" | "status";
 
 const TABS: ReadonlyArray<{ tab: WindowTab; title: string; note: string }> = [
   {
     tab: "limits",
     title: "Limits",
     note: "Every limit, with its reset. The │ in a bar is where you'd be if you used it evenly: left of it = you use it faster than it refills.",
+  },
+  {
+    tab: "usage",
+    title: "Usage",
+    note: "Tokens and what they would cost at API prices, from OpenCode's history. c/t cost or tokens · ←/→ range · m/d by model or day · ↑↓ pick a model, enter its details.",
   },
   {
     tab: "notices",
@@ -66,14 +76,20 @@ type Toast = {
   message: string;
   duration?: number;
 };
-type WindowKey = { bind: string; title: string; group: string; run: () => void };
-type CallOptions = { location: { directory: string }; signal: AbortSignal };
-type WindowRpc = {
+/** Returning false lets the key continue to the next layer. */
+type WindowKey = { bind: string; title: string; group: string; run: () => void | false };
+export type CallOptions = { location: { directory: string }; signal: AbortSignal };
+export type WindowRpc = {
   noticeList(
     input: QuotaRpcNoticeListInput,
     options: CallOptions,
   ): Promise<QuotaRpcNoticeListOutput>;
   status(input: QuotaRpcStatusInput, options: CallOptions): Promise<QuotaRpcStatusOutput>;
+  usage(input: QuotaRpcUsageInput, options: CallOptions): Promise<QuotaRpcUsageOutput>;
+  downloadPrices(
+    input: QuotaRpcDownloadPricesInput,
+    options: CallOptions,
+  ): Promise<QuotaRpcDownloadPricesOutput>;
 };
 
 /** What the window needs from OpenCode's TUI context. */
@@ -91,11 +107,15 @@ export type WindowHost = {
     copyToClipboardOSC52(text: string): boolean;
   };
   keymap: {
-    /** A layer with a target works only while that renderable has the keyboard. */
+    /**
+     * A layer with a target works only while that renderable has the keyboard; a "modal" one
+     * only while a dialog is open.
+     */
     layer(
       build: () => {
-        target: () => Renderable | undefined;
-        priority: number;
+        mode?: "modal";
+        target?: () => Renderable | undefined;
+        priority?: number;
         commands: WindowKey[];
       },
     ): void;
@@ -103,6 +123,11 @@ export type WindowHost = {
   ui: {
     router: { current(): { type: string; sessionID?: string } };
     toast: { show(toast: Toast): void };
+    dialog: {
+      show(render: () => JSX.Element, onClose?: () => void): void;
+      set(options: { size: "large" }): void;
+      clear(): void;
+    };
   };
 };
 
@@ -147,6 +172,7 @@ export function createQuotaWindow(api: WindowHost, host: SurfaceHost): QuotaWind
     const route = api.ui.router.current();
     return route.type === "session" ? route.sessionID : undefined;
   };
+  const usage = createUsageTab(api, { rpc, options, scroll: () => scroll });
   const showError = (error: unknown) =>
     api.ui.toast.show({
       variant: "error",
@@ -180,6 +206,7 @@ export function createQuotaWindow(api: WindowHost, host: SurfaceHost): QuotaWind
     if (next === "limits") void host.quota.refresh("manual", sessionID);
     if (next === "notices") void changeNotices({});
     if (next === "status") void loadStatus(sessionID);
+    if (next === "usage" && sessionID) usage.show(sessionID);
     setSelected(tabOptions()[0]?.id ?? "");
     scroll?.scrollTo(0);
   }
@@ -464,6 +491,9 @@ export function createQuotaWindow(api: WindowHost, host: SurfaceHost): QuotaWind
           ))}
           <Show when={tab() === "limits"}>
             <LimitsView host={host} sessionID={props.sessionID} nowMs={nowMs()} width={width()} />
+          </Show>
+          <Show when={tab() === "usage"}>
+            <usage.View width={width()} keyTarget={() => windowBox} />
           </Show>
           <Show when={tab() === "notices"}>
             <NoticesView

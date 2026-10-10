@@ -12,8 +12,6 @@ import { createSignal } from "solid-js";
 import type { QuotaSnapshot, SessionTokens } from "../core/types.js";
 import {
   QuotaRpc,
-  type QuotaRpcCommandInput,
-  type QuotaRpcCommandOutput,
   type QuotaRpcNoticesInput,
   type QuotaRpcNoticesOutput,
   type QuotaRpcRefreshInput,
@@ -29,10 +27,6 @@ export type QuotaRpcCallOptions = { location: { directory: string }; signal: Abo
 
 /** The quota RPC as OpenCode's TUI client offers it. */
 export type QuotaRpcClient = {
-  command(
-    input: QuotaRpcCommandInput,
-    options: QuotaRpcCallOptions,
-  ): Promise<QuotaRpcCommandOutput>;
   snapshot(
     input: QuotaRpcSnapshotInput,
     options: QuotaRpcCallOptions,

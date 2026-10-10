@@ -19,6 +19,7 @@ import {
   seedDefaultPluginBootstrapMocks,
 } from "./helpers/plugin-test-harness.js";
 import { createQuotaRpcBridge, createQuotaRpcEvents } from "./helpers/quota-rpc-bridge.js";
+import { writeSessionDatabase } from "./helpers/session-database.js";
 
 const CANARIES = {
   teamKey: "v6-team-key-secret-canary",
@@ -145,6 +146,10 @@ function httpFetch(url: string, init?: RequestInit): Response {
 
 type Node = { type: unknown; props: Record<string, any> };
 type Listener = (event: { data: Record<string, unknown> }) => void;
+type ServerCommand = {
+  name: string;
+  execute(invocation: { sessionID: string; prompt: { text: string } }): Promise<void>;
+};
 
 /** Every `text` node of a JSX tree as one line, its spans joined. */
 function textLines(node: unknown): string[] {
@@ -205,6 +210,8 @@ async function startHosts() {
   const { default: serverPlugin } = await import("../src/plugin.js");
   const events = createQuotaRpcEvents();
   const register = vi.fn(async () => ({ dispose: async () => {}, events: { emit: events.emit } }));
+  const serverCommands: ServerCommand[] = [];
+  const posted = vi.fn(async (_message: { text: string }) => ({}));
   const disposeServer = await serverPlugin.setup({
     location: { directory: process.cwd() },
     provider: {
@@ -213,8 +220,13 @@ async function startHosts() {
     session: {
       get: async () => ({ model: { id: "model-one", providerID: "github-copilot" } }),
       hook: vi.fn(),
+      wait: async () => {},
+      prompt: posted,
     },
-    command: { transform: vi.fn() },
+    command: {
+      transform: async (build: (editor: { add(command: ServerCommand): void }) => void) =>
+        build({ add: (command) => serverCommands.push(command) }),
+    },
     rpc: { register },
     integration: createFakeIntegration([]),
     event: { subscribe: () => ({ async *[Symbol.asyncIterator]() {} }) },
@@ -245,6 +257,7 @@ async function startHosts() {
   const renderers = new Map<string, (props?: { sessionID?: string }) => unknown>();
   let commands: Array<{ id: string; run: () => Promise<void> }> = [];
   const toast = vi.fn();
+  const dialog = { show: vi.fn(), clear: vi.fn(), prompt: vi.fn(), set: vi.fn() };
   vi.stubGlobal("React", {
     createElement: (
       type: unknown,
@@ -284,13 +297,20 @@ async function startHosts() {
       },
       toast: { show: toast },
       router: { current: () => ({ type: "session", sessionID: "ses_1" }) },
-      dialog: { show: vi.fn(), clear: vi.fn(), prompt: vi.fn(), set: vi.fn() },
+      dialog,
     },
   } as never);
   return {
     render: (slot: string, props?: { sessionID?: string }) => renderers.get(slot)?.(props),
     emit: (name: string, data: Record<string, unknown>) => listeners.get(name)?.({ data }),
     command: (id: string) => commands.find((command) => command.id === `quota.${id}`)!,
+    /** Runs a Web and Desktop slash command; `posted` gets its chat message. */
+    serverCommand: (name: string, sessionID: string, text = "") =>
+      serverCommands
+        .find((command) => command.name === name)!
+        .execute({ sessionID, prompt: { text } }),
+    posted,
+    dialog,
     toast,
     stored,
     dispose: async () => {
@@ -520,6 +540,82 @@ describe("v6 surfaces on the quota snapshot", () => {
       gauges,
       savedSnapshot,
     );
+    await tui.dispose();
+  });
+
+  it("shows OpenCode's usage in the Usage tab, its model popup and Web /quota_usage", async () => {
+    const now = Date.now();
+    const M = 1_000_000;
+    writeSessionDatabase(join(mocks.root, "data", "opencode.db"), {
+      sessions: [{ id: "ses_1", created: now - 3_600_000 }],
+      messages: [
+        {
+          id: "msg_1",
+          sessionID: "ses_1",
+          created: now - 60_000,
+          completed: now - 59_000,
+          providerID: "anthropic",
+          modelID: "claude-sonnet-4-5",
+          tokens: { input: M, cacheRead: 3 * M, output: M / 10 },
+        },
+        {
+          id: "msg_2",
+          sessionID: "ses_1",
+          created: now - 30_000,
+          completed: now - 29_000,
+          providerID: "acme",
+          modelID: "mystery-1",
+          tokens: { output: M / 2 },
+        },
+      ],
+    });
+    const tui = await startHosts();
+
+    // The palette's usage command opens the window on its Usage tab, on the last 7 days.
+    await tui.command("usage").run();
+    const usageTab = () => tui.render("session.composer.top", { sessionID: "ses_1" });
+    await vi.waitFor(() => expect(words(usageTab())).toContain("Breakdown"));
+    const tab = words(usageTab());
+    expect(tab).toEqual(
+      expect.arrayContaining([
+        "Usage",
+        "Last 7 days",
+        "▸ Download new prices",
+        // From 110 columns on, the daily chart sits beside the total.
+        expect.stringMatching(/^\$\d+\.\d\d 1 session · API estimate Daily cost$/u),
+        expect.stringMatching(/^Unpriced tokens excluded: 10\.9% \(mystery-1\) /u),
+        "Totals",
+        "Cost by type",
+        "# Model Cost Share Tokens",
+        expect.stringMatching(/^1 ● claude-sonnet-4-5 \$\d+\.\d\d 100\.0% 4\.10M$/u),
+        "2 ● mystery-1 no price 0% 500K",
+      ]),
+    );
+
+    // A click on a model row opens its details in OpenCode's dialog.
+    const modelRow = findAll(
+      usageTab(),
+      (node) => node.type === "text" && textLines(node)[0]?.includes("claude-sonnet-4-5") === true,
+    ).find((node) => typeof node.props.onMouseUp === "function");
+    modelRow?.props.onMouseUp();
+    expect(tui.dialog.show).toHaveBeenCalledOnce();
+    const popup = words(tui.dialog.show.mock.calls[0]?.[0]());
+    expect(popup).toEqual(
+      expect.arrayContaining([
+        "● claude-sonnet-4-5",
+        "Anthropic · 100.0% of cost",
+        "Cost Tokens Per 1M tokens Cache hit",
+        expect.stringMatching(/^\$\d+\.\d\d 4\.10M \$\d+\.\d\d 75\.0%$/u),
+        "esc",
+      ]),
+    );
+
+    // Web and Desktop: /quota_usage posts the same report as text, here for this session.
+    await tui.serverCommand("quota_usage", "ses_1", "session");
+    const message = tui.posted.mock.calls[0]?.[0].text ?? "";
+    expect(message).toContain("Usage · This session\n$");
+    expect(message).toContain("1 session · API estimate");
+    expect(message).toMatch(/1 {2}● claude-sonnet-4-5 .+4\.10M/u);
     await tui.dispose();
   });
 });

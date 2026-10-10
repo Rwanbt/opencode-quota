@@ -81,7 +81,7 @@ The server notices when a quota window resets, from data already fetched. The TU
 
 ### Include subagent session tokens
 
-Session totals count only the current session by default. `sessionTokenScope: "tree"` adds every subagent session, counted once. This applies to the session tokens in `/quota`, popup toasts, and the sidebar. It does not change `/tokens_session` or `/tokens_session_all`.
+Session totals count only the current session by default. `sessionTokenScope: "tree"` adds every subagent session, counted once. This applies to the session tokens in `/quota`, popup toasts, and the sidebar. It does not change the `session` and `session_tree` ranges of `/quota_usage`.
 
 ### Countdown and label styles
 
@@ -168,7 +168,7 @@ Provider credentials (API keys, cookies, tokens) are never set here. See [API ke
 
 | Option                        | Default        | Meaning |
 | ----------------------------- | -------------- | ------- |
-| `enabled`                     | `true`         | Master switch. When `false`, `/quota`, `/quota_status`, `/pricing_refresh`, and `/tokens_*` do nothing. |
+| `enabled`                     | `true`         | Master switch. When `false`, `/quota`, `/quota_status`, and `/quota_usage` in Web and Desktop do nothing. |
 | `enabledProviders`            | `"auto"`       | Auto-detect providers, or list them. Use `quota-providers` for custom definitions. |
 | `quotaProviders`              | `[]`           | Custom provider definitions (global-only). See [Custom providers](#custom-providers). |
 | `minIntervalMs`               | `300000`       | Minimum time between provider updates. |
@@ -184,7 +184,7 @@ Provider credentials (API keys, cookies, tokens) are never set here. See [API ke
 | `waitForQuotaReset`           | `true`         | On by default. When a request hits a provider limit, the plugin asks that model's provider for fresh quota; if a window shows 0% left, OpenCode retries 1 minute after the earliest such window resets (at most 5 hours per wait) instead of retrying quickly or giving up. Interrupt the session to stop waiting (Esc twice in the TUI). Set `"waitForQuotaReset": false` to keep OpenCode's normal retry timing. |
 | `showSessionTokens`           | `true`         | Show `Session input/output tokens` when available. Cached input appears in parentheses next to input. |
 | `sessionTokenScope`           | `"current"`    | `current` or `tree` (adds subagent sessions). See [above](#include-subagent-session-tokens). |
-| `pricingSnapshot.source`      | `"auto"`       | Token pricing for `/tokens_*`: `auto`, `bundled`, or `runtime`. |
+| `pricingSnapshot.source`      | `"auto"`       | Token pricing for `/quota_usage`: `auto`, `bundled`, or `runtime`. |
 | `pricingSnapshot.autoRefresh` | `7`            | Refresh local pricing after this many days. |
 
 ### TUI surfaces

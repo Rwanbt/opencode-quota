@@ -20,7 +20,6 @@ import {
 } from "../src/lib/opencode-auth.js";
 import { formatQuotaReportMessage } from "../src/lib/quota-report-message.js";
 import plugin from "../src/plugin.js";
-import { REPORT_COMMANDS } from "../src/rpc.js";
 import { createFakeIntegration } from "./helpers/fake-integration.js";
 
 type RegisteredTool = {
@@ -144,15 +143,11 @@ describe("V2 server plugin", () => {
     expect(ctx.provider.list).toHaveBeenCalledTimes(0);
   });
 
-  it("registers /quota, /quota_status and the report commands for Web and Desktop", async () => {
+  it("registers /quota, /quota_status and /quota_usage for Web and Desktop", async () => {
     const { ctx, commands } = createContext();
 
     await plugin.setup(ctx as never);
-    expect(commands.map((item) => item.name)).toEqual([
-      "quota",
-      "quota_status",
-      ...REPORT_COMMANDS.map((spec) => spec.id),
-    ]);
+    expect(commands.map((item) => item.name)).toEqual(["quota", "quota_status", "quota_usage"]);
     expect(commands.every((item) => item.description)).toBe(true);
   });
 
@@ -171,11 +166,7 @@ describe("V2 server plugin", () => {
     await runCommand(commands, "quota_status");
 
     expect(buildOutput).toHaveBeenCalledWith(
-      expect.objectContaining({
-        command: "quota_status",
-        sessionID: "session-web",
-        arguments: undefined,
-      }),
+      expect.objectContaining({ command: "quota_status", sessionID: "session-web" }),
     );
     expect(ctx.session.wait).toHaveBeenCalledWith({ sessionID: "session-web" });
     expect(calls).toEqual(["wait", "prompt"]);
@@ -190,30 +181,23 @@ describe("V2 server plugin", () => {
     vi.mocked(Date.now).mockRestore();
   });
 
-  it("passes typed arguments to the output builder", async () => {
+  it.each([
+    ["90d", 'Unknown range "90d".'],
+    ["between 2026-09-01", "between needs two dates."],
+    ["between 2026-09-31 2026-10-01", '"2026-09-31" is not a date like 2026-01-31.'],
+    ["between 2026-10-02 2026-10-01", "2026-10-01 is before 2026-10-02."],
+    ["today please", "The range today takes no dates."],
+  ])("answers /quota_usage %s with a clear error and how to use it", async (text, problem) => {
     const { ctx, commands } = createContext();
-    buildOutput.mockResolvedValue({ state: "output", title: "Tokens", output: "report" });
 
     await plugin.setup(ctx as never);
-    await runCommand(commands, "tokens_between", " 2026-09-01 2026-09-25 ");
+    await runCommand(commands, "quota_usage", text);
 
-    expect(buildOutput).toHaveBeenCalledWith(
-      expect.objectContaining({ command: "tokens_between", arguments: "2026-09-01 2026-09-25" }),
+    expect(ctx.session.prompt.mock.calls[0][0].text).toBe(
+      formatQuotaReportMessage(
+        `${problem}\nUsage: /quota_usage [today | 24h | 7d | 30d | all | session | session_tree | between YYYY-MM-DD YYYY-MM-DD]`,
+      ),
     );
-  });
-
-  it("posts the builder's usage text when /tokens_between has no arguments", async () => {
-    const { ctx, commands } = createContext();
-    const usage = "Invalid arguments for /tokens_between\n\nExpected: /tokens_between YYYY-MM-DD";
-    buildOutput.mockResolvedValue({ state: "output", title: "Tokens", output: usage });
-
-    await plugin.setup(ctx as never);
-    await runCommand(commands, "tokens_between", "   ");
-
-    expect(buildOutput).toHaveBeenCalledWith(
-      expect.objectContaining({ command: "tokens_between", arguments: undefined }),
-    );
-    expect(ctx.session.prompt.mock.calls[0][0].text).toBe(formatQuotaReportMessage(usage));
   });
 
   it("posts nothing when the plugin is disabled", async () => {
