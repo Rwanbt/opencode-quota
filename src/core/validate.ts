@@ -5,6 +5,7 @@
  */
 import { isCanonicalAccountingDecimal } from "../lib/accounting-format.js";
 import { sanitizeSingleLineDisplayText } from "../lib/display-sanitize.js";
+import { isRecord } from "../lib/json-guards.js";
 import type {
   Amount,
   AmountUnit,
@@ -34,10 +35,6 @@ const TEXT_MAX_LENGTH = 200;
 const ISO_TIME_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/u;
 const COUNT_UNIT_RE = /^[a-z_]{1,32}$/u;
 const CUSTOM_SYMBOL_RE = /^[\p{L}\p{N}._-]{1,16}$/u;
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 function isOneOf<T extends string>(value: unknown, choices: readonly T[]): value is T {
   return typeof value === "string" && (choices as readonly string[]).includes(value);

@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { readdir, readFile, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
+import { isContractResult, legacyResultFromFetch } from "../core/rows.js";
 import { writeJsonAtomic } from "./atomic-json.js";
 import type {
   QuotaProvider,
@@ -206,7 +207,9 @@ async function fetchValidatedProviderResult(
   cacheContext?: QuotaProviderCacheContext,
 ): Promise<QuotaProviderResult> {
   const fetched = await provider.fetch(ctx, cacheContext);
-  const normalized = normalizeQuotaProviderResult(fetched);
+  const normalized = normalizeQuotaProviderResult(
+    isContractResult(fetched) ? legacyResultFromFetch(fetched) : fetched,
+  );
   if (normalized) return normalized;
 
   return {

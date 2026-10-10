@@ -2,8 +2,6 @@ import { readFile } from "fs/promises";
 
 import { sanitizeDisplayText } from "../lib/display-sanitize.js";
 import type {
-  AccountingMetadata,
-  FixedWindowProjectionEvidence,
   QuotaProviderPresentation,
   QuotaProviderResult,
   QuotaProviderStatusDetail,
@@ -166,45 +164,4 @@ export function mapNullableProviderResult<
   }
 
   return params.onSuccess(result as Extract<TResult, { success: true }>);
-}
-
-export function groupedPercentWindowEntries(params: {
-  group: string;
-  accounting: AccountingMetadata;
-  windows: Array<{
-    window?: {
-      percentRemaining: number;
-      resetTimeIso?: string;
-      fixedWindow?: FixedWindowProjectionEvidence;
-    };
-    suffix: string;
-    label: string;
-  }>;
-  fallbackWhenEmpty?: boolean;
-}): QuotaToastEntry[] {
-  const entries: QuotaToastEntry[] = [];
-
-  for (const { window, suffix, label } of params.windows) {
-    if (!window) continue;
-
-    entries.push({
-      accounting: { ...params.accounting },
-      name: `${params.group} ${suffix}`,
-      group: params.group,
-      label,
-      percentRemaining: window.percentRemaining,
-      resetTimeIso: window.resetTimeIso,
-      ...(window.fixedWindow ? { fixedWindow: { ...window.fixedWindow } } : {}),
-    });
-  }
-
-  if (entries.length === 0 && params.fallbackWhenEmpty !== false) {
-    entries.push({
-      accounting: { ...params.accounting },
-      name: params.group,
-      percentRemaining: 0,
-    });
-  }
-
-  return entries;
 }

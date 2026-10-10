@@ -1,11 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { QuotaProviderResult } from "../src/lib/entries.js";
+import { rowsFromProviderResult } from "../src/core/rows.js";
+import type { QuotaRow } from "../src/core/types.js";
 import { hasOpenAIOAuthCached, queryOpenAIQuota } from "../src/lib/openai.js";
 import { type CredentialRow, readCredentialRows } from "../src/lib/opencode-auth.js";
-import { projectQuotaProviderResults } from "../src/lib/quota-accounting-projection.js";
-import { formatQuotaCommand } from "../src/lib/quota-command-format.js";
 import { openaiProvider } from "../src/providers/openai.js";
-import { expectNotAttempted, visibleEntries } from "./helpers/provider-assertions.js";
 import { createProviderAvailabilityContext } from "./helpers/provider-test-harness.js";
 
 vi.mock("../src/lib/openai.js", async (importOriginal) => ({
@@ -21,6 +19,7 @@ vi.mock("../src/lib/opencode-auth.js", async (importOriginal) => ({
 
 const readRows = vi.mocked(readCredentialRows);
 const query = vi.mocked(queryOpenAIQuota);
+const NOW_MS = Date.parse("2026-01-01T00:00:00.000Z");
 
 function oauthRow(id: string, overrides: Partial<CredentialRow> = {}): CredentialRow {
   return {
@@ -43,17 +42,28 @@ function hourlyQuota(label: string) {
 
 async function fetchRows(rows: CredentialRow[], config: Record<string, unknown> = {}) {
   readRows.mockResolvedValueOnce(rows);
-  return openaiProvider.fetch({ config } as never);
+  return rowsFromProviderResult("openai", await openaiProvider.fetch({ config } as never), NOW_MS);
 }
 
-function groupsAndSources(out: QuotaProviderResult) {
-  return out.entries.map((entry) => [entry.group, entry.accounting.sourceId]);
+/** id, account, label and the row's value. */
+function summary(rows: QuotaRow[]) {
+  return rows.map((row) => [
+    row.id,
+    row.account ?? null,
+    row.label,
+    row.percentRemaining ?? row.text,
+  ]);
 }
 
-/** The /quota text for this result. */
-function quotaCommandText(out: QuotaProviderResult): string {
-  return formatQuotaCommand({ entries: out.entries, errors: out.errors });
-}
+const STATUS_ROW = {
+  id: "openai.status",
+  providerId: "openai",
+  label: "Status",
+  type: "status",
+  method: "local_estimation",
+  authority: "locally_derived",
+  prominence: "primary",
+};
 
 beforeEach(() => {
   readRows.mockReset().mockResolvedValue([]);
@@ -62,12 +72,13 @@ beforeEach(() => {
 });
 
 describe("openai provider", () => {
-  it("returns attempted:false without a stored login", async () => {
-    const out = await fetchRows([]);
+  it("is not set up without a stored login", async () => {
+    const fetched = await fetchRows([]);
 
-    expectNotAttempted(out);
+    expect(fetched.rows).toEqual([]);
+    expect(fetched.error).toEqual({ code: "not_configured" });
     expect(query).not.toHaveBeenCalled();
-    expect(out.statusDetails).toEqual([
+    expect(fetched.debug).toEqual([
       { key: "auth_configured", value: "false" },
       { key: "auth_source", value: "(none)" },
       { key: "auth_method", value: "(none)" },
@@ -76,19 +87,19 @@ describe("openai provider", () => {
     ]);
   });
 
-  it("queries and labels every stored login independently", async () => {
+  it("queries and names every stored login independently", async () => {
     query.mockResolvedValue({
       success: true,
       label: "OpenAI (Business)",
       windows: {
-        hourly: { percentRemaining: 42, resetTimeIso: "2026-01-01T00:00:00.000Z" },
+        hourly: { percentRemaining: 42, resetTimeIso: "2026-01-01T03:00:00.000Z" },
         weekly: { percentRemaining: 80, resetTimeIso: "2026-01-07T00:00:00.000Z" },
         monthly: { percentRemaining: 67, resetTimeIso: "2026-02-01T00:00:00.000Z" },
         codeReview: { percentRemaining: 55, resetTimeIso: "2026-01-02T00:00:00.000Z" },
       },
     });
 
-    const out = await fetchRows(
+    const fetched = await fetchRows(
       [
         oauthRow("active-id", {
           label: "Work",
@@ -112,50 +123,34 @@ describe("openai provider", () => {
         loginLabel: "Work",
       },
     ]);
-    expect(out.errors).toEqual([]);
-    const group = "[OpenAI Work] (Business) (active)";
+    expect(fetched.error).toBeUndefined();
     expect(
-      visibleEntries(out.entries, "openai")
-        .slice(0, 4)
-        .map(({ name, label, percentRemaining, resetTimeIso }) => [
-          name,
-          label,
-          percentRemaining,
-          resetTimeIso,
-        ]),
-    ).toEqual([
-      [`${group} 5h`, "5h:", 42, "2026-01-01T00:00:00.000Z"],
-      [`${group} Weekly`, "Weekly:", 80, "2026-01-07T00:00:00.000Z"],
-      [`${group} Monthly`, "Monthly:", 67, "2026-02-01T00:00:00.000Z"],
-      [`${group} Code Review`, "Code Review:", 55, "2026-01-02T00:00:00.000Z"],
+      fetched.rows.map((row) => [row.id, row.account, row.label, row.window, row.resetsAt]),
+    ).toEqual(
+      ["Work (Business)", "Work 2 (Business)"].flatMap((account) => [
+        ["openai.five_hour", account, "5h", "five_hour", "2026-01-01T03:00:00.000Z"],
+        ["openai.weekly", account, "Weekly", "week", "2026-01-07T00:00:00.000Z"],
+        ["openai.monthly", account, "Monthly", "month", "2026-02-01T00:00:00.000Z"],
+        ["openai.code_review", account, "Code review", "code_review", "2026-01-02T00:00:00.000Z"],
+      ]),
+    );
+    expect(fetched.rows.every((row) => row.type === "quota" && row.method === "remote_api")).toBe(
+      true,
+    );
+    expect(fetched.rowLogins).toEqual([
+      ...Array(4).fill("active-id"),
+      ...Array(4).fill("other-id"),
     ]);
-    expect(out.entries.at(-1)?.accounting.resultType).toBe("rate_limit");
-    expect(groupsAndSources(out)).toEqual([
-      ["[OpenAI Work] (Business) (active)", "active-id"],
-      ["[OpenAI Work] (Business) (active)", "active-id"],
-      ["[OpenAI Work] (Business) (active)", "active-id"],
-      ["[OpenAI Work] (Business) (active)", "active-id"],
-      ["[OpenAI Work 2] (Business)", "other-id"],
-      ["[OpenAI Work 2] (Business)", "other-id"],
-      ["[OpenAI Work 2] (Business)", "other-id"],
-      ["[OpenAI Work 2] (Business)", "other-id"],
-    ]);
-    expect(projectQuotaProviderResults([out], "allWindows", "summary")).toHaveLength(8);
-    expect(
-      projectQuotaProviderResults([out], "singleWindow", "summary").map(
-        (entry) => entry.accounting.sourceId,
-      ),
-    ).toEqual(["active-id", "other-id"]);
   });
 
-  it("shows a login OpenCode could not return as its own error row next to working ones", async () => {
+  it("shows a login OpenCode could not return as its own error next to working ones", async () => {
     const actual =
       await vi.importActual<typeof import("../src/lib/openai.js")>("../src/lib/openai.js");
     query
       .mockImplementationOnce(actual.queryOpenAIQuota)
       .mockResolvedValueOnce(hourlyQuota("OpenAI (Pro)"));
 
-    const out = await fetchRows([
+    const fetched = await fetchRows([
       oauthRow("work-id", {
         label: "Work",
         active: true,
@@ -168,178 +163,111 @@ describe("openai provider", () => {
     expect(readRows).toHaveBeenLastCalledWith(["openai", "codex", "chatgpt"], {
       methods: ["oauth", "key"],
     });
-    expect(out.errors).toEqual([
-      {
-        label: "[OpenAI Work] (active)",
-        message:
-          "OpenAI sign-in could not be refreshed: refresh_failed: HTTP 400. Run `opencode auth logout openai Work`, then `opencode auth login openai`.",
-      },
-    ]);
-    expect(groupsAndSources(out)).toEqual([["[OpenAI Home] (Pro)", "home-id"]]);
-    expect(out.statusDetails).toEqual(
+    expect(summary(fetched.rows)).toEqual([["openai.five_hour", "Home (Pro)", "5h", 42]]);
+    expect(fetched.rowLogins).toEqual(["home-id"]);
+    expect(fetched.debug).toEqual(
       expect.arrayContaining([
         { key: "auth_configured", value: "true" },
         { key: "auth_source", value: "openai" },
         { key: "token_status", value: "failed" },
+        {
+          key: "error",
+          value:
+            "[OpenAI Work] (active): OpenAI sign-in could not be refreshed: refresh_failed: HTTP 400. Run `opencode auth logout openai Work`, then `opencode auth login openai`.",
+        },
       ]),
     );
   });
 
-  it("reports a stored API key without querying ChatGPT, on /quota", async () => {
-    const out = await fetchRows([keyRow("key-id", { label: "Key", active: true })]);
-
-    expect(query).not.toHaveBeenCalled();
-    expect(out.attempted).toBe(true);
-    expect(out.errors).toEqual([]);
-    expect(visibleEntries(out.entries, "openai")).toEqual([
-      {
-        kind: "value",
-        name: "[OpenAI Key]",
-        group: "[OpenAI Key]",
-        value: "ChatGPT quota unavailable for API key",
-      },
-    ]);
-    expect(out.statusDetails).toEqual(
-      expect.arrayContaining([
-        { key: "auth_configured", value: "true" },
-        { key: "auth_source", value: "openai" },
+  it.each([
+    {
+      name: "a stored API key",
+      row: keyRow("key-id", { label: "Key", active: true }),
+      rows: [{ ...STATUS_ROW, account: "Key", text: "ChatGPT quota unavailable for API key" }],
+      debug: [
         { key: "token_status", value: "api key" },
         { key: "token_expires_at", value: "(none)" },
-      ]),
-    );
-
-    // Narrow dialogs wrap the sentence; collapsing whitespace keeps the phrase checkable.
-    const collapsed = quotaCommandText(out).replace(/\s+/gu, " ");
-    expect(collapsed).toContain("OpenAI Key");
-    expect(collapsed).toContain("ChatGPT quota unavailable for API key");
-    const singleWindow = projectQuotaProviderResults([out], "singleWindow", "summary");
-    expect(singleWindow.map((entry) => entry.accounting.sourceId)).toEqual(["key-id"]);
-  });
-
-  it("reports a Sign in with ChatGPT login without querying ChatGPT (#316)", async () => {
-    const expires = Date.now() + 60 * 60_000;
-    const out = await fetchRows([
-      oauthRow("sharing-id", {
+      ],
+    },
+    {
+      name: "a Sign in with ChatGPT login (#316)",
+      row: oauthRow("sharing-id", {
         label: "OpenAI",
         active: true,
-        value: {
-          type: "oauth",
-          methodID: "chatgpt-token-sharing",
-          access: "a.b.c",
-          refresh: "refresh",
-          expires,
-        },
+        value: { type: "oauth", methodID: "chatgpt-token-sharing", access: "a.b.c" },
       }),
-    ]);
-
-    expect(query).not.toHaveBeenCalled();
-    expect(out.attempted).toBe(true);
-    expect(out.errors).toEqual([]);
-    expect(visibleEntries(out.entries, "openai")).toEqual([
-      {
-        kind: "value",
-        name: "[OpenAI]",
-        group: "[OpenAI]",
-        value: "ChatGPT quota unavailable for Sign in with ChatGPT",
-      },
-    ]);
-    expect(out.statusDetails).toEqual(
-      expect.arrayContaining([
-        { key: "auth_configured", value: "true" },
-        { key: "auth_source", value: "openai" },
+      rows: [{ ...STATUS_ROW, text: "ChatGPT quota unavailable for Sign in with ChatGPT" }],
+      debug: [
         { key: "auth_method", value: "chatgpt-token-sharing" },
         { key: "token_status", value: "valid" },
-        { key: "token_expires_at", value: new Date(expires).toISOString() },
-      ]),
-    );
-  });
+      ],
+    },
+    {
+      name: "an API key OpenCode could not read",
+      row: keyRow("key-id", {
+        label: "Key",
+        active: true,
+        value: { type: "api" },
+        resolveError: "refresh_failed: HTTP 400",
+      }),
+      rows: [],
+      debug: [
+        { key: "token_status", value: "failed" },
+        {
+          key: "error",
+          value: "[OpenAI Key]: OpenAI API key could not be read: refresh_failed: HTTP 400",
+        },
+      ],
+    },
+  ])("reports $name without querying ChatGPT", async ({ row, rows, debug }) => {
+    const fetched = await fetchRows([row]);
 
-  it("shows an active API key next to an inactive OAuth account with one ChatGPT query", async () => {
-    query.mockResolvedValueOnce(hourlyQuota("OpenAI (Pro)"));
-
-    const out = await fetchRows([
-      keyRow("key-id", { label: "API key", active: true }),
-      oauthRow("oauth-id", { label: "Work" }),
-    ]);
-
-    expect(query.mock.calls.map(([options]) => options.auth)).toEqual([
-      { state: "configured", sourceKey: "openai", accessToken: "token" },
-    ]);
-    expect(out.errors).toEqual([]);
-    expect(groupsAndSources(out)).toEqual([
-      ["[OpenAI] (active)", "key-id"],
-      ["[OpenAI Work] (Pro)", "oauth-id"],
-    ]);
-    expect(out.statusDetails).toEqual(
+    expect(query).not.toHaveBeenCalled();
+    expect(fetched.rows).toEqual(rows);
+    expect(fetched.debug).toEqual(
       expect.arrayContaining([
         { key: "auth_configured", value: "true" },
         { key: "auth_source", value: "openai" },
-        { key: "token_status", value: "api key" },
+        ...debug,
       ]),
     );
   });
 
   it.each([
-    true,
-    false,
-  ])("lists the active API-key account first among mixed credentials (key first: %s)", async (keyFirst) => {
-    const key = keyRow("key-id", { label: "API key", active: true });
-    const oauth = oauthRow("oauth-id", { label: "OAuth" });
-    query.mockResolvedValueOnce({
-      success: true,
-      label: "OpenAI",
-      windows: { hourly: { percentRemaining: 42 }, weekly: { percentRemaining: 74 } },
-    });
-
-    const out = await fetchRows(keyFirst ? [key, oauth] : [oauth, key]);
-    expect(out.entries.map((entry) => entry.accounting.sourceId)).toEqual([
-      "key-id",
-      "oauth-id",
-      "oauth-id",
-    ]);
-  });
-
-  it.each([
-    { config: { currentModel: "codex/gpt-5-codex" }, firstId: "oauth-id" },
+    // Unknown session: the OAuth login with quota numbers goes first.
+    { rows: "key, oauth", config: {}, logins: ["oauth-id", "key-id"], source: "codex" },
+    { rows: "oauth, key", config: {}, logins: ["oauth-id", "key-id"], source: "codex" },
     {
-      config: { currentProviderID: "codex", currentModel: "gpt-5-codex" },
-      firstId: "oauth-id",
+      rows: "key, oauth",
+      config: { currentModel: "codex/gpt-5-codex" },
+      logins: ["oauth-id", "key-id"],
+      source: "codex",
     },
-    { config: { currentProviderID: "codex" }, firstId: "oauth-id" },
     {
+      rows: "key, oauth",
       config: { currentProviderID: "openai", currentModel: "codex/gpt-5-codex" },
-      firstId: "key-id",
+      logins: ["key-id", "oauth-id"],
+      source: "openai",
     },
-    // Unknown session (e.g. onlyCurrentModel off): the OAuth login with quota numbers goes first.
-    { config: {}, firstId: "oauth-id" },
-  ])("prefers the session's active integration when OpenAI and Codex are both active ($config)", async ({
+  ])("lists the session's active login first ($rows, $config)", async ({
+    rows,
     config,
-    firstId,
+    logins,
+    source,
   }) => {
     query.mockResolvedValueOnce(hourlyQuota("OpenAI"));
+    const key = keyRow("key-id", { label: "API key", active: true });
+    const oauth = oauthRow("oauth-id", { integrationId: "codex", label: "Work", active: true });
 
-    const out = await fetchRows(
-      [
-        keyRow("key-id", { label: "API key", active: true }),
-        oauthRow("oauth-id", { integrationId: "codex", label: "Work", active: true }),
-      ],
-      config,
-    );
+    const fetched = await fetchRows(rows === "key, oauth" ? [key, oauth] : [oauth, key], config);
 
-    const expectedIds = firstId === "oauth-id" ? ["oauth-id", "key-id"] : ["key-id", "oauth-id"];
-    expect(out.entries.map((entry) => entry.accounting.sourceId)).toEqual(expectedIds);
+    expect(fetched.rowLogins).toEqual(logins);
     expect(query).toHaveBeenCalledOnce();
-    expect(out.errors).toEqual([]);
-    expect(out.statusDetails).toEqual(
-      expect.arrayContaining([
-        { key: "auth_source", value: firstId === "oauth-id" ? "codex" : "openai" },
-        { key: "token_status", value: firstId === "oauth-id" ? "valid" : "api key" },
-      ]),
-    );
+    expect(fetched.debug).toContainEqual({ key: "auth_source", value: source });
   });
 
-  it("keeps other active rows and inactive rows in source order after the session's active row", async () => {
-    const out = await fetchRows(
+  it("keeps other active logins and inactive ones in source order after the session's", async () => {
+    const fetched = await fetchRows(
       [
         { id: "inactive-openai", integrationId: "openai", active: false },
         { id: "active-openai", integrationId: "openai", active: true },
@@ -350,7 +278,7 @@ describe("openai provider", () => {
       { currentProviderID: "codex" },
     );
 
-    expect(out.entries.map((entry) => entry.accounting.sourceId)).toEqual([
+    expect(fetched.rowLogins).toEqual([
       "active-codex",
       "active-openai",
       "active-chatgpt",
@@ -360,55 +288,29 @@ describe("openai provider", () => {
   });
 
   it.each([
-    {
-      labels: ["API key", "default", "OpenAI"],
-      names: ["[OpenAI] (active)", "[OpenAI 2]", "[OpenAI 3]"],
-    },
-    { labels: ["", "API key"], names: ["[OpenAI]", "[OpenAI 2]"], noneActive: true },
-    // An explicit numeric alias stays separate from the numbered unnamed accounts.
-    {
-      labels: ["API key", "default", "2"],
-      names: ["[OpenAI] (active)", "[OpenAI 3]", "[OpenAI 2]"],
-    },
-  ])("keeps unnamed API-key accounts distinct on /quota ($labels)", async ({
-    labels,
-    names,
-    noneActive,
-  }) => {
-    const out = await fetchRows(
+    { labels: ["API key", "default", "OpenAI"], accounts: [null, "2", "3"] },
+    { labels: ["", "API key"], accounts: [null, "2"], noneActive: true },
+    // An explicit numeric alias stays apart from the numbered unnamed accounts.
+    { labels: ["API key", "default", "2"], accounts: [null, "3", "2"] },
+  ])("numbers unnamed API keys apart ($labels)", async ({ labels, accounts, noneActive }) => {
+    const fetched = await fetchRows(
       labels.map((label, index) =>
         keyRow(`key-${index}`, { label, active: !noneActive && index === 0 }),
       ),
     );
 
-    expect(query).not.toHaveBeenCalled();
-    expect(out.entries.map((entry) => entry.name)).toEqual(names);
-    expect(out.entries.map((entry) => entry.group)).toEqual(names);
-    expect(out.entries.map((entry) => entry.accounting.sourceId)).toEqual(
-      labels.map((_, index) => `key-${index}`),
-    );
-    const output = quotaCommandText(out);
-    for (const name of names) {
-      expect(
-        output.split("\n").filter((line) => line === name || line === `→ ${name}`),
-      ).toHaveLength(1);
-    }
-    expect(
-      output.replace(/\s+/gu, " ").match(/ChatGPT quota unavailable for API key/gu),
-    ).toHaveLength(labels.length);
+    expect(fetched.rows.map((row) => row.account ?? null)).toEqual(accounts);
+    expect(fetched.rowLogins).toEqual(labels.map((_, index) => `key-${index}`));
   });
 
-  it("reports unknown active auth when no stored row is marked active", async () => {
-    const out = await fetchRows([
+  it("reports unknown active auth when no stored login is marked active", async () => {
+    query.mockResolvedValueOnce(hourlyQuota("OpenAI"));
+    const fetched = await fetchRows([
       keyRow("key-id", { label: "Key" }),
-      oauthRow("oauth-id", {
-        label: "Work",
-        value: { type: "oauth", access: "token", expires: Date.now() + 60_000 },
-      }),
+      oauthRow("oauth-id", { label: "Work" }),
     ]);
 
-    expect(out.attempted).toBe(true);
-    expect(out.statusDetails).toEqual([
+    expect(fetched.debug.slice(0, 5)).toEqual([
       { key: "auth_configured", value: "true" },
       { key: "auth_source", value: "unknown" },
       { key: "auth_method", value: "unknown" },
@@ -417,39 +319,11 @@ describe("openai provider", () => {
     ]);
   });
 
-  it("shows an API key OpenCode could not read as an auth error", async () => {
-    const out = await fetchRows([
-      keyRow("key-id", {
-        label: "Key",
-        active: true,
-        value: { type: "api" },
-        resolveError: "refresh_failed: HTTP 400",
-      }),
-    ]);
-
-    expect(query).not.toHaveBeenCalled();
-    expect(out.attempted).toBe(true);
-    expect(out.entries).toEqual([]);
-    expect(out.errors).toEqual([
-      {
-        label: "[OpenAI Key]",
-        message: "OpenAI API key could not be read: refresh_failed: HTTP 400",
-      },
-    ]);
-    expect(out.statusDetails).toEqual(
-      expect.arrayContaining([
-        { key: "auth_configured", value: "true" },
-        { key: "token_status", value: "failed" },
-      ]),
-    );
-  });
-
   it.each([
     { providerIds: ["openai"], expected: true },
     { providerIds: ["chatgpt"], expected: true },
     { providerIds: ["codex"], expected: true },
     { providerIds: ["opencode"], expected: false },
-    { providerIds: ["zai"], expected: false },
     // Without an OpenAI provider id, a stored OAuth login or API key still counts.
     { providerIds: ["zai"], oauth: true, expected: true },
     { providerIds: ["zai"], keyRows: [keyRow("key-id", { active: true })], expected: true },

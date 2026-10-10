@@ -1,3 +1,4 @@
+import type { ProviderFetchResult } from "../providers/contract.js";
 import type { QuotaProviderDefinition } from "./quota-providers.js";
 import type { ResolvedAuthIdentity } from "./resolved-auth-identity.js";
 import type { RuntimeProviderIdResolver } from "./runtime-provider-ids.js";
@@ -413,11 +414,11 @@ export interface QuotaProvider {
   /** Best-effort availability check (no network if possible) */
   isAvailable: (ctx: QuotaProviderContext) => Promise<boolean>;
 
-  /** Fetch and normalize quota for this provider. */
+  /** Fetch quota for this provider: on the row contract, or as a legacy result. */
   fetch: (
     ctx: QuotaProviderContext,
     cacheContext?: QuotaProviderCacheContext,
-  ) => Promise<QuotaProviderResult>;
+  ) => Promise<QuotaProviderResult | ProviderFetchResult>;
 
   /**
    * Shared-cache safety policy. Canonical runtime providers are classified in

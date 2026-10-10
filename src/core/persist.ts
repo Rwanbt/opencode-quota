@@ -9,6 +9,7 @@
  */
 import { readFile } from "node:fs/promises";
 import { writeJsonAtomic } from "../lib/atomic-json.js";
+import { isRecord } from "../lib/json-guards.js";
 import { safeDebugValue, safeDetail } from "./redact.js";
 import type { DebugDetail, QuotaError, QuotaErrorCode, QuotaRow, ResetNotice } from "./types.js";
 import { validateRows } from "./validate.js";
@@ -60,10 +61,6 @@ export type SavedState = { entries: Map<string, SavedEntry> };
 /** One row's slot: rows of two checks match by id, account and login. */
 export function rowSlot({ login, row }: LoginRow): string {
   return `${row.id}\u001f${row.account ?? ""}\u001f${login}`;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function optionalTime(value: unknown): number | undefined | null {

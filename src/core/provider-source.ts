@@ -30,7 +30,7 @@ import type {
   PricingSnapshotConfig,
   SessionTokenScope,
 } from "../lib/types.js";
-import { rowsFromLegacyResult } from "./rows.js";
+import { rowsFromProviderResult } from "./rows.js";
 import { matchesQuotaProviderCurrentSelection } from "./selection.js";
 import type { ProviderIdentity, StoreProvider, StoreSource } from "./store.js";
 import type { SessionModel } from "./types.js";
@@ -159,7 +159,7 @@ function storeProvider(
     },
     async fetch() {
       const result = await provider.fetch(ctx, await cacheContextFor(provider, ctx));
-      const fetched = rowsFromLegacyResult(provider.id, result);
+      const fetched = rowsFromProviderResult(provider.id, result);
       if (!fetched.rowLogins) return fetched;
       return { ...fetched, rowLogins: await keyedLogins(provider.id, fetched.rowLogins) };
     },

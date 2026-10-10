@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
+import { rowsFromProviderResult } from "../src/core/rows.js";
 import { googleAgyProvider } from "../src/providers/google-agy.js";
-import { expectAttemptedWithNoErrors, visibleEntries } from "./helpers/provider-assertions.js";
 
 const mocks = vi.hoisted(() => ({ queryGoogleAgyQuota: vi.fn() }));
 
@@ -36,147 +36,72 @@ function bucket(overrides: Record<string, unknown> = {}) {
   };
 }
 
+async function fetchRows() {
+  return rowsFromProviderResult(
+    "google-agy",
+    await googleAgyProvider.fetch({ client: {} } as never),
+  );
+}
+
 describe("google agy provider", () => {
-  it("maps weekly and five-hour summary rows with fixed labels and accounting metadata", async () => {
+  it("shows each family's weekly and 5h windows under the account", async () => {
     mocks.queryGoogleAgyQuota.mockResolvedValueOnce({
       success: true,
       buckets: [
-        bucket({
-          window: "five_hour",
-          windowLabel: "5h",
-          bucketId: "gemini-five-hour",
-          percentRemaining: 25,
-          remainingAmount: "1234.5",
-        }),
+        bucket({ window: "five_hour", windowLabel: "5h", percentRemaining: 25 }),
         bucket(),
         bucket({
           family: "Claude and GPT models",
           window: "five_hour",
           windowLabel: "5h",
-          bucketId: "third-party-five-hour",
           percentRemaining: 90,
-          remainingAmount: "1e3",
         }),
         bucket({
           family: "Claude and GPT models",
-          bucketId: "third-party-weekly",
           percentRemaining: 100,
           resetTimeIso: "2026-06-23T00:00:00.000Z",
         }),
+        bucket({ family: "Quota Summary", accountIndex: 1, accountEmail: undefined }),
       ],
       errors: [{ email: "bob@example.com", error: "Unauthorized" }],
     });
 
-    const out = await googleAgyProvider.fetch({ client: {} } as never);
-    expect(out.attempted).toBe(true);
-    expect(visibleEntries(out.entries, "google-agy")).toEqual([
-      {
-        name: "Gemini Models (ali…)",
-        group: "AGY (ali…): Gemini",
-        label: "Weekly:",
-        sortPriority: 0,
-        percentRemaining: 58,
-        resetTimeIso: undefined,
-      },
-      {
-        name: "Gemini Models (ali…)",
-        group: "AGY (ali…): Gemini",
-        label: "5h:",
-        sortPriority: 1,
-        right: "1,234.5 left",
-        percentRemaining: 25,
-        resetTimeIso: undefined,
-      },
-      {
-        name: "Claude and GPT models (ali…)",
-        group: "AGY (ali…): Claude/GPT",
-        label: "Weekly:",
-        sortPriority: 0,
-        percentRemaining: 100,
-        resetTimeIso: "2026-06-23T00:00:00.000Z",
-      },
-      {
-        name: "Claude and GPT models (ali…)",
-        group: "AGY (ali…): Claude/GPT",
-        label: "5h:",
-        sortPriority: 1,
-        right: "1,000 left",
-        percentRemaining: 90,
-        resetTimeIso: undefined,
-      },
+    const fetched = await fetchRows();
+
+    expect(
+      fetched.rows.map((row) => [row.id, row.account, row.label, row.window, row.percentRemaining]),
+    ).toEqual([
+      ["google-agy.gemini.weekly", "ali…", "Gemini Weekly", "week", 58],
+      ["google-agy.gemini.five_hour", "ali…", "Gemini 5h", "five_hour", 25],
+      ["google-agy.claude_gpt.weekly", "ali…", "Claude/GPT Weekly", "week", 100],
+      ["google-agy.claude_gpt.five_hour", "ali…", "Claude/GPT 5h", "five_hour", 90],
+      ["google-agy.quota_summary.weekly", "Account 2", "Quota Summary Weekly", "week", 58],
     ]);
-    expect(out.errors).toEqual([{ label: "bob…", message: "Unauthorized" }]);
-    expect(out.presentation).toEqual({
-      singleWindowShowRight: true,
-    });
-    expect(out.entries.every((entry) => entry.accounting.sourceId === "account-1")).toBe(true);
+    expect(fetched.rows[2]?.resetsAt).toBe("2026-06-23T00:00:00.000Z");
+    expect(fetched.rowLogins).toEqual([...Array(4).fill("account-1"), "account-2"]);
+    expect(fetched.debug).toContainEqual({ key: "error", value: "bob…: Unauthorized" });
   });
 
-  it("keeps account order and email-less accounts distinct", async () => {
+  it("keeps email-less accounts apart", async () => {
     mocks.queryGoogleAgyQuota.mockResolvedValueOnce({
       success: true,
       buckets: [
-        bucket({
-          accountEmail: undefined,
-          accountIndex: 0,
-          percentRemaining: 20,
-        }),
-        bucket({
-          accountEmail: undefined,
-          accountIndex: 1,
-          percentRemaining: 80,
-        }),
+        bucket({ accountEmail: undefined, accountIndex: 0, percentRemaining: 20 }),
+        bucket({ accountEmail: undefined, accountIndex: 1, percentRemaining: 80 }),
       ],
     });
 
-    const out = await googleAgyProvider.fetch({ client: {} } as never);
-    expectAttemptedWithNoErrors(out);
-    expect(out.entries.map((entry) => entry.name)).toEqual([
-      "Gemini Models (Account 1)",
-      "Gemini Models (Account 2)",
+    const fetched = await fetchRows();
+
+    expect(fetched.error).toBeUndefined();
+    expect(fetched.rows.map((row) => [row.id, row.account, row.percentRemaining])).toEqual([
+      ["google-agy.gemini.weekly", "Account 1", 20],
+      ["google-agy.gemini.weekly", "Account 2", 80],
     ]);
-    expect(out.entries.map((entry) => entry.accounting.sourceId)).toEqual([
-      "account-1",
-      "account-2",
-    ]);
-    expect(out.entries.map((entry) => entry.percentRemaining)).toEqual([20, 80]);
+    expect(fetched.rowLogins).toEqual(["account-1", "account-2"]);
   });
 
-  it("sorts account, family, and weekly-before-five-hour independently of input order", async () => {
-    mocks.queryGoogleAgyQuota.mockResolvedValueOnce({
-      success: true,
-      buckets: [
-        bucket({
-          accountIndex: 1,
-          accountEmail: "bob@example.com",
-          window: "five_hour",
-          windowLabel: "5h",
-        }),
-        bucket({
-          family: "Claude and GPT models",
-          accountIndex: 0,
-          window: "five_hour",
-          windowLabel: "5h",
-        }),
-        bucket({ accountIndex: 0 }),
-        bucket({
-          family: "Claude and GPT models",
-          accountIndex: 0,
-        }),
-      ],
-    });
-
-    const out = await googleAgyProvider.fetch({ client: {} } as never);
-    expectAttemptedWithNoErrors(out);
-    expect(out.entries.map((entry) => entry.group)).toEqual([
-      "AGY (ali…): Gemini",
-      "AGY (ali…): Claude/GPT",
-      "AGY (ali…): Claude/GPT",
-      "AGY (bob…): Gemini",
-    ]);
-  });
-
-  it("preserves partial account errors when no summary rows succeed", async () => {
+  it("keeps account errors when no account has rows", async () => {
     mocks.queryGoogleAgyQuota.mockResolvedValueOnce({
       success: true,
       buckets: [],
@@ -186,12 +111,12 @@ describe("google agy provider", () => {
       ],
     });
 
-    const out = await googleAgyProvider.fetch({ client: {} } as never);
-    expect(out.attempted).toBe(true);
-    expect(out.entries).toEqual([]);
-    expect(out.errors).toEqual([
-      { label: "ali…", message: "API timeout" },
-      { label: "goo…", message: "Token revoked" },
+    const fetched = await fetchRows();
+
+    expect(fetched.rows).toEqual([]);
+    expect(fetched.debug.filter((detail) => detail.key === "error")).toEqual([
+      { key: "error", value: "ali…: API timeout" },
+      { key: "error", value: "goo…: Token revoked" },
     ]);
   });
 

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
+import { rowsFromProviderResult } from "../src/core/rows.js";
 import { googleGeminiCliProvider } from "../src/providers/google-gemini-cli.js";
-import { visibleEntries } from "./helpers/provider-assertions.js";
 
 const mocks = vi.hoisted(() => ({
   readCredentialRows: vi.fn(async () => [] as unknown[]),
@@ -25,92 +25,53 @@ vi.mock("../src/lib/google-gemini-cli.js", async (importOriginal) => ({
   })),
 }));
 
+async function fetchRows() {
+  return rowsFromProviderResult(
+    "google-gemini-cli",
+    await googleGeminiCliProvider.fetch({ client: {} } as never),
+  );
+}
+
 describe("google gemini cli provider", () => {
-  it("maps quality-tier buckets into grouped entries with amounts, token types, and labels", async () => {
+  it("keys the quality tiers and other models, per account", async () => {
     mocks.queryGeminiCliQuota.mockResolvedValueOnce({
       success: true,
       buckets: [
         {
-          modelId: "gemini-2.5-pro",
           displayName: "Gemini Pro",
           accountEmail: "alice@example.com",
           percentRemaining: 20,
           resetTimeIso: "2026-01-01T12:00:00Z",
-          remainingAmount: "50",
-          tokenType: "TOKENS",
         },
+        { displayName: "Gemini Flash", accountEmail: "alice@example.com", percentRemaining: 50 },
         {
-          modelId: "gemini-2.5-flash",
-          displayName: "Gemini Flash",
-          accountEmail: "alice@example.com",
-          percentRemaining: 50,
-          resetTimeIso: "2026-01-01T08:00:00Z",
-          remainingAmount: "1000",
-          tokenType: "REQUESTS",
-        },
-        {
-          modelId: "gemini-2.5-flash-lite",
           displayName: "Gemini Flash Lite",
           accountEmail: "alice@example.com",
           percentRemaining: 10,
-          resetTimeIso: "2026-01-01T06:00:00Z",
-          remainingAmount: "25",
-          tokenType: "REQUESTS",
         },
-        { modelId: "gemini-2.5-pro", displayName: "Gemini Pro", percentRemaining: 5 },
+        { displayName: "Gemini 3 Daily", accountEmail: "alice@example.com", percentRemaining: 30 },
+        { displayName: "Gemini Pro", percentRemaining: 5 },
       ],
       errors: [{ email: "bob@example.com", error: "Unauthorized" }],
     });
 
-    const out = await googleGeminiCliProvider.fetch({ client: {} } as never);
-    expect(out.attempted).toBe(true);
-    expect(visibleEntries(out.entries, "google-gemini-cli")).toEqual([
-      {
-        name: "Gemini Pro (ali…)",
-        group: "Gemini CLI (ali…)",
-        label: "Gemini Pro:",
-        right: "50 left TOKENS",
-        percentRemaining: 20,
-        resetTimeIso: "2026-01-01T12:00:00Z",
-      },
-      {
-        name: "Gemini Flash (ali…)",
-        group: "Gemini CLI (ali…)",
-        label: "Gemini Flash:",
-        right: "1,000 left",
-        percentRemaining: 50,
-        resetTimeIso: "2026-01-01T08:00:00Z",
-      },
-      {
-        name: "Gemini Flash Lite (ali…)",
-        group: "Gemini CLI (ali…)",
-        label: "Gemini Flash Lite:",
-        right: "25 left",
-        percentRemaining: 10,
-        resetTimeIso: "2026-01-01T06:00:00Z",
-      },
-      {
-        name: "Gemini Pro (Unknown)",
-        group: "Gemini CLI (Unknown)",
-        label: "Gemini Pro:",
-        percentRemaining: 5,
-        resetTimeIso: undefined,
-      },
-    ]);
-    expect(out.entries.map((entry) => entry.accounting.sourceId)).toEqual([
-      "alice@example.com",
-      "alice@example.com",
-      "alice@example.com",
-      undefined,
-    ]);
-    expect(out.errors).toEqual([{ label: "bob…", message: "Unauthorized" }]);
-    expect(out.presentation).toEqual({
-      singleWindowDisplayName: "Gemini CLI",
-      singleWindowShowRight: true,
-    });
+    const fetched = await fetchRows();
+
+    expect(fetched.rows.map((row) => [row.id, row.account, row.label, row.window ?? null])).toEqual(
+      [
+        ["google-gemini-cli.pro", "ali…", "Pro", null],
+        ["google-gemini-cli.flash", "ali…", "Flash", null],
+        ["google-gemini-cli.flash_lite", "ali…", "Flash Lite", null],
+        ["google-gemini-cli.model.3_daily", "ali…", "3 Daily", "day"],
+        ["google-gemini-cli.pro", "Unknown", "Pro", null],
+      ],
+    );
+    expect(fetched.rows[0]?.resetsAt).toBe("2026-01-01T12:00:00Z");
+    expect(fetched.rowLogins).toEqual([...Array(4).fill("alice@example.com"), ""]);
+    expect(fetched.debug).toContainEqual({ key: "error", value: "bob…: Unauthorized" });
   });
 
-  it("adds an error row per login OpenCode could not return, next to working accounts", async () => {
+  it("shows a login OpenCode could not return as an error, next to working ones", async () => {
     mocks.readCredentialRows.mockResolvedValueOnce([
       {
         id: "failed-id",
@@ -131,38 +92,30 @@ describe("google gemini cli provider", () => {
     mocks.queryGeminiCliQuota.mockResolvedValueOnce({
       success: true,
       buckets: [
-        {
-          modelId: "gemini-2.5-pro",
-          displayName: "Gemini Pro",
-          accountEmail: "home@example.com",
-          percentRemaining: 64,
-        },
+        { displayName: "Gemini Pro", accountEmail: "home@example.com", percentRemaining: 64 },
       ],
     });
 
-    const out = await googleGeminiCliProvider.fetch({ client: {} } as never);
+    const fetched = await fetchRows();
 
     expect(mocks.readCredentialRows).toHaveBeenCalledWith(
       ["google-gemini-cli", "gemini-cli", "opencode-gemini-auth", "gemini", "google"],
       { methods: ["oauth"] },
     );
-    // Only the working row is queried.
-    expect(mocks.queryGeminiCliQuota).toHaveBeenCalledTimes(1);
-    expect(mocks.queryGeminiCliQuota).toHaveBeenLastCalledWith({
+    // Only the working login is queried.
+    expect(mocks.queryGeminiCliQuota).toHaveBeenCalledExactlyOnceWith({
       requestTimeoutMs: undefined,
       authData: { "google-gemini-cli": { type: "oauth", refresh: "refresh-token|project-id" } },
     });
-    expect(out.attempted).toBe(true);
-    expect(out.errors).toEqual([
-      {
-        label: "[Gemini CLI work@example.com] (active)",
-        message:
-          "Gemini CLI sign-in could not be refreshed: refresh_failed: HTTP 400. Run `opencode auth login google`.",
-      },
+    expect(fetched.rows.map((row) => [row.id, row.account])).toEqual([
+      ["google-gemini-cli.pro", "home@example.com"],
     ]);
-    expect(out.entries.map((entry) => [entry.group, entry.accounting.sourceId])).toEqual([
-      ["[Gemini CLI home@example.com]", "working-id"],
-    ]);
+    expect(fetched.rowLogins).toEqual(["working-id"]);
+    expect(fetched.debug).toContainEqual({
+      key: "error",
+      value:
+        "[Gemini CLI work@example.com] (active): Gemini CLI sign-in could not be refreshed: refresh_failed: HTTP 400. Run `opencode auth login google`.",
+    });
   });
 
   it.each([

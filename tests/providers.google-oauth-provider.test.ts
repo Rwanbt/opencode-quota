@@ -36,13 +36,10 @@ vi.mock("../src/lib/google-gemini-cli.js", async (importOriginal) => ({
   inspectGeminiCliCompanionPresence: mocks.gemini.inspectCompanion,
 }));
 
+import { rowsFromProviderResult } from "../src/core/rows.js";
 import { googleAgyProvider } from "../src/providers/google-agy.js";
 import { googleGeminiCliProvider } from "../src/providers/google-gemini-cli.js";
 import { createGoogleAccountLabelMap } from "../src/providers/google-oauth-provider.js";
-import {
-  expectAttemptedWithErrorLabel,
-  expectNotAttempted,
-} from "./helpers/provider-assertions.js";
 
 const PROVIDERS = [
   {
@@ -57,7 +54,7 @@ const PROVIDERS = [
       accountIndex: 0,
       percentRemaining: 70,
     },
-    loginEntryName: "Gemini Weekly",
+    rowId: "google-agy.gemini.weekly",
   },
   {
     name: "Gemini CLI",
@@ -65,9 +62,13 @@ const PROVIDERS = [
     provider: googleGeminiCliProvider,
     lib: mocks.gemini,
     bucket: { displayName: "Gemini 2.5", percentRemaining: 70 },
-    loginEntryName: "Gemini 2.5",
+    rowId: "google-gemini-cli.model.2_5",
   },
 ] as const;
+
+async function fetchRows(provider: (typeof PROVIDERS)[number]["provider"], config = {}) {
+  return rowsFromProviderResult(provider.id, await provider.fetch({ client: {}, config } as never));
+}
 
 beforeEach(() => {
   mocks.readCredentialRows.mockResolvedValue([]);
@@ -91,12 +92,20 @@ describe.each(PROVIDERS)("$name provider", ({ name, integrationId, provider, lib
     expect(lib.query).toHaveBeenLastCalledWith({ requestTimeoutMs: 12000 });
   });
 
-  it("returns attempted:false without a login and one error row when the query fails", async () => {
+  it("is not set up without a login and shows the error when the query fails", async () => {
     lib.query.mockResolvedValueOnce(null);
-    expectNotAttempted(await provider.fetch({ client: {} } as never));
+    expect(await fetchRows(provider)).toMatchObject({
+      rows: [],
+      error: { code: "not_configured" },
+    });
 
     lib.query.mockResolvedValueOnce({ success: false, error: `No ${name} quota data available` });
-    expectAttemptedWithErrorLabel(await provider.fetch({ client: {} } as never), name);
+    const failed = await fetchRows(provider);
+    expect(failed).toMatchObject({ rows: [], error: { code: "no_data" } });
+    expect(failed.debug).toContainEqual({
+      key: "error",
+      value: `${name}: No ${name} quota data available`,
+    });
   });
 
   it("is available only when the runtime check succeeds", async () => {
@@ -123,8 +132,8 @@ describe.each(PROVIDERS)("$name provider", ({ name, integrationId, provider, lib
       error: "incompatible",
     });
 
-    const out = await provider.fetch({ client: {} } as never);
-    expect(out.statusDetails).toEqual([
+    const { debug } = await fetchRows(provider);
+    expect(debug).toEqual([
       { key: "auth_state", value: "invalid" },
       { key: "auth_source", value: integrationId },
       { key: "account_count", value: "1" },
@@ -155,19 +164,18 @@ describe.each(PROVIDERS)("$name provider", ({ name, integrationId, provider, lib
     ]);
     lib.query.mockResolvedValue({ success: true, buckets: [flavor.bucket] });
 
-    const output = await provider.fetch({ client: {}, config: {} } as never);
+    const fetched = await fetchRows(provider);
 
     expect(lib.query).toHaveBeenCalledTimes(2);
     expect(lib.query).toHaveBeenCalledWith({
       requestTimeoutMs: undefined,
       authData: { [integrationId]: { type: "oauth", refresh: "two|project" } },
     });
-    expect(
-      output.entries.map((entry) => [entry.name, entry.group, entry.accounting.sourceId]),
-    ).toEqual([
-      [`[${name} Work] (active) ${flavor.loginEntryName}`, `[${name} Work] (active)`, "active-id"],
-      [`[${name} Work 2] ${flavor.loginEntryName}`, `[${name} Work 2]`, "other-id"],
+    expect(fetched.rows.map((row) => [row.id, row.account, row.percentRemaining])).toEqual([
+      [flavor.rowId, "Work", 70],
+      [flavor.rowId, "Work 2", 70],
     ]);
+    expect(fetched.rowLogins).toEqual(["active-id", "other-id"]);
   });
 });
 

@@ -1,31 +1,21 @@
 import { sanitizeDisplayText } from "../lib/display-sanitize.js";
-import type {
-  AccountingMetadata,
-  QuotaProviderContext,
-  QuotaProviderPresentation,
-  QuotaProviderResult,
-  QuotaToastEntry,
-  QuotaToastError,
-} from "../lib/entries.js";
+import type { QuotaProviderContext } from "../lib/entries.js";
 import type { GoogleCompanionPresence } from "../lib/google-companion-credentials.js";
 import type {
   GoogleAuthPresence,
   GoogleAuthSourceKey,
   GoogleQuotaResult,
 } from "../lib/google-oauth-quota.js";
-import {
-  type CredentialRow,
-  formatCredentialDisplayNames,
-  readCredentialRows,
-} from "../lib/opencode-auth.js";
+import { type CredentialRow, readCredentialRows } from "../lib/opencode-auth.js";
 import type { AuthData } from "../lib/types.js";
 import {
-  attemptedErrorResult,
-  attemptedResult,
-  notAttemptedResult,
-  statusDetailsFromRecord,
-  withStatusDetails,
-} from "./result-helpers.js";
+  type AccountResult,
+  failedAccount,
+  fetchEachLogin,
+  type ProviderFetchResult,
+  type ProviderRow,
+} from "./contract.js";
+import { statusDetailsFromRecord } from "./result-helpers.js";
 
 /** The parts in which the Google AGY and Gemini CLI providers differ. */
 export type GoogleProviderFlavor<Bucket extends { accountEmail?: string }> = {
@@ -37,25 +27,20 @@ export type GoogleProviderFlavor<Bucket extends { accountEmail?: string }> = {
     requestTimeoutMs?: number;
     authData?: AuthData;
   }) => Promise<GoogleQuotaResult<Bucket>>;
-  /** Error row for a login OpenCode could not return; without it the login is queried. */
+  /** Error for a login OpenCode could not return; without it the login is queried. */
   failedLoginError?: (resolveError: string) => string;
   compareBuckets?: (left: Bucket, right: Bucket) => number;
-  presentation: QuotaProviderPresentation;
-  /** Entry for a bucket of one OpenCode login, shown under that login's name. */
-  loginEntry: (bucket: Bucket, login: { group: string; sourceId: string }) => QuotaToastEntry;
-  /** Entry for a bucket from the default login read; `accountLabel` is the short email. */
-  accountEntry: (bucket: Bucket, accountLabel: string | undefined) => QuotaToastEntry;
+  /** The row of one bucket, or none when the bucket gives no row key. */
+  row: (bucket: Bucket) => ProviderRow | undefined;
+  /**
+   * The account of a bucket from the default login read (`accountLabel` is the short email):
+   * its name and the login it counts as.
+   */
+  defaultAccount: (
+    bucket: Bucket,
+    accountLabel: string | undefined,
+  ) => { name: string; login: string | undefined };
 };
-
-export function googleQuotaAccounting(sourceId: string | undefined): AccountingMetadata {
-  return {
-    resultType: "quota",
-    acquisitionMethod: "remote_api",
-    ownership: "maintained",
-    authority: "provider_reported",
-    ...(sourceId !== undefined ? { sourceId } : {}),
-  };
-}
 
 export async function isGoogleRuntimeAvailable(
   hasRuntime: () => Promise<boolean>,
@@ -128,54 +113,53 @@ function sortBuckets<Bucket extends { accountEmail?: string }>(
   return flavor.compareBuckets ? [...buckets].sort(flavor.compareBuckets) : buckets;
 }
 
-/** One group per OpenCode login, named after the login. */
-async function fetchLoginRows<Bucket extends { accountEmail?: string }>(
+function bucketRows<Bucket extends { accountEmail?: string }>(
+  flavor: GoogleProviderFlavor<Bucket>,
+  buckets: Bucket[],
+): ProviderRow[] {
+  return sortBuckets(flavor, buckets).flatMap((bucket) => {
+    const row = flavor.row(bucket);
+    return row ? [row] : [];
+  });
+}
+
+/** One account per OpenCode login, named after the login. */
+function fetchLoginRows<Bucket extends { accountEmail?: string }>(
   flavor: GoogleProviderFlavor<Bucket>,
   rows: CredentialRow[],
   requestTimeoutMs: number | undefined,
-): Promise<QuotaProviderResult> {
-  const results = await Promise.all(
-    rows.map(async (row) => ({
-      row,
-      result:
+): Promise<AccountResult[]> {
+  return fetchEachLogin({
+    providerName: flavor.name,
+    logins: rows.map((row) => ({ row })),
+    async fetchLogin({ row }) {
+      const result =
         row.resolveError !== undefined && flavor.failedLoginError
           ? { success: false as const, error: flavor.failedLoginError(row.resolveError) }
           : await flavor.query({
               requestTimeoutMs,
               authData: { [row.integrationId]: row.value } as AuthData,
-            }),
-    })),
-  );
-  const groups = formatCredentialDisplayNames(
-    flavor.name,
-    rows.map((row) => ({ row, fallbackName: flavor.name })),
-  );
-
-  const entries: QuotaToastEntry[] = [];
-  const errors: QuotaToastError[] = [];
-  results.forEach(({ row, result }, index) => {
-    const group = groups[index] ?? flavor.name;
-    if (!result) return;
-    if (!result.success) {
-      errors.push({ label: group, message: result.error });
-      return;
-    }
-    for (const bucket of sortBuckets(flavor, result.buckets)) {
-      entries.push(flavor.loginEntry(bucket, { group, sourceId: row.id }));
-    }
-    for (const error of result.errors ?? []) errors.push({ label: group, message: error.error });
+            });
+      if (!result) return null;
+      if (!result.success) return { rows: [], errors: [{ message: result.error }] };
+      return {
+        rows: bucketRows(flavor, result.buckets),
+        errors: (result.errors ?? []).map((error) => ({ message: error.error })),
+      };
+    },
   });
-  return attemptedResult(entries, errors, { ...flavor.presentation });
 }
 
-/** The default login read, with groups labelled per account email. */
+/** The default login read: one account per run of buckets of one account, then the errors. */
 async function fetchDefaultLogin<Bucket extends { accountEmail?: string }>(
   flavor: GoogleProviderFlavor<Bucket>,
   requestTimeoutMs: number | undefined,
-): Promise<QuotaProviderResult> {
+): Promise<{ attempted: boolean; accounts: AccountResult[] }> {
   const result = await flavor.query({ requestTimeoutMs });
-  if (!result) return notAttemptedResult();
-  if (!result.success) return attemptedErrorResult(flavor.name, result.error);
+  if (!result) return { attempted: false, accounts: [] };
+  if (!result.success) {
+    return { attempted: true, accounts: [failedAccount(flavor.name, result.error)] };
+  }
 
   const buckets = sortBuckets(flavor, result.buckets);
   const accountErrors = result.errors ?? [];
@@ -183,22 +167,34 @@ async function fetchDefaultLogin<Bucket extends { accountEmail?: string }>(
     ...buckets.map((bucket) => bucket.accountEmail),
     ...accountErrors.map((error) => error.email),
   ]);
-  const entries = buckets.map((bucket) =>
-    flavor.accountEntry(bucket, bucket.accountEmail ? labels.get(bucket.accountEmail) : undefined),
-  );
-  const errors = accountErrors.map((error) => ({
-    label: labels.get(error.email) ?? formatGoogleAccountLabel(error.email),
-    message: error.error,
-  }));
-  return attemptedResult(entries, errors, { ...flavor.presentation });
+  const accounts: AccountResult[] = [];
+  for (const bucket of buckets) {
+    const row = flavor.row(bucket);
+    if (!row) continue;
+    const { name, login } = flavor.defaultAccount(
+      bucket,
+      bucket.accountEmail ? labels.get(bucket.accountEmail) : undefined,
+    );
+    const last = accounts.at(-1);
+    if (last && last.name === name && last.login === login) {
+      last.rows.push(row);
+    } else {
+      accounts.push({ name, ...(login ? { login } : {}), rows: [row], errors: [] });
+    }
+  }
+  for (const error of accountErrors) {
+    const label = labels.get(error.email) ?? formatGoogleAccountLabel(error.email);
+    accounts.push(failedAccount(label, error.error));
+  }
+  return { attempted: true, accounts };
 }
 
 export async function fetchGoogleProviderQuota<Bucket extends { accountEmail?: string }>(
   flavor: GoogleProviderFlavor<Bucket>,
   ctx: QuotaProviderContext,
-): Promise<QuotaProviderResult> {
+): Promise<ProviderFetchResult> {
   const [auth, companion] = await Promise.all([flavor.inspectAuth(), flavor.inspectCompanion()]);
-  const statusDetails = statusDetailsFromRecord({
+  const debug = statusDetailsFromRecord({
     auth_state: auth.state,
     auth_source: auth.sourceKey ?? "(none)",
     account_count: String(auth.accountCount),
@@ -215,9 +211,12 @@ export async function fetchGoogleProviderQuota<Bucket extends { accountEmail?: s
     ? ctx.config.requestTimeoutMs
     : undefined;
   const rows = await readCredentialRows(flavor.authKeys, { methods: ["oauth"] });
-  const result =
-    rows.length > 0
-      ? await fetchLoginRows(flavor, rows, requestTimeoutMs)
-      : await fetchDefaultLogin(flavor, requestTimeoutMs);
-  return withStatusDetails(result, statusDetails);
+  if (rows.length > 0) {
+    return {
+      attempted: true,
+      accounts: await fetchLoginRows(flavor, rows, requestTimeoutMs),
+      debug,
+    };
+  }
+  return { ...(await fetchDefaultLogin(flavor, requestTimeoutMs)), debug };
 }

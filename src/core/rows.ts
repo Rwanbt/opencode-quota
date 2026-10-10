@@ -1,19 +1,31 @@
 /**
- * Temporary shim (until the adapters emit rows, S14-S19): turns today's provider result into
- * v6 rows with stable ids. Each provider has a key rule that reads the legacy name, label and
- * semantic of an entry and returns the row key from the plan's key table; the account comes
- * from the entry's group. Value mapping follows ADR 0001: rate_limit is a quota, spend is
- * usage, local runtime accounting is a local estimation.
+ * The shim between providers and v6 rows. A provider returns either the row contract
+ * (`ProviderFetchResult`, see `providers/contract.ts`) or today's legacy result. For a legacy
+ * result, each provider has a key rule that reads the legacy name, label and semantic of an
+ * entry and returns the row key from the plan's key table; the account comes from the entry's
+ * group. Value mapping follows ADR 0001: rate_limit is a quota, spend is usage, local runtime
+ * accounting is a local estimation.
  */
 
 import type {
   AccountingAcquisitionMethod,
+  AccountingPercentageBasis,
   AccountingQuantity,
   AccountingResultType,
+  AccountingSemantic,
+  AccountingWindow,
   QuotaProviderResult,
   QuotaToastEntry,
+  QuotaToastError,
 } from "../lib/entries.js";
+import { isRecord } from "../lib/json-guards.js";
 import { customRowKey } from "../lib/quota-providers.js";
+import {
+  type AccountResult,
+  keySlug,
+  type ProviderFetchResult,
+  type ProviderRow,
+} from "../providers/contract.js";
 import { classifyError } from "./errors.js";
 import { safeDebugValue, safeDetail } from "./redact.js";
 import type { ProviderFetch } from "./store.js";
@@ -34,14 +46,6 @@ const DEBUG_VALUE_MAX_LENGTH = 300;
 /** What a key rule returns: the row key, its default label and its window. */
 type RowKey = { key: string; label?: string; window?: QuotaWindow };
 type KeyRule = (entry: QuotaToastEntry) => RowKey | undefined;
-
-/** Lower-case, underscores for anything else, for keys built from provider text. */
-function slug(text: string): string {
-  return text
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/gu, "_")
-    .replace(/^_+|_+$/gu, "");
-}
 
 /** The legacy row label without its trailing colon, for example "5h:" → "5h". */
 function legacyLabel(entry: QuotaToastEntry): string {
@@ -141,7 +145,7 @@ const geminiCliKey: KeyRule = (entry) => {
   if (!model) return undefined;
   const tier = geminiTierKeys[model];
   const short = model.replace(/^Gemini\s+/u, "") || model;
-  return tier ? { key: tier, label: short } : { key: `model.${slug(short)}`, label: short };
+  return tier ? { key: tier, label: short } : { key: `model.${keySlug(short)}`, label: short };
 };
 
 const AGY_FAMILY_KEYS: Readonly<Record<string, string>> = {
@@ -165,7 +169,7 @@ const googleAgyKey: KeyRule = (entry) => {
   const family = agyFamily(entry);
   const window = byWindowLabel("five_hour", "weekly")(entry);
   if (!family || !window) return undefined;
-  const familyKey = AGY_FAMILY_KEYS[family] ?? slug(family);
+  const familyKey = AGY_FAMILY_KEYS[family] ?? keySlug(family);
   if (!familyKey) return undefined;
   return {
     key: `${familyKey}.${window.key}`,
@@ -180,7 +184,7 @@ const nanogptKey: KeyRule = (entry) => {
   if (entry.name === "nanogpt-current-balance" && entry.kind === "quantity") {
     const unit = entry.quantity.unit;
     return unit.kind === "currency"
-      ? { key: `balance.${slug(unit.code)}`, label: "Balance" }
+      ? { key: `balance.${keySlug(unit.code)}`, label: "Balance" }
       : { key: "balance.nano", label: "Balance" };
   }
   return undefined;
@@ -192,7 +196,7 @@ const kimiKey: KeyRule = (entry) => {
   if (!name) return undefined;
   const window = classifyWindow(name);
   if (window === "week") return { key: "weekly", label: name, window };
-  const limit = slug(name.replace(/\s+limit$/iu, "")) || slug(name);
+  const limit = keySlug(name.replace(/\s+limit$/iu, "")) || keySlug(name);
   return limit ? { key: `limit.${limit}`, label: name, ...(window ? { window } : {}) } : undefined;
 };
 
@@ -209,7 +213,7 @@ const deepseekKey: KeyRule = (entry) => {
   if (!component || !label || entry.kind !== "quantity") return undefined;
   const unit = entry.quantity.unit;
   const currency = unit.kind === "currency" ? unit.code : undefined;
-  return currency ? { key: `${component}.${slug(currency)}`, label } : undefined;
+  return currency ? { key: `${component}.${keySlug(currency)}`, label } : undefined;
 };
 
 const xaiKey: KeyRule = (entry) => {
@@ -452,17 +456,35 @@ function valueFields(providerId: string, entry: QuotaToastEntry): Record<string,
   }
 }
 
+/**
+ * True for an entry `legacyResultFromFetch` made from a contract row: it carries its row key,
+ * and its window in the semantic. Custom sources carry a row key of their own (see `customKey`).
+ */
+function isConvertedEntry(providerId: string, entry: QuotaToastEntry): boolean {
+  return entry.rowKey !== undefined && providerId !== "quota-providers";
+}
+
+function convertedRowKey(entry: QuotaToastEntry): RowKey {
+  const metric = entry.semantic?.metric;
+  return {
+    key: entry.rowKey ?? "",
+    label: legacyLabel(entry),
+    ...(metric?.kind === "window" ? { window: metric.window } : {}),
+  };
+}
+
 /** The candidate row for one entry (checked later by `validateRows`), or why it has none. */
 function candidateRow(
   providerId: string,
   entry: QuotaToastEntry,
 ): Record<string, unknown> | string {
+  const converted = isConvertedEntry(providerId, entry);
   const rule = KEY_RULES[providerId];
-  if (!rule) return "unknown provider";
-  const rowKey = rule(entry);
+  if (!converted && !rule) return "unknown provider";
+  const rowKey = converted ? convertedRowKey(entry) : rule?.(entry);
   if (!rowKey) return "no row key";
   const account = accountFromGroup(providerId, entry.group);
-  const window = rowKey.window ?? classifyWindow(legacyLabel(entry));
+  const window = converted ? rowKey.window : (rowKey.window ?? classifyWindow(legacyLabel(entry)));
   return {
     id: `${providerId}.${rowKey.key}`,
     providerId,
@@ -504,9 +526,47 @@ function detail(key: string, value: string): DebugDetail {
 }
 
 /**
- * Today's provider result as v6 rows, the error to show, and the debug details. `rowLogins`
- * holds source ids here; the provider source keys them before the store gets them.
+ * Checks the candidate rows and reads the errors: the rows, the error to show and the debug
+ * details. `rowLogins` holds source ids here; the provider source keys them before the store
+ * gets them.
  */
+function finishFetch(params: {
+  providerId: string;
+  attempted: boolean;
+  candidates: readonly Candidate[];
+  errors: readonly QuotaToastError[];
+  debug: DebugDetail[];
+  nowMs: number;
+}): ProviderFetch {
+  const { debug } = params;
+  // Each row is checked on its own, so it keeps its login.
+  const rows: QuotaRow[] = [];
+  const rowLogins: string[] = [];
+  for (const { row, login } of dropRepeatedRows(params.candidates, debug)) {
+    const checked = validateRows(params.providerId, [row]);
+    debug.push(...checked.dropped);
+    for (const clean of checked.rows) {
+      rows.push(clean);
+      rowLogins.push(login);
+    }
+  }
+  const logins = rowLogins.some(Boolean) ? { rowLogins } : {};
+
+  for (const error of params.errors) {
+    const key = error.kind === "intentional-filter" ? "note" : "error";
+    debug.push(detail(key, `${error.label}: ${error.message}`));
+  }
+  const firstError = params.errors.find((error) => error.kind !== "intentional-filter");
+  if (firstError) {
+    return { rows, ...logins, error: classifyError(firstError.message, params.nowMs), debug };
+  }
+  if (!params.attempted && rows.length === 0) {
+    return { rows: [], error: { code: "not_configured" }, debug };
+  }
+  return { rows, ...logins, debug };
+}
+
+/** Today's legacy provider result as v6 rows, the error to show, and the debug details. */
 export function rowsFromLegacyResult(
   providerId: string,
   result: QuotaProviderResult,
@@ -529,29 +589,167 @@ export function rowsFromLegacyResult(
       debug.push(detail("dropped_row", `row ${index + 1}: unreadable`));
     }
   });
-  // Each row is checked on its own, so it keeps its login.
-  const rows: QuotaRow[] = [];
-  const rowLogins: string[] = [];
-  for (const { row, login } of dropRepeatedRows(candidates, debug)) {
-    const checked = validateRows(providerId, [row]);
-    debug.push(...checked.dropped);
-    for (const clean of checked.rows) {
-      rows.push(clean);
-      rowLogins.push(login);
-    }
-  }
-  const logins = rowLogins.some(Boolean) ? { rowLogins } : {};
+  return finishFetch({
+    providerId,
+    attempted: result.attempted,
+    candidates,
+    errors: result.errors,
+    debug,
+    nowMs,
+  });
+}
 
-  for (const error of result.errors) {
-    const key = error.kind === "intentional-filter" ? "note" : "error";
-    debug.push(detail(key, `${error.label}: ${error.message}`));
+/** Errors as the legacy result lists them: labelled with their account's name. */
+function accountErrors(accounts: readonly AccountResult[]): QuotaToastError[] {
+  return accounts.flatMap((account) =>
+    account.errors.map((error) => ({
+      label: account.name,
+      message: error.message,
+      ...(error.retryable === true ? { retryable: true } : {}),
+    })),
+  );
+}
+
+/** A contract result as v6 rows: each row gets its id, provider and its account's account. */
+function rowsFromContractResult(
+  providerId: string,
+  result: ProviderFetchResult,
+  nowMs: number,
+): ProviderFetch {
+  const candidates: Candidate[] = result.accounts.flatMap((account) => {
+    const accountText = accountFromGroup(providerId, account.name);
+    return account.rows.map(({ key, ...fields }) => ({
+      row: {
+        ...fields,
+        id: `${providerId}.${key}`,
+        providerId,
+        ...(accountText ? { account: accountText } : {}),
+      },
+      login: account.login ?? "",
+    }));
+  });
+  return finishFetch({
+    providerId,
+    attempted: result.attempted,
+    candidates,
+    errors: accountErrors(result.accounts),
+    debug: result.debug.map((item) => detail(item.key, item.value)),
+    nowMs,
+  });
+}
+
+/** True for a result on the row contract, false for a legacy result. */
+export function isContractResult(value: unknown): value is ProviderFetchResult {
+  return isRecord(value) && Array.isArray(value.accounts);
+}
+
+/** A provider result in either shape as v6 rows, the error to show and the debug details. */
+export function rowsFromProviderResult(
+  providerId: string,
+  result: QuotaProviderResult | ProviderFetchResult,
+  nowMs: number = Date.now(),
+): ProviderFetch {
+  return isContractResult(result)
+    ? rowsFromContractResult(providerId, result, nowMs)
+    : rowsFromLegacyResult(providerId, result, nowMs);
+}
+
+const ACCOUNTING_WINDOWS: ReadonlySet<string> = new Set<AccountingWindow>([
+  "rpm",
+  "hour",
+  "five_hour",
+  "day",
+  "week",
+  "month",
+  "year",
+  "mcp",
+  "code_review",
+]);
+
+function legacySemantic(row: ProviderRow): AccountingSemantic {
+  return {
+    metric:
+      row.window && ACCOUNTING_WINDOWS.has(row.window)
+        ? { kind: "window", window: row.window as AccountingWindow }
+        : { kind: "aggregate" },
+    prominence: row.prominence,
+  };
+}
+
+function legacyBasis(row: ProviderRow): AccountingPercentageBasis | undefined {
+  const fact = (amount: Amount) => ({
+    quantity: { decimal: amount.decimal, unit: { ...amount.unit } } as AccountingQuantity,
+    authority: row.authority,
+  });
+  const basis = {
+    ...(row.used ? { used: fact(row.used) } : {}),
+    ...(row.limit ? { limit: fact(row.limit) } : {}),
+    ...(row.remaining ? { remaining: fact(row.remaining) } : {}),
+  };
+  return Object.keys(basis).length > 0 ? basis : undefined;
+}
+
+/** The legacy entry for one contract row; the shim reads it back to the same row. */
+function legacyEntry(account: AccountResult, row: ProviderRow, nowMs: number): QuotaToastEntry {
+  const meta = {
+    accounting: {
+      resultType: row.type,
+      acquisitionMethod: row.method,
+      ownership: "maintained" as const,
+      authority: row.authority,
+      ...(account.login ? { sourceId: account.login } : {}),
+    },
+    name: `${account.name} ${row.label}`,
+    group: account.name,
+    label: `${row.label}:`,
+    rowKey: row.key,
+    semantic: legacySemantic(row),
+    ...(row.resetsAt ? { resetTimeIso: row.resetsAt } : {}),
+  };
+  if (row.percentRemaining !== undefined) {
+    const basis = legacyBasis(row);
+    const startedAtMs = row.windowStartedAt ? Date.parse(row.windowStartedAt) : Number.NaN;
+    const endsAtMs = row.resetsAt ? Date.parse(row.resetsAt) : Number.NaN;
+    const fixedWindow =
+      row.windowStartedAt && row.resetsAt && startedAtMs < nowMs && nowMs < endsAtMs
+        ? {
+            kind: "fixed_window" as const,
+            startedAtIso: row.windowStartedAt,
+            observedAtIso: new Date(nowMs).toISOString(),
+            endsAtIso: row.resetsAt,
+            fullReset: true as const,
+          }
+        : undefined;
+    return {
+      ...meta,
+      percentRemaining: row.percentRemaining,
+      ...(basis ? { basis } : {}),
+      ...(fixedWindow ? { fixedWindow } : {}),
+    };
   }
-  const firstError = result.errors.find((error) => error.kind !== "intentional-filter");
-  if (firstError) {
-    return { rows, ...logins, error: classifyError(firstError.message, nowMs), debug };
+  if (row.amount) {
+    const quantity = { decimal: row.amount.decimal, unit: { ...row.amount.unit } };
+    return { ...meta, kind: "quantity", quantity: quantity as AccountingQuantity };
   }
-  if (!result.attempted && rows.length === 0) {
-    return { rows: [], error: { code: "not_configured" }, debug };
-  }
-  return { rows, ...logins, debug };
+  if (row.flag !== undefined) return { ...meta, kind: "boolean", value: row.flag };
+  return { ...meta, kind: "value", value: row.text ?? "" };
+}
+
+/**
+ * A contract result in the legacy shape, for the code that still reads legacy results. Each
+ * entry carries its row key and window, so `rowsFromLegacyResult` gives the same rows back;
+ * names and groups are generic ("<account name> <label>").
+ */
+export function legacyResultFromFetch(
+  result: ProviderFetchResult,
+  nowMs: number = Date.now(),
+): QuotaProviderResult {
+  return {
+    attempted: result.attempted,
+    entries: result.accounts.flatMap((account) =>
+      account.rows.map((row) => legacyEntry(account, row, nowMs)),
+    ),
+    errors: accountErrors(result.accounts),
+    statusDetails: result.debug.map((item) => ({ key: item.key, value: item.value })),
+  };
 }
