@@ -46,7 +46,14 @@ function provider(label: string, percentRemaining?: number): ProviderSnapshot {
 }
 
 function snapshot(providers: ProviderSnapshot[], resetNotices: ResetNotice[] = []): QuotaSnapshot {
-  return { version: 6, providers, resetNotices, generatedAtMs: NOW, revision: NOW };
+  return {
+    version: 6,
+    providers,
+    resetNotices,
+    generatedAtMs: NOW,
+    serverId: "server",
+    revision: NOW,
+  };
 }
 
 function startToasts(answer: QuotaSnapshot | undefined, change: (d: DisplaySettings) => void) {
@@ -266,6 +273,7 @@ describe("turn events of the TUI plugin", () => {
     snapshot: vi.fn(),
     refresh: vi.fn(),
     notices: vi.fn(),
+    acknowledgeDisplayImport: vi.fn(),
     events: { on: vi.fn(() => () => {}) },
   };
   const session = { get: vi.fn() };
@@ -274,7 +282,9 @@ describe("turn events of the TUI plugin", () => {
   beforeEach(() => {
     handlers.clear();
     cleanups.length = 0;
-    for (const mock of [rpc.snapshot, rpc.notices, session.get, toast]) mock.mockReset();
+    for (const mock of [rpc.notices, session.get, toast]) mock.mockReset();
+    rpc.snapshot.mockReset().mockResolvedValue({ snapshot: snapshot([]) });
+    rpc.acknowledgeDisplayImport.mockReset().mockResolvedValue({});
     rpc.refresh.mockReset().mockResolvedValue({ snapshot: OK });
     plugin.setup({
       client: { rpc: () => rpc },
@@ -323,6 +333,27 @@ describe("turn events of the TUI plugin", () => {
     emit(end, { sessionID: "ses_1", id: "call-2" });
     expect(rpc.refresh).not.toHaveBeenCalled();
     expect(session.get).not.toHaveBeenCalled();
+  });
+
+  it("asks for the snapshot once mounted, so Home gets the converted looks too", () => {
+    expect(rpc.snapshot).toHaveBeenCalledWith({}, expect.anything());
+  });
+
+  it("says once that the settings were converted, then applies and acknowledges the looks", async () => {
+    const displayImport = { id: "import-1", display: { toast: { afterReply: "always" as const } } };
+    rpc.refresh.mockResolvedValue({ snapshot: { ...OK, displayImport } });
+    emit("session.step.ended", { sessionID: "ses_1" });
+    emit("session.step.ended", { sessionID: "ses_1" });
+    await vi.waitFor(() => expect(rpc.refresh).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() =>
+      expect(rpc.acknowledgeDisplayImport).toHaveBeenCalledExactlyOnceWith(
+        { id: "import-1" },
+        expect.anything(),
+      ),
+    );
+    expect(toast.mock.calls.map(([shown]) => shown.message)).toEqual([
+      "Settings converted from v5 to settings.jsonc, details in /quota_status",
+    ]);
   });
 
   it("stops listening when OpenCode unmounts the app slot", () => {

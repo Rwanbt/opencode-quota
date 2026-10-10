@@ -76,6 +76,6 @@ export const syntheticProvider: QuotaProvider = {
         ),
     });
     const detail = `configured=${diagnostics.configured ? "true" : "false"}${diagnostics.source ? ` source=${diagnostics.source}` : ""}${diagnostics.checkedPaths.length > 0 ? ` checked=${diagnostics.checkedPaths.join(" | ")}` : ""}`;
-    return withStatusDetails(providerResult, [{ key: "synthetic api key", value: detail }]);
+    return withStatusDetails(providerResult, [{ key: "api_key_diagnostics", value: detail }]);
   },
 };

@@ -1,6 +1,7 @@
 import { type ApiKeySpec, getApiKeyCheckedPaths, resolveApiKey } from "./api-key-resolver.js";
 import { sanitizeSingleLineDisplayText } from "./display-sanitize.js";
 import type { AccountingResultType, QuotaToastEntry } from "./entries.js";
+import { REQUEST_TIMEOUT_MS } from "./http.js";
 import { isRecord } from "./json-guards.js";
 import { getCredentialDatabasePaths } from "./opencode-auth.js";
 import type {
@@ -17,7 +18,6 @@ import {
   JSON_V1_MAX_NUMBER_MAGNITUDE,
   normalizeJsonV1Timestamp,
 } from "./quota-providers.js";
-import { REQUEST_TIMEOUT_MS } from "./types.js";
 
 export const QUOTA_PROVIDER_MAX_BODY_BYTES = 256 * 1024;
 const MAX_REMOTE_ROWS = 100;

@@ -71,13 +71,13 @@ const SIDECAR_NAMES = ["quota-toast.jsonc", "quota-toast.json"] as const;
 const HOST_FILE_NAMES = ["opencode.json", "opencode.jsonc"] as const;
 
 const NO_FORMAT_STYLE =
-  "no v6 equivalent: the sidebar shows every row and the collapsed sidebar one per provider; hide rows in the /quota window";
+  "no v6 equivalent: the sidebar shows every row and the collapsed sidebar one per provider";
 
 /** v5 keys v6 does not keep, and why. */
 const DROPPED: ReadonlyMap<string, string> = new Map(
   Object.entries({
     enabled: "v6 has no switch of its own; turn the plugin off in OpenCode's plugin list",
-    tuiCommandDisplay: "/quota always opens the quota window in v6",
+    tuiCommandDisplay: "TUI reports always open in a popup",
     formatStyle: NO_FORMAT_STYLE,
     toastStyle: NO_FORMAT_STYLE,
     "tuiSidebarPanel.formatStyle": NO_FORMAT_STYLE,

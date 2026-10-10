@@ -4,15 +4,18 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { keyedLogins } from "../src/core/provider-source.js";
+import { keyedLogins, loadProviderSource } from "../src/core/provider-source.js";
 import { createQuotaStore } from "../src/core/store.js";
 import type { QuotaRow } from "../src/core/types.js";
 import type { QuotaProvider, QuotaProviderResult } from "../src/lib/entries.js";
-import { buildQuotaExport } from "../src/lib/quota-export.js";
-import { __resetQuotaStateForTests, fetchQuotaProviderResult } from "../src/lib/quota-state.js";
+import { buildQuotaExportFromSnapshot } from "../src/lib/quota-export.js";
 import { __resetResolvedAuthIdentityForTests } from "../src/lib/resolved-auth-identity.js";
+import { defaultSettings } from "../src/settings/index.js";
 
 const runtime = vi.hoisted(() => ({ root: "" }));
+const registry = vi.hoisted(() => ({ providers: [] as unknown[] }));
+
+vi.mock("../src/providers/registry.js", () => ({ getProviders: () => registry.providers }));
 
 vi.mock("../src/lib/opencode-runtime-paths.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/lib/opencode-runtime-paths.js")>()),
@@ -96,15 +99,14 @@ describe("provider source logins", () => {
 describe("export after a failed check", () => {
   beforeEach(async () => {
     runtime.root = await mkdtemp(join(tmpdir(), "opencode-quota-export-failure-"));
-    __resetQuotaStateForTests();
   });
 
   afterEach(async () => {
-    __resetQuotaStateForTests();
+    registry.providers = [];
     await rm(runtime.root, { recursive: true, force: true });
   });
 
-  it("shows the provider's last failure, not 'unavailable', until a check works again", async () => {
+  it("shows the provider's last failure, not its kept rows, until a check works again", async () => {
     const accounting = {
       resultType: "quota",
       acquisitionMethod: "remote_api",
@@ -113,38 +115,53 @@ describe("export after a failed check", () => {
     } as const;
     const left = (percentRemaining: number): QuotaProviderResult => ({
       attempted: true,
-      entries: [{ accounting, name: "Claude", percentRemaining }],
+      entries: [{ accounting, name: "Claude", label: "Weekly:", percentRemaining }],
       errors: [],
     });
-    const answers = [
+    const answers: QuotaProviderResult[] = [
       left(80),
       { attempted: true, entries: [], errors: [{ label: "Claude", message: "HTTP 503" }] },
       left(70),
     ];
-    const provider = {
+    const provider: QuotaProvider = {
       id: "anthropic",
       cachePolicy: { kind: "account-neutral" },
       isAvailable: async () => true,
-      fetch: async () => answers.shift(),
-    } as unknown as QuotaProvider;
-    const ctx = { client: {}, config: { onlyCurrentModel: false } } as never;
-    // The store's fetch, then the export file's read.
+      fetch: async () => answers.shift() as QuotaProviderResult,
+    };
+    registry.providers = [provider];
+    const loaded = {
+      path: "settings.jsonc",
+      exists: true,
+      settings: defaultSettings(),
+      issues: [],
+      fromFile: [],
+      notRead: [],
+    };
+    const host = { client: {} as never, workspaceRoot: runtime.root, settings: () => loaded };
+    const store = createQuotaStore({
+      source: () => loadProviderSource(host),
+      file: join(runtime.root, "state", "snapshot-v6.json"),
+      log: () => {},
+    });
     const checkThenExport = async () => {
-      await fetchQuotaProviderResult({ provider, ctx, ttlMs: 0 });
-      const exported = await buildQuotaExport({
-        providers: [provider],
-        ctx,
-        ttlMs: 60_000,
-        fromCache: true,
-      });
-      return exported.providers.anthropic;
+      const snapshot = await store.refresh({ reason: "manual" });
+      return buildQuotaExportFromSnapshot(snapshot).providers.anthropic;
     };
 
-    expect(await checkThenExport()).toMatchObject({ status: "ok" });
+    expect(await checkThenExport()).toMatchObject({
+      status: "ok",
+      entries: [{ name: "Claude", window: "Weekly", percentRemaining: 80 }],
+    });
     expect(await checkThenExport()).toMatchObject({ status: "error", error: "HTTP 503" });
     expect(await checkThenExport()).toMatchObject({
       status: "ok",
       entries: [{ percentRemaining: 70 }],
     });
+    await store.dispose();
+
+    // The part stays in memory: the snapshot file, which the terminal command reads, has rows.
+    const saved = await readFile(join(runtime.root, "state", "snapshot-v6.json"), "utf8");
+    expect(saved).not.toContain("exportPart");
   });
 });

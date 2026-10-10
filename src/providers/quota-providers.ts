@@ -26,8 +26,6 @@ import {
   type QuotaProviderAuthSource,
   resolveQuotaProviderApiKey,
 } from "../lib/quota-providers-remote.js";
-import { fetchQuotaProviderResult } from "../lib/quota-state.js";
-import { resolveQuotaProviderDefinitionAuthIdentity } from "./cache-policies.js";
 
 const DEFINITION_CONCURRENCY = 4;
 
@@ -144,47 +142,6 @@ async function executeRemote(
   };
 }
 
-/** Each remote definition gets its own cache entry, keyed by the credential that won. */
-async function executeRemoteWithCache(
-  definition: RemoteApiQuotaProviderDefinition,
-  ctx: QuotaProviderContext,
-): Promise<InstanceResult> {
-  const remoteProvider: QuotaProvider = {
-    id: `${QUOTA_PROVIDERS_AGGREGATE_ID}:${definition.id}`,
-    isAvailable: async () => true,
-    cachePolicy: {
-      kind: "resolved-auth",
-      resolveIdentity: () => resolveQuotaProviderDefinitionAuthIdentity(definition),
-    },
-    fetch: async () => {
-      const result = await executeRemote(definition, ctx.config.requestTimeoutMs);
-      return {
-        attempted: result.diagnostic.attempted,
-        entries: result.entries,
-        errors: result.errors,
-        diagnostics: [result.diagnostic],
-      };
-    },
-  };
-  const result = await fetchQuotaProviderResult({
-    provider: remoteProvider,
-    ctx: { ...ctx, config: { ...ctx.config, quotaProviders: [definition] } },
-    ttlMs: ctx.config.providerCacheTtlMs ?? 0,
-  });
-  return {
-    entries: result.entries,
-    errors: result.errors,
-    diagnostic:
-      result.diagnostics?.[0] ??
-      buildDiagnostic(definition, {
-        attempted: true,
-        credentialSource: null,
-        outcome: "network_error",
-        entryCount: 0,
-      }),
-  };
-}
-
 async function executeLocal(
   definition: LocalEstimateQuotaProviderDefinition,
 ): Promise<InstanceResult> {
@@ -286,7 +243,7 @@ export const quotaProvidersProvider: QuotaProvider = {
       async (definition): Promise<InstanceResult> => {
         try {
           return definition.mode === "remote-api"
-            ? await executeRemoteWithCache(definition, ctx)
+            ? await executeRemote(definition, ctx.config.requestTimeoutMs)
             : await executeLocal(definition);
         } catch {
           return {

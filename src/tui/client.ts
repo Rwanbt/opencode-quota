@@ -9,9 +9,11 @@
  * start over. What a snapshot says about one session comes from the latest call about it.
  */
 import { createSignal } from "solid-js";
-import type { QuotaSnapshot, SessionTokens } from "../core/types.js";
+import type { QuotaSnapshot } from "../core/types.js";
 import {
   QuotaRpc,
+  type QuotaRpcAcknowledgeInput,
+  type QuotaRpcAcknowledgeOutput,
   type QuotaRpcCommandInput,
   type QuotaRpcCommandOutput,
   type QuotaRpcNoticesInput,
@@ -45,6 +47,10 @@ export type QuotaRpcClient = {
     input: QuotaRpcNoticesInput,
     options: QuotaRpcCallOptions,
   ): Promise<QuotaRpcNoticesOutput>;
+  acknowledgeDisplayImport(
+    input: QuotaRpcAcknowledgeInput,
+    options: QuotaRpcCallOptions,
+  ): Promise<QuotaRpcAcknowledgeOutput>;
   events: {
     on(
       name: "changed",
@@ -76,7 +82,10 @@ export function quotaCallOptions(host: RpcLocationHost): QuotaRpcCallOptions {
 }
 
 /** What a snapshot says only about one session. */
-type SessionPart = { currentModelProviderIds?: string[]; sessionTokens?: SessionTokens };
+type SessionPart = Pick<
+  QuotaSnapshot,
+  "currentModelProviderIds" | "currentModelRowPrefixes" | "sessionTokens"
+>;
 
 export type QuotaClient = {
   /** The latest snapshot with what is known about `sessionID`; undefined before the first answer. */
@@ -87,6 +96,8 @@ export type QuotaClient = {
   watch(sessionID?: string): () => void;
   /** Loads the Home notice line now and on every poll until the returned stop. */
   watchHome(): () => void;
+  /** Tells the server this TUI applied the snapshot's `displayImport` with this `id`. */
+  acknowledgeDisplayImport(id: string): Promise<void>;
   /** Asks the server to refresh; answers the new snapshot, or undefined when the call failed. */
   refresh(reason: QuotaRpcRefreshReason, sessionID?: string): Promise<QuotaSnapshot | undefined>;
   /**
@@ -148,7 +159,7 @@ export function createQuotaClient(
 
   /** `call` numbers the request a session's part came from. */
   function apply(snapshot: QuotaSnapshot, session?: { id: string; call: number }): void {
-    const { currentModelProviderIds, sessionTokens, ...shared } = snapshot;
+    const { currentModelProviderIds, currentModelRowPrefixes, sessionTokens, ...shared } = snapshot;
     // An answer that left before a newer snapshot arrived must not undo it.
     const current = latest();
     if (!current || current.serverId !== shared.serverId || current.revision < shared.revision) {
@@ -160,6 +171,7 @@ export function createQuotaClient(
         ...all,
         [session.id]: {
           ...(currentModelProviderIds ? { currentModelProviderIds } : {}),
+          ...(currentModelRowPrefixes ? { currentModelRowPrefixes } : {}),
           ...(sessionTokens ? { sessionTokens } : {}),
         },
       }));
@@ -254,6 +266,10 @@ export function createQuotaClient(
       return () => {
         homeWatchers -= 1;
       };
+    },
+
+    async acknowledgeDisplayImport(id) {
+      await rpc().acknowledgeDisplayImport({ id }, quotaCallOptions(host));
     },
 
     async refresh(reason, sessionID) {

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { classifyError, describeError } from "../src/core/errors.js";
 import type { QuotaErrorCode } from "../src/core/types.js";
@@ -121,6 +121,19 @@ describe("classifyError", () => {
       detail: "HTTP 503 busy",
     });
     expect(classifyError("", NOW_MS)).toEqual({ code: "internal" });
+  });
+
+  it.each([
+    { value: "alice.smith@example.com", shown: "[email]", hidden: "smith" },
+    { value: "/Users/alice/.config/opencode/x.json", shown: "~/.config", hidden: "ali" },
+  ])("hides $hidden before it cuts a long detail", ({ value, shown, hidden }) => {
+    vi.stubEnv("HOME", "/Users/alice");
+    // Unhidden, the cut at 300 characters would keep the first 16 characters of `value`.
+    const filler = "1234567.".repeat(40).slice(0, 300 - " ".length - 16);
+    const { detail } = classifyError(`${filler} ${value}`, NOW_MS);
+
+    expect(detail).toContain(`${filler} ${shown}`);
+    expect(detail).not.toContain(hidden);
   });
 
   it("reads the retry time of a rate limit", () => {

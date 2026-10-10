@@ -1,6 +1,6 @@
+import type { PercentDisplayMode } from "./format-utils.js";
 import { formatLocalCallTimestamp } from "./format-utils.js";
 import { renderMarkdownTable, type WidthMode } from "./markdown-table.js";
-import type { PercentDisplayMode } from "./types.js";
 
 /**
  * A report's first line. The text shows `line`. The TUI dialog has its own title, so it

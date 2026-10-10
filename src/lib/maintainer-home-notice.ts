@@ -12,7 +12,6 @@ import {
   getMaintainerAnnouncementsSummary,
 } from "./maintainer-announcements.js";
 import { getOpencodeRuntimeDirs } from "./opencode-runtime-paths.js";
-import type { MaintainerAnnouncementHomeFrequency } from "./types.js";
 
 // A daily Home notice stays this long after it first shows on a day, so the
 // footer's one-minute refresh does not hide it while you are on Home.
@@ -77,7 +76,7 @@ async function claimDailyHomeNotice(nowMs: number): Promise<boolean> {
  * @param providerIds the providers quota shows (an announcement can target some of them).
  */
 export async function homeNoticeLine(params: {
-  frequency: "off" | MaintainerAnnouncementHomeFrequency;
+  frequency: "off" | "daily" | "always";
   providerIds: string[];
   nowMs?: number;
 }): Promise<string> {

@@ -1,10 +1,9 @@
 /**
- * Today's providers and settings, as the store needs them: which providers are on and
- * available, how to ask each one, and who it is signed in as. Temporary glue: the v6 settings
- * file (V3) replaces the settings part and the row contract (V8/V9) the legacy fetch part.
+ * The providers as the store needs them: which ones the server settings turn on and which of
+ * those are available, how to ask each one, and who it is signed in as. Every read takes the
+ * settings the host holds now, so a settings change applies to the next snapshot or refresh.
  */
 import { createHmac, randomBytes } from "node:crypto";
-import type { RuntimeContextRootHints } from "../lib/config-file-utils.js";
 import type {
   QuotaProvider,
   QuotaProviderCacheContext,
@@ -14,73 +13,114 @@ import {
   getQuotaProviderDisplayLabel,
   isLiveLocalUsageProviderId,
 } from "../lib/provider-metadata.js";
-import { buildQuotaExport, createExportProviderContext } from "../lib/quota-export.js";
-import type { QuotaExport } from "../lib/quota-export-types.js";
+import { exportProviderFromResult } from "../lib/quota-export.js";
 import {
+  cloneQuotaProviders,
   QUOTA_PROVIDERS_AGGREGATE_ID,
   selectEligibleQuotaProviderDefinitions,
 } from "../lib/quota-providers.js";
-import {
-  createQuotaProviderRuntimeContext,
-  type QuotaRuntimeClient,
-  type QuotaRuntimeContext,
-  resolveQuotaRuntimeContext,
-} from "../lib/quota-runtime-context.js";
-import { fetchQuotaProviderResult } from "../lib/quota-state.js";
 import { deriveResolvedAuthIdentity } from "../lib/resolved-auth-identity.js";
-import type {
-  MaintainerAnnouncementHomeFrequency,
-  PricingSnapshotConfig,
-  SessionTokenScope,
-} from "../lib/types.js";
+import { createRuntimeProviderIdResolver } from "../lib/runtime-provider-ids.js";
+import { getProviders } from "../providers/registry.js";
+import type { LoadedSettings, Settings } from "../settings/index.js";
 import { rowsFromLegacyResult } from "./rows.js";
 import { matchesQuotaProviderCurrentSelection } from "./selection.js";
 import type { ProviderIdentity, StoreProvider, StoreSource } from "./store.js";
 import type { SessionModel } from "./types.js";
 
-export type ProviderSourceHost = { client: QuotaRuntimeClient; roots: RuntimeContextRootHints };
+export type ProviderSourceHost = {
+  /** OpenCode's provider list, for availability and model checks. */
+  client: QuotaProviderContext["client"];
+  /** The project folder quota is computed for. */
+  workspaceRoot: string;
+  /** The server settings now. */
+  settings: () => LoadedSettings;
+};
 
 /** The settings the server reads besides the providers themselves. */
 export type ServerSettings = {
-  /** False when the user turned OpenCode Quota off. */
-  enabled: boolean;
   waitForQuotaReset: boolean;
-  /** Which price list the usage report uses and how often it is downloaded again. */
-  pricing: PricingSnapshotConfig;
   /** The enabled providers that serve `model`. */
   providerIdsForModel: (model: SessionModel) => string[];
   /** The custom definitions (rows `quota-providers.custom.<id>.*`) that serve `model`. */
   customDefinitionIdsForModel: (model: SessionModel) => string[];
-  /** Session tokens of the session only, or with its subagents. */
-  sessionTokenScope: SessionTokenScope;
-  /** The maintainer notice on Home: off, once a day, or every time. */
-  homeNotice: "off" | MaintainerAnnouncementHomeFrequency;
   /** The export file, written after each snapshot change when on. */
   export: { enabled: boolean; path: string };
   /** Quota gauges through the host's OpenTelemetry MeterProvider. */
   telemetry: boolean;
 };
 
-async function loadRuntime(host: ProviderSourceHost) {
-  return resolveQuotaRuntimeContext({
-    client: host.client,
-    roots: host.roots,
-  });
+/** `providers.enabled` with registry ids: the custom providers run as `quota-providers`. */
+function registryProviderIds(enabled: Settings["providers"]["enabled"]): string[] | "auto" {
+  if (enabled === "auto") return "auto";
+  return enabled.map((id) => (id === "custom" ? QUOTA_PROVIDERS_AGGREGATE_ID : id));
 }
 
-function providerIdsForModel(runtime: QuotaRuntimeContext, model: SessionModel): string[] {
-  const { config, providers } = runtime;
-  return providers
+/** What every provider reads from the settings when it checks its quota. */
+export function providerContext(
+  host: ProviderSourceHost,
+  loaded: LoadedSettings = host.settings(),
+): QuotaProviderContext {
+  const { settings, fromFile } = loaded;
+  const { anthropic, cursor, opencode } = settings.providers;
+  return {
+    client: host.client,
+    resolveRuntimeProviderIds: createRuntimeProviderIdResolver(host.client),
+    workspaceRoot: host.workspaceRoot,
+    config: {
+      anthropicBinaryPath: anthropic.binaryPath,
+      cursorPlan: cursor.plan,
+      cursorIncludedApiUsd: cursor.includedApiUsd ?? undefined,
+      cursorBillingCycleStartDay: cursor.billingCycleStartDay ?? undefined,
+      opencodeMonthlyLimit: opencode.monthlyLimitUsd ?? undefined,
+      requestTimeoutMs: settings.checking.requestTimeoutMs,
+      requestTimeoutMsConfigured: fromFile.includes("checking.requestTimeoutMs"),
+      enabledProviders: registryProviderIds(settings.providers.enabled),
+      quotaProviders: cloneQuotaProviders(settings.providers.custom),
+    },
+  };
+}
+
+/** The registered providers that serve `model`, by the settings in `ctx`. */
+function providerIdsForModel(ctx: QuotaProviderContext, model: SessionModel): string[] {
+  return getProviders()
     .filter((provider) =>
       matchesQuotaProviderCurrentSelection({
         provider,
         currentModel: model.id,
         currentProviderID: model.providerID,
-        enabledProviders: config.enabledProviders,
-        quotaProviders: config.quotaProviders,
+        enabledProviders: ctx.config.enabledProviders,
+        quotaProviders: ctx.config.quotaProviders,
       }),
     )
     .map((provider) => provider.id);
+}
+
+/** OpenCode's provider ids; none when its list can't be read. */
+async function openCodeProviderIds(ctx: QuotaProviderContext): Promise<ReadonlySet<string>> {
+  try {
+    return await ctx.resolveRuntimeProviderIds();
+  } catch {
+    return new Set();
+  }
+}
+
+/**
+ * The custom definitions (rows `quota-providers.custom.<id>.*`) that serve `model`; without
+ * OpenCode's provider list none can be matched to a model.
+ */
+function customDefinitionIdsForModel(
+  ctx: QuotaProviderContext,
+  availableProviderIds: ReadonlySet<string>,
+  model: SessionModel,
+): string[] {
+  return selectEligibleQuotaProviderDefinitions({
+    definitions: ctx.config.quotaProviders ?? [],
+    availableProviderIds,
+    onlyCurrentModel: true,
+    currentModel: model.id,
+    currentProviderID: model.providerID,
+  }).map((definition) => definition.id);
 }
 
 /** The quota-providers aggregate needs the custom definitions OpenCode can serve right now. */
@@ -161,36 +201,28 @@ function storeProvider(
         : { key: `${account}\u001f${settingsKey}`, persist: true };
     },
     async fetch() {
-      // Through the legacy cache, which the export file and `show --json` read back.
-      const result = await fetchQuotaProviderResult({ provider, ctx, ttlMs: 0 });
-      const fetched = rowsFromLegacyResult(provider.id, result);
+      const result = await provider.fetch(ctx, await cacheContextFor(provider, ctx));
+      const exportPart = exportProviderFromResult({
+        providerId: provider.id,
+        result,
+        checkedAtMs: Date.now(),
+        customDefinitions: ctx.config.quotaProviders ?? [],
+      });
+      const fetched = { ...rowsFromLegacyResult(provider.id, result), exportPart };
       if (!fetched.rowLogins) return fetched;
       return { ...fetched, rowLogins: await keyedLogins(provider.id, fetched.rowLogins) };
     },
   };
 }
 
-/** The store's source: enabled and available providers, read with today's settings. */
+/** The store's source: the enabled and available providers, with the settings now. */
 export async function loadProviderSource(host: ProviderSourceHost): Promise<StoreSource> {
-  const runtime = await loadRuntime(host);
-  const { config } = runtime;
-  // "Only the current model" is a view filter in v6: every enabled provider is fetched.
-  const legacyCtx = createQuotaProviderRuntimeContext({
-    client: runtime.client,
-    config: { ...config, onlyCurrentModel: false },
-    configMeta: runtime.configMeta,
-    session: {},
-    resolveRuntimeProviderIds: runtime.resolveRuntimeProviderIds,
-    workspaceRoot: runtime.roots.workspaceRoot,
-  });
-  // The store keeps its own interval. The custom aggregate's own cache would hand back old
-  // rows that the store then stamps as fresh, so it is off.
-  const ctx = { ...legacyCtx, config: { ...legacyCtx.config, providerCacheTtlMs: 0 } };
-  const enabled = !config.enabled
-    ? []
-    : config.enabledProviders === "auto"
-      ? runtime.providers
-      : runtime.providers.filter((provider) => config.enabledProviders.includes(provider.id));
+  const loaded = host.settings();
+  const ctx = providerContext(host, loaded);
+  const { enabledProviders } = ctx.config;
+  const enabled = getProviders().filter(
+    (provider) => enabledProviders === "auto" || enabledProviders.includes(provider.id),
+  );
   const available = await Promise.all(
     enabled.map(async (provider) => {
       try {
@@ -201,64 +233,46 @@ export async function loadProviderSource(host: ProviderSourceHost): Promise<Stor
     }),
   );
   // A settings change that alters what a provider reports also changes its identity.
+  const { config } = ctx;
   const settingsKey = JSON.stringify([
     config.anthropicBinaryPath ?? null,
     config.cursorPlan,
     config.cursorIncludedApiUsd ?? null,
     config.cursorBillingCycleStartDay ?? null,
-    config.opencodeGoWindows ?? null,
     config.opencodeMonthlyLimit ?? null,
     config.quotaProviders ?? [],
   ]);
+  const availableProviderIds = config.quotaProviders?.length
+    ? await openCodeProviderIds(ctx)
+    : new Set<string>();
   return {
     providers: enabled
       .filter((_, index) => available[index])
       .map((provider) => storeProvider(provider, ctx, settingsKey)),
-    minIntervalMs: config.minIntervalMs,
-    providerIdsForModel: (model) => providerIdsForModel(runtime, model),
+    minIntervalMs: loaded.settings.checking.minIntervalMs,
+    providerIdsForModel: (model) => providerIdsForModel(ctx, model),
+    // A custom definition's rows serve only the models the definition serves.
+    rowPrefixesForModel: (model) => ({
+      [QUOTA_PROVIDERS_AGGREGATE_ID]: customDefinitionIdsForModel(
+        ctx,
+        availableProviderIds,
+        model,
+      ).map((id) => `${QUOTA_PROVIDERS_AGGREGATE_ID}.custom.${id}.`),
+    }),
   };
 }
 
 export async function loadServerSettings(host: ProviderSourceHost): Promise<ServerSettings> {
-  const runtime = await loadRuntime(host);
-  const { config } = runtime;
-  const announcements = config.maintainerAnnouncements;
-  let availableProviderIds: ReadonlySet<string> = new Set();
-  try {
-    availableProviderIds = await runtime.resolveRuntimeProviderIds();
-  } catch {
-    // Without OpenCode's provider list no custom definition can be matched to a model.
-  }
+  const loaded = host.settings();
+  const { settings } = loaded;
+  const ctx = providerContext(host, loaded);
+  const availableProviderIds = await openCodeProviderIds(ctx);
   return {
-    enabled: config.enabled,
-    waitForQuotaReset: config.waitForQuotaReset,
-    pricing: config.pricingSnapshot,
-    providerIdsForModel: (model) => providerIdsForModel(runtime, model),
+    waitForQuotaReset: settings.checking.waitForQuotaReset,
+    providerIdsForModel: (model) => providerIdsForModel(ctx, model),
     customDefinitionIdsForModel: (model) =>
-      selectEligibleQuotaProviderDefinitions({
-        definitions: config.quotaProviders ?? [],
-        availableProviderIds,
-        onlyCurrentModel: true,
-        currentModel: model.id,
-        currentProviderID: model.providerID,
-      }).map((definition) => definition.id),
-    sessionTokenScope: config.sessionTokenScope,
-    homeNotice:
-      config.enabled && announcements.enabled && announcements.home
-        ? announcements.homeFrequency
-        : "off",
-    export: { enabled: config.enabled && config.export.enabled, path: config.export.path },
-    telemetry: config.enabled && config.telemetry.enabled,
+      customDefinitionIdsForModel(ctx, availableProviderIds, model),
+    export: settings.export,
+    telemetry: settings.telemetry.enabled,
   };
-}
-
-/** The export document (version 2), read from the results the store's fetches left in the cache. */
-export async function loadQuotaExport(host: ProviderSourceHost): Promise<QuotaExport> {
-  const runtime = await loadRuntime(host);
-  return buildQuotaExport({
-    providers: runtime.providers,
-    ctx: createExportProviderContext(runtime),
-    ttlMs: runtime.config.minIntervalMs,
-    fromCache: true,
-  });
 }
