@@ -182,6 +182,59 @@ function switchedOff(): string {
   );
 }
 
+/** Names a caller may put where a property name goes: two secret shapes and a plain word. */
+const CALLER_NAMES = [
+  { shape: "hex", name: "9f86d081884c7d659a2feaa0c55ad015" },
+  { shape: "random", name: "Zx9QmT4vLr8KpW2sNb7YhC3dFg6JkA1e" },
+  { shape: "plain", name: "myownfieldname" },
+];
+
+const BALANCE_MAPPING = {
+  resultType: "balance",
+  name: "Balance",
+  metric: { type: "value", valueType: "balance", value: { path: ["data", "balance"] } },
+};
+
+/** Each place an add or a set can hold a name the caller made up. */
+const NAMED_DEFINITIONS: Array<{ where: string; definition: (name: string) => unknown }> = [
+  { where: "at the top level", definition: (name) => ({ ...GATEWAY, [name]: 1 }) },
+  { where: "after apiKey-", definition: (name) => ({ ...GATEWAY, [`apiKey-${name}`]: "x" }) },
+  { where: "with a dot", definition: (name) => ({ ...GATEWAY, [`label.${name}`]: "x" }) },
+  {
+    where: "nested in the adapter",
+    definition: (name) => ({
+      ...GATEWAY,
+      format: "json-v1",
+      adapter: { [name]: 1, mappings: [BALANCE_MAPPING] },
+    }),
+  },
+  {
+    where: "in an array of mappings",
+    definition: (name) => ({
+      ...GATEWAY,
+      format: "json-v1",
+      adapter: { mappings: [{ ...BALANCE_MAPPING, [name]: 1 }] },
+    }),
+  },
+  {
+    where: "in an array of windows",
+    definition: (name) => ({ ...LOCAL, windows: [{ ...LOCAL.windows[0], [name]: 1 }] }),
+  },
+  {
+    where: "as a pricingModelMap key",
+    definition: (name) => ({ ...LOCAL, pricingModelMap: { [name]: "nope/none" } }),
+  },
+];
+
+const NAMED_PATCHES: Array<{ where: string; patch: (name: string) => unknown }> = [
+  { where: "at the top level", patch: (name) => ({ [name]: 1 }) },
+  { where: "in a group", patch: (name) => ({ checking: { [name]: 1 } }) },
+  { where: "in a nested group", patch: (name) => ({ providers: { cursor: { [name]: 1 } } }) },
+  { where: "with a dot at the top level", patch: (name) => ({ [`checking.${name}`]: 1 }) },
+  { where: "with a dot in a group", patch: (name) => ({ checking: { [`a.${name}`]: 1 } }) },
+  { where: "in an array", patch: (name) => ({ providers: { enabled: [{ [name]: 1 }] } }) },
+];
+
 /** The custom providers in the settings file, as the plugin loads them. */
 async function savedProviders() {
   return (await loadSettings()).settings.providers.custom;
@@ -212,6 +265,34 @@ const DAILY_QUOTA = {
     },
   ],
 };
+
+describe("names the caller made up", () => {
+  it.each(
+    NAMED_DEFINITIONS.flatMap(({ where, definition }) =>
+      CALLER_NAMES.map(({ shape, name }) => ({ where, shape, name, definition: definition(name) })),
+    ),
+  )("add never repeats a $shape name $where", async ({ name, definition }) => {
+    const result = await call("quota_provider_add", { definition });
+
+    expect(result.ok).toBe(false);
+    expect(result.issues?.length).toBeGreaterThan(0);
+    expect(result.text).not.toContain(name);
+    expect(existsSync(settingsPath())).toBe(false);
+  });
+
+  it.each(
+    NAMED_PATCHES.flatMap(({ where, patch }) =>
+      CALLER_NAMES.map(({ shape, name }) => ({ where, shape, name, patch: patch(name) })),
+    ),
+  )("set never repeats a $shape name $where", async ({ name, patch }) => {
+    const result = await call("quota_settings_set", { patch });
+
+    expect(result.ok).toBe(false);
+    expect(result.issues?.length).toBeGreaterThan(0);
+    expect(result.text).not.toContain(name);
+    expect(existsSync(settingsPath())).toBe(false);
+  });
+});
 
 describe("quota_settings_get", () => {
   it("lists each setting with its source and allowed values, and key variable names only", async () => {
@@ -347,12 +428,13 @@ describe("quota_settings_set", () => {
     {
       name: "an unknown key, with the valid ones",
       patch: { checking: { minIntervalMz: 1 } },
-      message: /^unknown setting; valid in checking: minIntervalMs,/,
+      message: /^unknown setting \(key 1\); valid in checking: minIntervalMs,/,
     },
     {
       name: "an unknown group, with the ones agents may change",
       patch: { wordz: {} },
-      message: /^unknown setting; agents may change: providers, checking, pricing$/,
+      message:
+        /^unknown setting \(key 1 of the patch\); agents may change: providers, checking, pricing$/,
     },
     {
       name: "a bad value",
@@ -377,7 +459,7 @@ describe("quota_settings_set", () => {
     {
       name: "a nested dotted key",
       patch: { providers: { "cursor.plan": "pro" } },
-      message: /^use nested objects, not dotted keys/,
+      message: /^a key with a dot is not read \(key 1\); nest it instead$/,
     },
     {
       name: "a key-like value",
@@ -419,7 +501,7 @@ describe("quota_provider_add", () => {
       definition: { ...GATEWAY, label: value },
       key: "definition.label",
     })),
-    { name: "a key field", definition: { ...GATEWAY, apiKey: "abc" }, key: "definition.apiKey" },
+    { name: "a key field", definition: { ...GATEWAY, apiKey: "abc" }, key: "definition" },
     {
       name: "a random token in the URL",
       definition: {
@@ -807,13 +889,14 @@ describe("quota_provider_test and quota_provider_remove", () => {
   ])("%s names the known ids for an unknown one", async (name) => {
     writeSettings(FILE_WITH_COMMENTS);
 
-    const result = await call(name, { id: "nope" });
+    const result = await call(name, { id: "my-own-id-word" });
 
     expect(result).toMatchObject({
       ok: false,
-      message: 'No custom provider has the id "nope".',
+      message: "No custom provider has that id.",
       ids: ["other-quota"],
     });
+    expect(result.text).not.toContain("my-own-id-word");
     expect(settingsText()).toBe(FILE_WITH_COMMENTS);
   });
 

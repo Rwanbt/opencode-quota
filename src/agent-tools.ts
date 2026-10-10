@@ -20,6 +20,7 @@ import { resolveEnvTemplate } from "./lib/env-template.js";
 import { readCredentialRows } from "./lib/opencode-auth.js";
 import {
   describeQuotaProviderRequest,
+  QUOTA_PROVIDER_FIELDS,
   QUOTA_PROVIDERS_AGGREGATE_ID,
   type QuotaProviderDefinition,
 } from "./lib/quota-providers.js";
@@ -170,46 +171,39 @@ function redactStrings(value: unknown, redact: Redact): unknown {
 }
 
 /**
- * Every string in a value that looks like a secret, by its path; never the value itself.
- * Property names are checked like ids (a pricingModelMap is keyed by model ids), and a secret
- * one is reported at its parent, so the path never repeats it.
+ * True when a value holds a string, or a property name, that looks like a secret. Property names
+ * are checked like ids (a pricingModelMap is keyed by model ids).
  */
-function secretIssues(
-  value: unknown,
-  key: string,
-  message: string,
-  isName = false,
-): SettingsIssue[] {
-  if (typeof value === "string") return looksSecret(value, isName) ? [{ key, message }] : [];
-  if (Array.isArray(value)) {
-    return value.flatMap((item, index) => secretIssues(item, `${key}[${index}]`, message, isName));
-  }
+function holdsSecret(value: unknown, isName: boolean): boolean {
+  if (typeof value === "string") return looksSecret(value, isName);
+  if (Array.isArray(value)) return value.some((item) => holdsSecret(item, isName));
   if (isRecord(value)) {
-    return Object.entries(value).flatMap(([name, item]) => {
-      if (looksSecret(name, true)) return [{ key: key || "patch", message }];
-      const path = key ? `${key}.${name}` : name;
-      return secretIssues(item, path, message, isName || NAME_FIELDS.has(name));
-    });
+    return Object.entries(value).some(
+      ([name, item]) =>
+        looksSecret(name, true) || holdsSecret(item, isName || NAME_FIELDS.has(name)),
+    );
   }
-  return [];
+  return false;
 }
 
 /**
- * A field named like a secret is refused whatever it holds; other fields by their values. A
- * valid variable name in apiKeyEnv is only a name (the key rule checks it).
+ * The definition fields that look like they hold a secret. An issue names a definition field, or
+ * the position of a field definitions do not have; never a name from the input. A field named
+ * like a secret is refused whatever it holds; a valid variable name in apiKeyEnv is only a name.
  */
 function definitionSecretIssues(definition: Record<string, unknown>): SettingsIssue[] {
-  return Object.entries(definition).flatMap(([field, value]): SettingsIssue[] => {
+  return Object.entries(definition).flatMap(([field, value], index): SettingsIssue[] => {
     if (field === "apiKeyEnv" && typeof value === "string" && VARIABLE_NAME.test(value)) return [];
-    if (field !== "apiKeyEnv" && SECRET_FIELD_PATTERN.test(field)) {
-      return [{ key: `definition.${field}`, message: DEFINITION_SECRET_MESSAGE }];
+    if (QUOTA_PROVIDER_FIELDS.includes(field)) {
+      return holdsSecret(value, NAME_FIELDS.has(field))
+        ? [{ key: `definition.${field}`, message: DEFINITION_SECRET_MESSAGE }]
+        : [];
     }
-    return secretIssues(
-      value,
-      `definition.${field}`,
-      DEFINITION_SECRET_MESSAGE,
-      NAME_FIELDS.has(field),
-    );
+    const secret =
+      SECRET_FIELD_PATTERN.test(field) || looksSecret(field, true) || holdsSecret(value, false);
+    return secret
+      ? [{ key: "definition", message: `field ${index + 1} ${DEFINITION_SECRET_MESSAGE}` }]
+      : [];
   });
 }
 
@@ -353,15 +347,6 @@ async function getSettings(): Promise<ToolResult> {
   };
 }
 
-/** The dotted keys anywhere in a patch, such as "providers.custom". */
-function dottedKeys(patch: Record<string, unknown>, path: string): string[] {
-  return Object.entries(patch).flatMap(([name, value]) => {
-    const key = path ? `${path}.${name}` : name;
-    if (name.includes(".")) return [key];
-    return isRecord(value) ? dottedKeys(value, key) : [];
-  });
-}
-
 /** True when a patch would change the custom providers, which only the provider tools do. */
 function touchesCustomProviders(patch: Record<string, unknown>): boolean {
   if (!Object.hasOwn(patch, "providers")) return false;
@@ -369,25 +354,41 @@ function touchesCustomProviders(patch: Record<string, unknown>): boolean {
   return providers === null || (isRecord(providers) && Object.hasOwn(providers, "custom"));
 }
 
-/** What an agent may not change in a patch; checked before anything is saved. */
+/**
+ * What an agent may not change in a patch; checked before anything is saved. An issue names a
+ * settings key, or the position of a name that is not one; never a name from the patch. Names
+ * deeper in a group are checked by the save, which reports them the same way.
+ */
 function patchIssues(patch: Record<string, unknown>): SettingsIssue[] {
-  // Dotted keys first: a save reads "providers.custom" as a key, past every check below.
-  const dotted = dottedKeys(patch, "");
-  if (dotted.length > 0) {
-    return dotted.map((key) => ({
-      key,
-      message:
-        'use nested objects, not dotted keys, e.g. { "checking": { "minIntervalMs": 600000 } }',
-    }));
-  }
-  const issues: SettingsIssue[] = Object.keys(patch)
-    .filter((group) => !AGENT_GROUPS.includes(group))
-    .map((group) => ({
-      key: group,
-      message: TOP_LEVEL_SETTINGS.has(group)
-        ? `the user changes ${group} in /quota → Customize; agents may change: ${AGENT_GROUPS.join(", ")}`
-        : `unknown setting; agents may change: ${AGENT_GROUPS.join(", ")}`,
-    }));
+  const agentGroups = AGENT_GROUPS.join(", ");
+  const issues = Object.entries(patch).flatMap(([group, value], index): SettingsIssue[] => {
+    const position = `key ${index + 1} of the patch`;
+    if (group.includes(".")) {
+      return [
+        {
+          key: "patch",
+          message: `use nested objects, not dotted keys (${position}), e.g. { "checking": { "minIntervalMs": 600000 } }`,
+        },
+      ];
+    }
+    if (!TOP_LEVEL_SETTINGS.has(group)) {
+      return [
+        {
+          key: "patch",
+          message: `unknown setting (${position}); agents may change: ${agentGroups}`,
+        },
+      ];
+    }
+    if (!AGENT_GROUPS.includes(group)) {
+      return [
+        {
+          key: group,
+          message: `the user changes ${group} in /quota → Customize; agents may change: ${agentGroups}`,
+        },
+      ];
+    }
+    return holdsSecret(value, false) ? [{ key: group, message: SETTING_SECRET_MESSAGE }] : [];
+  });
   if (touchesCustomProviders(patch)) {
     issues.push({
       key: "providers.custom",
@@ -396,7 +397,7 @@ function patchIssues(patch: Record<string, unknown>): SettingsIssue[] {
         "to reset other provider settings, set each one to null",
     });
   }
-  return [...issues, ...secretIssues(patch, "", SETTING_SECRET_MESSAGE)];
+  return issues;
 }
 
 async function setSettings(input: unknown): Promise<ToolResult> {
@@ -429,12 +430,9 @@ function fixFileFirst(problems: SettingsIssue[]): ToolResult {
   };
 }
 
-function notFound(id: unknown, ids: readonly string[]): ToolResult {
-  return {
-    ok: false,
-    message: `No custom provider has the id ${JSON.stringify(id)}.`,
-    ids,
-  };
+/** The id the caller sent is not repeated; the ids in the file are listed instead. */
+function notFound(ids: readonly string[]): ToolResult {
+  return { ok: false, message: "No custom provider has that id.", ids };
 }
 
 /**
@@ -606,10 +604,7 @@ async function testProvider(
   if (!definition) {
     const problems = customProviderIssues(loaded.issues);
     return {
-      ...notFound(
-        id,
-        definitions.map((item) => item.id),
-      ),
+      ...notFound(definitions.map((item) => item.id)),
       ...(problems.length > 0 ? { problemsInFile: problems } : {}),
     };
   }
@@ -634,7 +629,7 @@ async function removeProvider(input: unknown): Promise<ToolResult> {
   });
   if (problems.length > 0) return fixFileFirst(problems);
   if (!saved.ok) return { ok: false, issues: saved.issues, message: "Nothing was removed." };
-  if (!found) return notFound(id, ids);
+  if (!found) return notFound(ids);
   return {
     ok: true,
     removed: id,

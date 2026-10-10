@@ -100,7 +100,7 @@ describe("quotaProviders schema", () => {
     expect(result.issues.map((issue) => issue.key)).toEqual(
       expect.arrayContaining([
         "quotaProviders[0]",
-        "quotaProviders[1].executableMapping",
+        "quotaProviders[1]",
         "quotaProviders[1].url",
         "quotaProviders[1].format",
         "quotaProviders[2].id",
@@ -356,8 +356,8 @@ describe("quotaProviders schema", () => {
       ]).issues,
     ).toContainEqual(
       expect.objectContaining({
-        key: "quotaProviders[0].pricingModelMap.gpt-4o",
-        message: expect.stringContaining("automatic models.dev matching already resolves"),
+        key: "quotaProviders[0].pricingModelMap",
+        message: expect.stringMatching(/^entry 1: automatic models.dev matching already resolves/),
       }),
     );
   });
