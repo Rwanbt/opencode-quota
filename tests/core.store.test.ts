@@ -351,7 +351,7 @@ describe("quota store", () => {
       ok([row("weekly", 100, { resetsAt: nextResetsAt, account: "pro" })]),
     );
     const notice = {
-      id: `copilot.weekly|pro|${resetsAt}`,
+      id: `copilot.weekly|pro||${resetsAt}`,
       rowId: "copilot.weekly",
       providerId: "copilot",
       account: "pro",
@@ -537,7 +537,7 @@ describe("quota store", () => {
     clock += HOUR;
     copilot.fetch.mockResolvedValue(ok([row("weekly", 100, { resetsAt: nextResetsAt })]));
     const { resetNotices } = await store.refresh({ reason: "poll" });
-    expect(resetNotices.map((notice) => notice.id)).toEqual([`copilot.weekly||${resetsAt}`]);
+    expect(resetNotices.map((notice) => notice.id)).toEqual([`copilot.weekly|||${resetsAt}`]);
   });
 
   it("drops a memory-only fetch that ran across a login change and shows that at once", async () => {
@@ -734,6 +734,87 @@ describe("quota store", () => {
     expect(after).toHaveLength(2);
     expect(accountOf(after, 50)).toBe(accountOf(before, 50));
     expect(accountOf(after, 30)).toBe(accountOf(before, 40));
+  });
+
+  it("numbers logins around names rows already have and gives each login its own notice", async () => {
+    const resetsAt = new Date(START_MS + HOUR).toISOString();
+    const nextResetsAt = new Date(START_MS + HOUR + 7 * 24 * HOUR).toISOString();
+    const copilot = fakeProvider();
+    // Two logins without a name and one named "Account 2", all on the same window.
+    const answer = (percent: number, at: string): ProviderFetch => ({
+      rows: [
+        row("weekly", percent, { resetsAt: at }),
+        row("weekly", percent, { resetsAt: at }),
+        row("weekly", percent, { resetsAt: at, account: "Account 2" }),
+      ],
+      rowLogins: ["first", "second", "third"],
+      debug: [],
+    });
+    const accounts = (items: Array<{ account?: string }>) =>
+      items.map((item) => item.account ?? "(none)").sort();
+    copilot.fetch.mockResolvedValue(answer(5, resetsAt));
+    const store = makeStore([copilot.provider], 0);
+    const before = only(await store.refresh({ reason: "poll" })).rows;
+    expect(accounts(before)).toEqual(["(none)", "Account 2", "Account 3"]);
+    expect(before[2]?.account).toBe("Account 2");
+
+    // All three reset at once: three notices.
+    clock += 2 * HOUR;
+    copilot.fetch.mockResolvedValue(answer(100, nextResetsAt));
+    const { resetNotices } = await store.refresh({ reason: "poll" });
+    expect(accounts(resetNotices)).toEqual(["(none)", "Account 2", "Account 3"]);
+    expect(new Set(resetNotices.map((notice) => notice.id)).size).toBe(3);
+  });
+
+  it("still fetches after a login change when an older refresh finishes reading with it", async () => {
+    const copilot = fakeProvider();
+    const identityRead = deferred<ProviderIdentity>();
+    const identity = vi.fn(() => identityRead.promise);
+    copilot.provider.identity = identity;
+    const store = makeStore([copilot.provider], 0);
+    const listener = vi.fn();
+    store.subscribe(listener);
+    const old = store.refresh({ reason: "manual" });
+    await vi.waitFor(() => expect(identity).toHaveBeenCalledTimes(1));
+    store.invalidateIdentity();
+    await vi.waitFor(() => expect(identity).toHaveBeenCalledTimes(2));
+
+    // Both operations read who is signed in from the same answer, in the same tick.
+    identityRead.resolve({ key: "bob", persist: true });
+    expect(only(await old).rows).toEqual([]);
+    await vi.waitFor(() => expect(copilot.fetch).toHaveBeenCalledOnce());
+    await vi.waitFor(() =>
+      expect(only(listener.mock.lastCall?.[0]).rows).toEqual([row("allowance", 50)]),
+    );
+  });
+
+  it("treats a snapshot file of another version exactly like no file", async () => {
+    const copilot = fakeProvider();
+    async function firstLook() {
+      const store = makeStore([copilot.provider]);
+      const snapshot = await store.snapshot();
+      await store.dispose();
+      return { snapshot, saved: await readFile(file, "utf8") };
+    }
+    const withoutFile = await firstLook();
+    const [key] = Object.keys((await savedFile()).entries);
+    if (!key) throw new Error("nothing saved");
+    // A recent entry: had it been read, the store would show it and not fetch.
+    const entry = {
+      providerId: "copilot",
+      rows: [row("old", 10)],
+      okAtMs: clock,
+      checkedAtMs: clock,
+      failures: 0,
+      debug: [],
+      notices: [],
+      resetSeenAtMs: {},
+    };
+    for (const version of [1, 3]) {
+      await writeFile(file, JSON.stringify({ version, entries: { [key]: entry } }));
+      expect(await firstLook()).toEqual(withoutFile);
+    }
+    expect(copilot.fetch).toHaveBeenCalledTimes(3);
   });
 
   it("works without a file", async () => {

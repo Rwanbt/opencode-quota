@@ -503,7 +503,10 @@ function detail(key: string, value: string): DebugDetail {
   return { key: safeDetail(key, 64), value: safeDebugValue(key, value, DEBUG_VALUE_MAX_LENGTH) };
 }
 
-/** Today's provider result as v6 rows, the error to show, and the debug details. */
+/**
+ * Today's provider result as v6 rows, the error to show, and the debug details. `rowLogins`
+ * holds source ids here; the provider source keys them before the store gets them.
+ */
 export function rowsFromLegacyResult(
   providerId: string,
   result: QuotaProviderResult,

@@ -15,7 +15,8 @@
  *   go on a login change.
  * - Rows also carry their login. A failed refresh keeps the last good rows and records the
  *   error; when one of several logins fails, that login keeps its last rows. Logins that share
- *   an account name are numbered here ("Pro", "Pro 2"), by login, so the numbers stay put.
+ *   an account name are numbered here ("Pro", "Pro 2"), by login, so the numbers stay put;
+ *   numbers skip names other rows already have.
  * - When a quota window resets between two checks, a reset notice is recorded once.
  * - Reads from OpenCode and provider fetches have time limits, so `dispose` always ends.
  */
@@ -56,7 +57,10 @@ const FETCH_TIMEOUT_MS = 60_000;
 /** One provider fetch, already turned into rows. */
 export type ProviderFetch = {
   rows: QuotaRow[];
-  /** The login each row came from (a source id), in the order of `rows`; omitted for one login. */
+  /**
+   * The login each row came from, in the order of `rows`; omitted for one login. An opaque id
+   * keyed with the install's secret (`keyedLogins`), never a source id such as an email.
+   */
   rowLogins?: string[];
   error?: QuotaError;
   debug: DebugDetail[];
@@ -170,7 +174,7 @@ function isDue(
   return entry.error?.retryAtMs === undefined || nowMs >= entry.error.retryAtMs;
 }
 
-/** Each fetched row with its login; logins are hashed, so the file never holds a source id. */
+/** Each fetched row with its login, shortened to a hash of the keyed id it arrives as. */
 function loginRows(result: ProviderFetch): LoginRow[] {
   return result.rows.map((row, index) => {
     const login = result.rowLogins?.[index] ?? "";
@@ -181,7 +185,8 @@ function loginRows(result: ProviderFetch): LoginRow[] {
 /**
  * The rows as shown. Logins that share an account name (or have none) are told apart: each
  * login after the first (by login key) gets " 2", " 3"... on all its rows ("Account 2" without
- * a name). Numbering by login keeps a login's number while another login fails.
+ * a name), skipping names that rows already have or got. Numbering by login keeps a login's
+ * number while another login fails.
  */
 function shownRows(rows: readonly LoginRow[]): QuotaRow[] {
   const loginsByAccount = new Map<string, string[]>();
@@ -190,11 +195,24 @@ function shownRows(rows: readonly LoginRow[]): QuotaRow[] {
     if (!logins.includes(login)) logins.push(login);
     loginsByAccount.set(row.account ?? "", logins);
   }
-  for (const logins of loginsByAccount.values()) logins.sort();
+  const taken = new Set(loginsByAccount.keys());
+  /** The shown account per `${account}\u001f${login}`. */
+  const shown = new Map<string, string>();
+  for (const [account, logins] of [...loginsByAccount].sort(([a], [b]) => (a < b ? -1 : 1))) {
+    let number = 1;
+    for (const login of logins.sort().slice(1)) {
+      let name: string;
+      do {
+        number += 1;
+        name = account ? `${account} ${number}` : `Account ${number}`;
+      } while (taken.has(name));
+      taken.add(name);
+      shown.set(`${account}\u001f${login}`, name);
+    }
+  }
   return rows.map(({ login, row }) => {
-    const number = (loginsByAccount.get(row.account ?? "") ?? []).indexOf(login) + 1;
-    if (number <= 1) return row;
-    return { ...row, account: row.account ? `${row.account} ${number}` : `Account ${number}` };
+    const account = shown.get(`${row.account ?? ""}\u001f${login}`);
+    return account === undefined ? row : { ...row, account };
   });
 }
 
@@ -230,7 +248,10 @@ function didReset(before: QuotaRow, after: QuotaRow, observedAtMs: number, nowMs
   );
 }
 
-/** Reset notices for `rows` (the new rows of `previous`'s entry), with their shown accounts. */
+/**
+ * Reset notices for `rows` (the new rows of `previous`'s entry), with their shown accounts.
+ * A notice's id names its row's slot (id, account, login), so each login's reset is one notice.
+ */
 function findResets(previous: Entry, rows: readonly LoginRow[], nowMs: number): ResetNotice[] {
   const before = rowsBySlot(previous.rows);
   const after = rowsBySlot(rows);
@@ -246,7 +267,7 @@ function findResets(previous: Entry, rows: readonly LoginRow[], nowMs: number): 
     if (observedAtMs === undefined || !didReset(old, row, observedAtMs, nowMs)) return;
     const account = shown[index]?.account;
     notices.push({
-      id: `${row.id}|${account ?? ""}|${old.resetsAt}`,
+      id: `${row.id}|${row.account ?? ""}|${current.login}|${old.resetsAt}`,
       rowId: row.id,
       providerId: row.providerId,
       ...(account === undefined ? {} : { account }),
@@ -500,7 +521,7 @@ export function createQuotaStore(deps: QuotaStoreDeps): QuotaStore {
     reason: RefreshReason,
   ): Promise<void> {
     const where = operation.keys.get(provider.id);
-    if (!where || disposed || !isCurrent(operation)) return;
+    if (!where) return;
     const minIntervalMs = provider.minIntervalMs ?? operation.source.minIntervalMs;
     if (!isDue(entries.get(where.key), reason, minIntervalMs, now())) return;
     const result = await fetchProvider(provider);
@@ -522,6 +543,9 @@ export function createQuotaStore(deps: QuotaStoreDeps): QuotaStore {
     provider: StoreProvider,
     reason: RefreshReason,
   ): Promise<void> {
+    // A stale operation never joins or starts a refresh: one of the new generation would join
+    // its run, which fetches nothing.
+    if (disposed || !isCurrent(operation)) return Promise.resolve();
     const running = inFlight.get(provider.id);
     if (running) return running;
     const run: Promise<void> = refreshProviderNow(operation, provider, reason).finally(() => {

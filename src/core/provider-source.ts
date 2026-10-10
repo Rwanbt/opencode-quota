@@ -3,6 +3,7 @@
  * available, how to ask each one, and who it is signed in as. Temporary glue: the v6 settings
  * file (V3) replaces the settings part and the row contract (V8/V9) the legacy fetch part.
  */
+import { createHmac, randomBytes } from "node:crypto";
 import type { RuntimeContextRootHints } from "../lib/config-file-utils.js";
 import type {
   QuotaProvider,
@@ -23,6 +24,7 @@ import {
   type QuotaRuntimeContext,
   resolveQuotaRuntimeContext,
 } from "../lib/quota-runtime-context.js";
+import { deriveResolvedAuthIdentity } from "../lib/resolved-auth-identity.js";
 import type { PricingSnapshotConfig } from "../lib/types.js";
 import { rowsFromLegacyResult } from "./rows.js";
 import { matchesQuotaProviderCurrentSelection } from "./selection.js";
@@ -96,6 +98,37 @@ async function accountIdentity(
   }
 }
 
+/** Keys logins while the install's protected key can't be read; no account is saved then. */
+const processLoginKey = randomBytes(32);
+
+/**
+ * Each login (a source id: an account number, a credential id, often an email) as an opaque id
+ * keyed with the install's protected key, so the snapshot file and notice ids can't be matched
+ * against guessed emails. Without that key no account identity exists either, so the store
+ * keeps such rows in memory only, and a key of this process is enough.
+ */
+export async function keyedLogins(
+  providerId: string,
+  logins: readonly string[],
+): Promise<string[]> {
+  return Promise.all(
+    logins.map(async (login) => {
+      if (!login) return "";
+      const keyed = await deriveResolvedAuthIdentity({
+        providerId,
+        principal: { kind: "stable-id", value: login },
+        qualifiers: ["v6-row-login"],
+      });
+      return (
+        keyed ??
+        createHmac("sha256", processLoginKey)
+          .update(JSON.stringify([providerId, login]))
+          .digest("base64url")
+      );
+    }),
+  );
+}
+
 function storeProvider(
   provider: QuotaProvider,
   ctx: QuotaProviderContext,
@@ -114,7 +147,9 @@ function storeProvider(
     },
     async fetch() {
       const result = await provider.fetch(ctx, await cacheContextFor(provider, ctx));
-      return rowsFromLegacyResult(provider.id, result);
+      const fetched = rowsFromLegacyResult(provider.id, result);
+      if (!fetched.rowLogins) return fetched;
+      return { ...fetched, rowLogins: await keyedLogins(provider.id, fetched.rowLogins) };
     },
   };
 }
