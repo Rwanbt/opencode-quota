@@ -504,7 +504,7 @@ describe("quota_provider_add", () => {
     });
     expect(added.test).toMatchObject({
       ok: true,
-      rows: [{ id: "quota-providers.custom.my_gateway_quota.daily", percentRemaining: 42 }],
+      rows: [{ id: "quota-providers.custom.my-gateway-quota.Daily", percentRemaining: 42 }],
     });
     expect(added.notes).toBeUndefined();
     expect(fetch).toHaveBeenCalledTimes(1);
