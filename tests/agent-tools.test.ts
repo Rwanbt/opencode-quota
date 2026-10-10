@@ -318,6 +318,9 @@ describe("quota_settings_get", () => {
         readsFrom: `OpenCode's API key for provider "openrouter"`,
       },
     ]);
+    expect(result.notes).toContainEqual(
+      expect.stringMatching(/The user changes the other settings in \/quota_settings\.$/),
+    );
     expect(result.text).not.toContain("gateway-key-value-123");
   });
 
@@ -444,7 +447,7 @@ describe("quota_settings_set", () => {
     ...["words", "announcements", "export", "telemetry", "version"].map((group) => ({
       name: `the user's ${group}`,
       patch: { [group]: group === "version" ? 6 : { enabled: true } },
-      message: new RegExp(`^the user changes ${group} in /quota → Customize`),
+      message: new RegExp(`^the user changes ${group} in /quota_settings`),
     })),
     {
       name: "a dotted key for custom providers",

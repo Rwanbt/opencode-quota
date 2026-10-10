@@ -1,7 +1,7 @@
 /**
  * Tools for AI agents: read the server settings, change the provider, checking and pricing
  * settings, and add, test and remove custom providers. Words, notices, export and telemetry
- * are the user's (in /quota → Customize); looks are not server settings at all. Every write
+ * are the user's (in /quota_settings); looks are not server settings at all. Every write
  * holds the settings lock and goes into OpenCode Quota's own settings file, never opencode.json.
  *
  * Keys: a provider added by an agent is saved switched off (`"enabled": false`), so it is never
@@ -68,7 +68,7 @@ type Redact = (text: string) => string;
 
 const REDACTED = "[redacted]";
 
-/** The top-level settings agents may change; the user changes the others in /quota → Customize. */
+/** The top-level settings agents may change; the user changes the others in /quota_settings. */
 const AGENT_GROUPS: readonly string[] = ["providers", "checking", "pricing"];
 
 const TOP_LEVEL_SETTINGS: ReadonlySet<string> = new Set(
@@ -329,7 +329,7 @@ async function getSettings(): Promise<ToolResult> {
   const notes = [
     `quota_settings_set changes only ${AGENT_GROUPS.join(", ")}, as nested objects, e.g. ` +
       '{ "checking": { "minIntervalMs": 600000 } }; null resets a key. The user changes the ' +
-      "other settings in /quota → Customize.",
+      "other settings in /quota_settings.",
     "Looks (sidebar, status line, toasts) are not in this file; these tools do not change them.",
   ];
   if (!loaded.exists && loaded.conversion) {
@@ -383,7 +383,7 @@ function patchIssues(patch: Record<string, unknown>): SettingsIssue[] {
       return [
         {
           key: group,
-          message: `the user changes ${group} in /quota → Customize; agents may change: ${agentGroups}`,
+          message: `the user changes ${group} in /quota_settings; agents may change: ${agentGroups}`,
         },
       ];
     }

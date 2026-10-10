@@ -3,6 +3,9 @@
  * (`src/tui/index.tsx`) on fake OpenCode hosts, joined by a JSON RPC bridge. Three providers:
  * Copilot with only its plan, MiniMax over its quota, and a custom json-v1 source next to a
  * failing one. API keys and a private error body are canaries no surface may show.
+ *
+ * Agent tool to plugin: a custom provider an agent replaces is switched off, and the running
+ * server stops its requests through the settings reload alone.
  */
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -500,5 +503,153 @@ describe("v6 surfaces on the quota snapshot", () => {
       savedSnapshot,
     );
     await tui.dispose();
+  });
+});
+
+const OLD_TEAM_KEY = "v6-replaced-team-key-canary";
+const NEW_TEAM_KEY = "v6-replacement-team-key-canary";
+
+/** A custom provider that is on (no `enabled`), as the user wrote it. */
+const ACTIVE_SOURCE = {
+  id: "team-quota",
+  providerId: "team-gateway",
+  label: "Team",
+  mode: "remote-api",
+  url: "https://old-gateway.example/quota",
+  format: "quota-v1",
+  apiKeyEnv: "V6_OLD_TEAM_KEY",
+};
+
+/** What an agent sends to replace it: another address and another key. */
+const REPLACEMENT = {
+  ...ACTIVE_SOURCE,
+  url: "https://new-gateway.example/quota",
+  apiKeyEnv: "V6_NEW_TEAM_KEY",
+};
+
+type AgentTool = { name: string; execute(input: unknown): Promise<{ content: string }> };
+type ChangedEvent = { snapshot: { providers: Array<{ providerId: string }> } };
+
+/** The real server plugin alone: its agent tools, a manual refresh, and its `changed` events. */
+async function startServer() {
+  const { default: serverPlugin } = await import("../src/plugin.js");
+  const changed: ChangedEvent[] = [];
+  const register = vi.fn(async () => ({
+    dispose: async () => {},
+    events: {
+      emit: async (name: string, data: ChangedEvent) => {
+        if (name === "changed") changed.push(structuredClone(data));
+      },
+    },
+  }));
+  const tools: AgentTool[] = [];
+  const dispose = await serverPlugin.setup({
+    location: { directory: process.cwd() },
+    provider: { list: async () => ({ data: [{ id: "team-gateway" }] }) },
+    session: { get: async () => ({}), hook: vi.fn() },
+    command: { transform: vi.fn() },
+    rpc: { register },
+    integration: createFakeIntegration([]),
+    event: { subscribe: () => ({ async *[Symbol.asyncIterator]() {} }) },
+    tool: {
+      transform: async (build: (editor: { add(tool: AgentTool): void }) => void) =>
+        build({ add: (tool) => tools.push(tool) }),
+    },
+  } as never);
+  const [, handlers] = register.mock.calls[0] as unknown as [
+    unknown,
+    { refresh(input: { reason: string }): Promise<unknown> },
+  ];
+  return {
+    changed,
+    // "manual" waits for no interval: every provider that is on is asked now.
+    refresh: () => handlers.refresh({ reason: "manual" }),
+    tool: (name: string) => {
+      const tool = tools.find((item) => item.name === name);
+      if (!tool) throw new Error(`tool not registered: ${name}`);
+      return tool;
+    },
+    dispose: dispose as unknown as () => Promise<void>,
+  };
+}
+
+describe("an agent tool replacing an active custom provider", () => {
+  const savedEnv = {
+    V6_OLD_TEAM_KEY: process.env.V6_OLD_TEAM_KEY,
+    V6_NEW_TEAM_KEY: process.env.V6_NEW_TEAM_KEY,
+  };
+  let requests: Array<{ url: string; authorization: string | null }>;
+  let server: Awaited<ReturnType<typeof startServer>> | undefined;
+
+  beforeEach(async () => {
+    mocks.root = await mkdtemp(join(tmpdir(), "opencode-quota-v6-tool-reload-"));
+    process.env.V6_OLD_TEAM_KEY = OLD_TEAM_KEY;
+    process.env.V6_NEW_TEAM_KEY = NEW_TEAM_KEY;
+    seedDefaultPluginBootstrapMocks(mocks, { resetPluginState: true });
+    writePluginTestSettings(mocks.root, {
+      providers: { enabled: ["custom"], custom: [ACTIVE_SOURCE] },
+      // Only a manual refresh asks the provider; nothing in the background does.
+      checking: { minIntervalMs: 3_600_000 },
+      announcements: { enabled: false, home: false },
+    });
+    const { quotaProvidersProvider } = await import("../src/providers/quota-providers.js");
+    mocks.getProviders.mockReturnValue([quotaProvidersProvider]);
+    requests = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: RequestInit) => {
+        requests.push({ url, authorization: new Headers(init?.headers).get("authorization") });
+        return new Response(JSON.stringify({ version: "quota-v1", entries: [] }), {
+          headers: { "content-type": "application/json" },
+        });
+      }),
+    );
+  });
+
+  afterEach(async () => {
+    await server?.dispose();
+    server = undefined;
+    for (const [name, value] of Object.entries(savedEnv)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+    vi.unstubAllGlobals();
+    await rm(mocks.root, { recursive: true, force: true, maxRetries: 3 });
+  });
+
+  it("sends no further request with the old definition or key once the settings reload", async () => {
+    server = await startServer();
+    await server.refresh();
+    expect(requests).toEqual([{ url: ACTIVE_SOURCE.url, authorization: `Bearer ${OLD_TEAM_KEY}` }]);
+
+    const { content } = await server.tool("quota_provider_add").execute({
+      definition: REPLACEMENT,
+    });
+    expect(JSON.parse(content)).toMatchObject({
+      ok: true,
+      replaced: ACTIVE_SOURCE.id,
+      enabled: false,
+    });
+    expect(content).not.toContain(OLD_TEAM_KEY);
+    expect(content).not.toContain(NEW_TEAM_KEY);
+    const sentBefore = requests.length;
+    const changedBefore = server.changed.length;
+
+    // The same server, no restart: the settings watch reads the saved file, and the next
+    // snapshot has no custom provider left to check.
+    await vi.waitFor(
+      () =>
+        expect(
+          server?.changed
+            .slice(changedBefore)
+            .some(({ snapshot }) => snapshot.providers.length === 0),
+        ).toBe(true),
+      { timeout: 10_000 },
+    );
+    await server.refresh();
+    await server.refresh();
+
+    // The replacement is switched off: neither the old address and key nor the new ones.
+    expect(requests.slice(sentBefore)).toEqual([]);
   });
 });
