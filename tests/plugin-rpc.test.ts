@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
-import { rm } from "node:fs/promises";
+import { readFile, rm } from "node:fs/promises";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-
+import type { QuotaSnapshot } from "../src/core/types.js";
 import {
   messageDocument,
   type ReportDocument,
@@ -85,9 +85,18 @@ function useConfig(overrides: Partial<typeof DEFAULT_CONFIG>): void {
   );
 }
 
-async function setupServer(sessionGet = vi.fn().mockResolvedValue({}), directory = process.cwd()) {
+const SNAPSHOT_FILE = `${TEST_RUNTIME_ROOT}/state/opencode-quota/snapshot-v6.json`;
+
+type ServerEvent = { type: string };
+
+async function setupServer(
+  sessionGet = vi.fn().mockResolvedValue({}),
+  directory = process.cwd(),
+  events: AsyncIterable<ServerEvent> = { async *[Symbol.asyncIterator]() {} },
+) {
   const { default: server } = await import("../src/plugin.js");
-  const register = vi.fn(async () => ({ dispose: async () => {}, events: { emit: vi.fn() } }));
+  const emit = vi.fn(async (_name: string, _data: unknown) => {});
+  const register = vi.fn(async () => ({ dispose: async () => {}, events: { emit } }));
   const commands: RegisteredCommand[] = [];
   const ctx = {
     location: { directory },
@@ -101,7 +110,7 @@ async function setupServer(sessionGet = vi.fn().mockResolvedValue({}), directory
     },
     rpc: { register },
     integration: createFakeIntegration([]),
-    event: { subscribe: () => ({ async *[Symbol.asyncIterator]() {} }) },
+    event: { subscribe: () => events },
   };
   await server.setup(ctx as never);
   expect(register).toHaveBeenCalledOnce();
@@ -118,7 +127,7 @@ async function setupServer(sessionGet = vi.fn().mockResolvedValue({}), directory
     expect(output).toStrictEqual(JSON.parse(JSON.stringify(output)));
     return output;
   };
-  return { ctx, definition, handlers, commands, call };
+  return { ctx, definition, handlers, commands, call, emit };
 }
 
 describe("server quota RPC", () => {
@@ -146,7 +155,7 @@ describe("server quota RPC", () => {
     await rm(TEST_RUNTIME_ROOT, { recursive: true, force: true });
   });
 
-  it("registers the quota RPC with its four methods during setup", async () => {
+  it("registers the quota RPC with its six methods during setup", async () => {
     const { QuotaRpc } = await import("../src/rpc.js");
     const { definition, handlers } = await setupServer();
 
@@ -157,8 +166,164 @@ describe("server quota RPC", () => {
       "footer",
       "writeExport",
       "command",
+      "snapshot",
+      "refresh",
     ]);
     expect(Object.keys(handlers)).toEqual(Object.keys(definition.methods));
+  });
+
+  it("asks no provider and reads no snapshot file during setup", async () => {
+    useConfig({});
+    const fetch = vi.fn();
+    mocks.getProviders.mockReturnValue([
+      { id: "copilot", isAvailable: vi.fn().mockResolvedValue(true), fetch },
+    ]);
+    await setupServer();
+
+    expect(mocks.loadConfig).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+    expect(existsSync(SNAPSHOT_FILE)).toBe(false);
+  });
+
+  it("serves v6 rows from the store, saves them and emits changed", async () => {
+    // A long interval: the snapshot call below answers from memory without a new fetch.
+    useConfig({ minIntervalMs: 60_000 });
+    mocks.getProviders.mockReturnValue([
+      {
+        id: "copilot",
+        cachePolicy: { kind: "account-neutral" },
+        isAvailable: vi.fn().mockResolvedValue(true),
+        fetch: vi.fn().mockResolvedValue({
+          attempted: true,
+          entries: [
+            {
+              accounting: TEST_ACCOUNTING,
+              name: "Copilot Premium Requests",
+              group: "Copilot (pro)",
+              label: "Quota:",
+              right: "60/300",
+              percentRemaining: 80,
+              resetTimeIso: "2026-11-01T00:00:00.000Z",
+            },
+          ],
+          errors: [],
+        }),
+      },
+    ]);
+    const { call, emit } = await setupServer();
+
+    const refreshed = (await call("refresh", { reason: "manual" })) as { snapshot: QuotaSnapshot };
+    expect(refreshed.snapshot.providers).toEqual([
+      expect.objectContaining({
+        providerId: "copilot",
+        label: "Copilot",
+        refreshing: false,
+        rows: [
+          {
+            id: "copilot.allowance",
+            providerId: "copilot",
+            account: "pro",
+            label: "Premium requests",
+            type: "quota",
+            method: "remote_api",
+            authority: "provider_reported",
+            window: "month",
+            prominence: "primary",
+            percentRemaining: 80,
+            used: { decimal: "60", unit: { kind: "count", unit: "unit" } },
+            limit: { decimal: "300", unit: { kind: "count", unit: "unit" } },
+            resetsAt: "2026-11-01T00:00:00.000Z",
+          },
+        ],
+      }),
+    ]);
+    expect(refreshed.snapshot).not.toHaveProperty("currentModelProviderIds");
+    expect(emit).toHaveBeenCalledWith("changed", {
+      snapshot: expect.objectContaining({ version: 6 }),
+    });
+
+    const saved = JSON.parse(await readFile(SNAPSHOT_FILE, "utf8")) as {
+      entries: Record<string, { rows: unknown[] }>;
+    };
+    expect(Object.values(saved.entries).map((entry) => entry.rows)).toEqual([
+      refreshed.snapshot.providers[0]?.rows,
+    ]);
+
+    const instant = (await call("snapshot", {})) as { snapshot: QuotaSnapshot };
+    expect(instant.snapshot.providers[0]?.rows).toEqual(refreshed.snapshot.providers[0]?.rows);
+  });
+
+  it("names the providers of the session's model in the snapshot", async () => {
+    useConfig({ enabledProviders: ["copilot", "openai"] });
+    mocks.getProviders.mockReturnValue(
+      ["copilot", "openai"].map((id) => ({
+        id,
+        isAvailable: vi.fn().mockResolvedValue(true),
+        fetch: vi.fn().mockResolvedValue({ attempted: true, entries: [], errors: [] }),
+      })),
+    );
+    const sessionGet = vi.fn().mockResolvedValue({
+      model: { id: "gpt-5", providerID: "openai" },
+    });
+    const { call } = await setupServer(sessionGet);
+
+    const output = (await call("snapshot", { sessionID: "session-1" })) as {
+      snapshot: QuotaSnapshot;
+    };
+    expect(output.snapshot.providers.map((provider) => provider.providerId)).toEqual([
+      "copilot",
+      "openai",
+    ]);
+    expect(output.snapshot.currentModelProviderIds).toEqual(["openai"]);
+  });
+
+  it("checks who each provider is signed in as after a login change", async () => {
+    useConfig({ minIntervalMs: 60_000 });
+    let account = "alice";
+    const fetch = vi.fn(async () => ({
+      attempted: true,
+      entries: [
+        {
+          accounting: TEST_ACCOUNTING,
+          name: "Copilot Premium Requests",
+          group: `Copilot (${account})`,
+          label: "Quota:",
+          percentRemaining: 50,
+        },
+      ],
+      errors: [],
+    }));
+    mocks.getProviders.mockReturnValue([
+      {
+        id: "copilot",
+        cachePolicy: { kind: "resolved-auth", resolveIdentity: async () => account },
+        isAvailable: vi.fn().mockResolvedValue(true),
+        fetch,
+      },
+    ]);
+    let sendLoginChange: () => void = () => {};
+    const loginChanged = new Promise<void>((resolve) => {
+      sendLoginChange = resolve;
+    });
+    const events = {
+      async *[Symbol.asyncIterator]() {
+        await loginChanged;
+        yield { type: "credential.switched" };
+      },
+    };
+    const { call, emit } = await setupServer(undefined, process.cwd(), events);
+    await call("refresh", { reason: "manual" });
+    emit.mockClear();
+
+    account = "bob";
+    sendLoginChange();
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(emit).toHaveBeenCalled());
+    const last = emit.mock.lastCall?.[1] as { snapshot: QuotaSnapshot };
+    expect(last.snapshot.providers[0]?.rows.map((row) => row.account)).toEqual(["bob"]);
+    // Nothing is due; this only waits for the snapshot file write before the folder goes.
+    await call("refresh", { reason: "poll" });
+    expect(fetch).toHaveBeenCalledTimes(2);
   });
 
   it("serves the sidebar panel and the idle toast", async () => {

@@ -3,7 +3,15 @@
  * the quota RPC that computes the TUI surfaces. Inside OpenCode, logins are read only here,
  * through OpenCode's integration API.
  */
+import { join } from "node:path";
 import { Plugin } from "@opencode/plugin";
+import {
+  loadModelProviderSettings,
+  loadProviderSource,
+  type ProviderSourceHost,
+} from "./core/provider-source.js";
+import { createQuotaStore } from "./core/store.js";
+import type { QuotaSnapshot } from "./core/types.js";
 import { resolveOpenCodeLocationRoots } from "./lib/config-file-utils.js";
 import { sanitizeDisplayText } from "./lib/display-sanitize.js";
 import {
@@ -13,6 +21,7 @@ import {
   scrubCredentialErrorText,
 } from "./lib/opencode-auth.js";
 import { reconcileDetectedProvidersInGlobalConfig } from "./lib/opencode-config-providers.js";
+import { getOpencodeRuntimeDirs } from "./lib/opencode-runtime-paths.js";
 import {
   QUOTA_DIALOG_COMMANDS,
   type QuotaDialogCommandId,
@@ -146,9 +155,31 @@ export const QuotaToastPlugin = Plugin.define({
     };
     const surfaceHost: QuotaSurfaceHost = { client, roots, resolveSessionMeta };
 
+    // The v6 quota store: last known rows, saved in the state dir, refreshed in the background.
+    // Building it reads nothing; the first snapshot or refresh call loads the file.
+    const sourceHost: ProviderSourceHost = { client, roots };
+    const store = createQuotaStore({
+      source: () => loadProviderSource(sourceHost),
+      file: join(getOpencodeRuntimeDirs().stateDir, "opencode-quota", "snapshot-v6.json"),
+    });
+    // With a session, a snapshot also names the providers serving its current model.
+    const forSession = async (
+      snapshot: QuotaSnapshot,
+      sessionID: string | undefined,
+    ): Promise<{ snapshot: QuotaSnapshot }> => {
+      const model = sessionID ? await resolveSessionMeta(sessionID) : {};
+      if (!model.modelID && !model.providerID) return { snapshot };
+      const settings = await loadModelProviderSettings(sourceHost);
+      const shown = new Set(snapshot.providers.map((provider) => provider.providerId));
+      const currentModelProviderIds = settings
+        .providerIdsForModel({ id: model.modelID, providerID: model.providerID })
+        .filter((id) => shown.has(id));
+      return { snapshot: { ...snapshot, currentModelProviderIds } };
+    };
+
     // Awaited so the plugin is active only once the RPC is registered: OpenCode waits for
     // activation before it routes an RPC call, so the first TUI call cannot miss it.
-    await ctx.rpc.register(QuotaRpc, {
+    const registration = await ctx.rpc.register(QuotaRpc, {
       surface: (input) =>
         logRpcFailure("surface", async () => ({
           quota: (await getQuotaMessage(surfaceHost, input.sessionID, input.surface)) ?? null,
@@ -182,6 +213,22 @@ export const QuotaToastPlugin = Plugin.define({
           };
         }
       },
+      snapshot: (input) =>
+        logRpcFailure("snapshot", async () => forSession(await store.snapshot(), input.sessionID)),
+      refresh: (input) =>
+        logRpcFailure("refresh", async () => {
+          const options = { reason: input.reason, providerIds: input.providerIds };
+          return forSession(await store.refresh(options), input.sessionID);
+        }),
+    });
+    const unsubscribeStore = store.subscribe((snapshot) => {
+      void (async () => {
+        try {
+          await registration.events.emit("changed", { snapshot });
+        } catch (error) {
+          console.warn(`[opencode-quota] changed event failed: ${logReason(error)}`);
+        }
+      })();
     });
 
     await ctx.tool.transform((editor) => {
@@ -266,7 +313,10 @@ export const QuotaToastPlugin = Plugin.define({
     // used-up quota window resets. Any failure keeps OpenCode's own retry decision.
     await ctx.session.hook("retry", async (event) => {
       try {
-        const delay = await resolveQuotaResetRetryDelayMs(surfaceHost, event);
+        const delay = await resolveQuotaResetRetryDelayMs(
+          { store, loadSettings: () => loadModelProviderSettings(sourceHost) },
+          event,
+        );
         if (delay !== undefined) event.decision = { retry: true, delay };
       } catch (error) {
         console.warn(`[opencode-quota] retry hook failed: ${logReason(error)}`);
@@ -280,13 +330,15 @@ export const QuotaToastPlugin = Plugin.define({
       createIntegrationCredentialSource(ctx.integration),
     );
     // A login added, changed or switched in OpenCode drops cached logins and failed-login
-    // entries, so the next read asks OpenCode again. If the subscription fails, cached logins
-    // stay until they expire; the log says why. The cleanup's abort ends it silently.
+    // entries, so the next read asks OpenCode again, and makes the store check who each
+    // provider is signed in as. If the subscription fails, cached logins stay until they
+    // expire; the log says why. The cleanup's abort ends it silently.
     const credentialEvents = new AbortController();
     void (async () => {
       for await (const event of ctx.event.subscribe({ signal: credentialEvents.signal })) {
         if (event.type === "credential.updated" || event.type === "credential.switched") {
           notifyCredentialsChanged();
+          store.invalidateIdentity();
         }
       }
     })().catch((error) => {
@@ -296,6 +348,7 @@ export const QuotaToastPlugin = Plugin.define({
 
     return () => {
       credentialEvents.abort();
+      unsubscribeStore();
       unbindCredentialSource();
     };
   },

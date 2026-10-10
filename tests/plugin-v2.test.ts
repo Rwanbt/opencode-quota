@@ -329,8 +329,12 @@ describe("V2 server plugin", () => {
     const waiting = event({ retry: false });
     await retry(waiting);
     expect(waiting.decision).toEqual({ retry: true, delay: 5_460_000 });
+    // The retry reads quota through the server's store, and the settings on demand.
     expect(resolveRetryDelay).toHaveBeenCalledWith(
-      expect.objectContaining({ client: expect.anything(), roots: expect.anything() }),
+      {
+        store: expect.objectContaining({ refresh: expect.any(Function) }),
+        loadSettings: expect.any(Function),
+      },
       waiting,
     );
 

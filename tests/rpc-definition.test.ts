@@ -33,21 +33,30 @@ async function expectRejected(schema: StandardSchema, value: unknown, message: s
 const methods = QuotaRpc.methods;
 
 describe("quota RPC definition", () => {
-  it("defines the plain RPC id, no events and four methods", () => {
+  it("defines the plain RPC id, the changed event and six methods", () => {
     expect(QUOTA_RPC_ID).toBe("slkiser.opencode-quota");
     expect(QuotaRpc.id).toBe(QUOTA_RPC_ID);
-    expect(QuotaRpc.events).toEqual({});
-    expect(Object.keys(methods)).toEqual(["surface", "footer", "writeExport", "command"]);
+    expect(Object.keys(QuotaRpc.events)).toEqual(["changed"]);
+    expect(Object.keys(methods)).toEqual([
+      "surface",
+      "footer",
+      "writeExport",
+      "command",
+      "snapshot",
+      "refresh",
+    ]);
   });
 
   it("uses Standard Schema v1 validators that carry no runtime types", () => {
-    for (const method of Object.values(methods)) {
-      for (const schema of [method.input, method.output]) {
-        expect(schema["~standard"]).toEqual(
-          expect.objectContaining({ version: 1, vendor: "opencode-quota" }),
-        );
-        expect(schema["~standard"]).not.toHaveProperty("types");
-      }
+    const schemas = [
+      ...Object.values(methods).flatMap((method) => [method.input, method.output]),
+      QuotaRpc.events.changed.schema,
+    ];
+    for (const schema of schemas) {
+      expect(schema["~standard"]).toEqual(
+        expect.objectContaining({ version: 1, vendor: "opencode-quota" }),
+      );
+      expect(schema["~standard"]).not.toHaveProperty("types");
     }
   });
 
@@ -127,11 +136,61 @@ describe("quota RPC definition", () => {
     );
   });
 
-  it("requires every output to be an object", async () => {
-    for (const method of Object.values(methods)) {
+  it("validates snapshot and refresh input", async () => {
+    await expectAccepted(methods.snapshot.input, {});
+    await expectAccepted(methods.snapshot.input, { sessionID: "session-1" });
+    await expectRejected(methods.snapshot.input, null, "input must be an object");
+    await expectRejected(methods.snapshot.input, { sessionID: 1 }, "sessionID must be a string");
+
+    for (const reason of ["poll", "turn", "manual"]) {
+      await expectAccepted(methods.refresh.input, { reason });
+    }
+    await expectAccepted(methods.refresh.input, {
+      reason: "manual",
+      providerIds: ["copilot", "anthropic"],
+      sessionID: "session-1",
+    });
+    const reasonIssue = "reason must be one of poll, turn, manual";
+    await expectRejected(methods.refresh.input, [], "input must be an object");
+    await expectRejected(methods.refresh.input, {}, reasonIssue);
+    // A retry refresh is the server's own; clients can't ask for one.
+    await expectRejected(methods.refresh.input, { reason: "retry" }, reasonIssue);
+    await expectRejected(
+      methods.refresh.input,
+      { reason: "manual", providerIds: "copilot" },
+      "providerIds must be a list of strings",
+    );
+    await expectRejected(
+      methods.refresh.input,
+      { reason: "manual", providerIds: [1] },
+      "providerIds must be a list of strings",
+    );
+    await expectRejected(
+      methods.refresh.input,
+      { reason: "poll", sessionID: false },
+      "sessionID must be a string",
+    );
+  });
+
+  it("requires every v5 output to be an object", async () => {
+    for (const method of [methods.surface, methods.footer, methods.writeExport, methods.command]) {
       await expectAccepted(method.output, { any: "object" });
       for (const value of [undefined, null, "text", 1, []]) {
         await expectRejected(method.output, value, "output must be an object");
+      }
+    }
+  });
+
+  it("requires a snapshot in snapshot and refresh output and in the changed event", async () => {
+    const snapshot = { version: 6, providers: [], resetNotices: [], generatedAtMs: 1 };
+    for (const schema of [
+      methods.snapshot.output,
+      methods.refresh.output,
+      QuotaRpc.events.changed.schema,
+    ]) {
+      await expectAccepted(schema, { snapshot });
+      for (const value of [undefined, null, {}, { snapshot: null }, { snapshot: [] }]) {
+        await expectRejected(schema, value, "output must carry a snapshot");
       }
     }
   });

@@ -1,0 +1,114 @@
+/**
+ * One error vocabulary for every surface: `classifyError` turns a provider's free-text failure
+ * into a `QuotaError`, and `describeError` gives the short words users see. The raw text is
+ * kept, scrubbed, in `detail` for /quota_status only.
+ */
+import { sanitizeSingleLineDisplaySnippet } from "../lib/display-sanitize.js";
+import type { QuotaError, QuotaErrorCode } from "./types.js";
+
+const DETAIL_MAX_LENGTH = 300;
+
+/** Local programs named in provider messages, longest names first. */
+const LOCAL_TOOLS = ["Alibaba Cloud CLI", "Claude CLI"] as const;
+
+/** Checked in order; the first match wins. Patterns run on the raw message, case-insensitive. */
+const RULES: ReadonlyArray<readonly [QuotaErrorCode, RegExp]> = [
+  ["internal", /invalid normalized provider result|failed to read quota data/i],
+  ["rate_limited", /\b429\b|rate.?limit|too many requests/i],
+  ["timeout", /timed? ?out\b|timeout/i],
+  [
+    "local_tool",
+    /not found on the trusted path|could not start|cli probe failed|not supported on this platform/i,
+  ],
+  [
+    "no_plan",
+    /not subscribed|subscription (?:not found|is not active)|no active .*subscription|not an active subscription/i,
+  ],
+  [
+    "login_expired",
+    /token (?:expired|revoked)|token refresh failed|sign-in could not be|session is missing or expired|requires login|could not read this login|\b401\b|unauthorized/i,
+  ],
+  [
+    "not_configured",
+    /not configured|auth entry|missing a refresh token|has no access token|unsupported .*(?:auth type|tier)|invalid config|config must be|config file|invalid cookie header/i,
+  ],
+  [
+    "network",
+    /fetch failed|\beconn(?:refused|reset|aborted)\b|\benotfound\b|\beai_again\b|socket hang up|request failed:/i,
+  ],
+  ["provider_error", /\b(?:http|api error|error|status)\s*\(?\d{3}\b|\(http \d{3}\)/i],
+  [
+    "bad_response",
+    /invalid|parse|valid json|unexpected response|exceeded \d+ bytes|redirect rejected|expected a json|did not match/i,
+  ],
+  [
+    "no_data",
+    /\bno\b.*\bdata\b|no usable|returned no|unavailable|no local usage|nothing to report/i,
+  ],
+];
+
+function findStatus(message: string): number | undefined {
+  const match = /\b([1-5]\d{2})\b/u.exec(message);
+  return match ? Number(match[1]) : undefined;
+}
+
+/** Anthropic's cooldown text says "retry in 42s". */
+function findRetryAtMs(message: string, nowMs: number): number | undefined {
+  const match = /retry in (\d+)\s*s\b/iu.exec(message);
+  return match ? nowMs + Number(match[1]) * 1000 : undefined;
+}
+
+export function classifyError(message: string, nowMs: number = Date.now()): QuotaError {
+  const code = RULES.find(([, pattern]) => pattern.test(message))?.[0] ?? "internal";
+  const detail = sanitizeSingleLineDisplaySnippet(message, DETAIL_MAX_LENGTH);
+  const error: QuotaError = { code, ...(detail ? { detail } : {}) };
+  if (code === "provider_error" || code === "rate_limited") {
+    const status = findStatus(message);
+    if (status !== undefined) error.status = status;
+  }
+  if (code === "rate_limited") {
+    const retryAtMs = findRetryAtMs(message, nowMs);
+    if (retryAtMs !== undefined) error.retryAtMs = retryAtMs;
+  }
+  if (code === "local_tool") {
+    const tool = LOCAL_TOOLS.find((name) => message.includes(name));
+    if (tool) error.tool = tool;
+    if (/not found|not supported/i.test(message)) error.missing = true;
+  }
+  return error;
+}
+
+function formatWait(ms: number): string {
+  const minutes = Math.max(1, Math.ceil(ms / 60_000));
+  return minutes < 60 ? `${minutes}m` : `${Math.ceil(minutes / 60)}h`;
+}
+
+/** The short words every surface shows for an error, for example "Sign in again". */
+export function describeError(error: QuotaError, providerLabel: string, nowMs: number): string {
+  switch (error.code) {
+    case "not_configured":
+      return "Not set up";
+    case "login_expired":
+      return "Sign in again";
+    case "no_plan":
+      return "No active plan";
+    case "rate_limited":
+      return error.retryAtMs !== undefined && error.retryAtMs > nowMs
+        ? `Rate limited, retry in ${formatWait(error.retryAtMs - nowMs)}`
+        : "Rate limited";
+    case "timeout":
+      return "Timed out";
+    case "network":
+      return `Can't reach ${providerLabel}`;
+    case "provider_error":
+      return error.status === undefined ? "Provider error" : `Provider error ${error.status}`;
+    case "bad_response":
+      return "Unexpected reply";
+    case "no_data":
+      return "Nothing reported";
+    case "local_tool":
+      return `${error.tool ?? "Local tool"} ${error.missing ? "not found" : "failed"}`;
+    case "internal":
+      return "Couldn't read";
+  }
+}

@@ -1,4 +1,4 @@
-import { access, readFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 
@@ -23,15 +23,6 @@ vi.mock("@opentui/solid", () => ({
 
 vi.mock("@opentui/solid/preload", () => ({}));
 
-async function exists(url: URL): Promise<boolean> {
-  try {
-    await access(fileURLToPath(url));
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 const packagedTui = await import("../dist/tui.js");
 
 describe("tui dist packaging", () => {
@@ -44,15 +35,17 @@ describe("tui dist packaging", () => {
   });
 
   it("ships the precompiled TUI entry without jsx artifacts", async () => {
-    const distTui = new URL("../dist/tui.js", import.meta.url);
-    const distJsx = new URL("../dist/tui.jsx", import.meta.url);
-    const distJsxMap = new URL("../dist/tui.jsx.map", import.meta.url);
+    const distDir = fileURLToPath(new URL("../dist/", import.meta.url));
+    const jsxFiles = (await readdir(distDir, { recursive: true })).filter((file) =>
+      /\.jsx(?:\.map)?$/.test(file),
+    );
+    expect(jsxFiles).toEqual([]);
 
-    expect(await exists(distTui)).toBe(true);
-    expect(await exists(distJsx)).toBe(false);
-    expect(await exists(distJsxMap)).toBe(false);
-
-    const source = await readFile(distTui, "utf8");
+    // dist/tui.js only re-exports the compiled TUI entry.
+    expect(await readFile(new URL("../dist/tui.js", import.meta.url), "utf8")).toBe(
+      'export { default } from "./tui-v2.js";\n',
+    );
+    const source = await readFile(new URL("../dist/tui-v2.js", import.meta.url), "utf8");
     expect(source).toContain("createComponent");
     expect(source).toContain("sidebar.content");
     expect(source).toContain("prompt.footer");

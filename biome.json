@@ -83,7 +83,7 @@
       }
     },
     {
-      "includes": ["src/tui-v2.tsx"],
+      "includes": ["src/tui-v2.tsx", "src/tui/**/*.tsx"],
       "linter": {
         "rules": {
           "a11y": {
