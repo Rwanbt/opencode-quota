@@ -12,6 +12,7 @@
 import type { Rpc } from "@opencode/plugin";
 import type { QuotaSnapshot } from "./core/types.js";
 import type { UsageQuery, UsageRange, UsageReport } from "./core/usage.js";
+import { parseCalendarDate } from "./lib/calendar-date.js";
 import {
   isQuotaDialogCommand,
   type QuotaDialogCommandId,
@@ -141,9 +142,7 @@ function checkUsageInput(value: unknown): string | null {
   if (needs === "sessionID" && !value.sessionID) return `sessionID is required for range ${range}`;
   if (needs !== "dates") return null;
   for (const field of ["from", "to"]) {
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(value[field]))) {
-      return `${field} must be a date like 2026-01-31`;
-    }
+    if (!parseCalendarDate(value[field])) return `${field} must be a date like 2026-01-31`;
   }
   return (value.from as string) > (value.to as string) ? "to must not be before from" : null;
 }

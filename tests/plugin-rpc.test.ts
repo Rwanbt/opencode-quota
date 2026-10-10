@@ -52,11 +52,16 @@ vi.mock("../src/lib/config.js", () => createConfigModuleMock(mocks.loadConfig));
 vi.mock("../src/providers/registry.js", () =>
   createProvidersRegistryModuleMock(mocks.getProviders),
 );
-// Price lookups stay real (bundled price list) for the usage report; refreshes are faked.
-vi.mock("../src/lib/modelsdev-pricing.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../src/lib/modelsdev-pricing.js")>()),
-  ...createPricingModuleMock(mocks),
-}));
+// Price lookups and the price list choice stay real for the usage report; refreshes are faked.
+vi.mock("../src/lib/modelsdev-pricing.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/lib/modelsdev-pricing.js")>();
+  return {
+    ...actual,
+    ...createPricingModuleMock(mocks),
+    setPricingSnapshotAutoRefresh: actual.setPricingSnapshotAutoRefresh,
+    setPricingSnapshotSelection: actual.setPricingSnapshotSelection,
+  };
+});
 vi.mock("../src/lib/session-tokens.js", () =>
   createSessionTokensModuleMock(mocks.fetchSessionTokensForDisplay),
 );
@@ -233,9 +238,14 @@ describe("server quota RPC", () => {
         },
       ],
     });
+    useConfig({ pricingSnapshot: { source: "bundled", autoRefresh: 3 } });
     const { call } = await setupServer();
 
     const today = (await call("usage", { range: "today" })) as { report: UsageReport };
+    // The report used the configured price list.
+    const pricing = await import("../src/lib/modelsdev-pricing.js");
+    expect(pricing.getPricingSnapshotSelection()).toBe("bundled");
+    expect(pricing.getPricingRefreshPolicy().maxAgeMs).toBe(3 * 24 * 60 * 60 * 1000);
     expect(today.report.totals).toMatchObject({ sessions: 1, unpricedTokens: 500 });
     expect(today.report.totals.costUsd).toBeGreaterThan(0);
     expect(today.report.models.map((model) => [model.modelID, model.priced])).toEqual([

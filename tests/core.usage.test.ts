@@ -1,9 +1,12 @@
+import { rmSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { type UsageQuery, type UsageRow, usageReport } from "../src/core/usage.js";
+import { setPricingSnapshotSelection } from "../src/lib/modelsdev-pricing.js";
 import {
   type SessionDatabaseMessage,
   type SessionDatabaseSession,
@@ -77,7 +80,14 @@ function message(
   };
 }
 
-/** Writes OpenCode's database: `sessions`, plus a plain session for every other session id. */
+function databasePath(): string {
+  return join(root, "data", "opencode", "opencode.db");
+}
+
+/**
+ * Writes OpenCode's database, replacing any earlier one: `sessions`, plus a plain session for
+ * every other session id.
+ */
 function writeHistory(
   messages: SessionDatabaseMessage[],
   sessions: SessionDatabaseSession[] = [],
@@ -86,10 +96,8 @@ function writeHistory(
   const unlisted = [...new Set(messages.map((item) => item.sessionID))]
     .filter((id) => !listed.has(id))
     .map((id) => ({ id, created: 0 }));
-  writeSessionDatabase(join(root, "data", "opencode", "opencode.db"), {
-    sessions: [...sessions, ...unlisted],
-    messages,
-  });
+  rmSync(databasePath(), { force: true });
+  writeSessionDatabase(databasePath(), { sessions: [...sessions, ...unlisted], messages });
 }
 
 function sum(rows: UsageRow[], field: "costShare" | "tokenShare" | "tokens"): number {
@@ -186,6 +194,15 @@ describe("usage report ranges", () => {
       query: { range: "between", from: "2026-02-31", to: "2026-03-08" },
       error: "from must be a date like 2026-01-31",
     },
+    // 2026 is no leap year.
+    {
+      query: { range: "between", from: "2026-02-01", to: "2026-02-29" },
+      error: "to must be a date like 2026-01-31",
+    },
+    {
+      query: { range: "between", from: "2026-04-31", to: "2026-05-01" },
+      error: "from must be a date like 2026-01-31",
+    },
     { query: { range: "between", from: "2026-03-01" }, error: "to must be a date like 2026-01-31" },
     { query: { range: "session" }, error: "sessionID is required for range session" },
     {
@@ -196,6 +213,19 @@ describe("usage report ranges", () => {
     writeHistory([message({ created: at(0, 8) })]);
 
     await expect(usageReport(query, NOW)).rejects.toThrow(error);
+  });
+
+  it("takes a leap day in a leap year", async () => {
+    const report = await usageReport(
+      { range: "between", from: "2028-02-29", to: "2028-02-29" },
+      NOW,
+    );
+
+    expect(report).toMatchObject({
+      sinceMs: new Date(2028, 1, 29).getTime(),
+      untilMs: new Date(2028, 2, 1).getTime() - 1,
+    });
+    expect(report.days.map((day) => day.date)).toEqual(["2028-02-29"]);
   });
 });
 
@@ -230,29 +260,167 @@ describe("usage report sessions", () => {
     expect(report.sessionID).toBe(item.query.sessionID);
   });
 
-  it.each([
-    { forkAddsWork: false, tokens: 1 + 2, sessions: 1 },
-    { forkAddsWork: true, tokens: 1 + 2 + 4, sessions: 2 },
-  ])("counts a fork's copied messages once (fork adds work: $forkAddsWork)", async (item) => {
-    const parent = [
-      message({ sessionID: "ses_parent", created: at(0, 8), tokens: { output: 1 } }),
-      message({ sessionID: "ses_parent", created: at(0, 9), tokens: { output: 2 } }),
+  describe("forks", () => {
+    // A fork made at 09:30 from ses_parent, and the fork's own subagent.
+    const forkSessions = [
+      { id: "ses_parent", created: at(0, 7) },
+      { id: "ses_fork", forkOf: "ses_parent", created: at(0, 9, 30) },
+      { id: "ses_fork_child", parentID: "ses_fork", created: at(0, 10) },
     ];
-    // OpenCode copies the parent's finished messages into a fork, with new ids.
-    const copies = parent.map((original, index) => ({
-      ...original,
-      id: `msg_fork_copy_${index}`,
-      sessionID: "ses_fork",
-    }));
-    const added = item.forkAddsWork
-      ? [message({ sessionID: "ses_fork", created: at(0, 10), tokens: { output: 4 } })]
-      : [];
-    writeHistory([...parent, ...copies, ...added]);
+    const forkHistory = (forkAddsWork: boolean) => {
+      const parent = [
+        message({ sessionID: "ses_parent", created: at(0, 8), tokens: { output: 1 } }),
+        message({
+          type: "compaction",
+          sessionID: "ses_parent",
+          created: at(0, 9),
+          tokens: { output: 2 },
+        }),
+      ];
+      // OpenCode copies the parent's settled rows into the fork: new ids, same times and data.
+      const copies = parent.map((original, index) => ({
+        ...original,
+        id: `msg_fork_copy_${index}`,
+        sessionID: "ses_fork",
+      }));
+      const added = forkAddsWork
+        ? [
+            message({ sessionID: "ses_fork", created: at(0, 10), tokens: { output: 4 } }),
+            message({ sessionID: "ses_fork_child", created: at(0, 10, 30), tokens: { output: 8 } }),
+          ]
+        : [];
+      return [...parent, ...copies, ...added];
+    };
 
-    const report = await usageReport({ range: "all" }, NOW);
+    it.each<{ query: UsageQuery; forkAddsWork: boolean; tokens: number; sessions: number }>([
+      { query: { range: "all" }, forkAddsWork: false, tokens: 1 + 2, sessions: 1 },
+      { query: { range: "today" }, forkAddsWork: false, tokens: 1 + 2, sessions: 1 },
+      {
+        query: { range: "between", from: "2026-03-15", to: "2026-03-15" },
+        forkAddsWork: false,
+        tokens: 1 + 2,
+        sessions: 1,
+      },
+      {
+        query: { range: "session", sessionID: "ses_fork" },
+        forkAddsWork: false,
+        tokens: 0,
+        sessions: 0,
+      },
+      {
+        query: { range: "session_tree", sessionID: "ses_fork" },
+        forkAddsWork: false,
+        tokens: 0,
+        sessions: 0,
+      },
+      { query: { range: "all" }, forkAddsWork: true, tokens: 1 + 2 + 4 + 8, sessions: 2 },
+      {
+        query: { range: "session", sessionID: "ses_fork" },
+        forkAddsWork: true,
+        tokens: 4,
+        sessions: 1,
+      },
+      {
+        query: { range: "session_tree", sessionID: "ses_fork" },
+        forkAddsWork: true,
+        tokens: 4 + 8,
+        sessions: 1,
+      },
+      {
+        query: { range: "session", sessionID: "ses_parent" },
+        forkAddsWork: true,
+        tokens: 1 + 2,
+        sessions: 1,
+      },
+    ])("counts a fork's copies only in its parent: $query.range $query.sessionID (fork adds work: $forkAddsWork)", async (item) => {
+      writeHistory(forkHistory(item.forkAddsWork), forkSessions);
+
+      const report = await usageReport(item.query, NOW);
+
+      expect(report.totals.tokens.processed).toBe(item.tokens);
+      expect(report.totals.sessions).toBe(item.sessions);
+      expect(report.totals.costUsd).toBeCloseTo((item.tokens * 10) / M, 10);
+    });
+  });
+});
+
+describe("usage report compactions", () => {
+  // `null` is a model row without a price.
+  it.each<{
+    name: string;
+    messages: () => SessionDatabaseMessage[];
+    tokens: number;
+    models: Array<[string, string, number | null, number]>;
+  }>([
+    {
+      name: "a completed compaction counts with its own model",
+      messages: () => [
+        message({ created: at(0, 8), tokens: { input: M } }),
+        message({ type: "compaction", created: at(0, 9), tokens: { input: 5 * M, output: M } }),
+      ],
+      tokens: 7 * M,
+      models: [["anthropic", "claude-test", 2 + 10 + 10, 7 * M]],
+    },
+    {
+      // It ran on the session's model; the other session's later message does not count.
+      name: "a failed compaction counts with its session's latest model",
+      messages: () => [
+        message({ created: at(0, 8), tokens: { input: M } }),
+        message({ modelID: "claude-plain", created: at(0, 9), tokens: { input: M } }),
+        message({ sessionID: "ses_other", created: at(0, 9, 30), tokens: { input: M } }),
+        message({
+          type: "compaction",
+          status: "failed",
+          providerID: undefined,
+          modelID: undefined,
+          created: at(0, 10),
+          tokens: { input: 3 * M },
+        }),
+      ],
+      tokens: 6 * M,
+      models: [
+        ["anthropic", "claude-plain", 1 + 3, 4 * M],
+        ["anthropic", "claude-test", 2 + 2, 2 * M],
+      ],
+    },
+    {
+      name: "a failed compaction with no model before it is unpriced",
+      messages: () => [
+        message({
+          type: "compaction",
+          status: "failed",
+          providerID: undefined,
+          modelID: undefined,
+          created: at(0, 10),
+          tokens: { input: M },
+        }),
+      ],
+      tokens: M,
+      models: [["unknown", "unknown", null, M]],
+    },
+    {
+      name: "running and usage-free compactions count nothing",
+      messages: () => [
+        message({ type: "compaction", status: "running", created: at(0, 9) }),
+        message({ type: "compaction", status: "failed", created: at(0, 10) }),
+      ],
+      tokens: 0,
+      models: [],
+    },
+  ])("$name", async (item) => {
+    writeHistory(item.messages());
+
+    const report = await usageReport({ range: "today" }, NOW);
 
     expect(report.totals.tokens.processed).toBe(item.tokens);
-    expect(report.totals.sessions).toBe(item.sessions);
+    expect(
+      report.models.map((model) => [
+        model.providerID,
+        model.modelID,
+        model.priced ? Number(model.costUsd.toFixed(9)) : null,
+        model.tokens,
+      ]),
+    ).toEqual(item.models);
   });
 });
 
@@ -374,5 +542,119 @@ describe("usage report cost", () => {
       expect(sum(rows, "costShare")).toBeCloseTo(item.costShares, 10);
       expect(sum(rows, "tokenShare")).toBeCloseTo(1, 10);
     }
+  });
+});
+
+describe("usage report price list", () => {
+  it("prices with the configured price list", async () => {
+    writeHistory([message({ created: at(0, 8), tokens: { input: M } })]);
+
+    // claude-test has a price only in the downloaded test list, not in the bundled one.
+    setPricingSnapshotSelection("bundled");
+    const bundled = await usageReport({ range: "today" }, NOW);
+    setPricingSnapshotSelection("runtime");
+    const runtime = await usageReport({ range: "today" }, NOW);
+
+    expect(bundled.totals).toMatchObject({ costUsd: 0, unpricedTokens: M });
+    expect(runtime.totals).toMatchObject({ costUsd: 2, unpricedTokens: 0 });
+  });
+});
+
+/**
+ * Writes `count` messages a minute apart, ending a minute before `NOW`, over 600 sessions (every
+ * other one a subagent). SQL makes the rows, so the test keeps no big array alive. Each message
+ * uses 4 tokens.
+ */
+function writeLongHistory(count: number): void {
+  const sessionID = (index: number) => `ses_${String(index).padStart(4, "0")}`;
+  writeHistory(
+    [],
+    Array.from({ length: 600 }, (_, index) => ({
+      id: sessionID(index),
+      ...(index % 2 === 1 ? { parentID: sessionID(index - 1) } : {}),
+      created: 0,
+    })),
+  );
+  const database = new DatabaseSync(databasePath());
+  try {
+    database
+      .prepare(`
+        WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i + 1 < :count)
+        INSERT INTO session_message (id, session_id, type, seq, time_created, time_updated, data)
+        SELECT printf('msg_%06d', i), printf('ses_%04d', i % 600), 'assistant', i,
+          :start + i * 60000, :start + i * 60000,
+          json_object(
+            'model', json_object('providerID', 'anthropic', 'id', 'claude-test'),
+            'tokens', json_object('input', 1, 'output', 1, 'reasoning', 0,
+              'cache', json_object('read', 1, 'write', 1)),
+            'time', json_object('created', :start + i * 60000))
+        FROM n`)
+      .run({ count, start: NOW - count * 60_000 });
+  } finally {
+    database.close();
+  }
+}
+
+describe("usage report reading", () => {
+  it("lets other work run while it reads a long history", async () => {
+    const count = 60_000;
+    writeLongHistory(count);
+    // How long the report holds the event loop between two timer ticks, in main-thread CPU
+    // time: unlike wall time, it leaves out the time a busy machine gives other processes.
+    let ticks = 0;
+    let longestHoldMs = 0;
+    let cpuAtLastTick = process.threadCpuUsage();
+    const measureHold = () => {
+      const used = process.threadCpuUsage(cpuAtLastTick);
+      longestHoldMs = Math.max(longestHoldMs, (used.user + used.system) / 1000);
+      cpuAtLastTick = process.threadCpuUsage();
+    };
+    const timer = setInterval(() => {
+      ticks += 1;
+      measureHold();
+    }, 1);
+
+    try {
+      const report = await usageReport({ range: "all" }, NOW);
+      measureHold();
+      expect(report.totals.tokens.processed).toBe(4 * count);
+      expect(report.totals.sessions).toBe(300);
+    } finally {
+      clearInterval(timer);
+    }
+
+    expect(ticks).toBeGreaterThan(50);
+    expect(longestHoldMs).toBeLessThan(50);
+  });
+
+  it("answers identical questions with one report for 30 s", async () => {
+    writeHistory([message({ created: at(0, 8), tokens: { output: 1 } })]);
+
+    // Both requests start before either finishes.
+    const [first, same] = await Promise.all([
+      usageReport({ range: "today" }, NOW),
+      usageReport({ range: "today" }, NOW + 1),
+    ]);
+    const otherRange = await usageReport({ range: "7d" }, NOW);
+    expect(same).toBe(first);
+    expect(otherRange).not.toBe(first);
+
+    writeHistory([
+      message({ created: at(0, 8), tokens: { output: 1 } }),
+      message({ created: at(0, 9), tokens: { output: 2 } }),
+    ]);
+    expect(await usageReport({ range: "today" }, NOW + 29_999)).toBe(first);
+    const later = await usageReport({ range: "today" }, NOW + 30_000);
+    expect(later.totals.tokens.processed).toBe(1 + 2);
+  });
+
+  it("does not keep a failed report", async () => {
+    writeHistory([message({ created: at(0, 8) })]);
+    const query: UsageQuery = { range: "session", sessionID: "ses_new" };
+    await expect(usageReport(query, NOW)).rejects.toThrow("Session not found: ses_new");
+
+    writeHistory([message({ sessionID: "ses_new", created: at(0, 8), tokens: { output: 1 } })]);
+
+    expect((await usageReport(query, NOW)).totals.tokens.processed).toBe(1);
   });
 });

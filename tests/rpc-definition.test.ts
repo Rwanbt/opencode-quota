@@ -179,11 +179,14 @@ describe("quota RPC definition", () => {
     }
     await expectAccepted(methods.usage.input, { range: "session", sessionID: "ses_1" });
     await expectAccepted(methods.usage.input, { range: "session_tree", sessionID: "ses_1" });
-    await expectAccepted(methods.usage.input, {
-      range: "between",
-      from: "2026-01-01",
-      to: "2026-01-01",
-    });
+    // Leap days exist in leap years only (every 4th year, but not 1900; 2000 is one).
+    for (const [from, to] of [
+      ["2026-01-01", "2026-01-01"],
+      ["2028-02-29", "2028-03-01"],
+      ["2000-02-29", "2000-02-29"],
+    ]) {
+      await expectAccepted(methods.usage.input, { range: "between", from, to });
+    }
 
     const rangeIssue =
       "range must be one of today, 7d, 30d, 90d, all, session, session_tree, between";
@@ -199,6 +202,35 @@ describe("quota RPC definition", () => {
       [
         { range: "between", from: "2026-01-01", to: "1/2/2026" },
         "to must be a date like 2026-01-31",
+      ],
+      // Shaped like dates, but no such day: the report would fail on them.
+      [
+        { range: "between", from: "2026-02-31", to: "2026-03-01" },
+        "from must be a date like 2026-01-31",
+      ],
+      [
+        { range: "between", from: "2026-02-01", to: "2026-02-29" },
+        "to must be a date like 2026-01-31",
+      ],
+      [
+        { range: "between", from: "1900-02-29", to: "1900-03-01" },
+        "from must be a date like 2026-01-31",
+      ],
+      [
+        { range: "between", from: "2026-04-31", to: "2026-05-01" },
+        "from must be a date like 2026-01-31",
+      ],
+      [
+        { range: "between", from: "2026-13-01", to: "2026-13-02" },
+        "from must be a date like 2026-01-31",
+      ],
+      [
+        { range: "between", from: "2026-00-10", to: "2026-01-02" },
+        "from must be a date like 2026-01-31",
+      ],
+      [
+        { range: "between", from: "2026-01-00", to: "2026-01-02" },
+        "from must be a date like 2026-01-31",
       ],
       [{ range: "between", from: "2026-01-02", to: "2026-01-01" }, "to must not be before from"],
     ];

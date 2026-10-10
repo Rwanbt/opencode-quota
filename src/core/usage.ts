@@ -5,24 +5,28 @@
  * day. Plain JSON, because it travels over the RPC.
  *
  * Rules:
- * - Messages are OpenCode's assistant messages, picked by creation time. The copies OpenCode
- *   makes when a session is forked count once (`opencode-storage` drops them).
+ * - Messages are OpenCode's assistant messages and the compactions that recorded usage, picked
+ *   by creation time. A fork starts with copies of its parent's messages; only the parent
+ *   counts them, in every range (`readUsageMessagePages` leaves them out).
  * - Cost comes from the shared pricing resolver (models.dev snapshot, Cursor's own table). A
- *   model without a price adds tokens but no cost; its tokens are the unpriced share.
+ *   model without a price adds tokens but no cost; its tokens are the unpriced share. A failed
+ *   compaction names no model and is priced as its session's model at the time.
  * - Sessions count conversations: a subagent session counts as part of its top parent.
  * - Ranges and days are local calendar days: "7d" is today and the 6 days before it, and
  *   "between" includes both dates.
  * - Token kinds: cached input = cache reads; uncached input = input + cache writes;
  *   output = output + reasoning; processed = all three.
+ * - The history is read in pages, and the plugin's other work runs between pages. Identical
+ *   questions share one read: see `usageReport`.
  */
-import type { CostBuckets } from "../lib/modelsdev-pricing.js";
+import { parseCalendarDate } from "../lib/calendar-date.js";
+import { type CostBuckets, getPricingSnapshotSelection } from "../lib/modelsdev-pricing.js";
+import { getOpenCodeDbPath } from "../lib/opencode-db-path.js";
 import {
-  iterAssistantMessages,
-  iterAssistantMessagesForSession,
-  iterAssistantMessagesForSessions,
-  type OpenCodeMessage,
   type OpenCodeSessionInfo,
   readAllSessionsIndex,
+  readUsageMessagePages,
+  SessionNotFoundError,
 } from "../lib/opencode-storage.js";
 import { type ModelPricing, resolveModelPricing, resolveSessionTree } from "../lib/quota-stats.js";
 import {
@@ -118,6 +122,12 @@ export type UsageReport = {
 /** How many local days the rolling ranges cover, today included. */
 const RANGE_DAYS: Partial<Record<UsageRange, number>> = { today: 1, "7d": 7, "30d": 30, "90d": 90 };
 
+/** Rows read in one go: one page holds the event loop for a few milliseconds. */
+const PAGE_ROWS = 250;
+
+/** How long a report answers the same question again. */
+const REPORT_REUSE_MS = 30_000;
+
 type TimeWindow = { sinceMs?: number; untilMs?: number };
 
 /** What one message adds to the report. */
@@ -131,9 +141,19 @@ type MessageUse = {
 
 type Tally = { costUsd: number; tokens: number; unpricedTokens: number };
 
+/**
+ * The local midnight that starts a day; `day` may run past the month. Unlike
+ * `new Date(year, month, day)`, it keeps years below 100 as they are.
+ */
+function localDayStart(year: number, monthIndex: number, day: number): number {
+  const date = new Date(2000, 0, 1);
+  date.setFullYear(year, monthIndex, day);
+  return date.getTime();
+}
+
 function localMidnight(ms: number, dayOffset: number): number {
   const date = new Date(ms);
-  return new Date(date.getFullYear(), date.getMonth(), date.getDate() + dayOffset).getTime();
+  return localDayStart(date.getFullYear(), date.getMonth(), date.getDate() + dayOffset);
 }
 
 function localDate(ms: number): string {
@@ -145,16 +165,10 @@ function localDate(ms: number): string {
 
 /** The local midnight that starts `text` ("2026-01-31"). */
 function parseLocalDate(text: string | undefined, field: "from" | "to"): number {
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(text ?? "");
-  if (match) {
-    const [year, month, day] = [Number(match[1]), Number(match[2]), Number(match[3])];
-    const date = new Date(year, month - 1, day);
-    // Rejects days that roll over (2026-02-31) and years Date reads as 19xx (0050).
-    if (date.getFullYear() === year && date.getMonth() === month - 1 && date.getDate() === day) {
-      return date.getTime();
-    }
-  }
-  throw new Error(`${field} must be a date like 2026-01-31`);
+  // The RPC checks dates with this same rule, so a date it lets through never fails here.
+  const date = parseCalendarDate(text);
+  if (!date) throw new Error(`${field} must be a date like 2026-01-31`);
+  return localDayStart(date.year, date.month - 1, date.day);
 }
 
 function resolveWindow(query: UsageQuery, nowMs: number): TimeWindow {
@@ -175,15 +189,21 @@ function requireSessionID(query: UsageQuery): string {
   return query.sessionID;
 }
 
-async function readMessages(query: UsageQuery, window: TimeWindow): Promise<OpenCodeMessage[]> {
+/** The sessions a session range reads; undefined for the other ranges, which read them all. */
+async function sessionsToRead(
+  query: UsageQuery,
+  sessionsIndex: Record<string, OpenCodeSessionInfo>,
+): Promise<string[] | undefined> {
   if (query.range === "session") {
-    return iterAssistantMessagesForSession({ sessionID: requireSessionID(query) });
+    const sessionID = requireSessionID(query);
+    if (!sessionsIndex[sessionID]) throw new SessionNotFoundError(sessionID, getOpenCodeDbPath());
+    return [sessionID];
   }
   if (query.range === "session_tree") {
     const tree = await resolveSessionTree(requireSessionID(query));
-    return iterAssistantMessagesForSessions({ sessionIDs: tree.map((node) => node.sessionID) });
+    return tree.map((node) => node.sessionID);
   }
-  return iterAssistantMessages(window);
+  return undefined;
 }
 
 /** The session at the top of `sessionID`'s parent chain (subagents belong to their parent). */
@@ -281,13 +301,47 @@ function localDays(firstMs: number, lastMs: number): string[] {
   return days;
 }
 
+type RecentReport = { startedMs: number; report: Promise<UsageReport> };
+
+/** Reports started in the last `REPORT_REUSE_MS`, by question (see `usageReport`). */
+const recentReports = new Map<string, RecentReport>();
+
+function isRecent(recent: RecentReport, nowMs: number): boolean {
+  const ageMs = nowMs - recent.startedMs;
+  return ageMs >= 0 && ageMs < REPORT_REUSE_MS;
+}
+
+/**
+ * The usage report for `query` at `nowMs`. Identical questions (same database, price list
+ * choice and query) share one read of the history: a request made while the same report is
+ * being built waits for it, and a finished report answers again for 30 s, so its numbers can
+ * be up to 30 s old. A failed report is not kept.
+ */
 export async function usageReport(
   query: UsageQuery,
   nowMs: number = Date.now(),
 ): Promise<UsageReport> {
+  for (const [key, recent] of recentReports) {
+    if (!isRecent(recent, nowMs)) recentReports.delete(key);
+  }
+  const { range, sessionID, from, to } = query;
+  const priceList = getPricingSnapshotSelection();
+  const key = JSON.stringify([getOpenCodeDbPath(), priceList, range, sessionID, from, to]);
+  const recent = recentReports.get(key);
+  if (recent) return recent.report;
+
+  const report = buildUsageReport(query, nowMs);
+  recentReports.set(key, { startedMs: nowMs, report });
+  report.catch(() => {
+    if (recentReports.get(key)?.report === report) recentReports.delete(key);
+  });
+  return report;
+}
+
+async function buildUsageReport(query: UsageQuery, nowMs: number): Promise<UsageReport> {
   const window = resolveWindow(query, nowMs);
-  const messages = await readMessages(query, window);
   const sessionsIndex = await readAllSessionsIndex();
+  const sessionIDs = await sessionsToRead(query, sessionsIndex);
 
   const totalTokens: UsageTokens = { processed: 0, cachedInput: 0, uncachedInput: 0, output: 0 };
   const costByType: UsageCostByType = { input: 0, cacheRead: 0, cacheWrite: 0, output: 0 };
@@ -305,50 +359,55 @@ export async function usageReport(
   let firstMs = Number.POSITIVE_INFINITY;
   let lastMs = Number.NEGATIVE_INFINITY;
 
-  for (const message of messages) {
-    // Storage always sets the creation time; it is what places a message on a day.
-    const createdMs = message.time?.created;
-    if (typeof createdMs !== "number") continue;
-    const providerID = message.providerID ?? "unknown";
-    const modelID = message.modelID ?? "unknown";
-    const modelKey = `${providerID}\n${modelID}`;
-    const pricing = entryFor(pricingByModel, modelKey, () =>
-      resolveModelPricing({ providerID: message.providerID, modelID: message.modelID }),
-    );
-    const use = messageUse(
-      tokenBucketsFromMessage(message),
-      pricing.kind === "priced" ? pricing.rates : null,
-    );
-    const topSession = entryFor(topSessionIDs, message.sessionID, () =>
-      topSessionID(message.sessionID, sessionsIndex),
-    );
+  const pages = readUsageMessagePages({ ...window, sessionIDs, pageSize: PAGE_ROWS });
+  for await (const page of pages) {
+    for (const message of page) {
+      // Storage always sets the creation time; it is what places a message on a day.
+      const createdMs = message.time?.created;
+      if (typeof createdMs !== "number") continue;
+      const providerID = message.providerID ?? "unknown";
+      const modelID = message.modelID ?? "unknown";
+      const modelKey = `${providerID}\n${modelID}`;
+      const pricing = entryFor(pricingByModel, modelKey, () =>
+        resolveModelPricing({ providerID: message.providerID, modelID: message.modelID }),
+      );
+      const use = messageUse(
+        tokenBucketsFromMessage(message),
+        pricing.kind === "priced" ? pricing.rates : null,
+      );
+      const topSession = entryFor(topSessionIDs, message.sessionID, () =>
+        topSessionID(message.sessionID, sessionsIndex),
+      );
 
-    addUse(total, use);
-    for (const kind of ["processed", "cachedInput", "uncachedInput", "output"] as const) {
-      totalTokens[kind] += use.tokens[kind];
-    }
-    for (const kind of ["input", "cacheRead", "cacheWrite", "output"] as const) {
-      costByType[kind] += use.costByType[kind];
-    }
-    cacheSavingsUsd += use.cacheSavingsUsd;
-    sessions.add(topSession);
+      addUse(total, use);
+      for (const kind of ["processed", "cachedInput", "uncachedInput", "output"] as const) {
+        totalTokens[kind] += use.tokens[kind];
+      }
+      for (const kind of ["input", "cacheRead", "cacheWrite", "output"] as const) {
+        costByType[kind] += use.costByType[kind];
+      }
+      cacheSavingsUsd += use.cacheSavingsUsd;
+      sessions.add(topSession);
 
-    const provider = entryFor(providers, providerID, () => ({
-      tally: emptyTally(),
-      sessions: new Set<string>(),
-    }));
-    addUse(provider.tally, use);
-    provider.sessions.add(topSession);
-    const model = entryFor(models, modelKey, () => ({
-      providerID,
-      modelID,
-      priced: use.priced,
-      tally: emptyTally(),
-    }));
-    addUse(model.tally, use);
-    addUse(entryFor(days, localDate(createdMs), emptyTally), use);
-    firstMs = Math.min(firstMs, createdMs);
-    lastMs = Math.max(lastMs, createdMs);
+      const provider = entryFor(providers, providerID, () => ({
+        tally: emptyTally(),
+        sessions: new Set<string>(),
+      }));
+      addUse(provider.tally, use);
+      provider.sessions.add(topSession);
+      const model = entryFor(models, modelKey, () => ({
+        providerID,
+        modelID,
+        priced: use.priced,
+        tally: emptyTally(),
+      }));
+      addUse(model.tally, use);
+      addUse(entryFor(days, localDate(createdMs), emptyTally), use);
+      firstMs = Math.min(firstMs, createdMs);
+      lastMs = Math.max(lastMs, createdMs);
+    }
+    // Let the plugin's other work run before the next page: a long history must not stall it.
+    await new Promise<void>((resolve) => setImmediate(resolve));
   }
 
   const rowTotal = { costUsd: total.costUsd, tokens: total.tokens };

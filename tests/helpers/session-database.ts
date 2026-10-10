@@ -7,7 +7,10 @@ export type SessionDatabaseSession = {
   id: string;
   /** Set for a subagent session; a fork has none. */
   parentID?: string;
+  /** For a fork: the session it was forked from (`fork_session_id`). */
+  forkOf?: string;
   title?: string;
+  /** For a fork: when it was forked. Its copies of the parent's messages are older. */
   created: number;
 };
 
@@ -18,10 +21,14 @@ export type SessionDatabaseMessage = {
   /** Defaults to "assistant". */
   type?: string;
   created: number;
-  /** Absent while the message is still running. */
+  /** An assistant message's end; absent while it is still running. */
   completed?: number;
+  /** A compaction's state; defaults to "completed". */
+  status?: "running" | "completed" | "failed";
+  /** A failed compaction names no model: leave both out. */
   providerID?: string;
   modelID?: string;
+  /** A compaction without `tokens` recorded no usage. */
   tokens?: {
     input?: number;
     output?: number;
@@ -32,9 +39,47 @@ export type SessionDatabaseMessage = {
   cost?: number;
 };
 
+function tokenUsage(tokens: NonNullable<SessionDatabaseMessage["tokens"]>) {
+  return {
+    input: tokens.input ?? 0,
+    output: tokens.output ?? 0,
+    reasoning: tokens.reasoning ?? 0,
+    cache: { read: tokens.cacheRead ?? 0, write: tokens.cacheWrite ?? 0 },
+  };
+}
+
+/** The message's `data` JSON, shaped like OpenCode 2's (`packages/schema/src/session-message.ts`). */
+function messageData(message: SessionDatabaseMessage): Record<string, unknown> {
+  const model =
+    message.providerID === undefined && message.modelID === undefined
+      ? {}
+      : { model: { providerID: message.providerID, id: message.modelID } };
+  if (message.type === "compaction") {
+    return {
+      type: "compaction",
+      id: message.id,
+      status: message.status ?? "completed",
+      reason: "auto",
+      ...model,
+      ...(message.tokens ? { tokens: tokenUsage(message.tokens), cost: message.cost ?? 0 } : {}),
+      time: { created: message.created },
+    };
+  }
+  return {
+    ...model,
+    tokens: tokenUsage(message.tokens ?? {}),
+    cost: message.cost ?? 0,
+    time:
+      message.completed === undefined
+        ? { created: message.created }
+        : { created: message.created, completed: message.completed },
+  };
+}
+
 /**
- * Creates OpenCode 2's session tables in a new database file (use a temp dir), creating its
- * folder, and inserts `sessions` and `messages`.
+ * Creates OpenCode 2's session tables and their indexes in a new database file (use a temp
+ * dir), creating its folder, and inserts `sessions` and `messages`. A message's `seq` is its
+ * place in `messages`.
  */
 export function writeSessionDatabase(
   databasePath: string,
@@ -51,9 +96,11 @@ export function writeSessionDatabase(
         id TEXT PRIMARY KEY,
         title TEXT,
         parent_id TEXT,
+        fork_session_id TEXT,
         time_created INTEGER NOT NULL,
         time_updated INTEGER NOT NULL
       );
+      CREATE INDEX "session_v2_parent_idx" ON "session_v2" (parent_id);
       CREATE TABLE "session_message" (
         id TEXT PRIMARY KEY,
         session_id TEXT NOT NULL,
@@ -63,13 +110,21 @@ export function writeSessionDatabase(
         time_updated INTEGER NOT NULL,
         data TEXT NOT NULL
       );
+      CREATE UNIQUE INDEX "session_message_session_seq_idx" ON "session_message" (session_id, seq);
+      CREATE INDEX "session_message_session_type_seq_idx"
+        ON "session_message" (session_id, type, seq);
+      CREATE INDEX "session_message_session_time_created_id_idx"
+        ON "session_message" (session_id, time_created, id);
+      CREATE INDEX "session_message_time_created_idx" ON "session_message" (time_created);
     `);
-    const insertSession = database.prepare(`INSERT INTO "session_v2" VALUES (?, ?, ?, ?, ?)`);
+    database.exec("BEGIN");
+    const insertSession = database.prepare(`INSERT INTO "session_v2" VALUES (?, ?, ?, ?, ?, ?)`);
     for (const session of data.sessions) {
       insertSession.run(
         session.id,
         session.title ?? null,
         session.parentID ?? null,
+        session.forkOf ?? null,
         session.created,
         session.created,
       );
@@ -78,7 +133,6 @@ export function writeSessionDatabase(
       `INSERT INTO "session_message" VALUES (?, ?, ?, ?, ?, ?, ?)`,
     );
     data.messages.forEach((message, seq) => {
-      const tokens = message.tokens ?? {};
       insertMessage.run(
         message.id,
         message.sessionID,
@@ -86,22 +140,10 @@ export function writeSessionDatabase(
         seq,
         message.created,
         message.completed ?? message.created,
-        JSON.stringify({
-          model: { providerID: message.providerID, id: message.modelID },
-          tokens: {
-            input: tokens.input ?? 0,
-            output: tokens.output ?? 0,
-            reasoning: tokens.reasoning ?? 0,
-            cache: { read: tokens.cacheRead ?? 0, write: tokens.cacheWrite ?? 0 },
-          },
-          cost: message.cost ?? 0,
-          time:
-            message.completed === undefined
-              ? { created: message.created }
-              : { created: message.created, completed: message.completed },
-        }),
+        JSON.stringify(messageData(message)),
       );
     });
+    database.exec("COMMIT");
   } finally {
     database.close();
   }
