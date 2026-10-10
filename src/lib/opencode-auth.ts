@@ -11,7 +11,7 @@
 
 import type { Plugin } from "@opencode/plugin";
 
-import { sanitizeSingleLineDisplayText } from "./display-sanitize.js";
+import { safeDetail } from "../core/redact.js";
 import { getOpenCodeDbPath } from "./opencode-db-path.js";
 
 import type { AuthData } from "./types.js";
@@ -233,10 +233,7 @@ export function getCredentialSourceDiagnostics(): CredentialSourceDiagnostics {
  */
 export function scrubCredentialErrorText(message: string): string {
   // Redact before cutting to length, so a token cut at the limit cannot leave a readable part.
-  return sanitizeSingleLineDisplayText(message)
-    .replace(/eyJ[A-Za-z0-9_-]{10,}(\.[A-Za-z0-9_-]+)*/gu, "[redacted]")
-    .replace(/[A-Za-z0-9_-]{32,}/gu, "[redacted]")
-    .slice(0, 120);
+  return safeDetail(message, 120);
 }
 
 function credentialErrorDetail(error: unknown): string {

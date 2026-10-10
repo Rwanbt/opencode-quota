@@ -11,7 +11,7 @@ import {
   type ProviderSourceHost,
 } from "./core/provider-source.js";
 import { createQuotaStore } from "./core/store.js";
-import type { QuotaSnapshot } from "./core/types.js";
+import type { SessionModel } from "./core/types.js";
 import { resolveOpenCodeLocationRoots } from "./lib/config-file-utils.js";
 import { sanitizeDisplayText } from "./lib/display-sanitize.js";
 import {
@@ -163,18 +163,9 @@ export const QuotaToastPlugin = Plugin.define({
       file: join(getOpencodeRuntimeDirs().stateDir, "opencode-quota", "snapshot-v6.json"),
     });
     // With a session, a snapshot also names the providers serving its current model.
-    const forSession = async (
-      snapshot: QuotaSnapshot,
-      sessionID: string | undefined,
-    ): Promise<{ snapshot: QuotaSnapshot }> => {
-      const model = sessionID ? await resolveSessionMeta(sessionID) : {};
-      if (!model.modelID && !model.providerID) return { snapshot };
-      const settings = await loadModelProviderSettings(sourceHost);
-      const shown = new Set(snapshot.providers.map((provider) => provider.providerId));
-      const currentModelProviderIds = settings
-        .providerIdsForModel({ id: model.modelID, providerID: model.providerID })
-        .filter((id) => shown.has(id));
-      return { snapshot: { ...snapshot, currentModelProviderIds } };
+    const sessionModel = async (sessionID: string | undefined): Promise<SessionModel> => {
+      const meta = sessionID ? await resolveSessionMeta(sessionID) : {};
+      return { id: meta.modelID, providerID: meta.providerID };
     };
 
     // Awaited so the plugin is active only once the RPC is registered: OpenCode waits for
@@ -214,11 +205,14 @@ export const QuotaToastPlugin = Plugin.define({
         }
       },
       snapshot: (input) =>
-        logRpcFailure("snapshot", async () => forSession(await store.snapshot(), input.sessionID)),
+        logRpcFailure("snapshot", async () => ({
+          snapshot: await store.snapshot({ model: await sessionModel(input.sessionID) }),
+        })),
       refresh: (input) =>
         logRpcFailure("refresh", async () => {
-          const options = { reason: input.reason, providerIds: input.providerIds };
-          return forSession(await store.refresh(options), input.sessionID);
+          const model = await sessionModel(input.sessionID);
+          const options = { reason: input.reason, providerIds: input.providerIds, model };
+          return { snapshot: await store.refresh(options) };
         }),
     });
     const unsubscribeStore = store.subscribe((snapshot) => {
@@ -346,9 +340,11 @@ export const QuotaToastPlugin = Plugin.define({
       console.warn(`[opencode-quota] credential event subscription stopped: ${logReason(error)}`);
     });
 
-    return () => {
+    // Running fetches still read logins, so the store is drained before the binding goes.
+    return async () => {
       credentialEvents.abort();
       unsubscribeStore();
+      await store.dispose();
       unbindCredentialSource();
     };
   },

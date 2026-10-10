@@ -1,5 +1,7 @@
-import { existsSync } from "node:fs";
+import { existsSync, mkdtempSync } from "node:fs";
 import { readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { QuotaSnapshot } from "../src/core/types.js";
 import {
@@ -20,7 +22,8 @@ import {
   seedDefaultPluginBootstrapMocks,
 } from "./helpers/plugin-test-harness.js";
 
-const TEST_RUNTIME_ROOT = "/tmp/opencode-quota-plugin-rpc-tests";
+// A fresh folder per run, so test runs in sibling checkouts never share it.
+const TEST_RUNTIME_ROOT = mkdtempSync(join(tmpdir(), "opencode-quota-plugin-rpc-"));
 const TEST_ACCOUNTING = {
   resultType: "quota",
   acquisitionMethod: "remote_api",
@@ -89,6 +92,9 @@ const SNAPSHOT_FILE = `${TEST_RUNTIME_ROOT}/state/opencode-quota/snapshot-v6.jso
 
 type ServerEvent = { type: string };
 
+/** Each server's cleanup; run after every test, before its folder goes. */
+const cleanups: Array<() => unknown> = [];
+
 async function setupServer(
   sessionGet = vi.fn().mockResolvedValue({}),
   directory = process.cwd(),
@@ -112,7 +118,8 @@ async function setupServer(
     integration: createFakeIntegration([]),
     event: { subscribe: () => events },
   };
-  await server.setup(ctx as never);
+  const cleanup = await server.setup(ctx as never);
+  if (typeof cleanup === "function") cleanups.push(cleanup);
   expect(register).toHaveBeenCalledOnce();
   const [definition, handlers] = register.mock.calls[0] as unknown as [
     { id: string; methods: Record<string, unknown> },
@@ -127,7 +134,7 @@ async function setupServer(
     expect(output).toStrictEqual(JSON.parse(JSON.stringify(output)));
     return output;
   };
-  return { ctx, definition, handlers, commands, call, emit };
+  return { ctx, definition, handlers, commands, call, emit, cleanup };
 }
 
 describe("server quota RPC", () => {
@@ -151,6 +158,8 @@ describe("server quota RPC", () => {
   });
 
   afterEach(async () => {
+    // Stops each server's store and waits for its fetches and writes.
+    for (const cleanup of cleanups.splice(0)) await cleanup();
     vi.restoreAllMocks();
     await rm(TEST_RUNTIME_ROOT, { recursive: true, force: true });
   });
@@ -230,8 +239,8 @@ describe("server quota RPC", () => {
             window: "month",
             prominence: "primary",
             percentRemaining: 80,
-            used: { decimal: "60", unit: { kind: "count", unit: "unit" } },
-            limit: { decimal: "300", unit: { kind: "count", unit: "unit" } },
+            used: { decimal: "60", unit: { kind: "count", unit: "request" } },
+            limit: { decimal: "300", unit: { kind: "count", unit: "request" } },
             resetsAt: "2026-11-01T00:00:00.000Z",
           },
         ],
@@ -275,6 +284,44 @@ describe("server quota RPC", () => {
       "openai",
     ]);
     expect(output.snapshot.currentModelProviderIds).toEqual(["openai"]);
+    // The providers and the model's providers come from one settings read.
+    expect(mocks.loadConfig).toHaveBeenCalledOnce();
+  });
+
+  it("waits for the store's running fetch and file write when the plugin is cleaned up", async () => {
+    useConfig({});
+    let answer: (result: unknown) => void = () => {};
+    const fetch = vi.fn(
+      () =>
+        new Promise((resolve) => {
+          answer = resolve;
+        }),
+    );
+    mocks.getProviders.mockReturnValue([
+      {
+        id: "copilot",
+        cachePolicy: { kind: "account-neutral" },
+        isAvailable: vi.fn().mockResolvedValue(true),
+        fetch,
+      },
+    ]);
+    const { call, cleanup } = await setupServer();
+    await call("snapshot", {});
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalledOnce());
+
+    let done = false;
+    const cleaning = Promise.resolve(cleanup()).then(() => {
+      done = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(done).toBe(false);
+    answer({
+      attempted: true,
+      entries: [{ accounting: TEST_ACCOUNTING, name: "Copilot", percentRemaining: 70 }],
+      errors: [],
+    });
+    await cleaning;
+    expect(existsSync(SNAPSHOT_FILE)).toBe(true);
   });
 
   it("checks who each provider is signed in as after a login change", async () => {
@@ -319,11 +366,10 @@ describe("server quota RPC", () => {
     sendLoginChange();
     await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
     await vi.waitFor(() => expect(emit).toHaveBeenCalled());
-    const last = emit.mock.lastCall?.[1] as { snapshot: QuotaSnapshot };
-    expect(last.snapshot.providers[0]?.rows.map((row) => row.account)).toEqual(["bob"]);
-    // Nothing is due; this only waits for the snapshot file write before the folder goes.
-    await call("refresh", { reason: "poll" });
-    expect(fetch).toHaveBeenCalledTimes(2);
+    await vi.waitFor(() => {
+      const last = emit.mock.lastCall?.[1] as { snapshot: QuotaSnapshot };
+      expect(last.snapshot.providers[0]?.rows.map((row) => row.account)).toEqual(["bob"]);
+    });
   });
 
   it("serves the sidebar panel and the idle toast", async () => {

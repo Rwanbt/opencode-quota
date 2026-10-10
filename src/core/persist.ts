@@ -1,12 +1,14 @@
 /**
- * The store's snapshot file: one JSON file with the last known rows of every provider and
- * account, plus recent reset notices. Several OpenCode processes share it, so every write
- * first merges what the others saved (the newer check wins) and drops entries older than a
- * week. A file that does not parse is ignored; a bad entry or row is skipped on its own.
+ * The store's snapshot file: one JSON file with the last known rows, recent reset notices and
+ * reset observation times of every provider and account. Several OpenCode processes share it
+ * without a lock: every write re-reads the file right before it and merges what the others
+ * saved (the newer check wins), and writes in this process run one at a time. Entries older
+ * than a week are dropped. A file that does not parse is ignored; a bad entry or row is
+ * skipped on its own. Provider text is scrubbed and credentials redacted again on read.
  */
 import { readFile } from "node:fs/promises";
 import { writeJsonAtomic } from "../lib/atomic-json.js";
-import { sanitizeSingleLineDisplaySnippet } from "../lib/display-sanitize.js";
+import { safeDetail } from "./redact.js";
 import type { DebugDetail, QuotaError, QuotaErrorCode, QuotaRow, ResetNotice } from "./types.js";
 import { validateRows } from "./validate.js";
 import { isQuotaWindow } from "./windows.js";
@@ -39,9 +41,18 @@ export type SavedEntry = {
   /** Failed attempts in a row; drives the error backoff. */
   failures: number;
   debug: DebugDetail[];
+  /** Windows of this account that reset recently; they belong to it like its rows. */
+  notices: ResetNotice[];
+  /** Per row (`${id}\u001f${account}`): when its current reset time was first seen. */
+  resetSeenAtMs: Record<string, number>;
 };
 
-export type SavedState = { entries: Map<string, SavedEntry>; notices: ResetNotice[] };
+export type SavedState = { entries: Map<string, SavedEntry> };
+
+/** One row's slot in `resetSeenAtMs`: rows match by id and account. */
+export function rowSlot(row: Pick<QuotaRow, "id" | "account">): string {
+  return `${row.id}\u001f${row.account ?? ""}`;
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -60,11 +71,9 @@ function parseError(value: unknown): QuotaError | undefined | null {
   const error: QuotaError = { code: code as QuotaErrorCode };
   if (Number.isInteger(status)) error.status = status as number;
   if (typeof retryAtMs === "number" && Number.isFinite(retryAtMs)) error.retryAtMs = retryAtMs;
-  if (typeof tool === "string") error.tool = sanitizeSingleLineDisplaySnippet(tool, 40);
+  if (typeof tool === "string") error.tool = safeDetail(tool, 40);
   if (missing === true) error.missing = true;
-  if (typeof detail === "string") {
-    error.detail = sanitizeSingleLineDisplaySnippet(detail, DETAIL_MAX_LENGTH);
-  }
+  if (typeof detail === "string") error.detail = safeDetail(detail, DETAIL_MAX_LENGTH);
   return error;
 }
 
@@ -72,8 +81,17 @@ function parseDebug(value: unknown): DebugDetail[] {
   if (!Array.isArray(value)) return [];
   return value.flatMap((item) =>
     isRecord(item) && typeof item.key === "string" && typeof item.value === "string"
-      ? [{ key: item.key, value: item.value }]
+      ? [{ key: safeDetail(item.key, 64), value: safeDetail(item.value, DETAIL_MAX_LENGTH) }]
       : [],
+  );
+}
+
+function parseSeenTimes(value: unknown): Record<string, number> {
+  if (!isRecord(value)) return {};
+  return Object.fromEntries(
+    Object.entries(value).filter(
+      (pair): pair is [string, number] => typeof pair[1] === "number" && Number.isFinite(pair[1]),
+    ),
   );
 }
 
@@ -89,6 +107,9 @@ function parseEntry(key: string, value: unknown): SavedEntry | undefined {
     Number.isInteger(value.failures) && (value.failures as number) >= 0
       ? (value.failures as number)
       : 0;
+  const notices = Array.isArray(value.notices)
+    ? value.notices.flatMap((notice) => parseNotice(providerId, notice) ?? [])
+    : [];
   return {
     providerId,
     rows: validateRows(providerId, value.rows).rows,
@@ -97,16 +118,18 @@ function parseEntry(key: string, value: unknown): SavedEntry | undefined {
     ...(error === undefined ? {} : { error }),
     failures,
     debug: parseDebug(value.debug),
+    notices,
+    resetSeenAtMs: parseSeenTimes(value.resetSeenAtMs),
   };
 }
 
-function parseNotice(value: unknown): ResetNotice | undefined {
+function parseNotice(entryProviderId: string, value: unknown): ResetNotice | undefined {
   if (!isRecord(value)) return undefined;
   const { id, rowId, providerId, account, label, window, percentRemaining, atMs } = value;
   if (
     typeof id !== "string" ||
     typeof rowId !== "string" ||
-    typeof providerId !== "string" ||
+    providerId !== entryProviderId ||
     (account !== undefined && typeof account !== "string") ||
     typeof label !== "string" ||
     !isQuotaWindow(window) ||
@@ -120,9 +143,9 @@ function parseNotice(value: unknown): ResetNotice | undefined {
   return {
     id,
     rowId,
-    providerId,
-    ...(account === undefined ? {} : { account }),
-    label,
+    providerId: entryProviderId,
+    ...(account === undefined ? {} : { account: safeDetail(account, 64) }),
+    label: safeDetail(label, 64),
     window,
     percentRemaining,
     atMs,
@@ -130,7 +153,7 @@ function parseNotice(value: unknown): ResetNotice | undefined {
 }
 
 function emptyState(): SavedState {
-  return { entries: new Map(), notices: [] };
+  return { entries: new Map() };
 }
 
 /** What the file holds now; empty when it is missing or does not parse. */
@@ -149,18 +172,22 @@ export async function readSavedState(file: string): Promise<SavedState> {
     const entry = parseEntry(key, value);
     if (entry) entries.set(key, entry);
   }
-  const notices = Array.isArray(data.resetNotices)
-    ? data.resetNotices.flatMap((value) => parseNotice(value) ?? [])
-    : [];
-  return { entries, notices };
+  return { entries };
 }
 
-/**
- * Merges `state` into the file (per entry the newer check wins; notices are joined by id),
- * drops entries not checked for a week and notices older than `noticeMaxAgeMs`, writes it
- * atomically (owner-only), and returns the merged state.
- */
-export async function writeSavedState(
+/** Each file's last write in this process (never rejects); the next write waits for it. */
+const writeQueues = new Map<string, Promise<void>>();
+
+export function joinNotices(
+  first: readonly ResetNotice[],
+  second: readonly ResetNotice[],
+): ResetNotice[] {
+  const byId = new Map(first.map((notice) => [notice.id, notice]));
+  for (const notice of second) byId.set(notice.id, notice);
+  return [...byId.values()];
+}
+
+async function mergeAndWrite(
   file: string,
   state: SavedState,
   options: { nowMs: number; noticeMaxAgeMs: number },
@@ -168,26 +195,51 @@ export async function writeSavedState(
   const merged = await readSavedState(file);
   for (const [key, entry] of state.entries) {
     const other = merged.entries.get(key);
-    if (!other || (other.checkedAtMs ?? 0) <= (entry.checkedAtMs ?? 0)) {
+    if (!other) {
       merged.entries.set(key, entry);
+    } else if ((other.checkedAtMs ?? 0) <= (entry.checkedAtMs ?? 0)) {
+      merged.entries.set(key, { ...entry, notices: joinNotices(other.notices, entry.notices) });
+    } else {
+      merged.entries.set(key, { ...other, notices: joinNotices(entry.notices, other.notices) });
     }
   }
   for (const [key, entry] of merged.entries) {
-    if (options.nowMs - (entry.checkedAtMs ?? 0) > ENTRY_MAX_AGE_MS) merged.entries.delete(key);
+    if (options.nowMs - (entry.checkedAtMs ?? 0) > ENTRY_MAX_AGE_MS) {
+      merged.entries.delete(key);
+      continue;
+    }
+    entry.notices = entry.notices.filter(
+      (notice) => options.nowMs - notice.atMs <= options.noticeMaxAgeMs,
+    );
   }
-  const noticesById = new Map(merged.notices.map((notice) => [notice.id, notice]));
-  for (const notice of state.notices) noticesById.set(notice.id, notice);
-  merged.notices = [...noticesById.values()].filter(
-    (notice) => options.nowMs - notice.atMs <= options.noticeMaxAgeMs,
-  );
   await writeJsonAtomic(
     file,
-    {
-      version: FILE_VERSION,
-      entries: Object.fromEntries(merged.entries),
-      resetNotices: merged.notices,
-    },
+    { version: FILE_VERSION, entries: Object.fromEntries(merged.entries) },
     { trailingNewline: true, directoryMode: 0o700, fileMode: 0o600 },
   );
   return merged;
+}
+
+/**
+ * Merges `state` into the file (per entry the newer check wins; notices are joined by id),
+ * drops entries not checked for a week and notices older than `noticeMaxAgeMs`, writes it
+ * atomically (owner-only), and returns the merged state.
+ */
+export function writeSavedState(
+  file: string,
+  state: SavedState,
+  options: { nowMs: number; noticeMaxAgeMs: number },
+): Promise<SavedState> {
+  // Writes of one process run one at a time, so each re-reads what the previous one wrote.
+  const previous = writeQueues.get(file) ?? Promise.resolve();
+  const write = previous.then(() => mergeAndWrite(file, state, options));
+  const settled = write.then(
+    () => {},
+    () => {},
+  );
+  writeQueues.set(file, settled);
+  void settled.then(() => {
+    if (writeQueues.get(file) === settled) writeQueues.delete(file);
+  });
+  return write;
 }

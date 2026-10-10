@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { accountFromGroup, rowsFromLegacyResult } from "../src/core/rows.js";
 import type { QuotaRow } from "../src/core/types.js";
@@ -7,6 +7,12 @@ import type {
   QuotaProviderResult,
   QuotaToastEntry,
 } from "../src/lib/entries.js";
+import type {
+  JsonV1Mapping,
+  LocalEstimateQuotaProviderDefinition,
+} from "../src/lib/quota-providers.js";
+import { computeLocalQuotaProviderEstimate } from "../src/lib/quota-providers-local.js";
+import { fetchRemoteQuotaProvider } from "../src/lib/quota-providers-remote.js";
 import { getProviders } from "../src/providers/registry.js";
 import { isLedgerRowKey, PROVIDER_ROW_KEYS } from "./helpers/provider-assertions.js";
 
@@ -613,8 +619,8 @@ const CASES: Case[] = [
       },
     ],
     rows: [
-      ["quota-providers.custom.source_one.monthly", "Source One", "Remaining", "month"],
-      ["quota-providers.custom.source_one.balance", "Source One", "Balance", null],
+      ["quota-providers.custom.source-one.monthly", "Source One", "Remaining", "month"],
+      ["quota-providers.custom.source-one.balance", "Source One", "Balance", null],
     ],
   },
 ];
@@ -692,24 +698,152 @@ describe("rowsFromLegacyResult", () => {
     expect(deepseek.rows[0]?.amount).toEqual(usd("12.340000000000000001"));
   });
 
-  it("reads used and limit from a compact right text only when it is unambiguous", () => {
-    const count = { kind: "count", unit: "unit" };
-    const synthetic = fetchRows("synthetic", sampleEntries("synthetic"));
-    expect(synthetic.rows.map((row) => [row.used, row.limit])).toEqual([
-      [
-        { decimal: "26", unit: count },
-        { decimal: "100", unit: count },
-      ],
-      [usd("22"), usd("24")],
-    ]);
+  it("reads used and limit from a compact right text only where its unit is known", () => {
+    const requests = (decimal: string) => ({ decimal, unit: { kind: "count", unit: "request" } });
     const copilot = fetchRows("copilot", sampleEntries("copilot"));
-    expect(copilot.rows[1]).toMatchObject({ used: usd("0.2"), limit: usd("1") });
+    expect(copilot.rows.slice(0, 2).map((row) => [row.used, row.limit])).toEqual([
+      [requests("60"), requests("300")],
+      [usd("0.2"), usd("1")],
+    ]);
+    const premium = (right: string) =>
+      fetchRows("copilot", [
+        { ...windowEntry("Copilot", "Quota"), name: "Copilot Premium Requests", right },
+      ]).rows[0];
+    expect(premium("1,200/1,500")).toMatchObject({
+      used: requests("1200"),
+      limit: requests("1500"),
+    });
+    for (const right of ["1,234 left", "$3/12", "$3/$12", "12/", "abc"]) {
+      expect(premium(right)).not.toHaveProperty("used");
+      expect(premium(right)).not.toHaveProperty("limit");
+    }
 
-    for (const right of ["1,234 left", "$3/12", "12/", "abc"]) {
-      const [row] = fetchRows("synthetic", [windowEntry("Synthetic", "5h", { right })]).rows;
+    // Synthetic rounds its numbers and names no unit: no amounts.
+    const synthetic = fetchRows("synthetic", sampleEntries("synthetic"));
+    for (const row of synthetic.rows) {
       expect(row).not.toHaveProperty("used");
       expect(row).not.toHaveProperty("limit");
     }
+  });
+
+  describe("custom sources through their real adapters", () => {
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    /** What the json-v1 adapter returns for `mappings`, stamped like the aggregate does. */
+    async function remoteEntries(mappings: JsonV1Mapping[]): Promise<QuotaToastEntry[]> {
+      const body = new Response("{}", { headers: { "content-type": "application/json" } });
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(body));
+      const result = await fetchRemoteQuotaProvider(
+        {
+          id: "my-gateway",
+          providerId: "gateway",
+          label: "My Gateway",
+          url: "https://gateway.example/quota",
+          mode: "remote-api",
+          format: "json-v1",
+          adapter: { mappings },
+        },
+        "test-key",
+      );
+      if (!result.success) throw new Error(result.error);
+      return result.entries.map((entry) => ({
+        ...entry,
+        accounting: { ...entry.accounting, sourceId: "my-gateway" },
+      }));
+    }
+
+    it("gives remote rows no amounts: a pair may be remaining/limit or used/limit", async () => {
+      const entries = await remoteEntries([
+        {
+          resultType: "quota",
+          name: "Requests left",
+          metric: { type: "remaining-limit", remaining: { literal: 30 }, limit: { literal: 100 } },
+        },
+        {
+          resultType: "quota",
+          name: "Requests used",
+          metric: { type: "used-limit", used: { literal: 70 }, limit: { literal: 100 } },
+        },
+        {
+          resultType: "budget",
+          name: "Budget left",
+          unit: "$",
+          unitPosition: "prefix",
+          metric: { type: "remaining-budget", remaining: { literal: 3 }, budget: { literal: 10 } },
+        },
+      ]);
+      expect(entries.map((entry) => entry.right)).toEqual(["30/100", "70/100", "$3/$10"]);
+
+      const result = fetchRows("quota-providers", entries);
+      expect(result.rows.map((row) => [row.id, row.percentRemaining])).toEqual([
+        ["quota-providers.custom.my-gateway.requests_left", 30],
+        ["quota-providers.custom.my-gateway.requests_used", 30],
+        ["quota-providers.custom.my-gateway.budget_left", 30],
+      ]);
+      for (const row of result.rows) {
+        expect(row).not.toHaveProperty("used");
+        expect(row).not.toHaveProperty("limit");
+        expect(row).not.toHaveProperty("remaining");
+      }
+    });
+
+    function localDefinition(
+      windows: LocalEstimateQuotaProviderDefinition["windows"],
+    ): LocalEstimateQuotaProviderDefinition {
+      return {
+        id: "private-gateway",
+        providerId: "private-gateway",
+        label: "Private Gateway",
+        mode: "local-estimate",
+        windows,
+      };
+    }
+
+    function localRows(definition: LocalEstimateQuotaProviderDefinition) {
+      const { entries } = computeLocalQuotaProviderEstimate({
+        definition,
+        state: {
+          version: 1,
+          definitionId: definition.id,
+          providerId: definition.providerId,
+          updatedAt: NOW_MS,
+          messages: [],
+        },
+        nowMs: NOW_MS,
+      });
+      return fetchRows("quota-providers", entries).rows;
+    }
+
+    it("keys local windows by their ids and reads their used requests and dollars", () => {
+      const rows = localRows(
+        localDefinition([
+          { id: "daily", label: "Daily", type: "utc-day", requestLimit: 10, usdBudget: 5 },
+          { id: "hourly", label: "Daily", type: "rolling", durationMinutes: 60, requestLimit: 4 },
+        ]),
+      );
+      const requests = (decimal: string) => ({
+        decimal,
+        unit: { kind: "count", unit: "request" },
+      });
+      expect(rows.map((row) => [row.id, row.label, row.used, row.limit])).toEqual([
+        ["quota-providers.custom.private-gateway.daily", "Daily", requests("0"), requests("10")],
+        ["quota-providers.custom.private-gateway.daily_budget", "Daily budget", usd("0"), usd("5")],
+        ["quota-providers.custom.private-gateway.hourly", "Daily", requests("0"), requests("4")],
+      ]);
+
+      // Renaming a window keeps its row id, so hide/rename/order settings still apply.
+      const renamed = localRows(
+        localDefinition([
+          { id: "daily", label: "Per day", type: "utc-day", requestLimit: 10, usdBudget: 5 },
+        ]),
+      );
+      expect(renamed.map((row) => row.id)).toEqual([
+        "quota-providers.custom.private-gateway.daily",
+        "quota-providers.custom.private-gateway.daily_budget",
+      ]);
+    });
   });
 
   it("keeps the window start for the pace marker", () => {
@@ -791,6 +925,41 @@ describe("rowsFromLegacyResult", () => {
       rowsFromLegacyResult("chutes", { attempted: false, entries: [], errors: [] }, NOW_MS),
     ).toEqual({ rows: [], error: { code: "not_configured" }, debug: [] });
     expect(fetchRows("chutes", [])).toEqual({ rows: [], debug: [] });
+  });
+
+  it("redacts credentials a provider echoes in errors and debug details", () => {
+    const secrets = [
+      "sk-proj-CANARY0secret0value0123",
+      "CANARY1bearer0token",
+      "Q0FOQVJZMjpiYXNpYw==",
+      "CANARY3query0key",
+      "CANARY4json0api0key",
+      "eyJhbGciOiJIUzI1NiJ9.eyJDQU5BUlk1Ijp0cnVlfQ.c2lnbmF0dXJl",
+      "ghp_CANARY6github0token0value",
+    ];
+    const message = [
+      `401 for key ${secrets[0]}`,
+      `Authorization: Bearer ${secrets[1]}`,
+      `"authorization":"Basic ${secrets[2]}"`,
+      `GET https://api.example/v1/quota?key=${secrets[3]}&x=1`,
+      `{"api_key":"${secrets[4]}"}`,
+      `token ${secrets[5]}`,
+      `${secrets[6]}`,
+    ].join(" | ");
+    const result = rowsFromLegacyResult(
+      "chutes",
+      {
+        attempted: true,
+        entries: [],
+        errors: [{ label: "Chutes", message }],
+        rawDetails: [{ key: "request", value: message }],
+      },
+      NOW_MS,
+    );
+    const text = JSON.stringify(result);
+    for (const secret of secrets) expect(text).not.toContain(secret);
+    expect(text).not.toContain("CANARY");
+    expect(result.error?.detail).toContain("[redacted]");
   });
 
   it("scrubs control characters from provider text", () => {

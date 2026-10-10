@@ -255,6 +255,7 @@ const COMMON_ENTRY_KEYS = [
   "semantic",
   "right",
   "sortPriority",
+  "rowKey",
 ] as const;
 
 function hasValidEntryBase(entry: Record<string, unknown>, safeText: boolean): boolean {
@@ -264,7 +265,7 @@ function hasValidEntryBase(entry: Record<string, unknown>, safeText: boolean): b
     isOptionalIsoTimestamp(entry.resetTimeIso) &&
     (entry.sortPriority === undefined ||
       (typeof entry.sortPriority === "number" && Number.isFinite(entry.sortPriority))) &&
-    ["group", "label", "metricLabel", "right"].every(
+    ["group", "label", "metricLabel", "right", "rowKey"].every(
       (key) => entry[key] === undefined || typeof entry[key] === "string",
     ) &&
     (entry.semantic === undefined || isAccountingSemantic(entry.semantic, safeText))

@@ -350,6 +350,7 @@ export function computeLocalQuotaProviderEstimate(params: {
       name: `${params.definition.label} ${window.label}`,
       group: params.definition.label,
       label: `${window.label}:`,
+      rowKey: window.id,
       right: `${messages.length}/${window.requestLimit}`,
       percentRemaining: percentRemaining(messages.length, window.requestLimit),
       ...(resetTimeIso ? { resetTimeIso } : {}),
@@ -379,6 +380,8 @@ export function computeLocalQuotaProviderEstimate(params: {
       name: `${params.definition.label} ${window.label} budget`,
       group: params.definition.label,
       label: `${window.label} budget:`,
+      // Window ids are kebab-case, so "_budget" can't collide with another window's id.
+      rowKey: `${window.id}_budget`,
       ...(resetTimeIso ? { resetTimeIso } : {}),
     };
     if (unpriced > 0) {
