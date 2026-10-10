@@ -10,7 +10,7 @@
  *   counts them, in every range (`readUsageMessagePages` leaves them out).
  * - Cost comes from the shared pricing resolver (models.dev snapshot, Cursor's own table). A
  *   model without a price adds tokens but no cost; its tokens are the unpriced share. A failed
- *   compaction names no model and is priced as its session's model at the time.
+ *   compaction names no model, so its tokens are unpriced too (provider and model "unknown").
  * - Sessions count conversations: a subagent session counts as part of its top parent.
  * - Ranges and days are local calendar days: "7d" is today and the 6 days before it, and
  *   "between" includes both dates.
@@ -313,9 +313,9 @@ function isRecent(recent: RecentReport, nowMs: number): boolean {
 
 /**
  * The usage report for `query` at `nowMs`. Identical questions (same database, price list
- * choice and query) share one read of the history: a request made while the same report is
- * being built waits for it, and a finished report answers again for 30 s, so its numbers can
- * be up to 30 s old. A failed report is not kept.
+ * choice, local day and query) share one read of the history: a request made while the same
+ * report is being built waits for it, and a finished report answers again for 30 s, so its
+ * numbers can be up to 30 s old. A failed report is not kept.
  */
 export async function usageReport(
   query: UsageQuery,
@@ -326,7 +326,9 @@ export async function usageReport(
   }
   const { range, sessionID, from, to } = query;
   const priceList = getPricingSnapshotSelection();
-  const key = JSON.stringify([getOpenCodeDbPath(), priceList, range, sessionID, from, to]);
+  // The local day decides where the rolling ranges start: after midnight, a new report.
+  const today = localDate(nowMs);
+  const key = JSON.stringify([getOpenCodeDbPath(), priceList, today, range, sessionID, from, to]);
   const recent = recentReports.get(key);
   if (recent) return recent.report;
 

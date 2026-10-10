@@ -362,12 +362,11 @@ describe("usage report compactions", () => {
       models: [["anthropic", "claude-test", 2 + 10 + 10, 7 * M]],
     },
     {
-      // It ran on the session's model; the other session's later message does not count.
-      name: "a failed compaction counts with its session's latest model",
+      // It names no model, so its tokens stay unpriced: no guess from the messages before it.
+      name: "a failed compaction counts its tokens as unpriced",
       messages: () => [
         message({ created: at(0, 8), tokens: { input: M } }),
         message({ modelID: "claude-plain", created: at(0, 9), tokens: { input: M } }),
-        message({ sessionID: "ses_other", created: at(0, 9, 30), tokens: { input: M } }),
         message({
           type: "compaction",
           status: "failed",
@@ -377,26 +376,12 @@ describe("usage report compactions", () => {
           tokens: { input: 3 * M },
         }),
       ],
-      tokens: 6 * M,
+      tokens: 5 * M,
       models: [
-        ["anthropic", "claude-plain", 1 + 3, 4 * M],
-        ["anthropic", "claude-test", 2 + 2, 2 * M],
+        ["anthropic", "claude-test", 2, M],
+        ["anthropic", "claude-plain", 1, M],
+        ["unknown", "unknown", null, 3 * M],
       ],
-    },
-    {
-      name: "a failed compaction with no model before it is unpriced",
-      messages: () => [
-        message({
-          type: "compaction",
-          status: "failed",
-          providerID: undefined,
-          modelID: undefined,
-          created: at(0, 10),
-          tokens: { input: M },
-        }),
-      ],
-      tokens: M,
-      models: [["unknown", "unknown", null, M]],
     },
     {
       name: "running and usage-free compactions count nothing",
@@ -646,6 +631,21 @@ describe("usage report reading", () => {
     expect(await usageReport({ range: "today" }, NOW + 29_999)).toBe(first);
     const later = await usageReport({ range: "today" }, NOW + 30_000);
     expect(later.totals.tokens.processed).toBe(1 + 2);
+  });
+
+  it.each([
+    { range: "today" as const, days: 1 },
+    { range: "7d" as const, days: 7 },
+  ])("starts a new $range report after local midnight", async ({ range, days }) => {
+    writeHistory([message({ created: at(0, 8), tokens: { output: 1 } })]);
+
+    const before = await usageReport({ range }, at(0, 23, 59, 59));
+    const after = await usageReport({ range }, at(1, 0, 0, 1));
+
+    expect(before.sinceMs).toBe(at(1 - days, 0));
+    expect(after.sinceMs).toBe(at(2 - days, 0));
+    expect(after.days.at(-1)?.date).toBe("2026-03-16");
+    expect(after.totals.tokens.processed).toBe(range === "today" ? 0 : 1);
   });
 
   it("does not keep a failed report", async () => {

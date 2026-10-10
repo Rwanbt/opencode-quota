@@ -527,29 +527,14 @@ export async function iterAssistantMessagesForSessions(params: {
   }
 }
 
-/**
- * A usage row's model. A failed compaction does not record one; it ran on its session's model,
- * so it takes the model of the latest earlier row in its session that names one.
- */
-function usageModelColumn(field: "providerID" | "id"): string {
-  const own = guardedJsonScalar(`$.model.${field}`, "message.data");
-  return (
-    `CASE WHEN message.type = 'compaction' AND ${own} IS NULL THEN (` +
-    `SELECT ${guardedJsonScalar(`$.model.${field}`, "earlier.data")}` +
-    ` FROM "session_message" AS earlier` +
-    ` WHERE earlier.session_id = message.session_id AND earlier.seq < message.seq` +
-    ` AND ${guardedJsonScalar("$.model.providerID", "earlier.data")} IS NOT NULL` +
-    ` ORDER BY earlier.seq DESC LIMIT 1) ELSE ${own} END`
-  );
-}
-
 const USAGE_MESSAGE_COLUMNS = [
   "message.id AS id",
   "message.session_id AS session_id",
   "message.time_created AS time_created",
   "message.type AS role",
-  `${usageModelColumn("providerID")} AS provider_id`,
-  `${usageModelColumn("id")} AS model_id`,
+  // A failed compaction names no model: its usage stays unpriced.
+  `${guardedJsonScalar("$.model.providerID", "message.data")} AS provider_id`,
+  `${guardedJsonScalar("$.model.id", "message.data")} AS model_id`,
   `${guardedJsonScalar("$.tokens.input", "message.data")} AS tokens_input`,
   `${guardedJsonScalar("$.tokens.output", "message.data")} AS tokens_output`,
   `${guardedJsonScalar("$.tokens.reasoning", "message.data")} AS tokens_reasoning`,
