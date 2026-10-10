@@ -141,16 +141,19 @@ describe("buildQuotaStatusReport", () => {
 
   it("has settings, every provider, files and logins, one section per known provider, then prices", async () => {
     const text = await report({
+      enabledProviders: ["anthropic", "copilot", "openai"],
       providerAvailability: [
         { id: "anthropic", enabled: true, available: true, matchesCurrentModel: true },
         { id: "copilot", enabled: true, available: true, matchesCurrentModel: false },
-        { id: "openai", enabled: false, available: false },
+        { id: "openai", enabled: true, available: false },
         { id: "xai", enabled: false, available: true },
       ],
       providers: [
         snapshot("anthropic", { checkedAtMs: NOW }),
         snapshot("copilot"),
-        snapshot("openai", { checkedAtMs: NOW, debug: [{ key: "auth_source", value: "(none)" }] }),
+        snapshot("openai", {
+          debug: [{ key: "opencode_provider", value: "no (looked for openai)" }],
+        }),
       ],
       maintainerAnnouncements: {
         config: { enabled: true, home: true, homeFrequency: "daily" },
@@ -184,12 +187,12 @@ describe("buildQuotaStatusReport", () => {
         "providers:",
         "- anthropic: enabled available matchesCurrentModel=yes",
         "- copilot: enabled available matchesCurrentModel=no",
-        "- openai: disabled unavailable",
+        "- openai: enabled unavailable",
         "- xai: disabled available",
       ].join("\n"),
     );
     expect(section(text, "openai")).toContain("- state: unavailable\n");
-    expect(section(text, "openai")).toContain("- auth_source: (none)");
+    expect(section(text, "openai")).toContain("- opencode_provider: no (looked for openai)");
     expect(section(text, "xai")).toBe("xai:\n- state: disabled");
     expect(section(text, "maintainer_announcements")).toBe(
       [
@@ -770,12 +773,7 @@ describe("buildStatusReportData", () => {
 
   it("checks every enabled provider through a store and shows what it returned, secrets redacted", async () => {
     const syntheticProvider = synthetic();
-    const openai = fakeProvider("openai", false, {
-      attempted: false,
-      entries: [],
-      errors: [],
-      statusDetails: [{ key: "auth_source", value: "(none)" }],
-    });
+    const openai = fakeProvider("openai", false);
     registry.providers = [syntheticProvider, openai];
 
     const { data, text, onDetectedProviderIds } = await statusData();
@@ -790,12 +788,12 @@ describe("buildStatusReportData", () => {
     expect(syntheticSection).toContain("- error: Synthetic: Weekly HTTP 503 Bearer [redacted]");
     expect(text).not.toContain(SECRET);
     expect(section(text, "providers")).toContain("- openai: disabled unavailable");
-    // An unavailable provider runs once for its setup details.
+    // An unavailable provider shows local setup details: it is never fetched.
     expect(section(text, "openai")).toContain("- state: unavailable\n");
-    expect(section(text, "openai")).toContain("- auth_source: (none)");
+    expect(section(text, "openai")).toMatch(/- opencode_provider: no \(looked for openai\b/u);
     expect(section(text, "pricing_snapshot")).toContain("- unpriced_30d: (no usage)");
     expect(syntheticProvider.fetch).toHaveBeenCalledOnce();
-    expect(openai.fetch).toHaveBeenCalledOnce();
+    expect(openai.fetch).not.toHaveBeenCalled();
     expect(onDetectedProviderIds).toHaveBeenCalledWith(["synthetic"]);
     expect(data.payload?.liveProbes).toEqual([{ id: "synthetic", ok: false }]);
     expect(data.payload?.providers.map((provider) => provider.id)).toEqual(["synthetic", "openai"]);

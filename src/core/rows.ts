@@ -6,6 +6,7 @@
  * usage, local runtime accounting is a local estimation.
  */
 
+import { sanitizeSingleLineDisplaySnippet } from "../lib/display-sanitize.js";
 import type {
   AccountingAcquisitionMethod,
   AccountingQuantity,
@@ -16,7 +17,7 @@ import type {
 } from "../lib/entries.js";
 import { customRowKey } from "../lib/quota-providers.js";
 import { classifyError } from "./errors.js";
-import { publicDebugValue, publicDetail } from "./redact.js";
+import { publicDebugValue } from "./redact.js";
 import type { ProviderFetch } from "./store.js";
 import type {
   Amount,
@@ -502,10 +503,11 @@ function dropRepeatedRows(candidates: readonly Candidate[], debug: DebugDetail[]
 /**
  * Debug details are kept for /quota_status, as a public issue may show them (see
  * `publicDetail`): hidden before they are cut, so a cut never leaves part of a hidden value.
+ * A key is a name the adapter or this file chose, so it is only cleaned and shortened.
  */
 function detail(key: string, value: string): DebugDetail {
   return {
-    key: publicDetail(key, 64),
+    key: sanitizeSingleLineDisplaySnippet(key, 64),
     value: publicDebugValue(key, value, DEBUG_VALUE_MAX_LENGTH),
   };
 }

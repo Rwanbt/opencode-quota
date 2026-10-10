@@ -1105,7 +1105,7 @@ describe("rowsFromLegacyResult", () => {
     expect(detail?.value).not.toContain(hidden);
   });
 
-  it("keeps each custom definition's check, without its URL or key", () => {
+  it("keeps each custom definition's check under its whole name, without its URL or key", () => {
     vi.stubEnv("HOME", "/Users/alice");
     const identity = { providerId: "gateway", modelIds: null, apiKeyEnv: null, selected: true };
     const result = rowsFromLegacyResult(
@@ -1117,7 +1117,7 @@ describe("rowsFromLegacyResult", () => {
         diagnostics: [
           {
             ...identity,
-            sourceId: "team",
+            sourceId: "production-gateway-us",
             mode: "remote-api",
             format: "json-v1",
             apiKeyEnv: "TEAM_KEY",
@@ -1151,7 +1151,7 @@ describe("rowsFromLegacyResult", () => {
     );
     expect(result.debug).toEqual([
       {
-        key: "custom_team_check",
+        key: "custom_production-gateway-us_check",
         value:
           "outcome=http_error http_status=503 credential_source=explicit_env checked_paths=~/.config/opencode/opencode.json | ~/.local/share/opencode/opencode.db",
       },

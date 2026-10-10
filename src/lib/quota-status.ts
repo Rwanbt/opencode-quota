@@ -14,7 +14,10 @@ import type { Amount, ProviderSnapshot, QuotaRow } from "../core/types.js";
 import type { UsageReport } from "../core/usage.js";
 import type { LoadedSettings, Settings, V5Conversion } from "../settings/index.js";
 import { formatShare, formatTokens } from "../view/format.js";
-import { sanitizeSingleLineDisplayText } from "./display-sanitize.js";
+import {
+  sanitizeSingleLineDisplaySnippet,
+  sanitizeSingleLineDisplayText,
+} from "./display-sanitize.js";
 import { replaceHomeDirWithTildeInDocument } from "./home-dir-display.js";
 import type { MaintainerAnnouncementsSummary } from "./maintainer-announcements.js";
 import {
@@ -296,14 +299,19 @@ function providerState(provider: ProviderSnapshot, nowMs: number): string {
   return provider.rows.length > 0 ? `partial: ${words}` : `error: ${words}`;
 }
 
-/** "unavailable" or "disabled" win over the check's own state: those show setup details only. */
+/**
+ * "disabled" (turned off in the settings, never fetched) and "unavailable" (only local setup
+ * details) win over the state of a check. With "auto" no provider is turned off; with a list,
+ * `availability.enabled` says whether the provider is in it.
+ */
 function sectionState(
   availability: ProviderAvailability,
   provider: ProviderSnapshot | undefined,
+  enabledProviders: QuotaStatusReportParams["enabledProviders"],
   nowMs: number,
 ): string {
+  if (enabledProviders !== "auto" && !availability.enabled) return "disabled";
   if (!availability.available) return "unavailable";
-  if (!availability.enabled) return "disabled";
   return provider ? providerState(provider, nowMs) : "not checked";
 }
 
@@ -314,11 +322,12 @@ function sectionState(
 function providerSection(
   availability: ProviderAvailability,
   provider: ProviderSnapshot | undefined,
-  nowMs: number,
+  params: QuotaStatusReportParams,
   homeDir: string,
 ): ReportSection {
+  const nowMs = params.generatedAtMs ?? Date.now();
   const shown = (text: string) => publicDetail(text, Infinity, homeDir);
-  const state = sectionState(availability, provider, nowMs);
+  const state = sectionState(availability, provider, params.enabledProviders, nowMs);
   const rows: ReportKvRow[] = [{ key: "state", value: shown(state) }];
   if (!provider) return kvSection(availability.id, rows);
   if (provider.checkedAtMs !== undefined) {
@@ -349,7 +358,7 @@ function providerSection(
   }
   for (const item of provider.debug) {
     rows.push({
-      key: publicDetail(item.key, 64, homeDir),
+      key: sanitizeSingleLineDisplaySnippet(item.key, 64),
       value: publicDebugValue(item.key, item.value, Infinity, homeDir),
     });
   }
@@ -437,7 +446,6 @@ export async function buildQuotaStatusReportDocument(
   params: QuotaStatusReportParams,
 ): Promise<ReportDocument> {
   const homeDir = params.homeDir ?? homedir();
-  const nowMs = params.generatedAtMs ?? Date.now();
   const version = (await getPackageVersion()) ?? "unknown";
   const snapshots = new Map(params.providers.map((provider) => [provider.providerId, provider]));
   const sections: ReportSection[] = [
@@ -449,7 +457,7 @@ export async function buildQuotaStatusReportDocument(
     await pathsSection(),
     credentialSourceSection(params.credentialSource, homeDir),
     ...params.providerAvailability.map((availability) =>
-      providerSection(availability, snapshots.get(availability.id), nowMs, homeDir),
+      providerSection(availability, snapshots.get(availability.id), params, homeDir),
     ),
     await pricingSection(params),
   ];

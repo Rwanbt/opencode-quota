@@ -54,7 +54,7 @@ The TUI, Web, and Desktop get their numbers from OpenCode's background service. 
 
 ## Provider fixes
 
-Run `/quota_status` first and check that provider's section. Every known provider has a section, named after its id (for example `copilot:` or `opencode-go:`). It shows `state` (`ok`, `partial`, `error`, `not checked`, `unavailable`, or `disabled`), `checked_at`, the `rows` it returned, an `error` line per failed check, and the provider's own details. An `unavailable` provider shows what it found and where it looked, which tells why it is missing. Email addresses show as `[email]` and account, team, org, user, and session ids as `[id]`. Setup steps and API-key variable names are in [Providers](providers.md).
+Run `/quota_status` first and check that provider's section. Every known provider has a section, named after its id (for example `copilot:` or `opencode-go:`). It shows `state` (`ok`, `partial`, `error`, `not checked`, `unavailable`, or `disabled`), `checked_at`, the `rows` it returned, an `error` line per failed check, and the provider's own details. An `unavailable` provider is not asked for quota; its section shows whether OpenCode lists it (`opencode_provider`) and, for an API-key provider, where the key was looked for (`api_key_diagnostics`). A `disabled` provider (left out of `providers.enabled`) is never asked. Email addresses show as `[email]` and account, team, org, user, and session ids as `[id]`. Setup steps and API-key variable names are in [Providers](providers.md).
 
 <details>
 <summary><strong>Custom providers</strong></summary>
@@ -223,7 +223,7 @@ Check the `opencode-go` section:
 
 | Symptom                           | Fix |
 | --------------------------------- | --- |
-| Provider not detected             | Run `opencode auth login opencode`, or set an API key ([order](providers.md#opencode-go)). Then check `auth_state`, `auth_source`, and `auth_checked_paths`. |
+| Provider not detected             | Run `opencode auth login opencode`, or set an API key ([order](providers.md#opencode-go)). Then rerun `/quota_status`; once Go is detected, `auth_state`, `auth_source`, and `auth_checked_paths` show which key it uses. |
 | `auth_state` is `invalid`         | Run `opencode auth login opencode-go`. A broken `opencode-go` login blocks the legacy `opencode` fallback and shows in `auth_error`. |
 | `OpenCode Console sign-in failed` | Shown only when no API key is set. Run `opencode auth login opencode`, or set an API key. `console_error` has the reason. |
 | No Go quota, `console_error` set  | The Console request failed and no API key is set (`Not configured` in manual mode). Retry, or set an API key. |

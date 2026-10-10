@@ -8,16 +8,16 @@ import {
   type ProviderSourceHost,
   providerContext,
 } from "../core/provider-source.js";
-import { rowsFromLegacyResult } from "../core/rows.js";
 import { matchesQuotaProviderCurrentSelection } from "../core/selection.js";
-import { createQuotaStore, type StoreProvider } from "../core/store.js";
-import type { ProviderSnapshot, QuotaSnapshot, SessionModel } from "../core/types.js";
+import { createQuotaStore } from "../core/store.js";
+import type { DebugDetail, ProviderSnapshot, QuotaSnapshot, SessionModel } from "../core/types.js";
 import { type UsageReport, usageReport } from "../core/usage.js";
 import { getProviders } from "../providers/registry.js";
 import type { V5Conversion } from "../settings/index.js";
 import { DEFAULT_WORDS } from "../view/format.js";
 import { type RowSettings, type SurfaceRows, visibleGroups } from "../view/select.js";
 import { plainLines } from "../view/text.js";
+import { API_KEY_VENDORS, getApiKeyDiagnostics } from "./api-key-resolver.js";
 import {
   formatYmd,
   parseQuotaBetweenArgs,
@@ -43,7 +43,7 @@ import {
   setPricingSnapshotSelection,
 } from "./modelsdev-pricing.js";
 import { getCredentialSourceDiagnostics } from "./opencode-auth.js";
-import { getQuotaProviderDisplayLabel } from "./provider-metadata.js";
+import { getQuotaProviderDisplayLabel, getQuotaProviderRuntimeIds } from "./provider-metadata.js";
 import {
   QUOTA_DIALOG_COMMANDS_BY_ID,
   type QuotaDialogCommandId,
@@ -280,22 +280,50 @@ async function isAvailable(provider: QuotaProvider, ctx: QuotaProviderContext): 
   }
 }
 
-/** A provider the plugin does not check, run once for its setup details (what it found). */
-function setupCheck(provider: QuotaProvider, ctx: QuotaProviderContext): StoreProvider {
-  return {
-    id: provider.id,
-    label: getQuotaProviderDisplayLabel(provider.id),
-    identity: async () => ({ key: "status-setup", persist: false }),
-    fetch: async () => rowsFromLegacyResult(provider.id, await provider.fetch(ctx, {})),
-  };
+/**
+ * What an unavailable provider's setup looks like, from local checks only: whether OpenCode
+ * lists the provider and, for an API-key provider, where its key was looked for. No quota
+ * request is made.
+ */
+async function localSetupDetails(
+  providerId: string,
+  ctx: QuotaProviderContext,
+): Promise<DebugDetail[]> {
+  const details: DebugDetail[] = [];
+  const runtimeIds = getQuotaProviderRuntimeIds(providerId);
+  if (runtimeIds.length > 0) {
+    let listed: string;
+    try {
+      const openCodeIds = await ctx.resolveRuntimeProviderIds();
+      const found = runtimeIds.filter((id) => openCodeIds.has(id));
+      listed =
+        found.length > 0 ? `yes (${found.join(", ")})` : `no (looked for ${runtimeIds.join(", ")})`;
+    } catch {
+      listed = "(OpenCode's provider list could not be read)";
+    }
+    details.push({ key: "opencode_provider", value: listed });
+  }
+  if (Object.hasOwn(API_KEY_VENDORS, providerId)) {
+    try {
+      const vendor = API_KEY_VENDORS[providerId as keyof typeof API_KEY_VENDORS];
+      const key = await getApiKeyDiagnostics(vendor);
+      const parts = [`configured=${key.configured ? "true" : "false"}`];
+      if (key.source) parts.push(`source=${key.source}`);
+      if (key.checkedPaths.length > 0) parts.push(`checked=${key.checkedPaths.join(" | ")}`);
+      details.push({ key: "api_key_diagnostics", value: parts.join(" ") });
+    } catch {
+      details.push({ key: "api_key_diagnostics", value: "(could not be read)" });
+    }
+  }
+  return details;
 }
 
 /**
- * A fresh check of every known provider (or only `providerId`) for /quota_status, through a
- * store of its own that keeps nothing. The plugin's source decides which providers are enabled
- * and available, and those are checked as the plugin's store would check them. Every
- * unavailable provider runs once for its setup details; a provider that is turned off but
- * available is not run.
+ * A fresh check of every known provider (or only `providerId`) for /quota_status. The plugin's
+ * source decides which providers are enabled and available; those are checked through a store
+ * of its own that keeps nothing, as the plugin's store would check them. An unavailable
+ * provider shows its local setup details instead, and one turned off in the settings is never
+ * fetched.
  */
 async function checkKnownProviders(
   host: ProviderSourceHost,
@@ -305,31 +333,35 @@ async function checkKnownProviders(
   const sourceIds = new Set(source.providers.map((provider) => provider.id));
   const ctx = providerContext(host);
   const { enabledProviders } = ctx.config;
+  const turnedOn = (id: string) => enabledProviders === "auto" || enabledProviders.includes(id);
   const known = getProviders().filter((provider) => !providerId || provider.id === providerId);
   const checks = await Promise.all(
     known.map(async (provider): Promise<ProviderCheck> => {
       if (sourceIds.has(provider.id)) return { provider, enabled: true, available: true };
       // In auto mode a provider is enabled when it is available, as v5 reports it.
       if (enabledProviders === "auto") return { provider, enabled: false, available: false };
-      if (enabledProviders.includes(provider.id)) {
-        return { provider, enabled: true, available: false };
-      }
+      if (turnedOn(provider.id)) return { provider, enabled: true, available: false };
       return { provider, enabled: false, available: await isAvailable(provider, ctx) };
     }),
   );
 
-  const setupChecks = checks
-    .filter((check) => !check.available)
-    .map((check) => setupCheck(check.provider, ctx));
-  const store = createQuotaStore({
-    source: async () => ({ ...source, providers: [...source.providers, ...setupChecks] }),
-    file: null,
-  });
+  const setupSnapshots = checks
+    .filter((check) => !check.available && turnedOn(check.provider.id))
+    .map(
+      async ({ provider }): Promise<ProviderSnapshot> => ({
+        providerId: provider.id,
+        label: getQuotaProviderDisplayLabel(provider.id),
+        rows: [],
+        refreshing: false,
+        debug: await localSetupDetails(provider.id, ctx),
+      }),
+    );
+  const store = createQuotaStore({ source: async () => source, file: null });
   try {
     const knownIds = new Set(known.map((provider) => provider.id));
     const snapshot = await store.refresh({ reason: "manual", providerIds: [...knownIds] });
-    const snapshots = snapshot.providers.filter((provider) => knownIds.has(provider.providerId));
-    return { checks, snapshots };
+    const checked = snapshot.providers.filter((provider) => knownIds.has(provider.providerId));
+    return { checks, snapshots: [...checked, ...(await Promise.all(setupSnapshots))] };
   } finally {
     await store.dispose();
   }
