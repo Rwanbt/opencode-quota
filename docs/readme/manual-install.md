@@ -34,25 +34,25 @@ Add OpenCode Quota to `opencode.jsonc` or `opencode.json`, and keep your other p
 }
 ```
 
-## 2. Add quota settings
+## 2. Add quota settings (optional)
 
-Create `opencode-quota/quota-toast.jsonc` next to that OpenCode config:
+OpenCode Quota works without settings. To change something, create `opencode-quota/settings.jsonc` in the global OpenCode folder (or in `$OPENCODE_CONFIG_DIR`), also for a project install:
 
 ```jsonc
 {
   // Find providers from your OpenCode config and logins.
-  "enabledProviders": "auto",
+  "providers": { "enabled": "auto" },
 
   // Show the count of maintainer notices on Home, once a day for 10 minutes.
-  "maintainerAnnouncements": { "enabled": true, "home": true },
+  "announcements": { "enabled": true, "home": true },
 }
 ```
 
-Restart OpenCode, then run `/quota` and `/quota_status` in the TUI. `/quota_status` shows the exact files OpenCode Quota loaded.
+Restart OpenCode, then run `/quota` and `/quota_status` in the TUI. `/quota_status` shows the settings file OpenCode Quota read.
 
 ## What appears in the TUI
 
-The TUI shows the `Quota` panel in the session sidebar, a status line under the message box, and a toast after compaction. For now their look is built in; see [TUI surfaces](configuration.md#tui-surfaces). Web and Desktop show none of these. See [Configuration](configuration.md) for every setting.
+The TUI shows the `Quota` panel in the session sidebar, a status line under the message box, and a toast after compaction. See [TUI surfaces](configuration.md#tui-surfaces) for their look. Web and Desktop show none of these. See [Configuration](configuration.md) for every setting.
 
 ## Web and Desktop notes
 

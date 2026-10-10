@@ -44,6 +44,8 @@ describe("quota RPC definition", () => {
       "status",
       "usage",
       "downloadPrices",
+      "saveSettings",
+      "acknowledgeDisplayImport",
     ]);
   });
 
@@ -216,6 +218,21 @@ describe("quota RPC definition", () => {
         value,
         "output must carry ok and a message",
       );
+    }
+  });
+
+  it("validates saveSettings and acknowledgeDisplayImport", async () => {
+    await expectAccepted(methods.saveSettings.input, { patch: { words: { percent: "used" } } });
+    for (const value of [undefined, {}, { patch: null }, { patch: [] }]) {
+      await expectRejected(methods.saveSettings.input, value, "input must carry a patch object");
+    }
+    await expectAccepted(methods.saveSettings.output, { ok: false, issues: [] });
+    for (const value of [{}, { ok: "yes", issues: [] }, { ok: true }]) {
+      await expectRejected(methods.saveSettings.output, value, "output must carry ok and issues");
+    }
+    await expectAccepted(methods.acknowledgeDisplayImport.input, { id: "import-1" });
+    for (const value of [1, {}, { id: 1 }]) {
+      await expectRejected(methods.acknowledgeDisplayImport.input, value, "input must carry an id");
     }
   });
 

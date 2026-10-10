@@ -32,9 +32,21 @@ function normalizeHomeDir(homeDir: string): string | null {
   return trimmed;
 }
 
-function replaceWholeHomeDir(text: string, home: string): string {
-  const pattern = new RegExp(`${HOME_DIR_START}${escapeRegExp(home)}${HOME_DIR_END}`, "gu");
-  return text.replace(pattern, "~");
+/**
+ * The home dir as a pattern. Spaces in it match any run of whitespace. A Windows home
+ * (C:\Users\Alice) also matches in any letter case and with "/", "\" or JSON's escaped "\\"
+ * between its parts, as programs and JSON print it: c:/users/alice, "C:\\Users\\Alice".
+ */
+function homeDirPattern(home: string): RegExp {
+  const literal = (part: string) => escapeRegExp(part).replace(/\s+/gu, "\\s+");
+  const windows = /^[A-Za-z]:/u.test(home) || home.includes("\\");
+  const body = windows
+    ? home
+        .split(/[/\\]+/u)
+        .map(literal)
+        .join("(?:\\\\\\\\|[/\\\\])")
+    : literal(home);
+  return new RegExp(`${HOME_DIR_START}${body}${HOME_DIR_END}`, windows ? "giu" : "gu");
 }
 
 /**
@@ -44,13 +56,7 @@ function replaceWholeHomeDir(text: string, home: string): string {
  */
 export function replaceHomeDirWithTilde(text: string, homeDir: string): string {
   const home = normalizeHomeDir(homeDir);
-  if (!home) return text;
-  // A JSON-quoted Windows path doubles its backslashes, e.g. a quoted command in
-  // checked_commands: "C:\\Users\\Alice Smith\\.local\\bin\\claude" -> "~\\.local\\bin\\claude".
-  const jsonEscapedHome = home.replace(/\\/gu, "\\\\");
-  const withoutEscapedHome =
-    jsonEscapedHome === home ? text : replaceWholeHomeDir(text, jsonEscapedHome);
-  return replaceWholeHomeDir(withoutEscapedHome, home);
+  return home ? text.replace(homeDirPattern(home), "~") : text;
 }
 
 // Optional fields are only set when the input has them. An optional field set to `undefined`

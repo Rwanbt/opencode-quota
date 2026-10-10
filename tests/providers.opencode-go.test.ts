@@ -115,14 +115,9 @@ function credentialRow(id: string, integrationId: string, key: string, label = "
   return { id, integrationId, label, active: false, value: { type: "key", key } };
 }
 
-async function runFetch(
-  opencodeGoWindows: Array<"rolling" | "weekly" | "monthly"> = ["rolling", "weekly", "monthly"],
-  requestTimeoutMs = 5_000,
-) {
+async function runFetch(requestTimeoutMs = 5_000) {
   return opencodeGoProvider.fetch(
-    createProviderAvailabilityContext({
-      configOverrides: { opencodeGoWindows, requestTimeoutMs },
-    }),
+    createProviderAvailabilityContext({ configOverrides: { requestTimeoutMs } }),
   );
 }
 
@@ -402,7 +397,7 @@ describe("opencode-go provider", () => {
         credentialRow("go-row", "opencode-go", "workspace-key"),
         credentialRow("zen-row", "opencode", "workspace-key"),
       ],
-      sourceIds: ["go-row", "go-row"],
+      sourceIds: ["go-row", "go-row", "go-row"],
     },
     {
       name: "no second connection for another integration's credential",
@@ -410,7 +405,7 @@ describe("opencode-go provider", () => {
         credentialRow("go-row", "opencode-go", "go-key"),
         credentialRow("zen-row", "opencode", "zen-key"),
       ],
-      sourceIds: ["go-row", "go-row"],
+      sourceIds: ["go-row", "go-row", "go-row"],
     },
     {
       name: "separate connections for distinct native credentials",
@@ -418,19 +413,19 @@ describe("opencode-go provider", () => {
         credentialRow("go-row", "opencode-go", "first-key"),
         credentialRow("second-go-row", "opencode-go", "second-key"),
       ],
-      sourceIds: ["go-row", "go-row", "second-go-row", "second-go-row"],
+      sourceIds: ["go-row", "go-row", "go-row", "second-go-row", "second-go-row", "second-go-row"],
     },
     {
       name: "legacy alias rows when no native opencode-go row exists",
       rows: [credentialRow("alias-row", "opencode", "legacy-key")],
-      sourceIds: ["alias-row", "alias-row"],
+      sourceIds: ["alias-row", "alias-row", "alias-row"],
     },
   ])("reports $name", async ({ rows, sourceIds }) => {
     vi.mocked(readCredentialRows).mockResolvedValueOnce(rows as never);
 
-    const out = await runFetch(["rolling", "weekly"]);
+    const out = await runFetch();
 
-    expect(mocks.queryOpenCodeGoQuota).toHaveBeenCalledTimes(sourceIds.length / 2);
+    expect(mocks.queryOpenCodeGoQuota).toHaveBeenCalledTimes(sourceIds.length / 3);
     const visible = visibleEntries(out.entries, "opencode-go");
     expect(visible.map((entry) => entry.group)).toEqual(sourceIds.map(() => "[OpenCode Go]"));
     expect(out.entries.map((entry) => entry.accounting.sourceId)).toEqual(sourceIds);
@@ -452,8 +447,8 @@ describe("opencode-go provider", () => {
       apiKey === "free-key" ? NOT_SUBSCRIBED : successfulResult(),
     );
 
-    const first = await runFetch(["rolling"]);
-    const second = await runFetch(["rolling"]);
+    const first = await runFetch();
+    const second = await runFetch();
 
     expect(mocks.queryOpenCodeGoQuota.mock.calls.map(([apiKey]) => apiKey)).toEqual([
       "free-key",
@@ -461,16 +456,16 @@ describe("opencode-go provider", () => {
       "paid-key",
     ]);
     for (const out of [first, second]) {
-      expect(out.entries).toEqual([
-        expect.objectContaining({
-          accounting: expect.objectContaining({ sourceId: "subscribed" }),
-        }),
+      expect(out.entries.map((entry) => entry.accounting.sourceId)).toEqual([
+        "subscribed",
+        "subscribed",
+        "subscribed",
       ]);
     }
   });
 
   it("returns canonical entries with remote_api accounting from the resolved token", async () => {
-    const out = await runFetch(["rolling", "weekly", "monthly"], 12_345);
+    const out = await runFetch(12_345);
 
     expect(mocks.queryOpenCodeGoQuota).toHaveBeenCalledWith("provider-test-token", {
       requestTimeoutMs: 12_345,
@@ -510,19 +505,20 @@ describe("opencode-go provider", () => {
     expect(JSON.stringify(out)).not.toContain("provider-test-token");
   });
 
-  it("filters duplicates in canonical order after full-response diagnostics", async () => {
+  it("reports every window, a rate-limited one too, with each window's usage", async () => {
     mocks.queryOpenCodeGoQuota.mockResolvedValueOnce(rateLimitedWeeklyResult());
 
-    const out = await runFetch(["monthly", "rolling", "monthly"]);
+    const out = await runFetch();
 
     expectAttemptedWithNoErrors(out);
     expect(out.entries.map((entry) => entry.name)).toEqual([
       "OpenCode Go 5h",
+      "OpenCode Go Weekly",
       "OpenCode Go Monthly",
     ]);
     expect(out.statusDetails).toEqual(
       expect.arrayContaining([
-        { key: "selected_windows", value: "monthly,rolling,monthly" },
+        { key: "selected_windows", value: "rolling,weekly,monthly" },
         {
           key: "rolling_usage",
           value:
@@ -542,7 +538,7 @@ describe("opencode-go provider", () => {
   });
 
   it("uses only the standard auth diagnostic keys", async () => {
-    const out = await runFetch(["weekly"]);
+    const out = await runFetch();
 
     expect(out.statusDetails?.map((detail) => detail.key)).toEqual([
       "auth_state",
@@ -611,17 +607,6 @@ describe("opencode-go provider", () => {
       ["week", "100% used"],
       ["month", "80% used"],
     ]);
-  });
-
-  it("keeps only the selected windows as rows, with every window in diagnostics", async () => {
-    mocks.queryOpenCodeGoQuota.mockResolvedValueOnce(rateLimitedWeeklyResult());
-
-    const fetched = rowsFromLegacyResult("opencode-go", await runFetch(["rolling", "monthly"]));
-
-    expect(fetched.rows.map((row) => row.window)).toEqual(["five_hour", "month"]);
-    expect(fetched.debug.map((detail) => detail.key)).toEqual(
-      expect.arrayContaining(["rolling_usage", "weekly_usage", "monthly_usage"]),
-    );
   });
 
   it("queries again after the credential changes, including when the original returns", async () => {
@@ -698,19 +683,6 @@ describe("opencode-go availability, model matching, and cache identity", () => {
     await expect(opencodeGoProvider.isAvailable(createProviderAvailabilityContext())).resolves.toBe(
       true,
     );
-  });
-
-  it("includes the selected Go windows in the provider cache identity", async () => {
-    const { buildQuotaProviderStateCacheKey } = await import("../src/lib/quota-state.js");
-    const keyFor = (window: "rolling" | "monthly") =>
-      buildQuotaProviderStateCacheKey(
-        "opencode-go",
-        createProviderAvailabilityContext({ configOverrides: { opencodeGoWindows: [window] } }),
-      );
-
-    expect(keyFor("rolling")).toContain("opencodeGoWindows=rolling");
-    expect(keyFor("monthly")).toContain("opencodeGoWindows=monthly");
-    expect(keyFor("rolling")).not.toBe(keyFor("monthly"));
   });
 
   it.each([

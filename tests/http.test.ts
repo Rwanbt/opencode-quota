@@ -1,7 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-
-import { fetchWithTimeout } from "../src/lib/http.js";
-import { REQUEST_TIMEOUT_MS } from "../src/lib/types.js";
+import { fetchWithTimeout, REQUEST_TIMEOUT_MS } from "../src/lib/http.js";
 
 function createPendingFetch() {
   return vi.fn((_url: string | URL | Request, options?: RequestInit) => {

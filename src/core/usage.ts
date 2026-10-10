@@ -26,6 +26,7 @@ import {
   getPricingSnapshotMeta,
   getPricingSnapshotSelection,
   maybeRefreshPricingSnapshot,
+  type PricingSnapshotSource,
 } from "../lib/modelsdev-pricing.js";
 import { getOpenCodeDbPath } from "../lib/opencode-db-path.js";
 import {
@@ -41,7 +42,6 @@ import {
   tokenBucketsFromMessage,
 } from "../lib/token-buckets.js";
 import { calculateUsdFromTokenBuckets } from "../lib/token-cost.js";
-import type { PricingSnapshotSource } from "../lib/types.js";
 import type { UsageRange } from "./usage-ranges.js";
 
 export {

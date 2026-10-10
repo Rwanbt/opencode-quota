@@ -45,14 +45,16 @@ vi.mock("../src/lib/opencode-runtime-paths.js", () => ({
   getOpencodeRuntimeDirs: () => runtimeDirs.value,
 }));
 
-import { createCliQuotaClient, runCliShowCommand } from "../src/lib/cli-show.js";
-import {
-  clearReadAuthFileCacheForTests,
-  getCredentialSourceDiagnostics,
-  readCredentialRows,
-} from "../src/lib/opencode-auth.js";
-import { __resetQuotaStateForTests } from "../src/lib/quota-state.js";
-import { writeCredentialDatabase } from "./helpers/credential-database.js";
+const { snapshotFilePath } = await import("../src/core/persist.js");
+const { loadProviderSource } = await import("../src/core/provider-source.js");
+const { createQuotaStore } = await import("../src/core/store.js");
+const { createCliQuotaClient, runCliShowCommand } = await import("../src/lib/cli-show.js");
+const { clearReadAuthFileCacheForTests, getCredentialSourceDiagnostics, readCredentialRows } =
+  await import("../src/lib/opencode-auth.js");
+const { __resetPricingSnapshotForTests, getPricingRefreshPolicy, getPricingSnapshotSelection } =
+  await import("../src/lib/modelsdev-pricing.js");
+const { loadSettings } = await import("../src/settings/index.js");
+const { writeCredentialDatabase } = await import("./helpers/credential-database.js");
 
 function createCaptureStream() {
   let output = "";
@@ -75,6 +77,15 @@ describe("runCliShowCommand", () => {
   let workspaceDir: string;
   let savedConfigDir: string | undefined;
 
+  function writeSettings(settings: Record<string, unknown>): void {
+    mkdirSync(join(globalConfigDir, "opencode-quota"), { recursive: true });
+    writeFileSync(
+      join(globalConfigDir, "opencode-quota", "settings.jsonc"),
+      JSON.stringify(settings),
+      "utf8",
+    );
+  }
+
   beforeEach(() => {
     authMocks.anthropicConfigured = false;
     authMocks.kimiGlobalState = "none";
@@ -87,14 +98,13 @@ describe("runCliShowCommand", () => {
     mkdirSync(globalConfigDir, { recursive: true });
     mkdirSync(workspaceDir, { recursive: true });
     runtimeDirs.value = {
-      dataDir: "/tmp/opencode-quota-cli-show-data",
+      dataDir: join(tempDir, "data"),
       configDir: globalConfigDir,
       cacheDir: join(tempDir, "cache"),
-      stateDir: "/tmp/opencode-quota-cli-show-state",
+      stateDir: join(tempDir, "state"),
     };
     vi.stubEnv("OPENCODE_DB", join(tempDir, "opencode.db"));
     mockProviders.length = 0;
-    __resetQuotaStateForTests();
   });
 
   afterEach(() => {
@@ -102,7 +112,6 @@ describe("runCliShowCommand", () => {
     if (savedConfigDir !== undefined) process.env.OPENCODE_CONFIG_DIR = savedConfigDir;
     else delete process.env.OPENCODE_CONFIG_DIR;
     mockProviders.length = 0;
-    __resetQuotaStateForTests();
     clearReadAuthFileCacheForTests();
     rmSync(tempDir, { recursive: true, force: true });
   });
@@ -110,22 +119,18 @@ describe("runCliShowCommand", () => {
   it("synthesizes offline Kimi runtime ids independently by region", async () => {
     writeFileSync(join(workspaceDir, "opencode.json"), "{}", "utf8");
 
-    const unauthenticated = await createCliQuotaClient({
-      configRootDir: workspaceDir,
-    }).config.providers();
+    const client = () =>
+      createCliQuotaClient({ configRootDir: workspaceDir, anthropicBinaryPath: "claude" });
+    const unauthenticated = await client().config.providers();
     expect(unauthenticated.data?.providers).toEqual([]);
 
     authMocks.anthropicConfigured = true;
     authMocks.kimiCnState = "configured";
-    const cnOnly = await createCliQuotaClient({
-      configRootDir: workspaceDir,
-    }).config.providers();
+    const cnOnly = await client().config.providers();
     expect(cnOnly.data?.providers).toEqual([{ id: "anthropic" }, { id: "kimi-code-plan-cn" }]);
 
     authMocks.kimiGlobalState = "configured";
-    const bothRegions = await createCliQuotaClient({
-      configRootDir: workspaceDir,
-    }).config.providers();
+    const bothRegions = await client().config.providers();
     expect(bothRegions.data?.providers).toEqual([
       { id: "anthropic" },
       { id: "kimi-code-plan-global" },
@@ -152,18 +157,7 @@ describe("runCliShowCommand", () => {
       }),
     };
     mockProviders.push(provider);
-    writeFileSync(
-      join(workspaceDir, "opencode.json"),
-      JSON.stringify({
-        experimental: {
-          quotaToast: {
-            enabledProviders: ["synthetic"],
-            showSessionTokens: true,
-          },
-        },
-      }),
-      "utf8",
-    );
+    writeSettings({ providers: { enabled: ["synthetic"] } });
 
     const stdout = createCaptureStream();
     const stderr = createCaptureStream();
@@ -180,6 +174,34 @@ describe("runCliShowCommand", () => {
     expect(stdout.output).toContain("75%");
     expect(stderr.output).toBe("");
     expect(provider.fetch).toHaveBeenCalledOnce();
+  });
+
+  it("checks the providers with the price list and refresh age the settings choose", async () => {
+    __resetPricingSnapshotForTests();
+    const seen: Array<{ source: string; maxAgeMs: number }> = [];
+    mockProviders.push({
+      id: "synthetic",
+      cachePolicy: { kind: "account-neutral" as const },
+      isAvailable: vi.fn().mockResolvedValue(true),
+      fetch: vi.fn(async () => {
+        const maxAgeMs = getPricingRefreshPolicy().maxAgeMs;
+        seen.push({ source: getPricingSnapshotSelection(), maxAgeMs });
+        return { attempted: true, entries: [], errors: [] };
+      }),
+    });
+    writeSettings({
+      providers: { enabled: ["synthetic"] },
+      pricing: { source: "bundled", autoRefreshDays: 3 },
+    });
+
+    await runCliShowCommand({
+      argv: [],
+      cwd: workspaceDir,
+      stdout: createCaptureStream().stream as any,
+      stderr: createCaptureStream().stream as any,
+    });
+
+    expect(seen).toEqual([{ source: "bundled", maxAgeMs: 3 * 24 * 60 * 60 * 1000 }]);
   });
 
   it("reads logins from OpenCode's database, read-only, only while the command runs", async () => {
@@ -218,11 +240,7 @@ describe("runCliShowCommand", () => {
       }),
     };
     mockProviders.push(provider);
-    writeFileSync(
-      join(workspaceDir, "opencode.json"),
-      JSON.stringify({ experimental: { quotaToast: { enabledProviders: ["synthetic"] } } }),
-      "utf8",
-    );
+    writeSettings({ providers: { enabled: ["synthetic"] } });
     const stdout = createCaptureStream();
     const stderr = createCaptureStream();
 
@@ -249,14 +267,16 @@ describe("runCliShowCommand", () => {
     expect(readFileSync(databasePath).equals(databaseBefore)).toBe(true);
   });
 
-  it("normalizes --provider aliases and uses the provider as an invocation override", async () => {
+  it("normalizes --provider aliases and checks only that provider", async () => {
     const copilotProvider = {
       id: "copilot",
       cachePolicy: { kind: "account-neutral" as const },
       isAvailable: vi.fn().mockResolvedValue(true),
       fetch: vi.fn().mockResolvedValue({
         attempted: true,
-        entries: [{ accounting: TEST_ACCOUNTING, name: "Copilot", percentRemaining: 50 }],
+        entries: [
+          { accounting: TEST_ACCOUNTING, name: "Copilot Premium Requests", percentRemaining: 50 },
+        ],
         errors: [],
       }),
     };
@@ -266,11 +286,7 @@ describe("runCliShowCommand", () => {
       fetch: vi.fn().mockResolvedValue({ attempted: true, entries: [], errors: [] }),
     };
     mockProviders.push(openAiProvider, copilotProvider);
-    writeFileSync(
-      join(workspaceDir, "opencode.json"),
-      JSON.stringify({ experimental: { quotaToast: { enabledProviders: ["openai"] } } }),
-      "utf8",
-    );
+    writeSettings({ providers: { enabled: ["openai"] } });
 
     const stdout = createCaptureStream();
     const stderr = createCaptureStream();
@@ -331,89 +347,6 @@ describe("runCliShowCommand", () => {
     expect(stderr.output).toContain("opencode-quota show");
   });
 
-  it("returns non-zero when quota is disabled in config", async () => {
-    writeFileSync(
-      join(workspaceDir, "opencode.json"),
-      JSON.stringify({ experimental: { quotaToast: { enabled: false } } }),
-      "utf8",
-    );
-    const stdout = createCaptureStream();
-    const stderr = createCaptureStream();
-
-    const code = await runCliShowCommand({
-      argv: [],
-      cwd: workspaceDir,
-      stdout: stdout.stream as any,
-      stderr: stderr.stream as any,
-    });
-
-    expect(code).toBe(1);
-    expect(stdout.output).toBe("");
-    expect(stderr.output).toContain("Quota disabled in config");
-  });
-
-  it("prefers the git worktree root over a nested cwd for config loading", async () => {
-    const nestedDir = join(workspaceDir, "packages", "app");
-    mkdirSync(nestedDir, { recursive: true });
-    mkdirSync(join(workspaceDir, ".git"));
-    writeFileSync(
-      join(workspaceDir, "opencode.json"),
-      JSON.stringify({ experimental: { quotaToast: { enabled: false } } }),
-      "utf8",
-    );
-    writeFileSync(
-      join(nestedDir, "opencode.json"),
-      JSON.stringify({ experimental: { quotaToast: { enabled: true } } }),
-      "utf8",
-    );
-    const stdout = createCaptureStream();
-    const stderr = createCaptureStream();
-
-    const code = await runCliShowCommand({
-      argv: [],
-      cwd: nestedDir,
-      stdout: stdout.stream as any,
-      stderr: stderr.stream as any,
-    });
-
-    expect(code).toBe(1);
-    expect(stdout.output).toBe("");
-    expect(stderr.output).toContain("Quota disabled in config");
-  });
-
-  it("reads worktree root config even when OPENCODE_CONFIG_DIR is set", async () => {
-    const nestedDir = join(workspaceDir, "packages", "app");
-    const provider = {
-      id: "synthetic",
-      cachePolicy: { kind: "account-neutral" as const },
-      isAvailable: vi.fn().mockResolvedValue(true),
-      fetch: vi.fn(),
-    };
-    mockProviders.push(provider);
-    mkdirSync(nestedDir, { recursive: true });
-    mkdirSync(join(workspaceDir, ".git"));
-    process.env.OPENCODE_CONFIG_DIR = ".opencode";
-    writeFileSync(
-      join(workspaceDir, "opencode.json"),
-      JSON.stringify({ experimental: { quotaToast: { enabled: false } } }),
-      "utf8",
-    );
-    const stdout = createCaptureStream();
-    const stderr = createCaptureStream();
-
-    const code = await runCliShowCommand({
-      argv: [],
-      cwd: nestedDir,
-      stdout: stdout.stream as any,
-      stderr: stderr.stream as any,
-    });
-
-    expect(code).toBe(1);
-    expect(stdout.output).toBe("");
-    expect(stderr.output).toContain("Quota disabled in config");
-    expect(provider.fetch).not.toHaveBeenCalled();
-  });
-
   it("uses root-level OpenCode provider ids for standalone provider availability", async () => {
     const provider = {
       id: "copilot",
@@ -424,7 +357,9 @@ describe("runCliShowCommand", () => {
       }),
       fetch: vi.fn().mockResolvedValue({
         attempted: true,
-        entries: [{ accounting: TEST_ACCOUNTING, name: "Copilot", percentRemaining: 88 }],
+        entries: [
+          { accounting: TEST_ACCOUNTING, name: "Copilot Premium Requests", percentRemaining: 88 },
+        ],
         errors: [],
       }),
     };
@@ -454,7 +389,7 @@ describe("runCliShowCommand", () => {
   //  --json / --threshold tests
   // ──────────────────────────────────────────────
 
-  it("--json outputs valid JSON to stdout with cached provider data", async () => {
+  it("--json outputs the quota OpenCode saved last", async () => {
     const provider = {
       id: "synthetic",
       cachePolicy: { kind: "account-neutral" as const },
@@ -473,27 +408,23 @@ describe("runCliShowCommand", () => {
       }),
     };
     mockProviders.push(provider);
-    writeFileSync(
-      join(workspaceDir, "opencode.json"),
-      JSON.stringify({
-        experimental: { quotaToast: { enabledProviders: ["synthetic"] } },
-      }),
-      "utf8",
-    );
+    writeSettings({ providers: { enabled: ["synthetic"] } });
 
-    // Run non-JSON show first to populate the cache.
-    const textOut = createCaptureStream();
-    const textErr = createCaptureStream();
-    const textCode = await runCliShowCommand({
-      argv: [],
-      cwd: workspaceDir,
-      stdout: textOut.stream as any,
-      stderr: textErr.stream as any,
+    // OpenCode's store checks the providers and saves the snapshot.
+    const loaded = await loadSettings();
+    const store = createQuotaStore({
+      source: () =>
+        loadProviderSource({
+          client: { config: { providers: async () => ({ data: { providers: [] } }) } },
+          workspaceRoot: workspaceDir,
+          settings: () => loaded,
+        }),
+      file: snapshotFilePath(),
     });
-    expect(textCode).toBe(0);
+    await store.refresh({ reason: "manual" });
+    await store.dispose();
     expect(provider.fetch).toHaveBeenCalledOnce();
 
-    // Now run --json (reads from cache).
     const jsonOut = createCaptureStream();
     const jsonErr = createCaptureStream();
     const jsonCode = await runCliShowCommand({
@@ -513,11 +444,11 @@ describe("runCliShowCommand", () => {
     expect(parsed).toHaveProperty("cacheAgeSeconds");
     expect(parsed.providers).toHaveProperty("synthetic");
     expect(parsed.providers.synthetic.status).toBe("ok");
-    expect(parsed.providers.synthetic.entries[0].name).toBe("Synthetic");
+    expect(parsed.providers.synthetic.entries[0].name).toBe("Synthetic Weekly");
     expect(parsed.providers.synthetic.entries[0].percentRemaining).toBe(75);
     expect(parsed.providers.synthetic.entries[0].renderType).toBe("percent");
     expect(parsed.providers.synthetic.entries[0]).not.toHaveProperty("unlimited");
-    expect(provider.fetch).toHaveBeenCalledTimes(1); // still only called from text path
+    expect(provider.fetch).toHaveBeenCalledTimes(1); // only OpenCode's store asked it
   });
 
   it("reports unknown flag with --json as error on stderr with exit code 1", async () => {

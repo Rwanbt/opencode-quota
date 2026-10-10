@@ -6,14 +6,16 @@
  *
  * Methods: `snapshot` (the last known quota, instantly), `refresh`, `notices` (the Home
  * notice line), `noticeList` (the maintainer notices with their read state), `status` (the
- * /quota_status report), `usage` (tokens and cost from OpenCode's history for one range), and
- * `downloadPrices` (a new price list from models.dev); the `changed` event carries every new
- * snapshot.
+ * /quota_status report), `usage` (tokens and cost from OpenCode's history for one range),
+ * `downloadPrices` (a new price list from models.dev), `saveSettings` (a patch of the server
+ * settings file) and `acknowledgeDisplayImport` (a TUI applied the snapshot's `displayImport`);
+ * the `changed` event carries every new snapshot.
  */
 import type { Rpc } from "@opencode/plugin";
 import type { QuotaSnapshot } from "./core/types.js";
 import type { UsageQuery, UsageRange, UsageReport } from "./core/usage.js";
 import { parseCalendarDate } from "./lib/calendar-date.js";
+import type { SettingsIssue } from "./settings/index.js";
 
 export const QUOTA_RPC_ID = "slkiser.opencode-quota";
 
@@ -47,6 +49,13 @@ export type QuotaRpcUsageOutput = { report: UsageReport };
 export type QuotaRpcDownloadPricesInput = Record<string, never>;
 /** `message` says what happened, for a toast. */
 export type QuotaRpcDownloadPricesOutput = { ok: boolean; message: string };
+/** A JSON merge patch of settings.jsonc; file-only keys are refused. */
+export type QuotaRpcSaveSettingsInput = { patch: Record<string, unknown> };
+/** Nothing is saved unless `ok`; `issues` say why. */
+export type QuotaRpcSaveSettingsOutput = { ok: boolean; issues: SettingsIssue[] };
+/** The `id` of the snapshot's `displayImport` that the TUI applied. */
+export type QuotaRpcAcknowledgeInput = { id: string };
+export type QuotaRpcAcknowledgeOutput = Record<string, never>;
 
 type StandardValueSchema = Extract<Rpc.PortableValueSchema, { "~standard": unknown }>;
 type StandardEventSchema = Extract<Rpc.PortableEventDefinition["schema"], { "~standard": unknown }>;
@@ -89,6 +98,10 @@ function eventSchema<T extends Readonly<Record<string, unknown>>>(
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function checkOutput(value: unknown): string | null {
+  return isObject(value) ? null : "output must be an object";
 }
 
 function checkOptionalString(input: Record<string, unknown>, field: string): string | null {
@@ -219,6 +232,22 @@ export const QuotaRpc = {
           ? null
           : "output must carry ok and a message",
       ),
+    },
+    saveSettings: {
+      input: schema<QuotaRpcSaveSettingsInput>((value) =>
+        isObject(value) && isObject(value.patch) ? null : "input must carry a patch object",
+      ),
+      output: schema<QuotaRpcSaveSettingsOutput>((value) =>
+        isObject(value) && typeof value.ok === "boolean" && Array.isArray(value.issues)
+          ? null
+          : "output must carry ok and issues",
+      ),
+    },
+    acknowledgeDisplayImport: {
+      input: schema<QuotaRpcAcknowledgeInput>((value) =>
+        isObject(value) && typeof value.id === "string" ? null : "input must carry an id",
+      ),
+      output: schema<QuotaRpcAcknowledgeOutput>(checkOutput),
     },
   },
 } satisfies Rpc.PortableDefinition;

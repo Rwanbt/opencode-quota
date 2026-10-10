@@ -200,17 +200,6 @@ describe("V2 server plugin", () => {
     );
   });
 
-  it("posts nothing when the plugin is disabled", async () => {
-    const { ctx, commands } = createContext();
-    buildOutput.mockResolvedValue({ state: "noop", command: "quota_status", reason: "disabled" });
-
-    await plugin.setup(ctx as never);
-    await runCommand(commands, "quota_status");
-
-    expect(ctx.session.wait).not.toHaveBeenCalled();
-    expect(ctx.session.prompt).not.toHaveBeenCalled();
-  });
-
   it("removes only tagged quota reports from model requests", async () => {
     const { ctx, hooks } = createContext();
     await plugin.setup(ctx as never);

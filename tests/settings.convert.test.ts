@@ -307,7 +307,7 @@ describe("convertV5, which v5 files", () => {
     expect(conversion?.settings.providers.opencode.monthlyLimitUsd).toBe(20);
     expect(conversion?.invalid.map((item) => item.key)).toEqual([
       "percentDisplayMode",
-      "quotaProviders[0].apiKey",
+      "quotaProviders[0]",
       ...Object.keys(nulls),
     ]);
     expect(readFileSync(settingsPath(), "utf8")).not.toContain("sk-fake");

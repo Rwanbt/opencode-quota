@@ -94,5 +94,13 @@ describe("quota report messages", () => {
     expect(quotaMessageText({ snapshot: { ...snapshot, providers: [] }, notices: [], nowMs })).toBe(
       "Quota\nNo quota providers found. Run /quota_status to see why.",
     );
+    const otherModel = {
+      ...snapshot,
+      words: { ...snapshot.words, onlyCurrentModel: true },
+      currentModelProviderIds: [],
+    };
+    expect(quotaMessageText({ snapshot: otherModel, notices: [], nowMs })).toBe(
+      "Quota\nNo quota provider serves the session's current model. Run /quota_status to see why.",
+    );
   });
 });

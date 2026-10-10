@@ -4,7 +4,9 @@ import plugin from "../src/tui/index.tsx";
 
 // The server plugin's quota RPC; the quota window asks it for its tabs.
 const rpc = vi.hoisted(() => ({
-  snapshot: vi.fn(),
+  snapshot: vi.fn(async () => ({
+    snapshot: { version: 6, providers: [], resetNotices: [], generatedAtMs: 0 },
+  })),
   refresh: vi.fn(),
   notices: vi.fn(),
   status: vi.fn(),

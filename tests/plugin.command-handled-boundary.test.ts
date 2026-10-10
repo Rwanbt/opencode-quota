@@ -72,13 +72,7 @@ function startTui() {
       store: (key: string, options: { initial: any }) => {
         const value =
           key === "settings"
-            ? {
-                ...options.initial,
-                settings: {
-                  ...options.initial.settings,
-                  toast: { ...options.initial.settings.toast, afterReply: "always" },
-                },
-              }
+            ? { ...options.initial, settings: { toast: { afterReply: "always" } } }
             : options.initial;
         return [value, async () => {}];
       },

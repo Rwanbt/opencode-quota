@@ -57,7 +57,9 @@ export function quotaMessageText(params: {
   const limits =
     groups.length > 0
       ? plainLines({ groups, words, nowMs, sessionTokens: snapshot.sessionTokens })
-      : ["No quota providers found. Run /quota_status to see why."];
+      : snapshot.providers.length > 0
+        ? ["No quota provider serves the session's current model. Run /quota_status to see why."]
+        : ["No quota providers found. Run /quota_status to see why."];
   const notices = params.notices.flatMap((notice) => [
     `- ${notice.message}`,
     ...(notice.url ? [`  ${notice.url}`] : []),

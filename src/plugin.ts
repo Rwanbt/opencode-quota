@@ -1,15 +1,16 @@
 /**
  * OpenCode V2 server plugin: quota slash commands for Web and Desktop, a diagnostics tool, and
- * the quota RPC that serves the quota snapshot, the notices and the reports to the TUI. It also writes the export file and
- * the OpenTelemetry gauges from each snapshot. Inside OpenCode, logins are read only here,
- * through OpenCode's integration API.
+ * the quota RPC that serves the quota snapshot, the notices and the reports to the TUI. It reads
+ * the server settings (settings.jsonc, converted from v5 once) and follows every change to them.
+ * It also writes the export file and the OpenTelemetry gauges from each snapshot. Inside
+ * OpenCode, logins are read only here, through OpenCode's integration API.
  */
-import { join } from "node:path";
+import { randomUUID } from "node:crypto";
 import { Plugin } from "@opencode/plugin";
 import { quotaAgentTools } from "./agent-tools.js";
+import { snapshotFilePath } from "./core/persist.js";
 import {
   loadProviderSource,
-  loadQuotaExport,
   loadServerSettings,
   type ProviderSourceHost,
 } from "./core/provider-source.js";
@@ -27,18 +28,17 @@ import { resolveOpenCodeLocationRoots } from "./lib/config-file-utils.js";
 import { sanitizeDisplayText } from "./lib/display-sanitize.js";
 import { homeNoticeLine, listNotices, markNotices } from "./lib/maintainer-home-notice.js";
 import {
-  setPricingSnapshotAutoRefresh,
-  setPricingSnapshotSelection,
-} from "./lib/modelsdev-pricing.js";
-import {
   bindCredentialSource,
   createIntegrationCredentialSource,
   notifyCredentialsChanged,
   scrubCredentialErrorText,
 } from "./lib/opencode-auth.js";
 import { reconcileDetectedProvidersInGlobalConfig } from "./lib/opencode-config-providers.js";
-import { getOpencodeRuntimeDirs } from "./lib/opencode-runtime-paths.js";
-import { buildQuotaDialogCommandOutput, kickPricingRefresh } from "./lib/quota-dialog-commands.js";
+import {
+  applyPricingSettings,
+  buildQuotaDialogCommandOutput,
+  kickPricingRefresh,
+} from "./lib/quota-dialog-commands.js";
 import {
   containsQuotaReport,
   formatQuotaReportMessage,
@@ -48,10 +48,19 @@ import {
   removeQuotaReports,
 } from "./lib/quota-report-message.js";
 import { resolveQuotaResetRetryDelayMs } from "./lib/quota-retry-wait.js";
-import type { QuotaSessionModelContext } from "./lib/quota-runtime-context.js";
 import { fetchSessionTokensForDisplay } from "./lib/session-tokens.js";
 import { QuotaRpc } from "./rpc.js";
-import { loadSettings, saveSettings } from "./settings/index.js";
+import {
+  acknowledgeDisplayImport,
+  convertV5,
+  type LoadedSettings,
+  loadSettings,
+  type PendingDisplayImport,
+  pendingDisplayImport,
+  saveSettings,
+  type V5Conversion,
+  watchSettings,
+} from "./settings/index.js";
 import { usageText } from "./view/usage.js";
 
 type ModelMessage = {
@@ -101,16 +110,36 @@ async function logRpcFailure<T>(method: string, handler: () => Promise<T>): Prom
   }
 }
 
+/**
+ * The settings (or one part of them) with the keys of that part the file sets, so a value set
+ * to its default in the file still differs from no value. The keys are sorted: their order in
+ * the file changes nothing.
+ */
+function settingsWithSources(loaded: LoadedSettings, part?: "checking" | "pricing"): string {
+  const fromFile = loaded.fromFile
+    .filter((key) => part === undefined || key.startsWith(`${part}.`))
+    .sort();
+  return JSON.stringify([part === undefined ? loaded.settings : loaded.settings[part], fromFile]);
+}
+
+/** Writes the v5 settings into settings.jsonc once; a failure leaves them converted in memory. */
+async function convertV5Settings(): Promise<V5Conversion | undefined> {
+  try {
+    return await convertV5();
+  } catch (error) {
+    console.warn(`[opencode-quota] settings conversion failed: ${logReason(error)}`);
+    return undefined;
+  }
+}
+
 export const QuotaToastPlugin = Plugin.define({
   id: "@slkiser/opencode-quota.server",
   async setup(ctx) {
     const roots = resolveOpenCodeLocationRoots(ctx.location.directory);
-    // The quota collector accepts a small V1-shaped configuration client. V2
-    // does not expose a mutable global config to plugins; quota settings are
-    // read from the plugin's own config file by the collector.
+    const projectDir = roots.workspaceRoot;
+    // The providers ask OpenCode which providers it has through this small client.
     const client = {
       config: {
-        get: async () => ({ data: {} }),
         providers: async () => ({
           data: {
             providers: (await ctx.provider.list()).data.map((provider) => ({ id: provider.id })),
@@ -118,6 +147,20 @@ export const QuotaToastPlugin = Plugin.define({
         }),
       },
     };
+
+    // The v5 settings move into settings.jsonc before anything reads the settings. The server
+    // holds the settings it read last; every reader takes them from here.
+    const conversion = await convertV5Settings();
+    let loaded: LoadedSettings = await loadSettings({ projectDir });
+    // Local estimates use prices, so the price list is chosen before any check.
+    applyPricingSettings(loaded.settings.pricing);
+    // The v5 looks the conversion found, sent with every snapshot until a TUI applied them and
+    // acknowledged their id. Empty looks still tell the TUI that the settings were converted.
+    let displayImport: PendingDisplayImport | undefined =
+      (await pendingDisplayImport()) ??
+      (conversion?.written ? { id: randomUUID(), display: {} } : undefined);
+    /** The looks a TUI acknowledged; a file read before that never offers them again. */
+    const acknowledgedImportIds = new Set<string>();
 
     // In auto mode, /quota_status reports the providers it detected. The slash commands and
     // the tool add them to the global OpenCode config; the TUI palette (via RPC) never writes it.
@@ -127,13 +170,10 @@ export const QuotaToastPlugin = Plugin.define({
     ) =>
       buildQuotaDialogCommandOutput({
         command: "quota_status",
-        client,
-        roots,
+        host: sourceHost,
         sessionID,
-        resolveSessionMeta: async (id) => {
-          const session = await ctx.session.get({ sessionID: id });
-          return { modelID: session.model?.id, providerID: session.model?.providerID };
-        },
+        resolveSessionModel: sessionModel,
+        conversion,
         onDetectedProviderIds: options.reconcileDetectedProviders
           ? async (providerIds) => {
               if (providerIds.length === 0) return;
@@ -149,59 +189,64 @@ export const QuotaToastPlugin = Plugin.define({
           : undefined,
       });
 
+    // The v6 quota store: last known rows, saved in the state dir, refreshed in the background.
+    // Building it reads nothing; the first snapshot or refresh call loads the file.
+    const sourceHost: ProviderSourceHost = {
+      client,
+      workspaceRoot: roots.workspaceRoot,
+      settings: () => loaded,
+    };
+    const store = createQuotaStore({
+      source: () => loadProviderSource(sourceHost),
+      file: snapshotFilePath(),
+    });
     // The TUI reads the session model from its local store, which has nothing for an
     // unknown session. The RPC handlers match that: a failed lookup means no model.
-    const resolveSessionMeta = async (id: string): Promise<QuotaSessionModelContext> => {
+    // With a session, a snapshot also names the providers serving its current model.
+    const sessionModel = async (sessionID: string | undefined): Promise<SessionModel> => {
+      if (!sessionID) return {};
       try {
-        const session = await ctx.session.get({ sessionID: id });
-        return { modelID: session.model?.id, providerID: session.model?.providerID };
+        const session = await ctx.session.get({ sessionID });
+        return { id: session.model?.id, providerID: session.model?.providerID };
       } catch {
         return {};
       }
     };
-    // The v6 quota store: last known rows, saved in the state dir, refreshed in the background.
-    // Building it reads nothing; the first snapshot or refresh call loads the file.
-    const sourceHost: ProviderSourceHost = { client, roots };
-    const store = createQuotaStore({
-      source: () => loadProviderSource(sourceHost),
-      file: join(getOpencodeRuntimeDirs().stateDir, "opencode-quota", "snapshot-v6.json"),
-    });
-    // With a session, a snapshot also names the providers serving its current model and the
-    // tokens the session used so far.
-    const sessionModel = async (sessionID: string | undefined): Promise<SessionModel> => {
-      const meta = sessionID ? await resolveSessionMeta(sessionID) : {};
-      return { id: meta.modelID, providerID: meta.providerID };
-    };
+    // With a session, a snapshot also has the tokens the session used so far.
     const withSessionTokens = async (
       snapshot: QuotaSnapshot,
       sessionID: string | undefined,
-    ): Promise<{ snapshot: QuotaSnapshot }> => {
-      if (!sessionID) return { snapshot };
-      const settings = await loadServerSettings(sourceHost);
+    ): Promise<QuotaSnapshot> => {
+      if (!sessionID) return snapshot;
       const { sessionTokens } = await fetchSessionTokensForDisplay({
         enabled: true,
         sessionID,
-        scope: settings.sessionTokenScope,
+        scope: loaded.settings.words.sessionTokens,
       });
-      if (!sessionTokens) return { snapshot };
+      if (!sessionTokens) return snapshot;
       return {
-        snapshot: {
-          ...snapshot,
-          sessionTokens: {
-            input: sessionTokens.totalInput,
-            cachedInput: sessionTokens.totalCachedInput ?? 0,
-            output: sessionTokens.totalOutput,
-          },
+        ...snapshot,
+        sessionTokens: {
+          input: sessionTokens.totalInput,
+          cachedInput: sessionTokens.totalCachedInput ?? 0,
+          output: sessionTokens.totalOutput,
         },
       };
     };
+    // Every snapshot a client gets carries the server's words and the v5 looks still to apply,
+    // and none of the export parts the server keeps for the export file.
+    const forClients = (snapshot: QuotaSnapshot): QuotaSnapshot => ({
+      ...snapshot,
+      providers: snapshot.providers.map(({ exportPart: _serverOnly, ...provider }) => provider),
+      words: loaded.settings.words,
+      ...(displayImport ? { displayImport } : {}),
+    });
 
     // The usage report with the configured price list. A due price download gets up to
     // 0.75 s to finish first.
     const loadUsageReport = async (query: UsageQuery): Promise<UsageReport> => {
-      const { pricing } = await loadServerSettings(sourceHost);
-      setPricingSnapshotAutoRefresh(pricing.autoRefresh);
-      setPricingSnapshotSelection(pricing.source);
+      const { pricing } = loaded.settings;
+      applyPricingSettings(pricing);
       await kickPricingRefresh({
         reason: "tokens",
         maxWaitMs: 750,
@@ -219,27 +264,29 @@ export const QuotaToastPlugin = Plugin.define({
     // activation before it routes an RPC call, so the first TUI call cannot miss it.
     const registration = await ctx.rpc.register(QuotaRpc, {
       snapshot: (input) =>
-        logRpcFailure("snapshot", async () =>
-          withSessionTokens(
-            await store.snapshot({ model: await sessionModel(input.sessionID) }),
-            input.sessionID,
-          ),
-        ),
+        logRpcFailure("snapshot", async () => {
+          const snapshot = await store.snapshot({ model: await sessionModel(input.sessionID) });
+          return { snapshot: forClients(await withSessionTokens(snapshot, input.sessionID)) };
+        }),
       refresh: (input) =>
         logRpcFailure("refresh", async () => {
           const model = await sessionModel(input.sessionID);
           const options = { reason: input.reason, providerIds: input.providerIds, model };
-          return withSessionTokens(await store.refresh(options), input.sessionID);
+          const snapshot = await store.refresh(options);
+          return { snapshot: forClients(await withSessionTokens(snapshot, input.sessionID)) };
         }),
       notices: () =>
         logRpcFailure("notices", async () => {
-          const { announcements } = (await loadSettings()).settings;
-          if (!announcements.enabled || !announcements.home) return { homeLine: "" };
-          const frequency = announcements.homeFrequency;
+          const { enabled, home, homeFrequency } = loaded.settings.announcements;
+          if (!enabled || !home) return { homeLine: "" };
           return {
-            homeLine: await homeNoticeLine({ frequency, providerIds: await noticeTargets() }),
+            homeLine: await homeNoticeLine({
+              frequency: homeFrequency,
+              providerIds: await noticeTargets(),
+            }),
           };
         }),
+      // The notice switches are settings: saved to settings.jsonc and in use before the answer.
       noticeList: (input) =>
         logRpcFailure("noticeList", async () => {
           const patch = {
@@ -247,15 +294,16 @@ export const QuotaToastPlugin = Plugin.define({
             ...(input.home === undefined ? {} : { home: input.home }),
           };
           if (Object.keys(patch).length > 0) {
-            const saved = await saveSettings({ announcements: patch });
+            const saved = await saveSettings({ announcements: patch }, { allowFileOnly: false });
             if (!saved.ok) {
               const reasons = saved.issues.map((issue) => `${issue.key}: ${issue.message}`);
               throw new Error(`cannot save the notice settings (${reasons.join("; ")})`);
             }
+            await applySettings(await loadSettings({ projectDir }));
           }
           if (input.read?.length) await markNotices(input.read, true);
           if (input.unread?.length) await markNotices(input.unread, false);
-          const { enabled, home } = (await loadSettings()).settings.announcements;
+          const { enabled, home } = loaded.settings.announcements;
           const notices = enabled ? await listNotices({ providerIds: await noticeTargets() }) : [];
           return { enabled, home, notices };
         }),
@@ -264,12 +312,7 @@ export const QuotaToastPlugin = Plugin.define({
           const result = await buildStatusOutput(input.sessionID, {
             reconcileDetectedProviders: false,
           });
-          return {
-            text:
-              result.state === "output"
-                ? sanitizeDisplayText(result.output)
-                : "OpenCode Quota is turned off in its settings.",
-          };
+          return { text: sanitizeDisplayText(result.output) };
         }),
       usage: (input) =>
         logRpcFailure("usage", async () => {
@@ -277,27 +320,77 @@ export const QuotaToastPlugin = Plugin.define({
           return { report: await loadUsageReport({ range, sessionID, from, to }) };
         }),
       downloadPrices: () =>
-        logRpcFailure("downloadPrices", async () => {
-          const { pricing } = await loadServerSettings(sourceHost);
-          return downloadPrices(pricing.source);
+        logRpcFailure("downloadPrices", async () => downloadPrices(loaded.settings.pricing.source)),
+      // The watch sees the save too; reading the file now answers with the new settings in use.
+      saveSettings: (input) =>
+        logRpcFailure("saveSettings", async () => {
+          const result = await saveSettings(input.patch, { allowFileOnly: false });
+          if (result.ok) await applySettings(await loadSettings({ projectDir }));
+          return { ok: result.ok, issues: result.issues };
+        }),
+      acknowledgeDisplayImport: (input) =>
+        logRpcFailure("acknowledgeDisplayImport", async () => {
+          if (displayImport?.id === input.id) {
+            acknowledgedImportIds.add(input.id);
+            displayImport = undefined;
+          }
+          await acknowledgeDisplayImport(input.id);
+          return {};
         }),
     });
     // The export file and the gauges follow the snapshot; neither asks a provider again.
     const publisher = createSnapshotPublisher({
       loadSettings: () => loadServerSettings(sourceHost),
-      buildExport: () => loadQuotaExport(sourceHost),
       log: (message, error) => console.warn(`[opencode-quota] ${message}: ${logReason(error)}`),
     });
-    const unsubscribeStore = store.subscribe((snapshot) => {
+    const announce = (snapshot: QuotaSnapshot) => {
       publisher.publish(snapshot);
       void (async () => {
         try {
-          await registration.events.emit("changed", { snapshot });
+          await registration.events.emit("changed", { snapshot: forClients(snapshot) });
         } catch (error) {
           console.warn(`[opencode-quota] changed event failed: ${logReason(error)}`);
         }
       })();
-    });
+    };
+    const unsubscribeStore = store.subscribe(announce);
+
+    /** Every client gets a snapshot now: the words and the v5 looks travel with it. */
+    const announceNow = () => {
+      store.snapshot({ refresh: false }).then(announce, (error) => {
+        console.warn(
+          `[opencode-quota] snapshot after a settings change failed: ${logReason(error)}`,
+        );
+      });
+    };
+    /** Offers the v5 looks a save kept since the start (it finished the conversion). */
+    async function adoptPendingDisplayImport(): Promise<boolean> {
+      const pending = await pendingDisplayImport();
+      if (!pending || pending.id === displayImport?.id) return false;
+      if (acknowledgedImportIds.has(pending.id)) return false;
+      displayImport = pending;
+      return true;
+    }
+    // New settings can change the providers, who each one is signed in as, the words and the
+    // prices. They supersede the store's running work: every client gets a snapshot built from
+    // them at once, then the new rows as more `changed` events. A check made with another time
+    // limit, interval or price list is out of date, so every provider is checked again.
+    async function applySettings(next: LoadedSettings): Promise<void> {
+      const previous = loaded;
+      loaded = next;
+      applyPricingSettings(next.settings.pricing);
+      if (settingsWithSources(next) !== settingsWithSources(previous)) {
+        const recheck =
+          settingsWithSources(next, "checking") !== settingsWithSources(previous, "checking") ||
+          settingsWithSources(next, "pricing") !== settingsWithSources(previous, "pricing");
+        store.settingsChanged({ recheck });
+      }
+      if (await adoptPendingDisplayImport()) announceNow();
+    }
+    // settings.jsonc edited by hand, by an agent or by another OpenCode process. A change made
+    // while this setup ran is read once more right after the watch starts.
+    const settingsWatch = await watchSettings((next) => void applySettings(next), { projectDir });
+    await applySettings(await loadSettings({ projectDir }));
 
     await ctx.tool.transform((editor) => {
       // Agent tools: read and change the settings file, add, test and remove custom providers.
@@ -317,7 +410,7 @@ export const QuotaToastPlugin = Plugin.define({
           const result = await buildStatusOutput(context.sessionID, {
             reconcileDetectedProviders: true,
           });
-          return { content: result.state === "output" ? sanitizeDisplayText(result.output) : "" };
+          return { content: sanitizeDisplayText(result.output) };
         },
       });
     });
@@ -346,13 +439,11 @@ export const QuotaToastPlugin = Plugin.define({
         name: "quota",
         description: "Show your quota limits and the maintainer notices.",
         async execute(invocation) {
+          // /quota waits for the providers that are due a check; the rest show their last rows.
           const model = await sessionModel(invocation.sessionID);
-          const { snapshot } = await withSessionTokens(
-            await store.refresh({ reason: "manual", model }),
-            invocation.sessionID,
-          );
-          const { announcements } = (await loadSettings()).settings;
-          const notices = announcements.enabled
+          const refreshed = await store.refresh({ reason: "poll", model });
+          const snapshot = forClients(await withSessionTokens(refreshed, invocation.sessionID));
+          const notices = loaded.settings.announcements.enabled
             ? await listNotices({ providerIds: await noticeTargets() })
             : [];
           const report = quotaMessageText({ snapshot, notices, nowMs: Date.now() });
@@ -366,7 +457,6 @@ export const QuotaToastPlugin = Plugin.define({
           const result = await buildStatusOutput(invocation.sessionID, {
             reconcileDetectedProviders: true,
           });
-          if (result.state === "noop") return;
           await postReport(invocation.sessionID, "quota_status", result.output);
         },
       });
@@ -375,8 +465,6 @@ export const QuotaToastPlugin = Plugin.define({
         description:
           "Tokens and API cost: today, 24h, 7d (default), 30d, all, session, session_tree, or between YYYY-MM-DD YYYY-MM-DD.",
         async execute(invocation) {
-          // Like /quota_status, it posts nothing while quota is turned off.
-          if (!(await loadServerSettings(sourceHost)).enabled) return;
           const parsed = parseUsageArguments(invocation.prompt.text);
           if (!parsed.ok) {
             await postReport(invocation.sessionID, "quota_usage", parsed.error);
@@ -452,6 +540,7 @@ export const QuotaToastPlugin = Plugin.define({
     // Running fetches still read logins, so the store is drained before the binding goes.
     return async () => {
       credentialEvents.abort();
+      settingsWatch.close();
       unsubscribeStore();
       publisher.dispose();
       await store.dispose();
