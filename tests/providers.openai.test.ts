@@ -1,8 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { rowsFromLegacyResult } from "../src/core/rows.js";
 import type { QuotaProviderResult } from "../src/lib/entries.js";
 import { hasOpenAIOAuthCached, queryOpenAIQuota } from "../src/lib/openai.js";
 import { type CredentialRow, readCredentialRows } from "../src/lib/opencode-auth.js";
-import { projectQuotaProviderResults } from "../src/lib/quota-accounting-projection.js";
+import { quotaReportLines } from "../src/lib/quota-dialog-commands.js";
 import { openaiProvider } from "../src/providers/openai.js";
 import { expectNotAttempted, visibleEntries } from "./helpers/provider-assertions.js";
 import { createProviderAvailabilityContext } from "./helpers/provider-test-harness.js";
@@ -47,6 +48,19 @@ async function fetchRows(rows: CredentialRow[], config: Record<string, unknown> 
 
 function groupsAndSources(out: QuotaProviderResult) {
   return out.entries.map((entry) => [entry.group, entry.accounting.sourceId]);
+}
+
+/** The quota lines `opencode-quota show` prints for this result. */
+function quotaCommandText(out: QuotaProviderResult): string {
+  const { rows } = rowsFromLegacyResult("openai", out);
+  const provider = { providerId: "openai", label: "OpenAI", rows, refreshing: false, debug: [] };
+  const snapshot = {
+    version: 6 as const,
+    providers: [provider],
+    resetNotices: [],
+    generatedAtMs: 0,
+  };
+  return quotaReportLines(snapshot, 0).join("\n");
 }
 
 beforeEach(() => {
@@ -134,12 +148,6 @@ describe("openai provider", () => {
       ["[OpenAI Work 2] (Business)", "other-id"],
       ["[OpenAI Work 2] (Business)", "other-id"],
     ]);
-    expect(projectQuotaProviderResults([out], "allWindows", "summary")).toHaveLength(8);
-    expect(
-      projectQuotaProviderResults([out], "singleWindow", "summary").map(
-        (entry) => entry.accounting.sourceId,
-      ),
-    ).toEqual(["active-id", "other-id"]);
   });
 
   it("shows a login OpenCode could not return as its own error row next to working ones", async () => {
@@ -202,8 +210,10 @@ describe("openai provider", () => {
       ]),
     );
 
-    const singleWindow = projectQuotaProviderResults([out], "singleWindow", "summary");
-    expect(singleWindow.map((entry) => entry.accounting.sourceId)).toEqual(["key-id"]);
+    // Narrow dialogs wrap the sentence; collapsing whitespace keeps the phrase checkable.
+    const collapsed = quotaCommandText(out).replace(/\s+/gu, " ");
+    expect(collapsed).toContain("OpenAI (Key)");
+    expect(collapsed).toContain("ChatGPT quota unavailable for API key");
   });
 
   it("reports a Sign in with ChatGPT login without querying ChatGPT (#316)", async () => {
@@ -377,6 +387,11 @@ describe("openai provider", () => {
     expect(out.entries.map((entry) => entry.accounting.sourceId)).toEqual(
       labels.map((_, index) => `key-${index}`),
     );
+    // One line per account, each named differently ("OpenAI", "OpenAI (2)", …).
+    const lines = quotaCommandText(out).split("\n");
+    expect(lines).toHaveLength(labels.length);
+    expect(new Set(lines.map((line) => line.split(" Status")[0]!.trim())).size).toBe(labels.length);
+    for (const line of lines) expect(line).toContain("ChatGPT quota unavailable for API key");
     expect(out.entries.map((entry) => (entry as { value?: string }).value)).toEqual(
       labels.map(() => "ChatGPT quota unavailable for API key"),
     );

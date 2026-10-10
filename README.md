@@ -51,8 +51,8 @@ Also:
 - **Terminal:** `npx @slkiser/opencode-quota@latest show` works even with OpenCode closed.
 - **Web and Desktop:** slash commands post the report in the chat.
 - **Scripts and status bars:** JSON, an export file, and metrics. See [External integration](docs/readme/external-integration.md).
-- **Your look:** used or left, reset style, a runs-out estimate, and more. See [Configuration](docs/readme/configuration.md).
-- **Retry at the reset:** when a request hits a limit and that provider's quota shows a used-up window, OpenCode retries after it resets. Turn off with `waitForQuotaReset: false`.
+- **Your words:** used or left, reset style, and more. See [Configuration](docs/readme/configuration.md).
+- **Retry at the reset:** when a request hits a limit and that provider's quota shows a used-up window, OpenCode retries after it resets. Turn off with `checking.waitForQuotaReset: false`.
 
 ## Updating
 
@@ -60,7 +60,7 @@ Also:
 opencode plugin update
 ```
 
-Restart OpenCode. Coming from 5.x? See [Updating](docs/readme/updating.md).
+Restart OpenCode. Coming from 5.x? Your old settings are converted automatically on the first start; see [Moving from 5.x](docs/readme/updating.md#moving-from-5x).
 
 ### Breaking changes in 5.0.0
 
@@ -192,7 +192,7 @@ These show only your own member API key's usage, not the whole organization's.
 
 ### Custom providers
 
-Track a provider that is not listed, from its quota API or from a local estimate. Ask your agent to add a custom provider: its `quota_provider_add` tool saves and tests one; [docs/readme/providers.md#custom-providers](docs/readme/providers.md#custom-providers) has a copy-paste prompt.
+Track a provider that is not listed, from its quota API or from a local estimate. Ask your agent to add a custom provider: its `quota_provider_add` tool saves one switched off, and you switch it on (`"enabled": true` in `opencode-quota/settings.jsonc`, or `/quota_settings` → **Providers**); [docs/readme/providers.md#custom-providers](docs/readme/providers.md#custom-providers) has a copy-paste prompt.
 
 ## Troubleshooting
 

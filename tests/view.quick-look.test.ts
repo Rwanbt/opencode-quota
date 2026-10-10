@@ -288,8 +288,8 @@ describe("quick look: short text", () => {
     expect(lines[0]).toBe("Quota · 7 days · $202.92 · 7.00M tokens");
     expect(lines.slice(1)).toEqual([
       "● Anthropic   $190.42",
-      "● Z.ai        5h 30%  $12.50",
-      "● Copilot     Premium 80%",
+      "● Z.ai        5h 30% left  $12.50",
+      "● Copilot     Premium 80% left",
       "● OpenRouter  Provider error 500",
     ]);
   });
@@ -302,7 +302,7 @@ describe("quick look: short text", () => {
       settings,
       nowMs: NOW,
     });
-    expect(message).toBe("Quota\n● Z.ai  5h 30% runs out in 1h 5m");
+    expect(message).toBe("Quota\n● Z.ai  5h 30% left runs out in 1h 5m");
   });
 
   it("says when quota found no provider", () => {

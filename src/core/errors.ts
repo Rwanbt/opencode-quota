@@ -1,9 +1,9 @@
 /**
  * One error vocabulary for every surface: `classifyError` turns a provider's free-text failure
  * into a `QuotaError`, and `describeError` gives the short words users see. The raw text is
- * kept in `detail` for /quota_status only, scrubbed and with credentials redacted.
+ * kept in `detail` for /quota_status only, as a public issue may show it (`publicDetail`).
  */
-import { safeDetail } from "./redact.js";
+import { publicDetail } from "./redact.js";
 import type { QuotaError, QuotaErrorCode } from "./types.js";
 
 const DETAIL_MAX_LENGTH = 300;
@@ -60,7 +60,8 @@ function findRetryAtMs(message: string, nowMs: number): number | undefined {
 
 export function classifyError(message: string, nowMs: number = Date.now()): QuotaError {
   const code = RULES.find(([, pattern]) => pattern.test(message))?.[0] ?? "internal";
-  const detail = safeDetail(message, DETAIL_MAX_LENGTH);
+  // Hidden before it is cut, so a cut never leaves part of an email address or home dir.
+  const detail = publicDetail(message, DETAIL_MAX_LENGTH);
   const error: QuotaError = { code, ...(detail ? { detail } : {}) };
   if (code === "provider_error" || code === "rate_limited") {
     const status = findStatus(message);

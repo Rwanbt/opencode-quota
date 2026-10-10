@@ -181,11 +181,18 @@ export function stepRange(
   return ranges[Math.max(0, Math.min(ranges.length - 1, index + delta))] ?? range;
 }
 
-/** The providers and rows the quick look shows: the sidebar's, every provider of any model. */
+/** There are providers, but `onlyCurrentModel` hides them all: none serves the session's model. */
+function servesNoCurrentModel(snapshot: QuotaSnapshot): boolean {
+  return snapshot.providers.length > 0 && (snapshot.words ?? DEFAULT_WORDS).onlyCurrentModel;
+}
+
+/**
+ * The providers and rows the quick look shows: the sidebar's, and with `onlyCurrentModel` only
+ * those serving the session's current model.
+ */
 function quotaGroups(snapshot: QuotaSnapshot | undefined, settings: RowSettings): Group[] {
   if (!snapshot) return [];
-  const words = { ...(snapshot.words ?? DEFAULT_WORDS), onlyCurrentModel: false };
-  return visibleGroups(snapshot, settings, "sidebar", words);
+  return visibleGroups(snapshot, settings, "sidebar", snapshot.words ?? DEFAULT_WORDS);
 }
 
 /**
@@ -382,10 +389,15 @@ export function quickLookView(input: QuickLookInput): QuickLookView {
     ),
     label: clampWidth(longest(labels.map((item) => item.label)), LABEL_MIN_WIDTH, LABEL_MAX_WIDTH),
   };
+  const empty = !input.snapshot
+    ? "Loading quota…"
+    : servesNoCurrentModel(input.snapshot)
+      ? "No quota provider serves the session's current model."
+      : "No quota providers found.";
   const blockSections =
     blocks.length > 0
       ? blocks.map((block) => blockLines(block, sized, columns))
-      : [[[span(input.snapshot ? "No quota providers found." : "Loading quota…", "muted")]]];
+      : [[[span(empty, "muted")]]];
   const byType =
     input.usage && input.usage.totals.tokens.processed > 0
       ? byTypeBarLines(input.usage, {
@@ -405,13 +417,13 @@ export function quickLookView(input: QuickLookInput): QuickLookView {
   };
 }
 
-/** A group's error and its limits in a few words: "5h 41% · 7d 68%". */
+/** A group's error and its limits in a few words: "5h 41% left · 7d 68% left". */
 function shortLimits(group: Group, words: Words, nowMs: number): string[] {
   const error = group.error ? [describeError(group.error, group.name, nowMs)] : [];
   const limits = group.rows.map(({ row, label }) => {
     const name = row.window ? WINDOWS[row.window].short : fit(label, LABEL_MAX_WIDTH).trimEnd();
     if (row.percentRemaining === undefined) return `${name} ${rowValueText(row)}`;
-    const percent = `${name} ${percentText(words, row.percentRemaining, false)}`;
+    const percent = `${name} ${percentText(words, row.percentRemaining, true)}`;
     const pace = words.runsOut ? paceOf(row, nowMs) : undefined;
     return pace?.kind === "fast" ? `${percent} ${paceText(pace, words)}` : percent;
   });
@@ -445,7 +457,11 @@ export function quickLookText(input: QuickLookTextInput): string {
     return `● ${parts.join("  ")}`;
   });
   if (lines.length === 0 && input.snapshot) {
-    lines.push("No quota providers found. Run /quota_status to see why.");
+    lines.push(
+      servesNoCurrentModel(input.snapshot)
+        ? "No quota provider serves the session's current model. Run /quota_status to see why."
+        : "No quota providers found. Run /quota_status to see why.",
+    );
   }
   return [header, ...lines].join("\n");
 }

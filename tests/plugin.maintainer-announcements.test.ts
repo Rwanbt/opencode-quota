@@ -1,19 +1,22 @@
-import { mkdir, rm, writeFile } from "fs/promises";
+import { mkdtempSync } from "node:fs";
+import { rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createFakeIntegration } from "./helpers/fake-integration.js";
 import {
   createAlibabaAuthModuleMock,
-  createConfigModuleMock,
   createPluginRuntimePathsMockModule,
   createPricingModuleMock,
   createProvidersRegistryModuleMock,
-  makeQuotaToastTestConfig,
   seedDefaultPluginBootstrapMocks,
+  writePluginTestSettings,
 } from "./helpers/plugin-test-harness.js";
 import { createQuotaRpcBridge } from "./helpers/quota-rpc-bridge.js";
 
-const TEST_RUNTIME_ROOT = "/tmp/opencode-quota-plugin-announcements-tests";
+// A fresh folder per run, so test runs in sibling checkouts never share it.
+const TEST_RUNTIME_ROOT = mkdtempSync(join(tmpdir(), "opencode-quota-plugin-announcements-"));
 const TEST_ACCOUNTING = {
   resultType: "quota",
   acquisitionMethod: "remote_api",
@@ -31,7 +34,6 @@ const TEST_ANNOUNCEMENT = vi.hoisted(() => ({
 }));
 
 const mocks = vi.hoisted(() => ({
-  loadConfig: vi.fn(),
   getProviders: vi.fn(),
   maybeRefreshPricingSnapshot: vi.fn(),
   getPricingSnapshotMeta: vi.fn(),
@@ -47,7 +49,6 @@ const announcementMocks = vi.hoisted(() => ({
   getMaintainerAnnouncementsSummary: vi.fn(),
 }));
 
-vi.mock("../src/lib/config.js", () => createConfigModuleMock(mocks.loadConfig));
 vi.mock("../src/providers/registry.js", () =>
   createProvidersRegistryModuleMock(mocks.getProviders),
 );
@@ -97,25 +98,15 @@ function makeAnnouncementSummary(overrides: Record<string, unknown> = {}) {
   };
 }
 
+/** Copilot with quota; the announcements as `announcements` sets them. */
 function configureQuestionQuotaToast(
-  overrides: Parameters<typeof makeQuotaToastTestConfig>[0] = {},
+  announcements: Record<string, unknown> = { enabled: true, home: true },
 ): void {
-  mocks.loadConfig.mockResolvedValue(
-    makeQuotaToastTestConfig({
-      enabled: true,
-      enableToast: true,
-      enabledProviders: ["copilot"],
-      showOnIdle: false,
-      showOnQuestion: true,
-      showOnCompact: false,
-      minIntervalMs: 0,
-      maintainerAnnouncements: {
-        enabled: true,
-        home: true,
-      },
-      ...overrides,
-    }),
-  );
+  writePluginTestSettings(TEST_RUNTIME_ROOT, {
+    providers: { enabled: ["copilot"] },
+    checking: { minIntervalMs: 1 },
+    announcements,
+  });
   mocks.getProviders.mockReturnValue([
     {
       id: "copilot",
@@ -137,7 +128,7 @@ async function startCli() {
   });
   const { default: server } = await import("../src/plugin.js");
   const register = vi.fn(async () => ({ dispose: async () => {}, events: { emit: vi.fn() } }));
-  await server.setup({
+  const disposeServer = await server.setup({
     location: { directory: process.cwd() },
     provider: { list: vi.fn(async () => ({ data: [{ id: "copilot" }] })) },
     session: { get: vi.fn(async () => ({})), hook: vi.fn() },
@@ -147,41 +138,27 @@ async function startCli() {
     integration: createFakeIntegration([]),
     event: { subscribe: () => ({ async *[Symbol.asyncIterator]() {} }) },
   } as never);
-  const [, handlers] = register.mock.calls[0] as unknown as [
+  const [, serverHandlers] = register.mock.calls[0] as unknown as [
     unknown,
     Parameters<typeof createQuotaRpcBridge>[0],
   ];
-  // Records each Home line the server answers.
-  const homeLines = vi.fn();
-  const notices = handlers.notices as (input: unknown, context: unknown) => Promise<unknown>;
-  const recorded = {
-    ...handlers,
-    notices: async (input: unknown, context: unknown) => {
-      const output = await notices(input, context);
-      homeLines(output);
-      return output;
-    },
-  } as typeof handlers;
+  // Recorded, so a test can wait for the Home notice line the TUI asked for.
+  const notices = vi.fn(serverHandlers.notices);
+  const handlers = { ...serverHandlers, notices };
   const { default: plugin } = await import("../src/tui/index.js");
   const listeners = new Map<string, (event: { data: Record<string, unknown> }) => void>();
   const renderers = new Map<string, () => unknown>();
   const toast = vi.fn();
   const context = {
     location: { directory: process.cwd() },
-    client: { rpc: createQuotaRpcBridge(recorded) },
+    client: { rpc: createQuotaRpcBridge(handlers) },
     theme: { text: { base: "base", muted: "muted" } },
     // Display settings with the question toast turned on.
     storage: {
       store: (key: string, options: { initial: any }) => {
         const value =
           key === "settings"
-            ? {
-                ...options.initial,
-                settings: {
-                  ...options.initial.settings,
-                  toast: { ...options.initial.settings.toast, afterQuestion: true },
-                },
-              }
+            ? { ...options.initial, settings: { toast: { afterQuestion: true } } }
             : options.initial;
         return [value, async () => {}];
       },
@@ -203,18 +180,14 @@ async function startCli() {
       toast: { show: toast },
     },
   };
-  const dispose = plugin.setup(context as never);
+  const disposeTui = plugin.setup(context as never);
   const renderHome = () => renderers.get("home.footer.status")?.();
-  return { listeners, toast, renderHome, homeLines, dispose };
-}
-
-/** Writes settings.jsonc, so the server reads it instead of converting the v5 settings. */
-async function writeSettings(settings: Record<string, unknown>): Promise<void> {
-  await mkdir(`${TEST_RUNTIME_ROOT}/config/opencode-quota`, { recursive: true });
-  await writeFile(
-    `${TEST_RUNTIME_ROOT}/config/opencode-quota/settings.jsonc`,
-    JSON.stringify({ version: 6, ...settings }),
-  );
+  // Stops the TUI, then the server's store with its fetches and file writes.
+  const dispose = async () => {
+    (disposeTui as unknown as () => void)?.();
+    await (disposeServer as unknown as () => Promise<void>)?.();
+  };
+  return { listeners, toast, renderHome, notices, dispose };
 }
 
 async function flushMaintainerFallbackWork(): Promise<void> {
@@ -225,20 +198,7 @@ async function flushMaintainerFallbackWork(): Promise<void> {
 
 describe("maintainer announcement plugin integration", () => {
   beforeEach(async () => {
-    seedDefaultPluginBootstrapMocks(mocks, {
-      configOverrides: {
-        enabled: true,
-        enableToast: true,
-        showOnIdle: false,
-        showOnQuestion: false,
-        showOnCompact: false,
-        maintainerAnnouncements: {
-          enabled: true,
-          home: true,
-        },
-      },
-      resetPluginState: true,
-    });
+    seedDefaultPluginBootstrapMocks(mocks, { resetPluginState: true });
     announcementMocks.getMaintainerAnnouncementsSummary
       .mockReset()
       .mockReturnValue(makeAnnouncementSummary());
@@ -248,7 +208,7 @@ describe("maintainer announcement plugin integration", () => {
 
   afterEach(async () => {
     vi.unstubAllGlobals();
-    await rm(TEST_RUNTIME_ROOT, { recursive: true, force: true });
+    await rm(TEST_RUNTIME_ROOT, { recursive: true, force: true, maxRetries: 3 });
   });
 
   it("shows the count-only announcement on Home instead of a toast", async () => {
@@ -274,17 +234,19 @@ describe("maintainer announcement plugin integration", () => {
     expect(cli.toast).toHaveBeenCalledOnce();
     expect(cli.toast.mock.calls[0]?.[0].message).toContain("Copilot");
     expect(cli.toast.mock.calls[0]?.[0].message).not.toContain("Notice:");
-    cli.dispose?.();
+    await cli.dispose();
   });
 
   it("does not show the Home announcement when announcements.home is off", async () => {
-    configureQuestionQuotaToast();
-    await writeSettings({ announcements: { home: false } });
+    configureQuestionQuotaToast({ enabled: true, home: false });
     const cli = await startCli();
     cli.renderHome();
-    await vi.waitFor(() => expect(cli.homeLines).toHaveBeenCalledWith({ homeLine: "" }));
+    // The notices call reads the settings, then stops.
+    await vi.waitFor(() => expect(cli.notices).toHaveBeenCalled());
+    await expect(cli.notices.mock.results[0]?.value).resolves.toEqual({ homeLine: "" });
+    await flushMaintainerFallbackWork();
 
     expect(announcementMocks.getMaintainerAnnouncementsSummary).not.toHaveBeenCalled();
-    cli.dispose?.();
+    await cli.dispose();
   });
 });

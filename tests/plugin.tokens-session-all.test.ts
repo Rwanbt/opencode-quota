@@ -9,8 +9,6 @@ import {
 import { REPORT_COMMANDS, type ReportCommandId } from "../src/rpc.js";
 import {
   createAlibabaAuthModuleMock,
-  createPluginTestClient as createClient,
-  createConfigModuleMock,
   createPricingModuleMock,
   createProvidersRegistryModuleMock,
   createSessionTokensModuleMock,
@@ -18,7 +16,6 @@ import {
 } from "./helpers/plugin-test-harness.js";
 
 const mocks = vi.hoisted(() => ({
-  loadConfig: vi.fn(),
   getProviders: vi.fn(),
   maybeRefreshPricingSnapshot: vi.fn(),
   getPricingSnapshotMeta: vi.fn(),
@@ -44,8 +41,6 @@ const mocks = vi.hoisted(() => ({
     }
   },
 }));
-
-vi.mock("../src/lib/config.js", () => createConfigModuleMock(mocks.loadConfig));
 
 vi.mock("../src/providers/registry.js", () =>
   createProvidersRegistryModuleMock(mocks.getProviders),
@@ -74,26 +69,32 @@ vi.mock("../src/lib/quota-stats-format.js", () => ({
 async function buildTokenDialogOutput(params: {
   command: Exclude<ReportCommandId, "pricing_refresh">;
   arguments?: string;
-  client: ReturnType<typeof createClient>;
   sessionID: string;
   generatedAtMs?: number;
   /** The renderer the command uses for its text; the text must equal it applied to the document. */
   render: (document: ReportDocument) => string;
 }) {
   const { buildQuotaDialogCommandOutput } = await import("../src/lib/quota-dialog-commands.js");
+  const { defaultSettings } = await import("../src/settings/schema.js");
   const result = await buildQuotaDialogCommandOutput({
     command: params.command,
     arguments: params.arguments,
-    client: params.client,
-    roots: {
+    // The default settings; no settings file is read.
+    host: {
+      client: { config: { providers: async () => ({ data: { providers: [] } }) } },
       workspaceRoot: process.cwd(),
-      configRoot: process.cwd(),
-      fallbackDirectory: process.cwd(),
+      settings: () => ({
+        path: "/nonexistent/settings.jsonc",
+        exists: false,
+        settings: defaultSettings(),
+        issues: [],
+        fromFile: [],
+        notRead: [],
+      }),
     },
     sessionID: params.sessionID,
     generatedAtMs: params.generatedAtMs,
   });
-  expect(params.client.session.prompt).not.toHaveBeenCalled();
   expect(result.state).toBe("output");
   if (result.state !== "output") throw new Error("expected report output");
   expect(params.render(result.document)).toBe(result.output);
@@ -115,12 +116,6 @@ const TOKEN_REPORT_DOCUMENT: ReportDocument = {
 describe("/tokens_session_all command", () => {
   beforeEach(() => {
     seedDefaultPluginBootstrapMocks(mocks, {
-      configOverrides: {
-        enabled: true,
-        showOnQuestion: false,
-        showSessionTokens: false,
-        minIntervalMs: 60_000,
-      },
       resetModules: true,
       resetPluginState: true,
     });
@@ -170,11 +165,8 @@ describe("/tokens_session_all command", () => {
   });
 
   it("aggregates the current session tree for /tokens_session_all", async () => {
-    const client = createClient();
-
     const { output } = await buildTokenDialogOutput({
       command: "tokens_session_all",
-      client,
       sessionID: "ses_parent",
       render: renderMarkdownReport,
     });
@@ -214,11 +206,8 @@ describe("/tokens_session_all command", () => {
   });
 
   it("keeps /tokens_session scoped to the selected session only", async () => {
-    const client = createClient();
-
     await buildTokenDialogOutput({
       command: "tokens_session",
-      client,
       sessionID: "ses_parent",
       render: renderMarkdownReport,
     });
@@ -249,12 +238,9 @@ describe("/tokens_session_all command", () => {
       new mocks.SessionNotFoundError("ses_missing", "/tmp/opencode.db"),
     );
 
-    const client = createClient();
-
     const generatedAtMs = Date.UTC(2026, 0, 2, 3, 4);
     const { output: injected, document } = await buildTokenDialogOutput({
       command: "tokens_session_all",
-      client,
       sessionID: "ses_missing",
       generatedAtMs,
       render: renderPlainTextReport,
@@ -281,11 +267,8 @@ describe("/tokens_session_all command", () => {
       new mocks.SessionNotFoundError("ses_parent", "/tmp/opencode.db"),
     );
 
-    const client = createClient();
-
     const { output: injected, document } = await buildTokenDialogOutput({
       command: "tokens_session",
-      client,
       sessionID: "ses_parent",
       render: renderPlainTextReport,
     });
@@ -303,7 +286,6 @@ describe("/tokens_session_all command", () => {
       await buildTokenDialogOutput({
         command: spec.id,
         arguments: between ? "2026-01-01 2026-01-15" : undefined,
-        client: createClient(),
         sessionID: "ses_parent",
         render: renderMarkdownReport,
       });

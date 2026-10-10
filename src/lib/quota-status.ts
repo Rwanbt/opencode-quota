@@ -1,42 +1,45 @@
-import { stat } from "fs/promises";
-import { homedir } from "os";
-import { getProviders } from "../providers/registry.js";
-import { interpretAccountingRow } from "./accounting-format.js";
+/**
+ * The Quota Status report (`/quota_status`, the `quota_status` tool, `opencode-quota status`):
+ * where the settings come from, what each known provider returned, logins, local files and
+ * prices. Every provider section is built the same way from the store's snapshot (state, rows,
+ * error, debug details); providers put the facts they want shown in their debug details.
+ * Users paste this report into public issues, so the home dir shows as "~" everywhere, and
+ * every provider text passes `publicDetail` (no secrets, email addresses or account ids).
+ */
+import { stat } from "node:fs/promises";
+import { homedir } from "node:os";
+import { describeError } from "../core/errors.js";
+import { publicDebugValue, publicDetail } from "../core/redact.js";
+import type { Amount, ProviderSnapshot, QuotaRow } from "../core/types.js";
+import type { UsageReport } from "../core/usage.js";
+import type { LoadedSettings, Settings, V5Conversion } from "../settings/index.js";
+import { formatShare, formatTokens } from "../view/format.js";
 import {
-  type LoadConfigIssue,
-  QUOTA_TOAST_SETTING_SOURCE_KEYS,
-  type QuotaToastSettingSources,
-} from "./config.js";
-import type { RuntimeContextRoots } from "./config-file-utils.js";
-import { sanitizeQuotaProviderResult, sanitizeSingleLineDisplayText } from "./display-sanitize.js";
-import type {
-  QuotaProviderDiagnostic,
-  QuotaProviderResult,
-  QuotaToastEntry,
-  QuotaToastError,
-} from "./entries.js";
-import { replaceHomeDirWithTilde, replaceHomeDirWithTildeInDocument } from "./home-dir-display.js";
+  sanitizeSingleLineDisplaySnippet,
+  sanitizeSingleLineDisplayText,
+} from "./display-sanitize.js";
+import { replaceHomeDirWithTildeInDocument } from "./home-dir-display.js";
 import type { MaintainerAnnouncementsSummary } from "./maintainer-announcements.js";
 import {
   getPricingRefreshPolicy,
   getPricingSnapshotHealth,
   getPricingSnapshotMeta,
   getPricingSnapshotSource,
-  getProviderModelCount,
   getRuntimePricingRefreshStatePath,
   getRuntimePricingSnapshotPath,
   listProviders,
+  type PricingSnapshotSource,
   readPricingRefreshState,
-  hasProvider as snapshotHasProvider,
 } from "./modelsdev-pricing.js";
-import { getCredentialSourceDiagnostics } from "./opencode-auth.js";
+import type { CredentialSourceDiagnostics } from "./opencode-auth.js";
 import { getOpenCodeDbPath } from "./opencode-db-path.js";
 import { getOpencodeRuntimeDirs } from "./opencode-runtime-paths.js";
 import { getOpenCodeDbStats } from "./opencode-storage.js";
-import { getQuotaProviderDisplayLabel } from "./provider-metadata.js";
-import type { QuotaProviderDefinition } from "./quota-providers.js";
-import { isMaintainedQuotaProviderTuning } from "./quota-providers.js";
-import { aggregateUsage } from "./quota-stats.js";
+import {
+  isMaintainedQuotaProviderTuning,
+  type QuotaProviderDefinition,
+} from "./quota-providers.js";
+import { getLocalQuotaProviderStatePath } from "./quota-providers-local.js";
 import {
   commandHeading,
   type ReportDocument,
@@ -44,21 +47,52 @@ import {
   type ReportSection,
   renderPlainTextReport,
 } from "./report-document.js";
-import { totalTokenBuckets } from "./token-buckets.js";
-import type {
-  CursorQuotaPlan,
-  MaintainerAnnouncementsConfig,
-  OpenCodeGoWindowKey,
-  PricingSnapshotSource,
-} from "./types.js";
 import { getPackageVersion } from "./version.js";
 
-/** Session token fetch error info for status report */
-export interface SessionTokenError {
-  sessionID: string;
-  error: string;
-  checkedPath?: string;
-}
+/** Rows listed per provider section; the rest are counted. */
+const ROW_LIST_LIMIT = 8;
+/** Models without a price listed in the pricing section; the rest are counted. */
+const UNPRICED_LIST_LIMIT = 5;
+
+type ProviderAvailability = {
+  id: string;
+  enabled: boolean;
+  available: boolean;
+  matchesCurrentModel?: boolean;
+};
+
+export type QuotaStatusReportParams = {
+  /** The server settings as read now. */
+  settings: Pick<LoadedSettings, "path" | "exists" | "issues" | "notRead">;
+  /** The v5 settings conversion: written when this server started, or done in memory. */
+  conversion?: V5Conversion;
+  /** The project folder quota is computed for. */
+  workspaceRoot: string;
+  enabledProviders: string[] | "auto";
+  onlyCurrentModel: boolean;
+  quotaProviders?: readonly QuotaProviderDefinition[];
+  pricingSnapshotSource: PricingSnapshotSource;
+  currentModel?: string;
+  /** Whether a session was available for model lookup */
+  sessionModelLookup?: "ok" | "not_found" | "no_session";
+  /** Every known provider, enabled or not: one section each, in this order. */
+  providerAvailability: ProviderAvailability[];
+  /**
+   * The store's snapshot of each provider it checked: the enabled and available ones, and the
+   * unavailable ones for their setup details.
+   */
+  providers: readonly ProviderSnapshot[];
+  credentialSource: CredentialSourceDiagnostics;
+  maintainerAnnouncements?: {
+    config: Settings["announcements"];
+    summary: MaintainerAnnouncementsSummary;
+  };
+  /** The last 30 days of usage, for the models without a price; null when it can't be read. */
+  usage?: UsageReport | null;
+  generatedAtMs?: number;
+  /** The home dir the report shows as "~"; defaults to the computer's (tests set it). */
+  homeDir?: string;
+};
 
 async function pathExists(path: string): Promise<boolean> {
   try {
@@ -73,663 +107,341 @@ function fmtInt(n: number): string {
   return Math.trunc(n).toLocaleString("en-US");
 }
 
-type PricingCoverageByProvider = {
-  pricedKeysSeen: number;
-  mappedMissingKeysSeen: number;
-  unpricedKeysSeen: number;
-};
+function isoOrNone(ms: number | null | undefined): string {
+  return ms ? new Date(ms).toISOString() : "(none)";
+}
 
-const STATUS_SAMPLE_LIMIT = 5;
-const STATUS_LIVE_ENTRY_LIMIT = 2;
-const STATUS_LIVE_ERROR_LIMIT = 2;
-const STATUS_LIVE_ROW_MAX_LENGTH = 120;
-const OPENCODE_GO_STATUS_DETAIL_KEYS = new Set([
-  "auth_state",
-  "auth_source",
-  "auth_checked_paths",
-  "credential_database_paths",
-  "auth_error",
-  "selected_windows",
-  "rolling_usage",
-  "weekly_usage",
-  "monthly_usage",
-  "live_fetch_error",
-  "opencode_go_state",
-  "go_source",
-  "console_error",
-  "console_auth_state",
-  "console_server",
-]);
-type ProviderLiveProbe = {
-  providerId: string;
-  result: QuotaProviderResult;
-};
-type ProviderAvailability = {
-  id: string;
-  enabled: boolean;
-  available: boolean;
-  matchesCurrentModel?: boolean;
-};
-
-function joinOrNone(values: string[]): string {
+function joinOrNone(values: readonly string[]): string {
   return values.length > 0 ? values.join(" | ") : "(none)";
 }
 
-function formatSettingSources(sources: QuotaToastSettingSources | undefined): string {
-  if (!sources) return "(none)";
-
-  const parts = QUOTA_TOAST_SETTING_SOURCE_KEYS.filter(
-    (key) => typeof sources[key] === "string" && sources[key].length > 0,
-  ).map((key) => `${key}<=${sources[key]}`);
-
-  return parts.length > 0 ? parts.join(" | ") : "(none)";
+function kvSection(id: string, rows: ReportKvRow[]): ReportSection {
+  return { id, title: `${id}:`, blocks: [{ kind: "kv", rows }] };
 }
 
-function getConfigPrecedenceLabel(configSource: string): string {
-  switch (configSource) {
-    case "files":
-      return "global defaults -> workspace overrides";
-    case "sdk":
-      return "sdk fallback (no file-backed config)";
-    case "defaults":
-      return "built-in defaults only";
-    default:
-      return configSource;
-  }
-}
-
-function createKvSection(id: string, title: string, rows: ReportKvRow[]): ReportSection {
-  return {
-    id,
-    title,
-    blocks: [{ kind: "kv", rows }],
-  };
-}
-
-function createLinesSection(id: string, title: string, lines: string[]): ReportSection {
-  return {
-    id,
-    title,
-    blocks: [{ kind: "lines", lines }],
-  };
-}
-
-function normalizeLiveProbeText(value: string): string {
-  return sanitizeSingleLineDisplayText(value).replace(/:+$/u, "").toLowerCase();
-}
-
-function isRedundantLiveProbeDescriptor(providerId: string, value?: string): boolean {
-  if (!value) return true;
-
-  const normalized = normalizeLiveProbeText(value);
-  if (!normalized) return true;
-
-  return (
-    normalized === normalizeLiveProbeText(providerId) ||
-    normalized === normalizeLiveProbeText(getQuotaProviderDisplayLabel(providerId))
-  );
-}
-
-function findProviderLiveProbe(
-  providerId: string,
-  probes?: ProviderLiveProbe[],
-): ProviderLiveProbe | undefined {
-  return probes?.find((probe) => probe.providerId === providerId);
-}
-
-function getProviderStatusDetails(
-  providerId: string,
-  probes?: ProviderLiveProbe[],
-): QuotaProviderResult["statusDetails"] {
-  const probe = findProviderLiveProbe(providerId, probes);
-  return probe ? sanitizeQuotaProviderResult(probe.result).statusDetails : undefined;
-}
-
-function appendProviderStatusDetailRows(
-  rows: ReportKvRow[],
-  providerId: string,
-  probes?: ProviderLiveProbe[],
-  keys?: ReadonlySet<string>,
-): void {
-  for (const detail of getProviderStatusDetails(providerId, probes) ?? []) {
-    if (!keys || keys.has(detail.key)) {
-      rows.push({ key: detail.key, value: detail.value });
-    }
-  }
-}
-
-function findProviderStatusDetail(
-  providerId: string,
-  key: string,
-  probes?: ProviderLiveProbe[],
-): string | undefined {
-  return getProviderStatusDetails(providerId, probes)?.find((detail) => detail.key === key)?.value;
-}
-
-function getLiveProbeState(probe?: ProviderLiveProbe): string {
-  if (!probe) return "unavailable";
-  if (probe.result.entries.length > 0 && probe.result.errors.length > 0) return "partial";
-  if (probe.result.entries.length > 0) return "success";
-  if (probe.result.errors.length > 0) return "error";
-  return "no_data";
-}
-
-function appendProviderCompactLiveProbeRows(
-  rows: ReportKvRow[],
-  providerId: string,
-  probes: ProviderLiveProbe[] | undefined,
-  availability: ProviderAvailability[],
-  homeDir: string,
-): void {
-  const provider = availability.find((item) => item.id === providerId);
-  if (!provider?.enabled || !provider.available) return;
-  appendCompactLiveProbeRows(rows, providerId, findProviderLiveProbe(providerId, probes), homeDir);
-}
-
-function createCompactLiveProbeOnlySection(params: {
-  id: string;
-  title: string;
-  providerId: string;
-  probes?: ProviderLiveProbe[];
-  availability: ProviderAvailability[];
-  homeDir: string;
-}): ReportSection | null {
-  const provider = params.availability.find((item) => item.id === params.providerId);
-  if (!provider?.enabled || !provider.available) return null;
-  const probe = findProviderLiveProbe(params.providerId, params.probes);
-  if (!probe) {
-    return null;
-  }
-
-  const rows: ReportKvRow[] = [];
-  appendCompactLiveProbeRows(rows, params.providerId, probe, params.homeDir);
-  return createKvSection(params.id, params.title, rows);
-}
-
-function createProviderStatusSection(params: {
-  id: string;
-  title: string;
-  providerId: string;
-  probes?: ProviderLiveProbe[];
-  availability: ProviderAvailability[];
-  includeDetails?: boolean;
-  detailKeys?: ReadonlySet<string>;
-  homeDir: string;
-}): ReportSection {
-  const rows: ReportKvRow[] = [];
-  if (params.includeDetails !== false) {
-    appendProviderStatusDetailRows(rows, params.providerId, params.probes, params.detailKeys);
-  }
-  appendProviderCompactLiveProbeRows(
-    rows,
-    params.providerId,
-    params.probes,
-    params.availability,
-    params.homeDir,
-  );
-  return createKvSection(params.id, params.title, rows);
-}
-
-function getCompactLiveProbeDescriptor(
-  providerId: string,
-  entry: QuotaToastEntry,
-  semanticLabel: string,
-): string | undefined {
-  if (entry.semantic) {
-    return sanitizeSingleLineDisplayText(semanticLabel);
-  }
-
-  const candidates = [entry.label, entry.name, entry.group];
-  for (const candidate of candidates) {
-    if (typeof candidate !== "string") continue;
-    const cleaned = sanitizeSingleLineDisplayText(candidate);
-    if (!cleaned || isRedundantLiveProbeDescriptor(providerId, cleaned)) {
-      continue;
-    }
-    return cleaned;
-  }
-  return undefined;
+function currentModelText(params: QuotaStatusReportParams): string {
+  if (params.currentModel) return params.currentModel;
+  if (params.sessionModelLookup === "not_found") return "(error: session.get returned no modelID)";
+  if (params.sessionModelLookup === "no_session") return "(no session available)";
+  return "(unknown)";
 }
 
 /**
- * One live probe row, cut to its length limit. The home dir becomes "~" before the cut, so a
- * cut inside a home path cannot leave part of the user name (e.g. "/Users/ali").
+ * A custom provider definition's safe identity: never its URL, adapter or key. A local estimate
+ * names its counter file; a tuned maintained provider shows its own in that provider's section.
  */
-function shortenLiveRowText(text: string, homeDir: string): string {
-  return replaceHomeDirWithTilde(sanitizeSingleLineDisplayText(text), homeDir).slice(
-    0,
-    STATUS_LIVE_ROW_MAX_LENGTH,
+function customProviderText(definition: QuotaProviderDefinition): string {
+  if (definition.enabled === false) {
+    return sanitizeSingleLineDisplayText(
+      `provider_id=${definition.providerId} off (switch on in /quota_settings → Providers)`,
+    );
+  }
+  const tuned = isMaintainedQuotaProviderTuning(definition);
+  const parts = [
+    `provider_id=${definition.providerId}`,
+    `mode=${definition.mode}`,
+    ...(definition.mode === "remote-api"
+      ? [`format=${definition.format}`, `env_name=${definition.apiKeyEnv ?? "(none)"}`]
+      : [`limits=${definition.windows.map((w) => `${w.id}:${w.requestLimit}`).join(",")}`]),
+    `coverage=${definition.modelIds ? definition.modelIds.join(",") : "all_models"}`,
+    ...(definition.mode === "local-estimate" && !tuned
+      ? [`state_path=${getLocalQuotaProviderStatePath(definition.id)}`]
+      : []),
+    ...(tuned ? [`tunes=${definition.id}`] : []),
+  ];
+  return parts.map((part) => sanitizeSingleLineDisplayText(part)).join(" ");
+}
+
+function settingsFileText(params: QuotaStatusReportParams): string {
+  const { path, exists } = params.settings;
+  if (exists) return `${path} (exists)`;
+  if (params.conversion) return `${path} (missing; the v5 settings are converted in memory)`;
+  return `${path} (missing; using the defaults)`;
+}
+
+/** Where the v5 settings went: written to settings.jsonc, or why not. */
+function conversionRows(conversion: V5Conversion): ReportKvRow[] {
+  const { sources, converted, dropped, invalid } = conversion;
+  const counts = `${converted.length} converted, ${dropped.length} dropped, ${invalid.length} invalid`;
+  const outcome = conversion.written
+    ? "written to settings.jsonc"
+    : (conversion.notWrittenReason ?? "converted in memory");
+  const rows: ReportKvRow[] = [
+    { key: "conversion", value: `from ${joinOrNone(sources)} (${counts}); ${outcome}` },
+  ];
+  const notes = [
+    ...converted.filter((item) => item.note).map((item) => `${item.key}: ${item.note}`),
+    ...dropped.map((item) => `${item.key} dropped: ${item.reason}`),
+    ...invalid.map((item) => `${item.key} invalid: ${item.reason}`),
+    ...conversion.notes,
+  ];
+  for (const note of notes) {
+    rows.push({ key: "conversion_note", value: sanitizeSingleLineDisplayText(note) });
+  }
+  return rows;
+}
+
+/** The settings file, what is wrong in it, the v5 conversion, and what quota is set to do. */
+function settingsSection(params: QuotaStatusReportParams): ReportSection {
+  const enabled = params.enabledProviders;
+  const rows: ReportKvRow[] = [{ key: "settings_file", value: settingsFileText(params) }];
+  for (const issue of params.settings.issues) {
+    const text = `${issue.key}: ${issue.message}`;
+    rows.push({ key: "settings_issue", value: sanitizeSingleLineDisplayText(text) });
+  }
+  if (params.conversion) rows.push(...conversionRows(params.conversion));
+  rows.push({
+    key: "project_settings",
+    value: "none: the settings are global; v5 project-scope files are not read",
+  });
+  if (params.settings.notRead.length > 0) {
+    rows.push({ key: "not_read", value: joinOrNone(params.settings.notRead) });
+  }
+  rows.push(
+    { key: "enabledProviders", value: enabled === "auto" ? "(auto)" : joinOrNone(enabled) },
+    { key: "onlyCurrentModel", value: String(params.onlyCurrentModel) },
+    { key: "currentModel", value: currentModelText(params) },
+    { key: "workspace_root", value: params.workspaceRoot },
+  );
+  for (const definition of params.quotaProviders ?? []) {
+    rows.push({ key: `provider_${definition.id}`, value: customProviderText(definition) });
+  }
+  return kvSection("settings", rows);
+}
+
+function providerListSection(availability: readonly ProviderAvailability[]): ReportSection {
+  return kvSection(
+    "providers",
+    availability.map((provider) => {
+      const bits = [
+        provider.enabled ? "enabled" : "disabled",
+        provider.available ? "available" : "unavailable",
+      ];
+      if (provider.matchesCurrentModel !== undefined) {
+        bits.push(`matchesCurrentModel=${provider.matchesCurrentModel ? "yes" : "no"}`);
+      }
+      return { key: provider.id, value: bits.join(" ") };
+    }),
   );
 }
 
-function formatCompactLiveProbeEntry(
-  providerId: string,
-  entry: QuotaToastEntry,
-  homeDir: string,
-): string {
-  const interpretation = interpretAccountingRow(entry, { booleanWording: "semantic" });
-  const parts: string[] = [];
-  const descriptor = getCompactLiveProbeDescriptor(providerId, entry, interpretation.label);
-  if (descriptor) {
-    parts.push(descriptor);
-  }
+function announcementsSection(
+  announcements: NonNullable<QuotaStatusReportParams["maintainerAnnouncements"]>,
+): ReportSection {
+  const { config, summary } = announcements;
+  return kvSection("maintainer_announcements", [
+    { key: "enabled", value: String(config.enabled) },
+    { key: "home", value: String(config.home) },
+    { key: "home_frequency", value: config.homeFrequency },
+    { key: "source", value: summary.source },
+    { key: "network", value: String(summary.network) },
+    { key: "active", value: String(summary.activeCount) },
+    { key: "future", value: String(summary.futureCount) },
+    { key: "expired", value: String(summary.expiredCount) },
+  ]);
+}
 
-  if (interpretation.display.kind === "value") {
-    const value =
-      interpretation.display.entryKind === "value"
-        ? sanitizeSingleLineDisplayText(interpretation.display.text)
-        : interpretation.display.text;
-    parts.push(`value=${value}`);
+async function pathsSection(): Promise<ReportSection> {
+  const dirs = getOpencodeRuntimeDirs();
+  const dbPath = getOpenCodeDbPath();
+  let db = `path=${dbPath} present=false`;
+  if (await pathExists(dbPath)) {
+    const stats = await getOpenCodeDbStats();
+    db = `path=${dbPath} present=true sessions=${fmtInt(stats.sessionCount)} messages=${fmtInt(stats.messageCount)} assistant_messages=${fmtInt(stats.assistantMessageCount)}`;
+  }
+  return kvSection("paths", [
+    {
+      key: "opencode_dirs",
+      value: `data=${dirs.dataDir} config=${dirs.configDir} cache=${dirs.cacheDir} state=${dirs.stateDir}`,
+    },
+    { key: "opencode.db", value: `${db} (session and token history)` },
+  ]);
+}
+
+function credentialSourceSection(
+  diagnostics: CredentialSourceDiagnostics,
+  homeDir: string,
+): ReportSection {
+  // A login's label is often its email address.
+  const failures = diagnostics.failures.map((failure) =>
+    [failure.integrationId, failure.label, failure.category, failure.detail]
+      .map((part) => publicDetail(part, Infinity, homeDir))
+      .join(":"),
+  );
+  const listError = diagnostics.lastListError?.detail;
+  return kvSection("credential_source", [
+    { key: "source", value: diagnostics.state === "bound" ? diagnostics.kind : "unbound" },
+    { key: "list_error", value: listError ? publicDetail(listError, Infinity, homeDir) : "(none)" },
+    { key: "failures", value: joinOrNone(failures) },
+  ]);
+}
+
+function amountText(amount: Amount): string {
+  const { unit } = amount;
+  if (unit.kind === "currency") return `${amount.decimal} ${unit.code}`;
+  if (unit.kind === "count") return `${amount.decimal} ${unit.unit}`;
+  return `${unit.symbol}${amount.decimal}`;
+}
+
+/** A row's numbers in one line, for example "43% left, 57/100 requests, resets 2026-…". */
+function rowFacts(row: QuotaRow): string {
+  const parts: string[] = [row.label];
+  if (row.percentRemaining !== undefined) parts.push(`${Math.round(row.percentRemaining)}% left`);
+  if (row.used && row.limit) parts.push(`${row.used.decimal}/${amountText(row.limit)}`);
+  if (row.amount) parts.push(amountText(row.amount));
+  if (row.text) parts.push(row.text);
+  if (row.flag !== undefined) parts.push(row.flag ? "yes" : "no");
+  if (row.resetsAt) parts.push(`resets ${row.resetsAt}`);
+  return parts.join(", ");
+}
+
+/** "ok", or the error's short words and code; "partial" when rows came with the error. */
+function providerState(provider: ProviderSnapshot, nowMs: number): string {
+  if (provider.checkedAtMs === undefined) return provider.refreshing ? "checking" : "not checked";
+  const error = provider.error;
+  if (!error) return "ok";
+  const words = `${describeError(error, provider.label, nowMs)} (${error.code})`;
+  return provider.rows.length > 0 ? `partial: ${words}` : `error: ${words}`;
+}
+
+/**
+ * "disabled" (turned off in the settings, never fetched) and "unavailable" (only local setup
+ * details) win over the state of a check. With "auto" no provider is turned off; with a list,
+ * `availability.enabled` says whether the provider is in it.
+ */
+function sectionState(
+  availability: ProviderAvailability,
+  provider: ProviderSnapshot | undefined,
+  enabledProviders: QuotaStatusReportParams["enabledProviders"],
+  nowMs: number,
+): string {
+  if (enabledProviders !== "auto" && !availability.enabled) return "disabled";
+  if (!availability.available) return "unavailable";
+  return provider ? providerState(provider, nowMs) : "not checked";
+}
+
+/**
+ * One provider's section, the same for every provider: state, rows, error, debug details.
+ * Every text from the provider passes `publicDetail`, even when the store already did.
+ */
+function providerSection(
+  availability: ProviderAvailability,
+  provider: ProviderSnapshot | undefined,
+  params: QuotaStatusReportParams,
+  homeDir: string,
+): ReportSection {
+  const nowMs = params.generatedAtMs ?? Date.now();
+  const shown = (text: string) => publicDetail(text, Infinity, homeDir);
+  const state = sectionState(availability, provider, params.enabledProviders, nowMs);
+  const rows: ReportKvRow[] = [{ key: "state", value: shown(state) }];
+  if (!provider) return kvSection(availability.id, rows);
+  if (provider.checkedAtMs !== undefined) {
+    const lastRows =
+      provider.okAtMs !== undefined && provider.okAtMs !== provider.checkedAtMs
+        ? ` (rows from ${isoOrNone(provider.okAtMs)})`
+        : "";
+    rows.push({ key: "checked_at", value: `${isoOrNone(provider.checkedAtMs)}${lastRows}` });
+  }
+  // The provider's own messages are in its debug "error" details; a fetch that failed outright
+  // (a timeout, a crash) has only the error's detail.
+  const detail = provider.error?.detail;
+  if (detail && !provider.debug.some((item) => item.key === "error")) {
+    rows.push({ key: "error_detail", value: shown(detail) });
+  }
+  rows.push({ key: "rows", value: String(provider.rows.length) });
+  for (const row of provider.rows.slice(0, ROW_LIST_LIMIT)) {
+    // The row id comes from this plugin's key rules; the account is the provider's login label.
+    const id = sanitizeSingleLineDisplayText(row.id);
+    rows.push({
+      key: row.account ? `${id} (${shown(row.account)})` : id,
+      value: shown(rowFacts(row)),
+      indent: 1,
+    });
+  }
+  if (provider.rows.length > ROW_LIST_LIMIT) {
+    rows.push({ key: `… (${provider.rows.length - ROW_LIST_LIMIT} more)`, indent: 1 });
+  }
+  for (const item of provider.debug) {
+    rows.push({
+      key: sanitizeSingleLineDisplaySnippet(item.key, 64),
+      value: publicDebugValue(item.key, item.value, Infinity, homeDir),
+    });
+  }
+  return kvSection(availability.id, rows);
+}
+
+/** The models of the last 30 days without a price: their tokens add no cost. */
+function unpricedRows(usage: UsageReport | null | undefined): ReportKvRow[] {
+  if (!usage) return [{ key: "unpriced_30d", value: "(the usage history could not be read)" }];
+  const { totals } = usage;
+  if (totals.tokens.processed === 0) return [{ key: "unpriced_30d", value: "(no usage)" }];
+  const summary = `${formatShare(totals.unpricedShare)} of ${formatTokens(totals.tokens.processed)} tokens`;
+  const unpriced = usage.models.filter((model) => !model.priced);
+  const rows: ReportKvRow[] = [{ key: "unpriced_30d", value: summary }];
+  for (const model of unpriced.slice(0, UNPRICED_LIST_LIMIT)) {
+    const key = sanitizeSingleLineDisplayText(`${model.providerID}/${model.modelID}`);
+    rows.push({ key, value: `${formatTokens(model.unpricedTokens)} tokens`, indent: 1 });
+  }
+  if (unpriced.length > UNPRICED_LIST_LIMIT) {
+    rows.push({ key: `… (${unpriced.length - UNPRICED_LIST_LIMIT} more)`, indent: 1 });
+  }
+  return rows;
+}
+
+async function pricingSection(params: QuotaStatusReportParams): Promise<ReportSection> {
+  const meta = getPricingSnapshotMeta();
+  const activeSource = getPricingSnapshotSource();
+  const { maxAgeMs } = getPricingRefreshPolicy();
+  const health = getPricingSnapshotHealth({ maxAgeMs });
+  const refreshState = await readPricingRefreshState();
+  const configured = params.pricingSnapshotSource;
+
+  const rows: ReportKvRow[] = [
+    {
+      key: "pricing",
+      value: `source=${meta.source} active_source=${activeSource} generated_at=${isoOrNone(meta.generatedAt)} units=${meta.units}`,
+    },
+    { key: "selection", value: `configured=${configured} active=${activeSource}` },
+  ];
+  if (configured === "bundled") {
+    rows.push({
+      key: "selection_note",
+      value:
+        "bundled config pins the packaged snapshot and ignores runtime refresh for active pricing",
+    });
+  } else if (configured === "runtime" && activeSource !== "runtime") {
+    rows.push({
+      key: "selection_note",
+      value:
+        "runtime config requested the local runtime snapshot, but bundled fallback is active because no valid runtime snapshot is available",
+    });
+  }
+  rows.push(
+    {
+      key: "runtime_paths",
+      value: `snapshot=${getRuntimePricingSnapshotPath()} refresh_state=${getRuntimePricingRefreshStatePath()}`,
+    },
+    {
+      key: "staleness",
+      value: `age_ms=${fmtInt(health.ageMs)} max_age_ms=${fmtInt(health.maxAgeMs)} stale=${health.stale}`,
+    },
+    {
+      key: "refresh_policy",
+      value: `auto_refresh_days=${fmtInt(Math.round(maxAgeMs / (24 * 60 * 60 * 1000)))}`,
+    },
+  );
+  if (refreshState) {
+    rows.push({
+      key: "refresh",
+      value: `last_attempt_at=${isoOrNone(refreshState.lastAttemptAt)} last_success_at=${isoOrNone(refreshState.lastSuccessAt)} last_failure_at=${isoOrNone(refreshState.lastFailureAt)} last_result=${refreshState.lastResult ?? "(none)"}`,
+    });
+    if (refreshState.lastError) rows.push({ key: "refresh_error", value: refreshState.lastError });
   } else {
-    if (entry.right) {
-      parts.push(sanitizeSingleLineDisplayText(entry.right));
-    }
-    const percentRemaining = Number.isFinite(interpretation.display.percentRemaining)
-      ? Math.max(0, Math.min(100, Math.round(interpretation.display.percentRemaining)))
-      : 0;
-    parts.push(`percent_remaining=${percentRemaining}`);
+    rows.push({ key: "refresh", value: "(no runtime refresh state yet)" });
   }
-
-  if (entry.resetTimeIso) {
-    parts.push(`reset_at=${sanitizeSingleLineDisplayText(entry.resetTimeIso)}`);
-  }
-
-  return shortenLiveRowText(parts.join(" "), homeDir);
+  rows.push({ key: "providers", value: listProviders().join(",") }, ...unpricedRows(params.usage));
+  return kvSection("pricing_snapshot", rows);
 }
-
-function formatCompactLiveProbeError(
-  providerId: string,
-  error: QuotaToastError,
-  homeDir: string,
-): string {
-  const label = isRedundantLiveProbeDescriptor(providerId, error.label)
-    ? ""
-    : sanitizeSingleLineDisplayText(error.label);
-  const message = sanitizeSingleLineDisplayText(error.message);
-  return shortenLiveRowText(label ? `${label}: ${message}` : message, homeDir);
-}
-
-function getQuotaProviderCredentialCategory(
-  source: QuotaProviderDiagnostic["credentialSource"],
-): string {
-  switch (source) {
-    case "explicit_env":
-      return "environment";
-    case "global_opencode_json":
-    case "global_opencode_jsonc":
-      return "trusted_global_config";
-    case "opencode_db":
-      return "opencode_db";
-    default:
-      return "none";
-  }
-}
-
-function createQuotaProvidersSection(params: {
-  definitions: readonly QuotaProviderDefinition[];
-  probes?: ProviderLiveProbe[];
-}): ReportSection | null {
-  if (params.definitions.length === 0) return null;
-
-  const diagnostics =
-    findProviderLiveProbe("quota-providers", params.probes)?.result.diagnostics ?? [];
-  const diagnosticsBySource = new Map(
-    diagnostics.map((diagnostic) => [diagnostic.sourceId, diagnostic] as const),
-  );
-  const rows: ReportKvRow[] = [];
-
-  for (const definition of params.definitions) {
-    const diagnostic = diagnosticsBySource.get(definition.id);
-    const coverage = definition.modelIds ? definition.modelIds.join(",") : "all_models";
-    if (definition.mode === "local-estimate" && isMaintainedQuotaProviderTuning(definition)) {
-      const probe = findProviderLiveProbe(definition.id, params.probes);
-      const statePath = findProviderStatusDetail(definition.id, "local_state_path", params.probes);
-      const stateExists = findProviderStatusDetail(
-        definition.id,
-        "local_state_exists",
-        params.probes,
-      );
-      const stateHealth = findProviderStatusDetail(
-        definition.id,
-        "local_state_health",
-        params.probes,
-      );
-      const stateVersion = findProviderStatusDetail(
-        definition.id,
-        "local_state_version",
-        params.probes,
-      );
-      const stateLastUpdate = findProviderStatusDetail(
-        definition.id,
-        "local_state_last_update",
-        params.probes,
-      );
-      rows.push({
-        key: `provider_${definition.id}`,
-        value: [
-          `provider_id=${definition.providerId}`,
-          "mode=local-estimate",
-          `coverage=${coverage}`,
-          `outcome=${getLiveProbeState(probe)}`,
-          `limits=${definition.windows.map((window) => `${window.id}:${window.requestLimit}`).join(",")}`,
-          `state_path=${statePath ?? "(none)"}`,
-          `state_exists=${stateExists ?? "false"}`,
-          `state_health=${stateHealth ?? "missing"}`,
-          `state_version=${stateVersion ?? "(none)"}`,
-          `state_last_update=${stateLastUpdate ?? "(none)"}`,
-        ]
-          .map((part) => sanitizeSingleLineDisplayText(part))
-          .join(" "),
-      });
-      continue;
-    }
-
-    if (definition.mode === "local-estimate") {
-      const stateHealth = diagnostic?.stateHealth ?? "missing";
-      rows.push({
-        key: `provider_${definition.id}`,
-        value: [
-          `provider_id=${definition.providerId}`,
-          "mode=local-estimate",
-          `coverage=${coverage}`,
-          `outcome=${diagnostic?.outcome ?? "unavailable"}`,
-          `state_path=${diagnostic?.statePath ?? "(none)"}`,
-          `state_exists=${diagnostic?.statePath && stateHealth !== "missing" ? "true" : "false"}`,
-          `state_health=${stateHealth}`,
-          `state_version=${diagnostic?.stateVersion ?? "(none)"}`,
-          `state_last_update=${diagnostic?.stateLastUpdatedAt == null ? "(none)" : new Date(diagnostic.stateLastUpdatedAt).toISOString()}`,
-        ]
-          .map((part) => sanitizeSingleLineDisplayText(part))
-          .join(" "),
-      });
-      continue;
-    }
-
-    const checkedPaths = diagnostic
-      ? [...new Set([...diagnostic.checkedPaths, ...diagnostic.credentialDatabasePaths])]
-      : [];
-    rows.push({
-      key: `provider_${definition.id}`,
-      value: [
-        `provider_id=${definition.providerId}`,
-        "mode=remote-api",
-        `format=${definition.format}`,
-        `coverage=${coverage}`,
-        `outcome=${diagnostic?.outcome ?? "unavailable"}`,
-        `credential_category=${getQuotaProviderCredentialCategory(diagnostic?.credentialSource ?? null)}`,
-        `env_name=${definition.apiKeyEnv ?? "(none)"}`,
-        `checked_paths=${checkedPaths.length > 0 ? checkedPaths.join(" | ") : "(none)"}`,
-      ]
-        .map((part) => sanitizeSingleLineDisplayText(part))
-        .join(" "),
-    });
-  }
-
-  return createKvSection("quota_providers", "quota_providers:", rows);
-}
-
-function appendCompactLiveProbeRows(
-  rows: ReportKvRow[],
-  providerId: string,
-  probe: ProviderLiveProbe | undefined,
-  homeDir: string,
-): void {
-  if (!probe) return;
-
-  const result = sanitizeQuotaProviderResult(probe.result);
-  const entryCount = Math.min(result.entries.length, STATUS_LIVE_ENTRY_LIMIT);
-  const errorCount = Math.min(result.errors.length, STATUS_LIVE_ERROR_LIMIT);
-  const state =
-    result.entries.length > 0 && result.errors.length > 0
-      ? "partial"
-      : result.entries.length > 0
-        ? "success"
-        : result.errors.length > 0
-          ? "error"
-          : "no_data";
-
-  rows.push({ key: "live_probe", value: state });
-
-  for (let index = 0; index < entryCount; index += 1) {
-    rows.push({
-      key: `live_entry_${index + 1}`,
-      value: formatCompactLiveProbeEntry(providerId, result.entries[index]!, homeDir),
-    });
-  }
-
-  for (let index = 0; index < errorCount; index += 1) {
-    rows.push({
-      key: `live_error_${index + 1}`,
-      value: formatCompactLiveProbeError(providerId, result.errors[index]!, homeDir),
-    });
-  }
-
-  const suppressedCount =
-    Math.max(0, result.entries.length - entryCount) +
-    Math.max(0, result.errors.length - errorCount);
-  if (suppressedCount > 0) {
-    rows.push({
-      key: "live_more",
-      value: `+${suppressedCount} additional rows suppressed`,
-    });
-  }
-}
-
-function computePricingCoverageFromAgg(agg: Awaited<ReturnType<typeof aggregateUsage>>): {
-  byProvider: Map<string, PricingCoverageByProvider>;
-  totals: { pricedKeysSeen: number; mappedMissingKeysSeen: number; unpricedKeysSeen: number };
-} {
-  const byProvider = new Map<string, PricingCoverageByProvider>();
-  let pricedKeysSeen = 0;
-  let mappedMissingKeysSeen = 0;
-  let unpricedKeysSeen = 0;
-
-  // Priced keys seen in history
-  for (const row of agg.byModel) {
-    const p = row.key.provider;
-    const existing = byProvider.get(p) ?? {
-      pricedKeysSeen: 0,
-      mappedMissingKeysSeen: 0,
-      unpricedKeysSeen: 0,
-    };
-    existing.pricedKeysSeen += 1;
-    byProvider.set(p, existing);
-    pricedKeysSeen += 1;
-  }
-
-  // Keys that mapped to an official provider/model but were missing pricing
-  for (const row of agg.unknown) {
-    const p = row.key.mappedProvider;
-    if (!p || !row.key.mappedModel) continue;
-    const existing = byProvider.get(p) ?? {
-      pricedKeysSeen: 0,
-      mappedMissingKeysSeen: 0,
-      unpricedKeysSeen: 0,
-    };
-    existing.mappedMissingKeysSeen += 1;
-    byProvider.set(p, existing);
-    mappedMissingKeysSeen += 1;
-  }
-
-  // Mapped keys that we explicitly consider unpriced
-  for (const row of agg.unpriced) {
-    const p = row.key.mappedProvider;
-    const existing = byProvider.get(p) ?? {
-      pricedKeysSeen: 0,
-      mappedMissingKeysSeen: 0,
-      unpricedKeysSeen: 0,
-    };
-    existing.unpricedKeysSeen += 1;
-    byProvider.set(p, existing);
-    unpricedKeysSeen += 1;
-  }
-
-  return { byProvider, totals: { pricedKeysSeen, mappedMissingKeysSeen, unpricedKeysSeen } };
-}
-
-function supportedProviderPricingRow(params: {
-  id: string;
-  agg: Awaited<ReturnType<typeof aggregateUsage>>;
-  snapshotProviders: string[];
-}): { id: string; pricing: "yes" | "partial" | "no"; notes: string } {
-  const id = params.id;
-
-  if (id === "synthetic") {
-    return {
-      id,
-      pricing: "no",
-      notes: "subscription request quota (not token-priced)",
-    };
-  }
-
-  if (id === "alibaba-coding-plan") {
-    return {
-      id,
-      pricing: "no",
-      notes: "local request-count estimate (tiered rolling windows, no token pricing API)",
-    };
-  }
-
-  if (id === "alibaba-token-plan") {
-    return {
-      id,
-      pricing: "no",
-      notes: "official Alibaba Cloud CLI Personal Token Plan quota (not token-priced)",
-    };
-  }
-
-  if (id === "cursor") {
-    return {
-      id,
-      pricing: "partial",
-      notes:
-        "API-pool models map to official pricing; Auto/Composer use bundled static Cursor rates",
-    };
-  }
-
-  if (id === "nanogpt") {
-    return {
-      id,
-      pricing: "no",
-      notes: "subscription request quota + account balance (not token-priced)",
-    };
-  }
-
-  if (id === "deepseek") {
-    return {
-      id,
-      pricing: "no",
-      notes: "account balance only (not token-priced)",
-    };
-  }
-
-  if (id === "opencode-go") {
-    return {
-      id,
-      pricing: "no",
-      notes: "subscription percentage quota from the OpenCode Go usage API (not token-priced)",
-    };
-  }
-
-  if (id === "xiaomi") {
-    return {
-      id,
-      pricing: "no",
-      notes: "dashboard monthly token quota and balances; per-key costs unsupported",
-    };
-  }
-
-  if (
-    id === "kimi-code-plan-global" ||
-    id === "kimi-code-plan-cn" ||
-    id === "kimi-for-coding" ||
-    id === "kimi-code" ||
-    id === "kimi"
-  ) {
-    return {
-      id,
-      pricing: "no",
-      notes: "request quota via Kimi Code API (not token-priced)",
-    };
-  }
-
-  // Providers that correspond directly to models.dev providers.
-  if (params.snapshotProviders.includes(id)) {
-    return { id, pricing: "yes", notes: "models.dev snapshot provider" };
-  }
-
-  // Connector to snapshot provider; treat as priced if snapshot has OpenAI pricing.
-  // Copilot is an OpenCode provider but token costs still map into official model pricing.
-  if (id === "copilot") {
-    return snapshotHasProvider("openai")
-      ? { id, pricing: "yes", notes: "connector (priced via models.dev openai)" }
-      : { id, pricing: "partial", notes: "connector (pricing snapshot missing openai)" };
-  }
-
-  if (id === "google-gemini-cli") {
-    return snapshotHasProvider("google")
-      ? { id, pricing: "yes", notes: "connector (priced via models.dev google)" }
-      : { id, pricing: "partial", notes: "connector (pricing snapshot missing google)" };
-  }
-
-  // Connector providers: pricing exists when model IDs can be mapped into snapshot pricing keys.
-  // Use local history as the source of truth.
-  const hasAnyUsage = params.agg.bySourceProvider.some((p) => p.providerID === id);
-  const hasAnyUnknown = params.agg.unknown.some((u) => u.key.sourceProviderID === id);
-
-  // Note: agg.byModel is already mapped to official pricing keys, not source provider IDs.
-  // So for connector providers we infer pricing availability based on whether we saw usage at all
-  // and whether it was mappable.
-  if (!hasAnyUsage && !hasAnyUnknown) {
-    return { id, pricing: "no", notes: "no local usage observed" };
-  }
-
-  if (hasAnyUnknown) {
-    return {
-      id,
-      pricing: "partial",
-      notes: "some models not in snapshot (see unpriced_models / unknown_pricing)",
-    };
-  }
-
-  return {
-    id,
-    pricing: "yes",
-    notes: "model IDs map into snapshot pricing",
-  };
-}
-
-type QuotaStatusReportParams = {
-  configSource: string;
-  configPaths: string[];
-  globalConfigPaths?: string[];
-  workspaceConfigPaths?: string[];
-  settingSources?: QuotaToastSettingSources;
-  configIssues?: LoadConfigIssue[];
-  runtimeRoots?: RuntimeContextRoots;
-  enabledProviders: string[] | "auto";
-  anthropicBinaryPath?: string;
-  cursorPlan: CursorQuotaPlan;
-  cursorIncludedApiUsd?: number;
-  cursorBillingCycleStartDay?: number;
-  opencodeGoWindows?: OpenCodeGoWindowKey[];
-  pricingSnapshotSource: PricingSnapshotSource;
-  onlyCurrentModel: boolean;
-  currentModel?: string;
-  /** Whether a session was available for model lookup */
-  sessionModelLookup?: "ok" | "not_found" | "no_session";
-  providerAvailability: ProviderAvailability[];
-  providerLiveProbes?: ProviderLiveProbe[];
-  quotaProviders?: readonly QuotaProviderDefinition[];
-  sessionTokenError?: SessionTokenError;
-  maintainerAnnouncements?: {
-    config: MaintainerAnnouncementsConfig;
-    summary: MaintainerAnnouncementsSummary;
-  };
-  generatedAtMs?: number;
-  /** The home dir the report shows as "~"; defaults to the computer's (tests set it). */
-  homeDir?: string;
-};
 
 export async function buildQuotaStatusReport(params: QuotaStatusReportParams): Promise<string> {
   return renderPlainTextReport(await buildQuotaStatusReportDocument(params));
@@ -739,437 +451,27 @@ export async function buildQuotaStatusReportDocument(
   params: QuotaStatusReportParams,
 ): Promise<ReportDocument> {
   const homeDir = params.homeDir ?? homedir();
-  const version = await getPackageVersion();
-  const v = version ?? "unknown";
-  const modelDisplay = params.currentModel
-    ? params.currentModel
-    : params.sessionModelLookup === "not_found"
-      ? "(error: session.get returned no modelID)"
-      : params.sessionModelLookup === "no_session"
-        ? "(no session available)"
-        : "(unknown)";
-  const sections: ReportSection[] = [];
-
-  // === toast diagnostics ===
-  const toastLines: string[] = [
-    `- configSource: ${params.configSource}`,
-    `- configPaths: ${joinOrNone(params.configPaths)}`,
-    `- precedence: ${getConfigPrecedenceLabel(params.configSource)}`,
-    `- global_config_paths: ${joinOrNone(params.globalConfigPaths ?? [])}`,
-    `- workspace_config_paths: ${joinOrNone(params.workspaceConfigPaths ?? [])}`,
-    `- setting_sources: ${formatSettingSources(params.settingSources)}`,
-    `- enabledProviders: ${params.enabledProviders === "auto" ? "(auto)" : params.enabledProviders.length ? params.enabledProviders.join(",") : "(none)"}`,
-    `- onlyCurrentModel: ${params.onlyCurrentModel ? "true" : "false"}`,
-    `- currentModel: ${modelDisplay}`,
+  const version = (await getPackageVersion()) ?? "unknown";
+  const snapshots = new Map(params.providers.map((provider) => [provider.providerId, provider]));
+  const sections: ReportSection[] = [
+    settingsSection(params),
+    providerListSection(params.providerAvailability),
+    ...(params.maintainerAnnouncements
+      ? [announcementsSection(params.maintainerAnnouncements)]
+      : []),
+    await pathsSection(),
+    credentialSourceSection(params.credentialSource, homeDir),
+    ...params.providerAvailability.map((availability) =>
+      providerSection(availability, snapshots.get(availability.id), params, homeDir),
+    ),
+    await pricingSection(params),
   ];
-  if (params.configIssues?.length) {
-    toastLines.push("- config_errors:");
-    for (const issue of params.configIssues) {
-      toastLines.push(
-        `  - ${sanitizeSingleLineDisplayText(issue.path)} ${sanitizeSingleLineDisplayText(issue.key)}: ${sanitizeSingleLineDisplayText(issue.message)}`,
-      );
-    }
-  }
-  if (params.runtimeRoots) {
-    toastLines.push(`- workspace_root: ${params.runtimeRoots.workspaceRoot}`);
-    toastLines.push(`- config_root: ${params.runtimeRoots.configRoot}`);
-  }
-  toastLines.push("- providers:");
-  for (const p of params.providerAvailability) {
-    const bits: string[] = [];
-    bits.push(p.enabled ? "enabled" : "disabled");
-    bits.push(p.available ? "available" : "unavailable");
-    if (p.matchesCurrentModel !== undefined) {
-      bits.push(`matchesCurrentModel=${p.matchesCurrentModel ? "yes" : "no"}`);
-    }
-    toastLines.push(`  - ${p.id}: ${bits.join(" ")}`);
-  }
-  sections.push(createLinesSection("toast", "toast:", toastLines));
 
-  const quotaProvidersSection = createQuotaProvidersSection({
-    definitions: params.quotaProviders ?? [],
-    probes: params.providerLiveProbes,
-  });
-  if (quotaProvidersSection) {
-    sections.push(quotaProvidersSection);
-  }
-
-  if (params.maintainerAnnouncements) {
-    const announcements = params.maintainerAnnouncements;
-    const summary = announcements.summary;
-    sections.push(
-      createLinesSection("maintainer_announcements", "maintainer_announcements:", [
-        `- enabled: ${announcements.config.enabled ? "true" : "false"}`,
-        `- home: ${announcements.config.home ? "true" : "false"}`,
-        `- home_frequency: ${announcements.config.homeFrequency}`,
-        `- source: ${summary.source}`,
-        `- network: ${summary.network ? "true" : "false"}`,
-        `- active: ${summary.activeCount}`,
-        `- future: ${summary.futureCount}`,
-        `- expired: ${summary.expiredCount}`,
-      ]),
-    );
-  }
-
-  // === paths ===
-  const pathsRows: ReportKvRow[] = [];
-  const runtime = getOpencodeRuntimeDirs();
-  pathsRows.push({
-    key: "opencode_dirs",
-    value: `data=${runtime.dataDir} config=${runtime.configDir} cache=${runtime.cacheDir} state=${runtime.stateDir}`,
-  });
-  const dbPath = getOpenCodeDbPath();
-  pathsRows.push({
-    key: "opencode.db",
-    value: `path=${dbPath} present=${(await pathExists(dbPath)) ? "true" : "false"} (session and token history)`,
-  });
-
-  appendProviderStatusDetailRows(
-    pathsRows,
-    "alibaba-coding-plan",
-    params.providerLiveProbes,
-    new Set([
-      "alibaba auth configured",
-      "alibaba_api_key_source",
-      "alibaba_api_key_checked_paths",
-      "alibaba_api_key_credential_database_paths",
-      "alibaba_coding_plan",
-      "alibaba_auth_error",
-    ]),
-  );
-  sections.push(createKvSection("paths", "paths:", pathsRows));
-
-  // === credential_source ===
-  const credentialSource = getCredentialSourceDiagnostics();
-  sections.push(
-    createKvSection("credential_source", "credential_source:", [
-      {
-        key: "source",
-        value: credentialSource.state === "bound" ? credentialSource.kind : "unbound",
-      },
-      { key: "list_error", value: credentialSource.lastListError?.detail ?? "(none)" },
-      {
-        key: "failures",
-        value: joinOrNone(
-          credentialSource.failures.map((failure) =>
-            [failure.integrationId, failure.label, failure.category, failure.detail]
-              .map((part) => sanitizeSingleLineDisplayText(part))
-              .join(":"),
-          ),
-        ),
-      },
-    ]),
-  );
-
-  for (const [id, providerId] of [
-    ["openai", "openai"],
-    ["anthropic", "anthropic"],
-  ] as const) {
-    sections.push(
-      createProviderStatusSection({
-        id,
-        title: `${id}:`,
-        providerId,
-        probes: params.providerLiveProbes,
-        availability: params.providerAvailability,
-        homeDir,
-      }),
-    );
-  }
-
-  // === cursor ===
-  const cursorRows: ReportKvRow[] = [];
-  appendProviderStatusDetailRows(cursorRows, "cursor", params.providerLiveProbes);
-
-  appendProviderStatusDetailRows(
-    cursorRows,
-    "alibaba-coding-plan",
-    params.providerLiveProbes,
-    new Set(["alibaba coding plan local quota", "alibaba coding plan error"]),
-  );
-  appendProviderCompactLiveProbeRows(
-    cursorRows,
-    "cursor",
-    params.providerLiveProbes,
-    params.providerAvailability,
-    homeDir,
-  );
-  sections.push(createKvSection("cursor", "cursor:", cursorRows));
-
-  const alibabaCodingPlanLiveProbeSection = createCompactLiveProbeOnlySection({
-    id: "alibaba_coding_plan",
-    title: "alibaba_coding_plan:",
-    providerId: "alibaba-coding-plan",
-    probes: params.providerLiveProbes,
-    availability: params.providerAvailability,
-    homeDir,
-  });
-  if (alibabaCodingPlanLiveProbeSection) {
-    sections.push(alibabaCodingPlanLiveProbeSection);
-  }
-
-  const alibabaTokenPlanLiveProbeSection = createCompactLiveProbeOnlySection({
-    id: "alibaba_token_plan",
-    title: "alibaba_token_plan:",
-    providerId: "alibaba-token-plan",
-    probes: params.providerLiveProbes,
-    availability: params.providerAvailability,
-    homeDir,
-  });
-  if (alibabaTokenPlanLiveProbeSection) {
-    sections.push(alibabaTokenPlanLiveProbeSection);
-  }
-
-  for (const section of [
-    { id: "minimax", title: "minimax:", providerId: "minimax-coding-plan" },
-    {
-      id: "minimax_china",
-      title: "minimax_china:",
-      providerId: "minimax-china-coding-plan",
-    },
-    { id: "kimi", title: "kimi:", providerId: "kimi-code-plan-global" },
-    { id: "kimi_cn", title: "kimi_cn:", providerId: "kimi-code-plan-cn" },
-    {
-      id: "opencode_go",
-      title: "opencode_go:",
-      providerId: "opencode-go",
-      detailKeys: OPENCODE_GO_STATUS_DETAIL_KEYS,
-    },
-    { id: "opencode_zen", title: "opencode_zen:", providerId: "opencode" },
-    { id: "xiaomi", title: "xiaomi:", providerId: "xiaomi" },
-    { id: "zai", title: "zai:", providerId: "zai" },
-    { id: "zhipu", title: "zhipu:", providerId: "zhipu" },
-    { id: "synthetic", title: "synthetic:", providerId: "synthetic" },
-    { id: "chutes", title: "chutes:", providerId: "chutes" },
-    { id: "deepseek", title: "deepseek:", providerId: "deepseek" },
-    { id: "xai", title: "xai:", providerId: "xai", includeDetails: false },
-    { id: "nanogpt", title: "nanogpt:", providerId: "nanogpt" },
-    { id: "openrouter", title: "openrouter:", providerId: "openrouter" },
-    {
-      id: "copilot_quota_auth",
-      title: "copilot_quota_auth:",
-      providerId: "copilot",
-    },
-  ] as const) {
-    sections.push(
-      createProviderStatusSection({
-        ...section,
-        probes: params.providerLiveProbes,
-        availability: params.providerAvailability,
-        homeDir,
-      }),
-    );
-  }
-
-  if (findProviderLiveProbe("kilo", params.providerLiveProbes)) {
-    sections.push(
-      createProviderStatusSection({
-        id: "kilo",
-        title: "kilo:",
-        providerId: "kilo",
-        probes: params.providerLiveProbes,
-        availability: params.providerAvailability,
-        homeDir,
-      }),
-    );
-  }
-
-  for (const [id, providerId] of [
-    ["google_gemini_cli", "google-gemini-cli"],
-    ["google_agy", "google-agy"],
-  ] as const) {
-    sections.push(
-      createProviderStatusSection({
-        id,
-        title: `${id}:`,
-        providerId,
-        probes: params.providerLiveProbes,
-        availability: params.providerAvailability,
-        homeDir,
-      }),
-    );
-  }
-
-  // === session token errors ===
-  if (params.sessionTokenError) {
-    const sessionTokenErrorRows: ReportKvRow[] = [
-      { key: "session_id", value: params.sessionTokenError.sessionID },
-      { key: "error", value: params.sessionTokenError.error },
-    ];
-    if (params.sessionTokenError.checkedPath) {
-      sessionTokenErrorRows.push({
-        key: "checked_path",
-        value: params.sessionTokenError.checkedPath,
-      });
-    }
-    sections.push(
-      createKvSection("session_tokens_error", "session_tokens_error:", sessionTokenErrorRows),
-    );
-  }
-
-  // === storage scan ===
-  const dbStats = await getOpenCodeDbStats();
-  sections.push(
-    createKvSection("storage", "storage:", [
-      { key: "sessions_in_db", value: fmtInt(dbStats.sessionCount) },
-      { key: "messages_in_db", value: fmtInt(dbStats.messageCount) },
-      { key: "assistant_messages_in_db", value: fmtInt(dbStats.assistantMessageCount) },
-    ]),
-  );
-
-  // === pricing snapshot ===
-  const agg = await aggregateUsage({});
-  const meta = getPricingSnapshotMeta();
-  const providers = listProviders();
-  const coverage = computePricingCoverageFromAgg(agg);
-  const refreshPolicy = getPricingRefreshPolicy();
-  const autoRefreshDays = Math.round(refreshPolicy.maxAgeMs / (24 * 60 * 60 * 1000));
-  const health = getPricingSnapshotHealth({
-    maxAgeMs: refreshPolicy.maxAgeMs,
-  });
-  const snapshotSource = getPricingSnapshotSource();
-  const runtimeSnapshotPath = getRuntimePricingSnapshotPath();
-  const refreshStatePath = getRuntimePricingRefreshStatePath();
-  const pricingRefreshState = await readPricingRefreshState();
-
-  const pricingRows: ReportKvRow[] = [
-    {
-      key: "pricing",
-      value: `source=${meta.source} active_source=${snapshotSource} generated_at=${new Date(meta.generatedAt).toISOString()} units=${meta.units}`,
-    },
-    {
-      key: "selection",
-      value: `configured=${params.pricingSnapshotSource} active=${snapshotSource}`,
-    },
-  ];
-  if (params.pricingSnapshotSource === "bundled") {
-    pricingRows.push({
-      key: "selection_note",
-      value:
-        "bundled config pins the packaged snapshot and ignores runtime refresh for active pricing",
-    });
-  } else if (params.pricingSnapshotSource === "runtime" && snapshotSource !== "runtime") {
-    pricingRows.push({
-      key: "selection_note",
-      value:
-        "runtime config requested the local runtime snapshot, but bundled fallback is active because no valid runtime snapshot is available",
-    });
-  }
-  pricingRows.push({
-    key: "runtime_paths",
-    value: `snapshot=${runtimeSnapshotPath} refresh_state=${refreshStatePath}`,
-  });
-  pricingRows.push({
-    key: "staleness",
-    value: `age_ms=${fmtInt(health.ageMs)} max_age_ms=${fmtInt(health.maxAgeMs)} stale=${health.stale ? "true" : "false"}`,
-  });
-  pricingRows.push({
-    key: "refresh_policy",
-    value: `auto_refresh_days=${fmtInt(autoRefreshDays)}`,
-  });
-  if (pricingRefreshState) {
-    pricingRows.push({
-      key: "refresh",
-      value: `last_attempt_at=${pricingRefreshState.lastAttemptAt ? new Date(pricingRefreshState.lastAttemptAt).toISOString() : "(none)"} last_success_at=${pricingRefreshState.lastSuccessAt ? new Date(pricingRefreshState.lastSuccessAt).toISOString() : "(none)"} last_failure_at=${pricingRefreshState.lastFailureAt ? new Date(pricingRefreshState.lastFailureAt).toISOString() : "(none)"} last_result=${pricingRefreshState.lastResult ?? "(none)"}`,
-    });
-    if (pricingRefreshState.lastError) {
-      pricingRows.push({ key: "refresh_error", value: pricingRefreshState.lastError });
-    }
-  } else {
-    pricingRows.push({ key: "refresh", value: "(no runtime refresh state yet)" });
-  }
-  pricingRows.push({ key: "providers", value: providers.join(",") });
-  pricingRows.push({
-    key: "coverage_seen",
-    value: `priced_keys=${fmtInt(coverage.totals.pricedKeysSeen)} mapped_but_missing=${fmtInt(coverage.totals.mappedMissingKeysSeen)} unpriced_keys=${fmtInt(coverage.totals.unpricedKeysSeen)}`,
-  });
-  for (const p of providers) {
-    const c = coverage.byProvider.get(p) ?? {
-      pricedKeysSeen: 0,
-      mappedMissingKeysSeen: 0,
-      unpricedKeysSeen: 0,
-    };
-    pricingRows.push({
-      key: p,
-      value: `models=${fmtInt(getProviderModelCount(p))} priced_models_seen=${fmtInt(c.pricedKeysSeen)} mapped_but_missing_models_seen=${fmtInt(c.mappedMissingKeysSeen)} unpriced_models_seen=${fmtInt(c.unpricedKeysSeen)}`,
-      indent: 1,
-    });
-  }
-  sections.push(createKvSection("pricing_snapshot", "pricing_snapshot:", pricingRows));
-
-  // === supported providers pricing ===
-  const supported = getProviders().map((p) => p.id);
-  const supportedRows: ReportKvRow[] = supported.map((id) => {
-    const row = supportedProviderPricingRow({ id, agg, snapshotProviders: providers });
-    return {
-      key: row.id,
-      value: `pricing=${row.pricing} (${row.notes})`,
-    };
-  });
-  sections.push(
-    createKvSection("supported_providers_pricing", "supported_providers_pricing:", supportedRows),
-  );
-
-  // === unpriced models ===
-  const unpricedRows: ReportKvRow[] = [];
-  if (agg.unpriced.length === 0) {
-    unpricedRows.push({ key: "none" });
-  } else {
-    unpricedRows.push({
-      key: "keys",
-      value: `${fmtInt(agg.unpriced.length)} tokens_total=${fmtInt(totalTokenBuckets(agg.totals.unpriced))}`,
-    });
-    for (const row of agg.unpriced.slice(0, STATUS_SAMPLE_LIMIT)) {
-      const src = `${row.key.sourceProviderID}/${row.key.sourceModelID}`;
-      const mapped = `${row.key.mappedProvider}/${row.key.mappedModel}`;
-      unpricedRows.push({
-        key: src,
-        value: `mapped=${mapped} tokens=${fmtInt(totalTokenBuckets(row.tokens))} msgs=${fmtInt(row.messageCount)} reason=${row.key.reason}`,
-      });
-    }
-    if (agg.unpriced.length > STATUS_SAMPLE_LIMIT) {
-      unpricedRows.push({ key: `… (${fmtInt(agg.unpriced.length - STATUS_SAMPLE_LIMIT)} more)` });
-    }
-  }
-  sections.push(createKvSection("unpriced_models", "unpriced_models:", unpricedRows));
-
-  // === unknown pricing ===
-  const unknownRows: ReportKvRow[] = [];
-  if (agg.unknown.length === 0) {
-    unknownRows.push({ key: "none" });
-  } else {
-    unknownRows.push({
-      key: "keys",
-      value: `${fmtInt(agg.unknown.length)} tokens_total=${fmtInt(totalTokenBuckets(agg.totals.unknown))}`,
-    });
-    for (const row of agg.unknown.slice(0, STATUS_SAMPLE_LIMIT)) {
-      const src = `${row.key.sourceProviderID}/${row.key.sourceModelID}`;
-      const mappedBase =
-        row.key.mappedProvider && row.key.mappedModel
-          ? `${row.key.mappedProvider}/${row.key.mappedModel}`
-          : "(none)";
-      const candidates =
-        row.key.providerCandidates && row.key.providerCandidates.length > 0
-          ? ` candidates=${row.key.providerCandidates.join(",")}`
-          : "";
-      unknownRows.push({
-        key: src,
-        value: `mapped=${mappedBase}${candidates} tokens=${fmtInt(totalTokenBuckets(row.tokens))} msgs=${fmtInt(row.messageCount)}`,
-      });
-    }
-    if (agg.unknown.length > STATUS_SAMPLE_LIMIT) {
-      unknownRows.push({ key: `… (${fmtInt(agg.unknown.length - STATUS_SAMPLE_LIMIT)} more)` });
-    }
-  }
-  sections.push(createKvSection("unknown_pricing", "unknown_pricing:", unknownRows));
-
-  // Users paste this report into public issues: show the home dir as "~" in every path
-  // so it does not reveal their computer's user name.
   return replaceHomeDirWithTildeInDocument(
     {
       heading: commandHeading({
-        title: `Quota Status (opencode-quota v${v}) (/quota_status)`,
-        detail: `opencode-quota v${v}`,
+        title: `Quota Status (opencode-quota v${version}) (/quota_status)`,
+        detail: `opencode-quota v${version}`,
         generatedAtMs: params.generatedAtMs,
       }),
       sections,

@@ -4,9 +4,9 @@
 
 ## First checks
 
-1. Run `/quota_status` inside OpenCode, or `opencode-quota status` in a terminal. Both show which config, providers, logins, and local files OpenCode Quota found.
+1. Run `/quota_status` inside OpenCode, or `opencode-quota status` in a terminal. Both show which settings, providers, logins, and local files OpenCode Quota found.
 2. Find the provider or feature that fails, and follow the matching fix below.
-3. Restart OpenCode after changing config or logins.
+3. Restart OpenCode after changing `opencode.json` or logins. Changes to `settings.jsonc` apply without a restart.
 
 Every provider missing? Check that `@slkiser/opencode-quota` is in the `plugin` list of `opencode.jsonc` or `.json`. That one entry also loads the TUI; no `tui.json` entry is needed.
 
@@ -26,8 +26,7 @@ In `/quota_status`, the `credential_source` section shows:
 
 The TUI, Web, and Desktop get their numbers from OpenCode's background service. The service takes `PATH` and environment variables from whatever started it first, not from the terminal you use now, and it runs in your home folder. The terminal command uses your terminal's `PATH`, environment, and current folder instead.
 
-- **`claude` or `bl` not found, or an API-key variable ignored:** in a terminal where they work, run `opencode service restart`. To keep that `PATH` for every later start, run `opencode service set env PATH "$PATH"` (it stops the service; open OpenCode again). For Claude you can instead set `anthropicBinaryPath`.
-- A relative `export.path` is relative to your home folder.
+- **`claude` or `bl` not found, or an API-key variable ignored:** in a terminal where they work, run `opencode service restart`. To keep that `PATH` for every later start, run `opencode service set env PATH "$PATH"` (it stops the service; open OpenCode again). For Claude you can instead set `providers.anthropic.binaryPath`.
 - Cursor's plugin-entry check reads `opencode.json` in your global config folder and your home folder, not in the project folder.
 
 ## Terminal commands
@@ -37,7 +36,7 @@ The TUI, Web, and Desktop get their numbers from OpenCode's background service. 
 - They work with OpenCode closed and read logins from `opencode.db` read-only.
 - They never refresh a token, so a sign-in can show as expired (for example `Token expired`) until you open OpenCode.
 - They use your shell's `PATH` and API-key variables.
-- They use the settings of the folder you run them in, so a project's `opencode-quota/quota-toast.jsonc` applies.
+- They read the same global `settings.jsonc` as OpenCode.
 
 ## Common problems
 
@@ -55,21 +54,20 @@ The TUI, Web, and Desktop get their numbers from OpenCode's background service. 
 
 ## Provider fixes
 
-Run `/quota_status` first and check that provider's section. Setup steps and API-key variable names are in [Providers](providers.md).
+Run `/quota_status` first and check that provider's section. Every known provider has a section, named after its id (for example `copilot:` or `opencode-go:`). It shows `state` (`ok`, `partial`, `error`, `not checked`, `unavailable`, or `disabled`), `checked_at`, the `rows` it returned, an `error` line per failed check, and the provider's own details. An `unavailable` provider is not asked for quota; its section shows whether OpenCode lists it (`opencode_provider`) and, for an API-key provider, where the key was looked for (`api_key_diagnostics`). A `disabled` provider (left out of `providers.enabled`) is never asked. Email addresses show as `[email]` and account, team, org, user, and session ids as `[id]`. Setup steps and API-key variable names are in [Providers](providers.md).
 
 <details>
 <summary><strong>Custom providers</strong></summary>
 
-`/quota_status` lists each definition under `quota_providers`: IDs, mode, format or exact local state path, model coverage, live outcome, credential type, environment variable name, and safe checked paths. These results are fetched live for the status command; cached results are not substituted.
+`/quota_status` lists each definition in the `settings` section as `provider_<id>`: IDs, mode, format and environment variable name (or limits and exact local state path), and model coverage. The `quota-providers` section shows the live check: `state`, the rows, an `error` line per failed definition, and a `custom_<id>_check` line per definition with its outcome, credential source, and checked paths (or local state health). These results are fetched live for the status command; cached results are not substituted.
 
 | Symptom                                    | Fix |
 | ------------------------------------------ | --- |
-| Config is rejected                         | Keep `quotaProviders` in global config only ([where](providers.md#custom-providers)). Remove `customSources`, unknown fields, duplicate IDs/request identities, or overlapping model coverage. |
-| Definition is `unavailable`                | Confirm OpenCode reports the exact `providerId`. With `onlyCurrentModel`, the model id (without provider prefix) must match `modelIds`, or omit `modelIds`. |
-| `missing_credential`                       | Set the `apiKeyEnv` variable, trusted global `provider.<providerId>.options.apiKey`, or an API-key login saved in OpenCode 2 for that provider id. |
-| `http_error`, `timeout`, or response error | Check the endpoint and its response format. `/quota_status` intentionally hides URLs, request/response contents, raw errors, and secret material. |
+| Config is rejected                         | Keep definitions in `providers.custom` in `settings.jsonc` ([where](configuration.md#where-settings-live)). Remove unknown fields, duplicate IDs/request identities, or overlapping model coverage. |
+| Definition is `unavailable`                | Confirm OpenCode reports the exact `providerId`. With `words.onlyCurrentModel`, the model id (without provider prefix) must match `modelIds`, or omit `modelIds`. |
+| `API key not configured`                   | Set the `apiKeyEnv` variable, trusted global `provider.<providerId>.options.apiKey`, or an API-key login saved in OpenCode 2 for that provider id. |
+| `HTTP <code>`, timeout, or response error  | Check the endpoint and its response format. `/quota_status` intentionally hides URLs, request/response contents, raw errors, and secret material. |
 | One definition fails but others show       | Expected. Working definitions stay visible; the failed one stays an error row. |
-| Single-window output shows fewer rows      | Each source keeps only its lowest remaining percentage, or first value row. Use `"formatStyle": "allWindows"` for every row. |
 | CLI/export looks stale                     | `show --json` is cache-only, and the export file changes only when the server's quota does. Open a TUI session first. `/quota_status` is the live check. |
 
 </details>
@@ -80,7 +78,7 @@ Run `/quota_status` first and check that provider's section. Setup steps and API
 | Symptom                              | Fix |
 | ------------------------------------ | --- |
 | `claude` not found                   | Install Claude Code. OpenCode Quota tries `claude` on the [service `PATH`](#service-environment), then `~/.claude/local/claude`, `~/.local/bin/claude`, `/opt/homebrew/bin/claude`, and `/usr/local/bin/claude` (not on Windows). `binary_path` shows which one ran. |
-| Claude is installed at a custom path | Set `anthropicBinaryPath` in `opencode-quota/quota-toast.json`. |
+| Claude is installed at a custom path | Set `providers.anthropic.binaryPath` in `settings.jsonc`. |
 | Not signed in                        | Run `claude auth login`, then check `claude auth status`. |
 | Signed in but no quota rows          | Check `quota_source` and `message`; sign in to Claude again if the OAuth credential fallback is missing or stale. |
 | Provider not detected                | Make sure OpenCode uses the `anthropic` provider. |
@@ -90,7 +88,7 @@ Run `/quota_status` first and check that provider's section. Setup steps and API
 <details>
 <summary><strong>GitHub Copilot</strong></summary>
 
-Check `copilot_quota_auth`, `deployment`, `api_host`, `enterprise_host_source`, `billing_model`, `billing_scope`, `quota_api`, `budget_api`, and `token_compatibility_error`.
+Check the `copilot` section: `pat_state`, `deployment`, `api_host`, `enterprise_host_source`, `billing_model`, `billing_scope`, `quota_api`, `budget_api`, and `token_compatibility_error`.
 
 | Symptom                                           | Fix |
 | ------------------------------------------------- | --- |
@@ -125,16 +123,16 @@ Check `copilot_quota_auth`, `deployment`, `api_host`, `enterprise_host_source`, 
 | ----------------------------------------- | --- |
 | Cursor not detected                       | Put `cursor-opencode-provider/plugin/opencode2` before `@slkiser/opencode-quota` in `opencode.json`. |
 | Cursor login missing                      | Run `/connect` → **Cursor** in OpenCode, or set `CURSOR_API_KEY`. |
-| Quota shows but no remaining percentage   | Set `cursorPlan` or `cursorIncludedApiUsd`. |
-| Billing cycle looks wrong                 | Set `cursorBillingCycleStartDay` to your billing day. |
-| Unknown Cursor pricing                    | Run `/pricing_refresh`. If still unknown, check `/quota_status` for unknown model ids. Cursor `auto`, `composer*`, and `grok-4.5`–`grok-4.7` use bundled Cursor pricing. |
+| Quota shows but no remaining percentage   | Set `providers.cursor.plan` or `providers.cursor.includedApiUsd`. |
+| Billing cycle looks wrong                 | Set `providers.cursor.billingCycleStartDay` to your billing day. |
+| Unknown Cursor pricing                    | Run `/pricing_refresh`. If still unknown, check `unpriced_30d` in `/quota_status` (models of the last 30 days without a price). Cursor `auto`, `composer*`, and `grok-4.5`–`grok-4.7` use bundled Cursor pricing. |
 
 </details>
 
 <details>
 <summary><strong>Alibaba Coding Plan</strong></summary>
 
-Check the Alibaba login, tier, state-file path, and `alibaba_coding_plan` live check.
+Check the `alibaba-coding-plan` section: the login, tier (`alibaba_coding_plan`), state-file path (`local_state_path`), and live check.
 
 | Symptom              | Fix |
 | -------------------- | --- |
@@ -148,7 +146,7 @@ Check the Alibaba login, tier, state-file path, and `alibaba_coding_plan` live c
 <details>
 <summary><strong>Alibaba Personal Token Plan</strong></summary>
 
-Check the `alibaba_token_plan` live check (separate from Alibaba Coding Plan).
+Check the `alibaba-token-plan` section (separate from Alibaba Coding Plan).
 
 | Symptom                 | Fix |
 | ----------------------- | --- |
@@ -162,25 +160,25 @@ Check the `alibaba_token_plan` live check (separate from Alibaba Coding Plan).
 <details>
 <summary><strong>API-key providers (MiniMax, Kimi, Chutes AI, Synthetic, Z.ai, Zhipu, NanoGPT, DeepSeek, OpenRouter)</strong></summary>
 
-- Check the provider's API-key section in `/quota_status` (for example `kimi:`, `kimi_cn:`, or `openrouter:`, which also shows the live check and errors such as HTTP 401).
+- Check the provider's API-key section in `/quota_status` (for example `kimi-code-plan-global:`, `kimi-code-plan-cn:`, or `openrouter:`), which also shows the live check and errors such as HTTP 401.
 - Put keys in environment variables or trusted user/global config, never in the project's `opencode.json`. Variable names and rules: [API keys](providers.md#api-keys).
 - Kimi keys go only to their own region's host: see [Kimi Code](providers.md#kimi-code).
-- Synthetic says `Synthetic returned no quota data for this account.`: the quota endpoint returned HTTP 200 `{}`. This is not a bad API key or a Clerk/browser problem, and no 5h or Weekly rows are invented. `/quota_status` shows it on `live_error_*`.
+- Synthetic says `Synthetic returned no quota data for this account.`: the quota endpoint returned HTTP 200 `{}`. This is not a bad API key or a Clerk/browser problem, and no 5h or Weekly rows are invented. `/quota_status` shows it on the `error` line.
 
 </details>
 
 <details>
 <summary><strong>Google AGY</strong></summary>
 
-Check the `google_agy` section.
+Check the `google-agy` section.
 
 | Symptom                             | Fix |
 | ----------------------------------- | --- |
 | Companion missing                   | Put `@anthonyhaussman/opencode-agy-auth` before `@slkiser/opencode-quota` in `opencode.json`. |
-| Provider not enabled in manual mode | Include `google-agy` in `enabledProviders`. |
+| Provider not enabled in manual mode | Include `google-agy` in `providers.enabled`. |
 | Login missing                       | Run `opencode auth login google-agy`. |
 | Project missing                     | Set `OPENCODE_AGY_PROJECT_ID` or `provider.google-agy.options.projectId`. |
-| No rows                             | Check `live_probe`, `live_entry_*`, and `live_error_*`. |
+| No rows                             | Check `state`, `rows`, and `error`. |
 
 </details>
 
@@ -192,7 +190,7 @@ Gemini CLI works only with Gemini Code Assist Standard or Enterprise (organizati
 | Symptom                             | Fix |
 | ----------------------------------- | --- |
 | Companion missing                   | Put `opencode-gemini-auth` before `@slkiser/opencode-quota` in `opencode.json`. |
-| Provider not enabled in manual mode | Include `google-gemini-cli` in `enabledProviders`. |
+| Provider not enabled in manual mode | Include `google-gemini-cli` in `providers.enabled`. |
 | Login missing                       | Run `opencode auth login google`. |
 | Project missing                     | Set `provider.google.options.projectId`, `OPENCODE_GEMINI_PROJECT_ID`, `GOOGLE_CLOUD_PROJECT`, or `GOOGLE_CLOUD_PROJECT_ID`. |
 
@@ -201,15 +199,15 @@ Gemini CLI works only with Gemini Code Assist Standard or Enterprise (organizati
 <details>
 <summary><strong>Xiaomi MiMo</strong></summary>
 
-Check the `xiaomi` section. It shows state, source, checked paths, and safe live summaries, never cookie names, cookie values, or raw responses.
+Check the `xiaomi` section. It shows `config_state`, `config_source`, `config_checked_paths`, and the live check, never cookie names, cookie values, or raw responses.
 
 | Symptom                             | Fix |
 | ----------------------------------- | --- |
 | Config not detected                 | Set `MIMO_USAGE_COOKIE` or create trusted user/global `opencode-quota/mimo.json`, then rerun `/quota_status`. |
 | Config is invalid                   | Fix or remove the reported higher-priority source; an invalid source blocks fallback on purpose. |
-| Provider not enabled in manual mode | Include `xiaomi` in `enabledProviders`. |
-| Monthly quota missing               | Make sure the plan is active and check `live_error_*`; expired plans are hidden. |
-| Balance or plan details missing     | Check the partial live summary. The requests fail independently, so other rows can still show. |
+| Provider not enabled in manual mode | Include `xiaomi` in `providers.enabled`. |
+| Monthly quota missing               | Make sure the plan is active and check `error`; expired plans are hidden. |
+| Balance or plan details missing     | Check for `state: partial` and its `error` lines. The requests fail independently, so other rows can still show. |
 | Session expired                     | Sign in again at `platform.xiaomimimo.com`, copy a fresh Cookie header ([how](providers.md#xiaomi-mimo)), and update the same source. |
 
 </details>
@@ -217,7 +215,7 @@ Check the `xiaomi` section. It shows state, source, checked paths, and safe live
 <details>
 <summary><strong>OpenCode Go</strong></summary>
 
-Check the `opencode_go` section:
+Check the `opencode-go` section:
 
 - `auth_*`: key diagnostics (never the key itself). `selected_windows`: the windows shown. `live_fetch_error`: why the usage API failed.
 - With a Console sign-in: `console_auth_state` and `console_server` describe it, `go_source` shows who answered (`console` or `legacy_key`), and `console_error` shows why the Console failed.
@@ -225,26 +223,25 @@ Check the `opencode_go` section:
 
 | Symptom                           | Fix |
 | --------------------------------- | --- |
-| Provider not detected             | Run `opencode auth login opencode`, or set an API key ([order](providers.md#opencode-go)). Then check `auth_state`, `auth_source`, and `auth_checked_paths`. |
+| Provider not detected             | Run `opencode auth login opencode`, or set an API key ([order](providers.md#opencode-go)). Then rerun `/quota_status`; once Go is detected, `auth_state`, `auth_source`, and `auth_checked_paths` show which key it uses. |
 | `auth_state` is `invalid`         | Run `opencode auth login opencode-go`. A broken `opencode-go` login blocks the legacy `opencode` fallback and shows in `auth_error`. |
 | `OpenCode Console sign-in failed` | Shown only when no API key is set. Run `opencode auth login opencode`, or set an API key. `console_error` has the reason. |
 | No Go quota, `console_error` set  | The Console request failed and no API key is set (`Not configured` in manual mode). Retry, or set an API key. |
 | API returns 401 or 403            | The usage API rejected the key. Update the source shown by `auth_source`, wait briefly for the credential cache to expire, and rerun `/quota_status`. |
 | Invalid API response              | Check `live_fetch_error`. 5h, Weekly, and Monthly must all be valid; one bad window rejects the whole response. |
-| Request times out or fails        | Check `live_fetch_error`, make sure `https://opencode.ai/zen/go/v1/usage` is reachable, and retry. Raise `requestTimeoutMs` only for timeouts. |
-| Expected window is not shown      | Check `selected_windows`, then update `opencodeGoWindows` (`rolling`, `weekly`, `monthly`). |
-| Provider missing in manual mode   | Include `opencode-go` in `enabledProviders`. |
+| Request times out or fails        | Check `live_fetch_error`, make sure `https://opencode.ai/zen/go/v1/usage` is reachable, and retry. Raise `checking.requestTimeoutMs` only for timeouts. |
+| Provider missing in manual mode   | Include `opencode-go` in `providers.enabled`. |
 
 </details>
 
 <details>
 <summary><strong>OpenCode Zen</strong></summary>
 
-Check the `opencode_zen` section. `console_auth_state` shows whether OpenCode returned your Console sign-in, `console_server` and `console_org` show which Console and organization Zen reads, and `budget_source` shows whether the budget came from the org budget (`org_budget`) or the credit limit plus this month's usage (`credit_limit`). `live_fetch_error` lists failed Console routes. The token is never shown.
+Check the `opencode` section (OpenCode Zen). `console_auth_state` shows whether OpenCode returned your Console sign-in, `console_server` and `console_org` show which Console and organization Zen reads, and `budget_source` shows whether the budget came from the org budget (`org_budget`) or the credit limit plus this month's usage (`credit_limit`). `live_fetch_error` lists failed Console routes. The token is never shown.
 
 | Symptom                                                           | Fix |
 | ----------------------------------------------------------------- | --- |
-| Zen does not appear                                               | Run `opencode auth login opencode` and sign in to the Console. An API key alone is not a Console sign-in. To see a hint instead of nothing, include `opencode` in `enabledProviders`. |
+| Zen does not appear                                               | Run `opencode auth login opencode` and sign in to the Console. An API key alone is not a Console sign-in. To see a hint instead of nothing, include `opencode` in `providers.enabled`. |
 | `OpenCode Console sign-in failed` or `session expired or invalid` | Run `opencode auth login opencode` again. |
 | Wrong organization                                                | Run `opencode auth switch opencode`, or sign in again and pick the organization. Check `console_org`. |
 | `OpenCode Console <route> error 403`                              | Your sign-in cannot read that route for this organization. Zen still shows the other rows, unless the route is `billing/status` (the balance). |
@@ -260,6 +257,6 @@ Check the pricing snapshot health and the `opencode.db` path.
 | -------------------------------------- | --- |
 | `/tokens_*` is empty                   | Start OpenCode once so it creates `opencode.db`, then use a model. |
 | Pricing looks stale                    | Run `/pricing_refresh`. |
-| Runtime pricing does not change output | Check `pricingSnapshot.source`; `bundled` keeps the packaged pricing. |
+| Runtime pricing does not change output | Check `pricing.source`; `bundled` keeps the packaged pricing. |
 
 </details>

@@ -19,7 +19,9 @@ import plugin from "../src/tui/index.tsx";
 // The server plugin's quota RPC runs palette commands; the TUI shows their output.
 const rpc = vi.hoisted(() => ({
   command: vi.fn(),
-  snapshot: vi.fn(),
+  snapshot: vi.fn(async () => ({
+    snapshot: { version: 6, providers: [], resetNotices: [], generatedAtMs: 0 },
+  })),
   refresh: vi.fn(),
   notices: vi.fn(),
   status: vi.fn(),

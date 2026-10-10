@@ -33,26 +33,18 @@ vi.mock("../src/lib/atomic-json.js", () => ({
   writeJsonAtomic: vi.fn(),
 }));
 
-// Mock readCachedProviderResult — each test sets it up via the hoisted ref.
-const { mockReadCachedProviderResult } = vi.hoisted(() => {
-  const mockReadCachedProviderResult = vi.fn();
-  return { mockReadCachedProviderResult };
-});
-
-vi.mock("../src/lib/quota-state.js", async () => {
-  const actual = await vi.importActual<typeof import("../src/lib/quota-state.js")>(
-    "../src/lib/quota-state.js",
-  );
-  return {
-    ...actual,
-    readCachedProviderResult: mockReadCachedProviderResult,
-  };
-});
-
 // --------------- imports ---------------
 
 import { writeJsonAtomic } from "../src/lib/atomic-json.js";
-import { buildQuotaExport, resolveExportPath, writeQuotaExport } from "../src/lib/quota-export.js";
+import type { QuotaProviderResult } from "../src/lib/entries.js";
+import {
+  buildQuotaExportFromSnapshot,
+  exportProviderFromResult,
+  resolveExportPath,
+  writeQuotaExport,
+} from "../src/lib/quota-export.js";
+import type { QuotaExport } from "../src/lib/quota-export-types.js";
+import type { QuotaProviderDefinition } from "../src/lib/quota-providers.js";
 import {
   accountingContractExport,
   accountingContractResult,
@@ -60,29 +52,28 @@ import {
 
 // --------------- helpers ---------------
 
-function createMockProvider(id: string) {
-  return {
-    id,
-    isAvailable: vi.fn(),
-    fetch: vi.fn(),
-  };
-}
+type Check = { result: QuotaProviderResult; checkedAtMs: number };
 
-function createMockContext(): any {
-  return {
-    client: {
-      config: {
-        providers: async () => ({ data: { providers: [] } }),
-        get: async () => ({ data: {} }),
-      },
-    },
-    config: {
-      anthropicBinaryPath: "claude",
-      cursorPlan: "none",
-      onlyCurrentModel: false,
-    },
-    session: {},
-  };
+/** The export document after each provider's last check; `undefined`: never checked. */
+function exportAfter(
+  checks: Record<string, Check | undefined>,
+  customDefinitions: QuotaProviderDefinition[] = [],
+): QuotaExport {
+  const providers = Object.entries(checks).map(([providerId, check]) => ({
+    providerId,
+    label: providerId,
+    rows: [],
+    refreshing: false,
+    debug: [],
+    ...(check
+      ? { exportPart: exportProviderFromResult({ providerId, ...check, customDefinitions }) }
+      : {}),
+  }));
+  const generatedAtMs = Date.now();
+  return buildQuotaExportFromSnapshot(
+    { version: 6, providers, resetNotices: [], generatedAtMs, serverId: "test", revision: 1 },
+    generatedAtMs,
+  );
 }
 
 const QUOTA_ACCOUNTING = {
@@ -126,7 +117,7 @@ describe("resolveExportPath", () => {
   });
 });
 
-describe("buildQuotaExport", () => {
+describe("the export of each provider's last check", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-06-01T12:00:00.000Z"));
@@ -134,12 +125,10 @@ describe("buildQuotaExport", () => {
 
   afterEach(() => {
     vi.useRealTimers();
-    mockReadCachedProviderResult.mockReset();
   });
 
-  it("returns status ok and maps cached entries into export rows", async () => {
-    mockReadCachedProviderResult.mockResolvedValue({
-      hit: true,
+  it("returns status ok and maps the checked entries into export rows", () => {
+    const check: Check = {
       result: {
         attempted: true,
         entries: [
@@ -185,15 +174,10 @@ describe("buildQuotaExport", () => {
         ],
         errors: [],
       },
-      timestamp: new Date("2026-06-01T11:00:00.000Z").getTime(),
-    });
+      checkedAtMs: new Date("2026-06-01T11:00:00.000Z").getTime(),
+    };
 
-    const exportData = await buildQuotaExport({
-      providers: [createMockProvider("copilot")],
-      ctx: createMockContext(),
-      ttlMs: 60_000,
-      fromCache: true,
-    });
+    const exportData = exportAfter({ copilot: check });
 
     expect(exportData.version).toBe(2);
     expect(exportData.fromCache).toBe(true);
@@ -236,9 +220,8 @@ describe("buildQuotaExport", () => {
     }
   });
 
-  it("exports semantic availability booleans with generic wording and the raw name", async () => {
-    mockReadCachedProviderResult.mockResolvedValue({
-      hit: true,
+  it("exports semantic availability booleans with generic wording and the raw name", () => {
+    const check: Check = {
       result: {
         attempted: true,
         entries: [
@@ -255,15 +238,10 @@ describe("buildQuotaExport", () => {
         ],
         errors: [],
       },
-      timestamp: Date.now(),
-    });
+      checkedAtMs: Date.now(),
+    };
 
-    const exportData = await buildQuotaExport({
-      providers: [createMockProvider("availability")],
-      ctx: createMockContext(),
-      ttlMs: 60_000,
-      fromCache: true,
-    });
+    const exportData = exportAfter({ availability: check });
 
     const provider = exportData.providers.availability;
     expect(provider).toBeDefined();
@@ -283,9 +261,8 @@ describe("buildQuotaExport", () => {
     }
   });
 
-  it("preserves raw family names when display projections suppress them", async () => {
-    mockReadCachedProviderResult.mockResolvedValue({
-      hit: true,
+  it("preserves raw family names when display projections suppress them", () => {
+    const check: Check = {
       result: {
         attempted: true,
         entries: [
@@ -307,15 +284,10 @@ describe("buildQuotaExport", () => {
           redundantQuotaFamily: "Claude",
         },
       },
-      timestamp: Date.now(),
-    });
+      checkedAtMs: Date.now(),
+    };
 
-    const actual = await buildQuotaExport({
-      providers: [createMockProvider("example-family")],
-      ctx: createMockContext(),
-      ttlMs: 60_000,
-      fromCache: true,
-    });
+    const actual = exportAfter({ "example-family": check });
     const provider = actual.providers["example-family"];
     expect(provider).toMatchObject({
       status: "partial",
@@ -345,8 +317,7 @@ describe("buildQuotaExport", () => {
       { key: "overage_usd", value: "$2.00" },
       { key: "reset_at", value: "2026-07-01T00:00:00.000Z" },
     ];
-    mockReadCachedProviderResult.mockResolvedValue({
-      hit: true,
+    const check: Check = {
       result: {
         attempted: true,
         entries: [
@@ -366,15 +337,10 @@ describe("buildQuotaExport", () => {
         errors: [],
         rawDetails,
       },
-      timestamp: Date.now(),
-    });
+      checkedAtMs: Date.now(),
+    };
 
-    const actual = await buildQuotaExport({
-      providers: [createMockProvider("kilo")],
-      ctx: createMockContext(),
-      ttlMs: 60_000,
-      fromCache: true,
-    });
+    const actual = exportAfter({ kilo: check });
 
     const provider = actual.providers.kilo;
     expect(provider).toMatchObject({
@@ -393,8 +359,7 @@ describe("buildQuotaExport", () => {
 
   it("omits OpenRouter API-key diagnostics from export data", async () => {
     const secretCanary = "sk-or-export-secret-canary";
-    mockReadCachedProviderResult.mockResolvedValue({
-      hit: true,
+    const check: Check = {
       result: {
         attempted: true,
         entries: [
@@ -418,15 +383,10 @@ describe("buildQuotaExport", () => {
           { key: "secret_canary", value: secretCanary },
         ],
       },
-      timestamp: Date.now(),
-    });
+      checkedAtMs: Date.now(),
+    };
 
-    const actual = await buildQuotaExport({
-      providers: [createMockProvider("openrouter")],
-      ctx: createMockContext(),
-      ttlMs: 60_000,
-      fromCache: true,
-    });
+    const actual = exportAfter({ openrouter: check });
 
     expect(actual.providers.openrouter).toMatchObject({
       status: "ok",
@@ -441,20 +401,12 @@ describe("buildQuotaExport", () => {
 
   it("matches the v2 all-result-types JSON golden", async () => {
     vi.setSystemTime(new Date("2026-07-11T00:00:00.000Z"));
-    mockReadCachedProviderResult.mockResolvedValue({
-      hit: true,
+    const check: Check = {
       result: accountingContractResult,
-      timestamp: new Date("2026-07-10T23:59:00.000Z").getTime(),
-    });
+      checkedAtMs: new Date("2026-07-10T23:59:00.000Z").getTime(),
+    };
 
-    const ctx = createMockContext();
-    ctx.config.accountingDetail = "summary";
-    const actual = await buildQuotaExport({
-      providers: [createMockProvider("fixture")],
-      ctx,
-      ttlMs: 60_000,
-      fromCache: true,
-    });
+    const actual = exportAfter({ fixture: check });
     const golden = JSON.parse(
       readFileSync(
         new URL("./fixtures/quota-export-v2-all-result-types.json", import.meta.url),
@@ -495,9 +447,8 @@ describe("buildQuotaExport", () => {
     }
   });
 
-  it("omits invalid optional timestamps instead of exporting NaN", async () => {
-    mockReadCachedProviderResult.mockResolvedValue({
-      hit: true,
+  it("omits invalid optional timestamps instead of exporting NaN", () => {
+    const check: Check = {
       result: {
         attempted: true,
         entries: [
@@ -510,15 +461,10 @@ describe("buildQuotaExport", () => {
         ],
         errors: [],
       },
-      timestamp: Date.now(),
-    });
+      checkedAtMs: Date.now(),
+    };
 
-    const actual = await buildQuotaExport({
-      providers: [createMockProvider("fixture")],
-      ctx: createMockContext(),
-      ttlMs: 60_000,
-      fromCache: true,
-    });
+    const actual = exportAfter({ fixture: check });
     expect(actual.providers.fixture).toMatchObject({
       status: "ok",
       entries: [
@@ -533,8 +479,7 @@ describe("buildQuotaExport", () => {
   });
 
   it("exports flat quota-provider definition entry identity and ordered coarse source statuses", async () => {
-    const ctx = createMockContext();
-    ctx.config.quotaProviders = [
+    const definitions: QuotaProviderDefinition[] = [
       {
         id: "same-label-one",
         providerId: "gateway-one",
@@ -570,8 +515,7 @@ describe("buildQuotaExport", () => {
         format: "quota-v1",
       },
     ];
-    mockReadCachedProviderResult.mockResolvedValue({
-      hit: true,
+    const check: Check = {
       result: {
         attempted: true,
         entries: [
@@ -617,15 +561,10 @@ describe("buildQuotaExport", () => {
           },
         ],
       },
-      timestamp: Date.now(),
-    });
+      checkedAtMs: Date.now(),
+    };
 
-    const actual = await buildQuotaExport({
-      providers: [createMockProvider("quota-providers")],
-      ctx,
-      ttlMs: 60_000,
-      fromCache: true,
-    });
+    const actual = exportAfter({ "quota-providers": check }, definitions);
 
     expect(actual.version).toBe(2);
     expect(actual.providers["quota-providers"]).toMatchObject({
@@ -659,9 +598,8 @@ describe("buildQuotaExport", () => {
     expect(json).not.toContain("/trusted/opencode.db");
   });
 
-  it("returns ordered unavailable quota-provider definitions when the cache has no aggregate entry", async () => {
-    const ctx = createMockContext();
-    ctx.config.quotaProviders = [
+  it("lists every custom definition as unavailable when the custom providers could not be asked", async () => {
+    const definitions: QuotaProviderDefinition[] = [
       {
         id: "first",
         providerId: "gateway-one",
@@ -679,14 +617,12 @@ describe("buildQuotaExport", () => {
         format: "quota-v1",
       },
     ];
-    mockReadCachedProviderResult.mockResolvedValue({ hit: false });
+    const check: Check = {
+      result: { attempted: false, entries: [], errors: [] },
+      checkedAtMs: Date.now(),
+    };
 
-    const actual = await buildQuotaExport({
-      providers: [createMockProvider("quota-providers")],
-      ctx,
-      ttlMs: 60_000,
-      fromCache: true,
-    });
+    const actual = exportAfter({ "quota-providers": check }, definitions);
 
     expect(actual.providers["quota-providers"]).toEqual({
       status: "unavailable",
@@ -697,37 +633,78 @@ describe("buildQuotaExport", () => {
     });
   });
 
-  it("returns status unavailable when provider has no cache entry", async () => {
-    mockReadCachedProviderResult.mockResolvedValue({ hit: false });
+  it("marks a switched-off definition, so it is told apart from an unavailable one", async () => {
+    const definition: QuotaProviderDefinition = {
+      id: "first",
+      providerId: "gateway-one",
+      label: "First",
+      mode: "remote-api",
+      url: "https://one.example/accounting",
+      format: "quota-v1",
+    };
+    const diagnostic = {
+      providerId: "gateway-one",
+      mode: "remote-api",
+      format: "quota-v1",
+      modelIds: null,
+      apiKeyEnv: null,
+      selected: true,
+      attempted: true,
+      credentialSource: "opencode_db",
+      outcome: "success",
+      entryCount: 1,
+      checkedPaths: [],
+      credentialDatabasePaths: [],
+    } as const;
+    // A result from before the user switched "second" off.
+    const check: Check = {
+      result: {
+        attempted: true,
+        entries: [],
+        errors: [],
+        diagnostics: [
+          { ...diagnostic, sourceId: "first", outcome: "network_error", entryCount: 0 },
+          { ...diagnostic, sourceId: "second" },
+        ],
+      },
+      checkedAtMs: Date.now(),
+    };
 
-    const exportData = await buildQuotaExport({
-      providers: [createMockProvider("ghost")],
-      ctx: createMockContext(),
-      ttlMs: 60_000,
-      fromCache: true,
-    });
+    const actual = exportAfter({ "quota-providers": check }, [
+      definition,
+      { ...definition, id: "second", enabled: false },
+    ]);
+
+    expect(actual.providers["quota-providers"].sources).toEqual([
+      { id: "first", providerId: "gateway-one", status: "error", entryCount: 0 },
+      {
+        id: "second",
+        providerId: "gateway-one",
+        status: "unavailable",
+        entryCount: 0,
+        enabled: false,
+      },
+    ]);
+  });
+
+  it("returns status unavailable for a provider never checked", async () => {
+    const exportData = exportAfter({ ghost: undefined });
 
     expect(exportData.providers.ghost).toEqual({ status: "unavailable" });
   });
 
-  it("returns status error with a sanitized message when cache has only errors", async () => {
-    mockReadCachedProviderResult.mockResolvedValue({
-      hit: true,
+  it("returns status error with a sanitized message when the check found only errors", () => {
+    const check: Check = {
       result: {
         attempted: true,
         entries: [],
         // Includes an ANSI escape + control chars + newline that must be stripped.
         errors: [{ label: "Fetch", message: "Request failed\n\u001b[31mwith 429\u0007" }],
       },
-      timestamp: new Date("2026-06-01T11:00:00.000Z").getTime(),
-    });
+      checkedAtMs: new Date("2026-06-01T11:00:00.000Z").getTime(),
+    };
 
-    const exportData = await buildQuotaExport({
-      providers: [createMockProvider("broken")],
-      ctx: createMockContext(),
-      ttlMs: 60_000,
-      fromCache: true,
-    });
+    const exportData = exportAfter({ broken: check });
 
     expect(exportData.providers.broken).toEqual({
       status: "error",
@@ -737,27 +714,19 @@ describe("buildQuotaExport", () => {
   });
 
   it("computes cacheAgeSeconds from oldest fetchedAt across ok/error providers", async () => {
-    mockReadCachedProviderResult
-      .mockResolvedValueOnce({
-        hit: true,
+    const exportData = exportAfter({
+      a: {
         result: {
           attempted: true,
           entries: [{ accounting: QUOTA_ACCOUNTING, name: "A", percentRemaining: 90 }],
           errors: [],
         },
-        timestamp: new Date("2026-06-01T10:00:00.000Z").getTime(), // 2h old
-      })
-      .mockResolvedValueOnce({
-        hit: true,
+        checkedAtMs: new Date("2026-06-01T10:00:00.000Z").getTime(), // 2h old
+      },
+      b: {
         result: { attempted: true, entries: [], errors: [{ label: "E", message: "err" }] },
-        timestamp: new Date("2026-06-01T11:30:00.000Z").getTime(), // 30m old
-      });
-
-    const exportData = await buildQuotaExport({
-      providers: [createMockProvider("a"), createMockProvider("b")],
-      ctx: createMockContext(),
-      ttlMs: 60_000,
-      fromCache: true,
+        checkedAtMs: new Date("2026-06-01T11:30:00.000Z").getTime(), // 30m old
+      },
     });
 
     // Oldest is "a" at 10:00, now is 12:00 → 2h = 7200s

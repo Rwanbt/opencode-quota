@@ -98,8 +98,9 @@ export const alibabaCodingPlanProvider: QuotaProvider = {
       ctx.config.quotaProviders ?? [],
       "alibaba-coding-plan",
     );
+    // A switched-off tuning is not applied; the tier's own limits count.
     const limits =
-      tuning?.mode === "local-estimate"
+      tuning?.mode === "local-estimate" && tuning.enabled !== false
         ? {
             fiveHour: tuning.windows.find((window) => window.id === "five-hour")!.requestLimit,
             weekly: tuning.windows.find((window) => window.id === "weekly")!.requestLimit,

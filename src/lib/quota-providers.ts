@@ -16,10 +16,40 @@ export function isMaintainedQuotaProviderTuning(definition: QuotaProviderDefinit
   return (MAINTAINED_LOCAL_ESTIMATE_IDS as readonly string[]).includes(definition.id);
 }
 
+/**
+ * The custom definitions that run: not maintained tunings, and not switched off. A switched-off
+ * definition is never fetched and its key is never sent.
+ */
 export function customQuotaProviderDefinitions(
   definitions: readonly QuotaProviderDefinition[],
 ): QuotaProviderDefinition[] {
-  return definitions.filter((definition) => !isMaintainedQuotaProviderTuning(definition));
+  return definitions.filter(
+    (definition) => !isMaintainedQuotaProviderTuning(definition) && definition.enabled !== false,
+  );
+}
+
+/** Hosts a plain-HTTP address may use without a warning: this computer only. */
+const LOCAL_HOSTNAMES: ReadonlySet<string> = new Set(["localhost", "127.0.0.1", "[::1]"]);
+
+/**
+ * Where a remote custom provider sends its key, for the user to check before switching it on:
+ * the URL's origin and path (the scheme shows http or https), and where the key comes from.
+ * Never the key itself. `insecure` is true for plain HTTP to any host but localhost, 127.0.0.1
+ * or ::1. Null for a local estimate, which sends nothing.
+ */
+export function describeQuotaProviderRequest(
+  definition: QuotaProviderDefinition,
+): { url: string; key: string; insecure: boolean } | null {
+  if (definition.mode !== "remote-api") return null;
+  const url = new URL(definition.url);
+  const saved = `OpenCode's API key for provider "${definition.providerId}"`;
+  return {
+    url: `${url.origin}${url.pathname}`,
+    key: definition.apiKeyEnv
+      ? `environment variable ${definition.apiKeyEnv}, else ${saved}`
+      : saved,
+    insecure: url.protocol === "http:" && !LOCAL_HOSTNAMES.has(url.hostname),
+  };
 }
 
 export function resolveQuotaProviderSessionModelIdentity(params: {
@@ -167,6 +197,12 @@ interface QuotaProviderDefinitionBase {
   mode: QuotaProviderMode;
   /** Exact OpenCode model ids, without a provider prefix. Omission covers the provider. */
   modelIds?: string[];
+  /**
+   * `false` switches the definition off: it is never fetched and its key is never sent (a
+   * maintained tuning is not applied). Omission means on. Agents add definitions switched off;
+   * only the user switches them on.
+   */
+  enabled?: boolean;
 }
 
 interface RemoteApiQuotaProviderDefinitionBase extends QuotaProviderDefinitionBase {
@@ -219,9 +255,13 @@ export type QuotaProvidersValidationResult =
   | { value: QuotaProviderDefinition[]; issues: [] }
   | { value?: undefined; issues: QuotaProviderValidationIssue[] };
 
-const BASE_FIELDS = ["id", "providerId", "label", "mode", "modelIds"] as const;
+const BASE_FIELDS = ["id", "providerId", "label", "mode", "modelIds", "enabled"] as const;
 const REMOTE_FIELDS = [...BASE_FIELDS, "url", "format", "apiKeyEnv", "adapter"] as const;
 const LOCAL_FIELDS = [...BASE_FIELDS, "windows", "pricingModelMap"] as const;
+/** Every top-level field a definition can have, in either mode. */
+export const QUOTA_PROVIDER_FIELDS: readonly string[] = [
+  ...new Set([...REMOTE_FIELDS, ...LOCAL_FIELDS]),
+];
 const WINDOW_FIELDS = [
   "id",
   "label",
@@ -1136,15 +1176,14 @@ function validateWindows(
       continue;
     }
 
-    for (const field of Object.keys(item).filter(
-      (field) => !(WINDOW_FIELDS as readonly string[]).includes(field),
-    )) {
+    // An unknown field is named by its position: its name is the caller's, never repeated.
+    Object.keys(item).forEach((field, position) => {
+      if ((WINDOW_FIELDS as readonly string[]).includes(field)) return;
       issues.push({
-        key: `${windowKey}.${field}`,
-        message:
-          "unknown field; allowed fields are id, label, type, durationMinutes, requestLimit, usdBudget",
+        key: windowKey,
+        message: `field ${position + 1} is unknown; allowed fields are ${WINDOW_FIELDS.join(", ")}`,
       });
-    }
+    });
     for (const field of ["id", "type", "requestLimit"] as const) {
       if (!hasOwnKey(item, field)) {
         issues.push({ key: `${windowKey}.${field}`, message: "field is required" });
@@ -1292,19 +1331,22 @@ function validatePricingModelMap(
     return undefined;
   }
 
+  const key = `${providerKey}.pricingModelMap`;
+  const sourceModelIds = Object.keys(raw);
   const result: Record<string, string> = {};
-  for (const sourceModelId of Object.keys(raw).sort()) {
-    const key = `${providerKey}.pricingModelMap.${sourceModelId}`;
+  for (const sourceModelId of [...sourceModelIds].sort()) {
+    // An entry is named by its position: its source key is the caller's, never repeated.
+    const entry = `entry ${sourceModelIds.indexOf(sourceModelId) + 1}`;
     const target = raw[sourceModelId];
     if (sourceModelId.length === 0 || MODEL_FORBIDDEN_PATTERN.test(sourceModelId)) {
       issues.push({
         key,
-        message: "source key must be an exact model id without whitespace or control characters",
+        message: `${entry}: source key must be an exact model id without whitespace or control characters`,
       });
       continue;
     }
     if (typeof target !== "string") {
-      issues.push({ key, message: "expected a models.dev provider/model string" });
+      issues.push({ key, message: `${entry}: expected a models.dev provider/model string` });
       continue;
     }
 
@@ -1312,7 +1354,7 @@ function validatePricingModelMap(
     if (automatic.ok) {
       issues.push({
         key,
-        message: `automatic models.dev matching already resolves to ${automatic.key.provider}/${automatic.key.model}`,
+        message: `${entry}: automatic models.dev matching already resolves to ${automatic.key.provider}/${automatic.key.model}`,
       });
       continue;
     }
@@ -1323,7 +1365,7 @@ function validatePricingModelMap(
     if (!targetProvider || !targetModel || !lookupCost(targetProvider, targetModel)) {
       issues.push({
         key,
-        message: "target must be an exact priced models.dev provider/model id",
+        message: `${entry}: target must be an exact priced models.dev provider/model id`,
       });
       continue;
     }
@@ -1360,15 +1402,16 @@ export function validateQuotaProviders(value: unknown): QuotaProvidersValidation
         ? LOCAL_FIELDS
         : mode === "remote-api"
           ? REMOTE_FIELDS
-          : [...new Set([...REMOTE_FIELDS, ...LOCAL_FIELDS])];
-    for (const field of Object.keys(raw)
-      .filter((field) => !(allowedFields as readonly string[]).includes(field))
-      .sort()) {
+          : QUOTA_PROVIDER_FIELDS;
+    // An unknown field is named by its position: its name is the caller's, never repeated.
+    const modeName = QUOTA_PROVIDER_MODES.find((known) => known === mode) ?? "quota provider";
+    Object.keys(raw).forEach((field, position) => {
+      if ((allowedFields as readonly string[]).includes(field)) return;
       issues.push({
-        key: `${providerKey}.${field}`,
-        message: `unknown field for ${typeof mode === "string" ? mode : "quota provider"} mode`,
+        key: providerKey,
+        message: `field ${position + 1} is unknown for ${modeName} mode; allowed fields are ${allowedFields.join(", ")}`,
       });
-    }
+    });
 
     for (const field of ["id", "mode"] as const) {
       if (!hasOwnKey(raw, field)) {
@@ -1441,6 +1484,11 @@ export function validateQuotaProviders(value: unknown): QuotaProvidersValidation
     }
 
     const modelIds = validateModelIds({ raw, providerKey, providerId, issues });
+    const enabled = raw.enabled;
+    if (hasOwnKey(raw, "enabled") && typeof enabled !== "boolean") {
+      issues.push({ key: `${providerKey}.enabled`, message: "expected true or false" });
+    }
+    const switchField = typeof enabled === "boolean" ? { enabled } : {};
     const modelIdsValid =
       !hasOwnKey(raw, "modelIds") ||
       (Array.isArray(raw.modelIds) && modelIds?.length === raw.modelIds.length);
@@ -1536,6 +1584,7 @@ export function validateQuotaProviders(value: unknown): QuotaProvidersValidation
           url: normalizedUrl.value,
           ...(apiKeyEnv !== undefined ? { apiKeyEnv: apiKeyEnv as string } : {}),
           ...(modelIds ? { modelIds } : {}),
+          ...switchField,
         };
         definitions.push({
           index,
@@ -1570,6 +1619,7 @@ export function validateQuotaProviders(value: unknown): QuotaProvidersValidation
             windows,
             ...(modelIds ? { modelIds } : {}),
             ...(pricingModelMap ? { pricingModelMap } : {}),
+            ...switchField,
           },
         });
       }

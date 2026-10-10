@@ -154,10 +154,7 @@ try {
   const cachedOpenRouter = JSON.parse(cachedOpenRouterOutput);
   assert.equal(cachedOpenRouter.fromCache, true);
   assert.equal(cachedOpenRouter.providers.openrouter.status, "ok");
-  assert.equal(
-    cachedOpenRouter.providers.openrouter.entries[0].name,
-    "Packed production OpenRouter",
-  );
+  assert.equal(cachedOpenRouter.providers.openrouter.entries[0].name, "OpenRouter Month");
   assert.equal(cachedOpenRouter.providers.openrouter.entries[0].percentRemaining, 67);
 
   const readTree = async (directory) => {

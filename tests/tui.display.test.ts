@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  applyDisplayImport,
   type DisplaySettings,
   defaultDisplaySettings,
   loadDisplaySettings,
@@ -80,7 +81,7 @@ describe("display settings in plugin storage", () => {
   });
 
   it("reads the live store, so an edit from another TUI shows at once", () => {
-    let value: { version: number; settings: Partial<DisplaySettings> } | undefined;
+    let value: { version: number; settings?: Partial<DisplaySettings> } | undefined;
     const read = loadDisplaySettings({
       store: <Value extends object>(key: string, options: { readonly initial: Value }) => {
         expect(key).toBe("settings");
@@ -89,7 +90,60 @@ describe("display settings in plugin storage", () => {
       },
     });
     expect(read().statusLine.home).toBe(false);
-    value!.settings.statusLine = { ...defaultDisplaySettings().statusLine, home: true };
+    value!.settings = { statusLine: { ...defaultDisplaySettings().statusLine, home: true } };
     expect(read().statusLine.home).toBe(true);
+  });
+
+  /** OpenCode's plugin storage: one live value per key, changed only through `update`. */
+  function memoryStorage(initial?: object) {
+    const values = new Map<string, unknown>();
+    if (initial) values.set("settings", structuredClone(initial));
+    return {
+      values,
+      store<Value extends object>(key: string, options: { readonly initial: Value }) {
+        if (!values.has(key)) values.set(key, structuredClone(options.initial));
+        const value = values.get(key) as Value;
+        return [value, async (mutation: (draft: Value) => void) => mutation(value)] as const;
+      },
+    };
+  }
+
+  it.each([
+    {
+      name: "saves the v5 looks over the defaults while nothing is saved",
+      saved: undefined,
+      displayImport: {
+        statusLine: { detail: "one" as const },
+        toast: { afterReply: "always" as const },
+      },
+      expected: { detail: "one", afterReply: "always", afterCompaction: true },
+    },
+    {
+      name: "never overwrites settings saved before",
+      saved: { version: 1, settings: { toast: { afterReply: "low" } } },
+      displayImport: {
+        statusLine: { detail: "one" as const },
+        toast: { afterReply: "always" as const },
+      },
+      expected: { detail: "auto", afterReply: "low", afterCompaction: true },
+    },
+    {
+      name: "saves nothing for an empty import",
+      saved: undefined,
+      displayImport: {},
+      expected: { detail: "auto", afterReply: "off", afterCompaction: true },
+    },
+  ])("applyDisplayImport $name", async ({ saved, displayImport, expected }) => {
+    const storage = memoryStorage(saved);
+    await applyDisplayImport(storage, displayImport);
+    const display = loadDisplaySettings(storage)();
+    expect({
+      detail: display.statusLine.detail,
+      afterReply: display.toast.afterReply,
+      afterCompaction: display.toast.afterCompaction,
+    }).toEqual(expected);
+    if (Object.keys(displayImport).length === 0 && !saved) {
+      expect(storage.values.get("settings")).toEqual({ version: 1 });
+    }
   });
 });

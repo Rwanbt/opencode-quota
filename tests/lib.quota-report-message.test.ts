@@ -85,7 +85,7 @@ describe("quota report messages", () => {
 
     expect(quotaMessageText({ snapshot, usage: undefined, notices, nowMs }).split("\n")).toEqual([
       "Quota",
-      "● Claude  5h 58% · fable 90%",
+      "● Claude  5h 58% left · fable 90% left",
       "",
       "Notices",
       "- Copilot moves to AI Credits.",
@@ -99,5 +99,13 @@ describe("quota report messages", () => {
         nowMs,
       }),
     ).toBe("Quota\nNo quota providers found. Run /quota_status to see why.");
+    const otherModel = {
+      ...snapshot,
+      words: { ...snapshot.words, onlyCurrentModel: true },
+      currentModelProviderIds: [],
+    };
+    expect(quotaMessageText({ snapshot: otherModel, usage: undefined, notices: [], nowMs })).toBe(
+      "Quota\nNo quota provider serves the session's current model. Run /quota_status to see why.",
+    );
   });
 });
