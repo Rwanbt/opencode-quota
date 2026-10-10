@@ -31,7 +31,7 @@ import { rpcErrorMessage } from "../client.js";
 import type { SurfaceHost } from "../sidebar.js";
 import type { Theme } from "../theme.js";
 import { type NoticeBoard, noticeOptions } from "./notices.js";
-import { createUsageTab } from "./usage.js";
+import { createUsageTab, type UsageChoice } from "./usage.js";
 import { LimitsView, NoticesView, type StatusReport, StatusView } from "./views.js";
 
 const RPC_TIMEOUT_MS = 60_000;
@@ -77,7 +77,13 @@ type Toast = {
   duration?: number;
 };
 /** Returning false lets the key continue to the next layer. */
-type WindowKey = { bind: string; title: string; group: string; run: () => void | false };
+export type WindowKey = {
+  bind: string;
+  title: string;
+  group: string;
+  // biome-ignore lint/suspicious/noConfusingVoidType: OpenCode's keymap API types `run` this way.
+  run: () => void | false;
+};
 export type CallOptions = { location: { directory: string }; signal: AbortSignal };
 export type WindowRpc = {
   noticeList(
@@ -147,6 +153,8 @@ const KEYS = "Quota window";
 export type QuotaWindow = {
   /** Opens the window on a tab, or switches to it. On Home it only says to open a session. */
   open(tab: WindowTab): void;
+  /** Opens the window on its Usage tab, on `choice`. */
+  openUsage(choice: UsageChoice): void;
   /** The `session.composer.top` slot. */
   Slot(props: { sessionID: string }): JSX.Element;
 };
@@ -421,9 +429,11 @@ export function createQuotaWindow(api: WindowHost, host: SurfaceHost): QuotaWind
 
     const current = () => TABS.find((item) => item.tab === tab()) ?? TABS[0];
     const hint = () =>
-      hasKeyboard()
-        ? "↑↓ select or scroll · space/enter or click to use a line · ‹ › (or ←/→) to change · tab next tab · esc close"
-        : "The keyboard is somewhere else (the message box, a dialog). Click this box to use ↑↓ space tab esc here.";
+      tab() === "usage" && usage.typingDate()
+        ? "Typing a date: enter next date, then apply · tab other date · esc back to the window"
+        : hasKeyboard()
+          ? "↑↓ select or scroll · space/enter or click to use a line · ‹ › (or ←/→) to change · tab next tab · esc close"
+          : "The keyboard is somewhere else (the message box, a dialog). Click this box to use ↑↓ space tab esc here.";
 
     return (
       <box
@@ -525,6 +535,10 @@ export function createQuotaWindow(api: WindowHost, host: SurfaceHost): QuotaWind
 
   return {
     open,
+    openUsage: (choice) => {
+      usage.choose(choice);
+      open("usage");
+    },
     Slot: (props) => (
       <Show when={tab() !== undefined}>
         <Window sessionID={props.sessionID} />

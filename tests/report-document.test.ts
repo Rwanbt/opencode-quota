@@ -114,10 +114,8 @@ describe("report-document", () => {
       line: `# Quota Status (opencode-quota v5.0.0) (/quota_status) ${time}`,
       subtitle: `opencode-quota v5.0.0 · ${time}`,
     });
-    expect(
-      commandHeading({ title: "Tokens used (Last 7 Days) (/tokens_weekly)", generatedAtMs }),
-    ).toEqual({
-      line: `# Tokens used (Last 7 Days) (/tokens_weekly) ${time}`,
+    expect(commandHeading({ title: "Usage (Last 7 days) (/quota_usage)", generatedAtMs })).toEqual({
+      line: `# Usage (Last 7 days) (/quota_usage) ${time}`,
       subtitle: time,
     });
   });

@@ -611,6 +611,17 @@ export function usageView(report: UsageReport, options: UsageViewOptions): Usage
 /** Below this width per side, cost by type and tokens by type stack in the model detail. */
 const DETAIL_SIDE_MIN_WIDTH = 30;
 
+/** The model detail's first line: the provider's dot and the model's name, cut to `width`. */
+export function modelDetailTitle(
+  report: UsageReport,
+  model: UsageModelRow,
+  width: number,
+): UsageLine {
+  const room = Math.max(0, Math.floor(width));
+  const name = truncateColumns(modelName(report, model), room - columnsOf(DOT));
+  return clip([span(DOT, providerRole(report, model.providerID)), span(name, "title")], room);
+}
+
 /**
  * One model of the breakdown, like T3 Code's model popup: its name, provider and share, then
  * Cost, Tokens, cost per 1M tokens and cache hit (cache reads ÷ all input tokens), its daily
@@ -637,7 +648,7 @@ export function modelDetailView(
   else if (model.tokens > 0) perMillion = formatUsd((model.costUsd / model.tokens) * 1_000_000);
 
   const lines: UsageLine[] = [
-    [span(DOT, providerRole(report, model.providerID)), span(modelName(report, model), "title")],
+    modelDetailTitle(report, model, width),
     [span(`${getQuotaProviderDisplayLabel(model.providerID)} · ${share}`, "muted")],
     [],
     ...grid(

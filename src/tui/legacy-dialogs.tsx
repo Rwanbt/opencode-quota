@@ -26,15 +26,15 @@ export type TypedCommandHost = {
 
 /**
  * Runs quota slash commands typed in the prompt in the TUI. On Enter, before OpenCode submits
- * the prompt, a prompt that holds exactly a quota command is cleared and the command runs:
- * each of `windowCommands` (/quota, /quota_usage, /quota_status) opens the quota window. So no
- * report shows in the chat, and on Home no session is created for one. The server registers
- * the "/" entries, so each is listed once.
+ * the prompt, a prompt that starts with a quota command is cleared and the command runs with
+ * the rest of the prompt as its arguments: each of `windowCommands` (/quota, /quota_usage,
+ * /quota_status) opens the quota window. So no report shows in the chat, and on Home no session
+ * is created for one. The server registers the "/" entries, so each is listed once.
  * The layer has no mode, so it is off while the "/" list or a dialog is open.
  */
 export function registerTypedQuotaCommands(
   context: TypedCommandHost,
-  windowCommands: Record<string, () => void>,
+  windowCommands: Record<string, (argumentsText: string) => void>,
 ): void {
   context.keymap.layer(() => ({
     // Above OpenCode's textarea layer, which submits the prompt on Enter.
@@ -51,7 +51,7 @@ export function registerTypedQuotaCommands(
           const name = trimmed.slice(1).split(/\s/, 1)[0] ?? "";
           if (!Object.hasOwn(windowCommands, name)) return false;
           editor.clear();
-          windowCommands[name]();
+          windowCommands[name](trimmed.slice(1 + name.length).trim());
         },
       },
     ],

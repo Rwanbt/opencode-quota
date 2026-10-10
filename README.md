@@ -77,7 +77,7 @@ Full list: [Moving to OpenCode 2](docs/readme/updating.md#moving-to-opencode-2).
 
 ### Slash commands
 
-Type these in OpenCode. In Web and Desktop, add a range after `/quota_usage`, like `/quota_usage 30d` or `/quota_usage between 2026-09-01 2026-09-25`.
+Type these in OpenCode. Add a range after `/quota_usage`, like `/quota_usage 30d` or `/quota_usage between 2026-09-01 2026-09-25`.
 
 | Command                | What it shows                                                                                                   |
 | ---------------------- | --------------------------------------------------------------------------------------------------------------- |
@@ -85,7 +85,7 @@ Type these in OpenCode. In Web and Desktop, add a range after `/quota_usage`, li
 | `/quota_usage [range]` | Tokens and API cost: `today`, `24h`, `7d` (default), `30d`, `all`, `session`, `session_tree`, `between` two dates |
 | `/quota_status`        | Setup check: logins, providers, pricing, and notices                                                            |
 
-In the terminal, `/quota_usage` opens the window's Usage tab: pick the range there, and click a model for its details. **Download new prices** there refreshes pricing from `models.dev`.
+In the terminal, `/quota_usage` opens the window's Usage tab on that range: change it there, and click a model for its details. **Download new prices** there refreshes pricing from `models.dev`.
 
 ### CLI commands
 

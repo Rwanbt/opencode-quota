@@ -10,6 +10,7 @@ import { Plugin } from "@opencode/plugin/tui";
 import type { JSX } from "@opentui/solid";
 import { onCleanup, Show } from "solid-js";
 import type { QuotaSnapshot } from "../core/types.js";
+import { parseUsageArguments } from "../core/usage-ranges.js";
 import { type ClientHost, createQuotaClient, reportFailure } from "./client.js";
 import {
   applyDisplayImport,
@@ -119,6 +120,16 @@ const plugin = Plugin.define({
     });
     const host: SurfaceHost = { theme: () => api.theme, display, quota };
     const quotaWindow = createQuotaWindow(api, host);
+    /** `/quota_usage [range]`: the Usage tab, on the typed range; a wrong range says why. */
+    const openUsage = (argumentsText: string) => {
+      if (!argumentsText) {
+        quotaWindow.open("usage");
+        return;
+      }
+      const parsed = parseUsageArguments(argumentsText);
+      if (parsed.ok) quotaWindow.openUsage(parsed);
+      else api.ui.toast.show({ variant: "warning", title: TOAST_TITLE, message: parsed.error });
+    };
 
     let disposeMount: (() => void) | undefined;
     const questionToolCalls = new Set<string>();
@@ -168,7 +179,7 @@ const plugin = Plugin.define({
         }));
         registerTypedQuotaCommands(api, {
           quota: () => quotaWindow.open("limits"),
-          quota_usage: () => quotaWindow.open("usage"),
+          quota_usage: openUsage,
           quota_status: () => quotaWindow.open("status"),
         });
         const afterTurn = (event: TuiEvent, trigger: TurnEnd) => {

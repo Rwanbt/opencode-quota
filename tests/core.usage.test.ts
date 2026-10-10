@@ -242,6 +242,67 @@ describe("usage report ranges", () => {
     });
     expect(report.days.map((day) => day.date)).toEqual(["2028-02-29"]);
   });
+
+  describe("across daylight saving time changes (New York)", () => {
+    const HOUR_MS = 60 * 60 * 1000;
+    beforeEach(() => {
+      vi.stubEnv("TZ", "America/New_York");
+    });
+
+    it("counts 24h as 24 real hours over the short day clocks spring forward", async () => {
+      // 2026-03-08 has 23 hours: 02:00 does not happen.
+      const now = new Date(2026, 2, 8, 12).getTime();
+      writeHistory([
+        message({ created: new Date(2026, 2, 7, 10, 59).getTime(), tokens: { output: 1 } }),
+        message({ created: new Date(2026, 2, 7, 11).getTime(), tokens: { output: 2 } }),
+        message({ created: new Date(2026, 2, 8, 3, 30).getTime(), tokens: { output: 4 } }),
+      ]);
+
+      const report = await usageReport({ range: "24h" }, now);
+
+      // 24 hours back is 11:00 the day before, not 12:00.
+      expect(report).toMatchObject({ sinceMs: new Date(2026, 2, 7, 11).getTime(), untilMs: now });
+      expect(report.totals.tokens.processed).toBe(2 + 4);
+      expect(report.days.map(({ date, tokens }) => [date, tokens])).toEqual([
+        ["2026-03-07", 2],
+        ["2026-03-08", 4],
+      ]);
+    });
+
+    it("keeps both 1:30s of the long day clocks fall back on that one day", async () => {
+      // 2026-11-01 has 25 hours: 01:00 to 02:00 happens twice.
+      const firstHalfPastOne = new Date(2026, 10, 1, 1, 30).getTime();
+      writeHistory([
+        message({ created: firstHalfPastOne, tokens: { output: 1 } }),
+        message({ created: firstHalfPastOne + HOUR_MS, tokens: { output: 2 } }),
+        message({ created: new Date(2026, 10, 2, 0, 30).getTime(), tokens: { output: 4 } }),
+      ]);
+
+      const report = await usageReport(
+        { range: "between", from: "2026-11-01", to: "2026-11-01" },
+        new Date(2026, 10, 2, 12).getTime(),
+      );
+
+      expect(report.untilMs - report.sinceMs + 1).toBe(25 * HOUR_MS);
+      expect(report.totals.tokens.processed).toBe(1 + 2);
+      expect(report.days.map(({ date, tokens }) => [date, tokens])).toEqual([["2026-11-01", 3]]);
+    });
+
+    it("gives 7d seven calendar days across the short day", async () => {
+      const report = await usageReport({ range: "7d" }, new Date(2026, 2, 10, 12).getTime());
+
+      expect(report.days.map((day) => day.date)).toEqual([
+        "2026-03-04",
+        "2026-03-05",
+        "2026-03-06",
+        "2026-03-07",
+        "2026-03-08",
+        "2026-03-09",
+        "2026-03-10",
+      ]);
+      expect(report.sinceMs).toBe(new Date(2026, 2, 4).getTime());
+    });
+  });
 });
 
 describe("usage report sessions", () => {
@@ -522,6 +583,28 @@ describe("usage report cost", () => {
     }
     expect(totals.costUsd).toBeCloseTo(input + cacheRead + cacheWrite + output, 10);
     expect(totals.cacheSavingsUsd).toBeCloseTo(item.cacheSavingsUsd, 10);
+  });
+
+  it("prices a message without uncached input: all its input came from the cache", async () => {
+    writeHistory([message({ created: at(0, 8), tokens: { cacheRead: M, output: M } })]);
+
+    const { totals, models } = await usageReport({ range: "today" }, NOW);
+
+    expect(totals.tokens).toEqual({
+      processed: 2 * M,
+      cachedInput: M,
+      uncachedInput: 0,
+      output: M,
+    });
+    expect(models[0]?.tokensByType).toEqual({ input: 0, cacheRead: M, cacheWrite: 0, output: M });
+    expect(models[0]?.costByType).toEqual({
+      input: 0,
+      cacheRead: expect.closeTo(0.2, 10),
+      cacheWrite: 0,
+      output: expect.closeTo(10, 10),
+    });
+    // Read from the cache at 0.2 instead of 2 per 1M input tokens.
+    expect(totals.cacheSavingsUsd).toBeCloseTo(2 - 0.2, 10);
   });
 
   it("lists each model's own days with usage", async () => {

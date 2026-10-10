@@ -25,6 +25,7 @@ import { parseCalendarDate } from "../../lib/calendar-date.js";
 import { sanitizeDisplayText } from "../../lib/display-sanitize.js";
 import {
   breakdownModels,
+  modelDetailTitle,
   modelDetailView,
   type UsageBreakdown,
   type UsageLine,
@@ -33,7 +34,7 @@ import {
   usageView,
 } from "../../view/usage.js";
 import { rpcErrorMessage } from "../client.js";
-import type { CallOptions, WindowHost, WindowRpc, WindowTheme } from "./shell.js";
+import type { CallOptions, WindowHost, WindowKey, WindowRpc, WindowTheme } from "./shell.js";
 
 /** OpenCode's theme also has categorical hue scales, for things told apart by color. */
 type UsageTheme = WindowTheme & { categorical?: ReadonlyArray<Record<number, RGBA>> };
@@ -45,6 +46,8 @@ type UsageResult =
 
 /** OpenCode's "large" dialog width (dialogWidth in its ui/dialog.tsx). */
 const DIALOG_WIDTH = 88;
+/** Room for " esc" after the model popup's title. */
+const CLOSE_LABEL_ROOM = " esc".length;
 const KEYS = "Usage";
 const MODEL_ROW_ID = "quota-usage-model-";
 
@@ -138,9 +141,12 @@ function ModelDetail(props: {
 }): JSX.Element {
   const theme = () => props.api.theme as UsageTheme;
   const dimensions = useTerminalDimensions();
-  // The dialog is its size's width, at most the terminal's minus 2; inside come this box's
-  // paddings (2 + 2) and the scrollbar's column.
-  const width = () => Math.min(DIALOG_WIDTH, dimensions().width - 2) - 4 - 1;
+  // The dialog is its size's width, at most the terminal's minus 2, inside this box's paddings
+  // (2 + 2). The lines below the title leave a column for the scrollbar; the title leaves room
+  // for " esc".
+  const innerWidth = () => Math.min(DIALOG_WIDTH, dimensions().width - 2) - 4;
+  const width = () => innerWidth() - 1;
+  const title = () => modelDetailTitle(props.report, props.model, innerWidth() - CLOSE_LABEL_ROOM);
   // The dialog starts a quarter of the way down; the title row and paddings take 4 rows.
   const maxHeight = () => Math.max(1, Math.floor(dimensions().height * 0.75) - 4);
   const lines = () =>
@@ -156,10 +162,11 @@ function ModelDetail(props: {
   return (
     <box paddingLeft={2} paddingRight={2} paddingBottom={1}>
       <box flexDirection="row">
-        <UsageLineText line={lines()[0] ?? []} theme={theme()} />
+        <UsageLineText line={title()} theme={theme()} />
         <box flexGrow={1} />
         <text
           fg={theme().text.muted}
+          flexShrink={0}
           selectable={false}
           onMouseUp={() => props.api.ui.dialog.clear()}
         >
@@ -182,7 +189,14 @@ function ModelDetail(props: {
   );
 }
 
+/** A range to show, with its dates for "between". */
+export type UsageChoice = { range: UsageRange; from?: string; to?: string };
+
 export type UsageTab = {
+  /** Puts the tab on a range; the next `show` asks for it. */
+  choose(choice: UsageChoice): void;
+  /** True while one of the Between dates has the keyboard. */
+  typingDate(): boolean;
   /** Asks the server for the report again, for the window's session. */
   show(sessionID: string): void;
   View(props: { width: number; keyTarget: () => Renderable | undefined }): JSX.Element;
@@ -210,6 +224,8 @@ export function createUsageTab(
   let fromInput: InputRenderable | undefined;
   let toInput: InputRenderable | undefined;
   let windowBox: () => Renderable | undefined = () => undefined;
+  /** The date input that has the keyboard, if any. */
+  const [dateFocus, setDateFocus] = createSignal<DateField>();
 
   function dateInput(field: DateField): InputRenderable | undefined {
     return field === "from" ? fromInput : toInput;
@@ -311,7 +327,7 @@ export function createUsageTab(
   }
 
   /** ↑↓ in the model breakdown: the next model, scrolled into view; past the ends, none. */
-  function moveSelection(delta: number): void | false {
+  function moveSelection(delta: number): ReturnType<WindowKey["run"]> {
     const report = readyReport();
     if (!report || breakdown() !== "model") return false;
     const next = selected() + delta;
@@ -333,8 +349,6 @@ export function createUsageTab(
   function View(props: { width: number; keyTarget: () => Renderable | undefined }): JSX.Element {
     const theme = () => api.theme as UsageTheme;
     windowBox = props.keyTarget;
-    const focusedDate = (): DateField | undefined =>
-      fromInput?.focused ? "from" : toInput?.focused ? "to" : undefined;
     const backToWindow = () => {
       setEditingDates(false);
       props.keyTarget()?.focus();
@@ -346,7 +360,7 @@ export function createUsageTab(
     const keys: Array<{
       bind: string;
       title: string;
-      window?: () => void | false;
+      window?: WindowKey["run"];
       date?: (field: DateField) => void;
     }> = [
       { bind: "c", title: "Cost", window: () => chooseMode("cost") },
@@ -390,7 +404,7 @@ export function createUsageTab(
         title: key.title,
         group: KEYS,
         run: () => {
-          const field = focusedDate();
+          const field = dateFocus();
           if (field) return key.date ? key.date(field) : false;
           return key.window ? key.window() : false;
         },
@@ -415,6 +429,8 @@ export function createUsageTab(
         ref={(element: InputRenderable) => {
           if (field === "from") fromInput = element;
           else toInput = element;
+          element.on("focused", () => setDateFocus(field));
+          element.on("blurred", () => setDateFocus((now) => (now === field ? undefined : now)));
         }}
         // A date's 10 characters, the cursor after them, and the input's scroll margin.
         width={13}
@@ -531,6 +547,12 @@ export function createUsageTab(
   }
 
   return {
+    choose(choice) {
+      setRange(choice.range);
+      if (choice.from && choice.to) setDates({ from: choice.from, to: choice.to });
+      setEditingDates(false);
+    },
+    typingDate: () => dateFocus() !== undefined,
     show(nextSessionID) {
       sessionID = nextSessionID;
       void load();
