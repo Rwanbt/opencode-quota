@@ -23,7 +23,8 @@ const TEST_ACCOUNTING = {
   ownership: "maintained",
   authority: "provider_reported",
 } as const;
-const ANNOUNCEMENT_HOME_MESSAGE = "Notice: 1 unread maintainer notice, see /quota → Notices.";
+const ANNOUNCEMENT_HOME_MESSAGE =
+  "Notice: 1 unread maintainer notice, see /quota_status → Notices.";
 
 const TEST_ANNOUNCEMENT = vi.hoisted(() => ({
   id: "copilot-credits",

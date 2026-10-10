@@ -168,6 +168,11 @@ export type QuotaSnapshot = {
   currentModelRowPrefixes?: Record<string, string[]>;
   /** With a session: the tokens it used so far. */
   sessionTokens?: SessionTokens;
+  /**
+   * The OpenCode provider id each custom definition serves, by the prefix of its row ids
+   * (`quota-providers.custom.<definition id>.`); absent without custom definitions.
+   */
+  customRowProviders?: Record<string, string>;
   /** The server's words; clients use their defaults until the server sends them. */
   words?: Words;
   /**

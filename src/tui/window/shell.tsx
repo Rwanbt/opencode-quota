@@ -1,10 +1,13 @@
 /** @jsxImportSource @opentui/solid */
 /**
- * The quota window. `/quota` opens it above the message box of a session, where it covers the
- * chat with the same size on every tab: Limits, Usage, Notices and Status. While it is focused (it is
- * after opening; click it to give it the keyboard again) its keys work: ↑↓ select or scroll,
- * space/enter use a line, ←/→ change it, tab switches tabs, esc closes. Closing gives the
- * keyboard back to whatever had it before.
+ * The quota window. `/quota_usage`, `/quota_status` and `/quota_settings` (and u and s in the
+ * `/quota` quick look) open it above the message box of a session, where it covers the chat
+ * with the same size on every tab: Limits, Usage, Notices, Status, and Settings. Settings is a
+ * placeholder. While it is focused (it is after opening; click it to give it the keyboard again)
+ * its keys work: ↑↓ select or scroll, space/enter use a line, ←/→ change it, tab switches tabs,
+ * esc closes. Closing gives the keyboard back to whatever had it before. Notices asks the server
+ * again every 15 seconds while it shows, so a new notice or a change made in another window
+ * appears.
  */
 import {
   type BoxRenderable,
@@ -35,33 +38,52 @@ import { createUsageTab, type UsageChoice } from "./usage.js";
 import { LimitsView, NoticesView, type StatusReport, StatusView } from "./views.js";
 
 const RPC_TIMEOUT_MS = 60_000;
+const NOTICE_POLL_MS = 15_000;
 /** Columns inside the window until it knows its real width. */
 const DEFAULT_WIDTH = 120;
 
-export type WindowTab = "limits" | "usage" | "notices" | "status";
+export type WindowTab = "limits" | "usage" | "notices" | "status" | "settings";
 
-const TABS: ReadonlyArray<{ tab: WindowTab; title: string; note: string }> = [
+/** The view tabs, then the Settings group after a │ in the tab bar. */
+const TABS: ReadonlyArray<{
+  tab: WindowTab;
+  title: string;
+  note: string;
+  group: "view" | "settings";
+}> = [
   {
     tab: "limits",
     title: "Limits",
     note: "Every limit, with its reset. The │ in a bar is where you'd be if you used it evenly: left of it = you use it faster than it refills.",
+    group: "view",
   },
   {
     tab: "usage",
     title: "Usage",
     note: "Tokens and what they would cost at API prices, from OpenCode's history. c/t cost or tokens · ←/→ range · m/d by model or day · ↑↓ pick a model, enter its details.",
+    group: "view",
   },
   {
     tab: "notices",
     title: "Notices",
     note: "Short notes from the OpenCode Quota maintainer (a provider changed its limits, a new version).",
+    group: "view",
   },
   {
     tab: "status",
     title: "Status",
     note: "What quota found and when it last checked. Copy it into a bug report.",
+    group: "view",
+  },
+  {
+    tab: "settings",
+    title: "Settings",
+    note: "How the sidebar, the status line, the toasts and /quota look.",
+    group: "settings",
   },
 ];
+/** The body of a tab that is not built yet. */
+const PLACEHOLDER_TABS: ReadonlySet<WindowTab> = new Set(["settings"]);
 
 /** The theme tokens the window reads, besides the surfaces' ones (OpenCode's `ResolvedTheme`). */
 export type WindowTheme = Theme & {
@@ -109,6 +131,8 @@ export type WindowHost = {
       on(event: "layout-changed", listener: () => void): void;
       off(event: "layout-changed", listener: () => void): void;
     };
+    on(event: "resize", listener: () => void): void;
+    off(event: "resize", listener: () => void): void;
     currentFocusedRenderable: Renderable | null;
     copyToClipboardOSC52(text: string): boolean;
   };
@@ -168,6 +192,33 @@ export function createQuotaWindow(api: WindowHost, host: SurfaceHost): QuotaWind
   let scroll: ScrollBoxRenderable | undefined;
   /** What had the keyboard before the window opened (the message box), so closing gives it back. */
   let focusBefore: Renderable | null = null;
+  /**
+   * The window had the keyboard and nothing took it on purpose. A resize across the sidebar's
+   * breakpoint makes OpenCode give the keyboard to its message box, and OpenCode can draw the
+   * window again (a new box); the window then takes the keyboard back.
+   */
+  let keyboardWanted = false;
+  /** The terminal was resized in this turn of the event loop. */
+  let resizedThisTurn = false;
+  const onResize = () => {
+    resizedThisTurn = true;
+    setTimeout(() => {
+      resizedThisTurn = false;
+    }, 0);
+  };
+  /** Numbers the notice and status requests; only the newest one's answer shows. */
+  let noticeRequest = 0;
+  let statusRequest = 0;
+  /** Notice requests not answered yet. */
+  let openNoticeRequests = 0;
+  /** The notice requests run one after another, so changes reach the server in click order. */
+  let noticeQueue: Promise<void> = Promise.resolve();
+  /**
+   * What the clicks not on the board yet change: a notice id, or a Notices line. Another click
+   * on the same thing is ignored until the newest answer shows, since it would send the same.
+   */
+  const changing = new Set<string>();
+  let noticePoll: ReturnType<typeof setInterval> | undefined;
 
   // The RPC client is made per call, so nothing reaches OpenCode during plugin setup.
   const rpc = () => api.client.rpc(QuotaRpc);
@@ -188,31 +239,62 @@ export function createQuotaWindow(api: WindowHost, host: SurfaceHost): QuotaWind
       message: sanitizeDisplayText(rpcErrorMessage(error)),
     });
 
-  /** Asks for the notices, after making the given changes. */
-  async function changeNotices(input: QuotaRpcNoticeListInput): Promise<void> {
-    try {
-      setBoard(await rpc().noticeList(input, options()));
-    } catch (error) {
-      showError(error);
-    }
+  /** Asks for the notices, after making the given changes, once the earlier requests are done. */
+  function changeNotices(input: QuotaRpcNoticeListInput): Promise<void> {
+    const request = ++noticeRequest;
+    openNoticeRequests += 1;
+    noticeQueue = noticeQueue.then(async () => {
+      try {
+        const next = await rpc().noticeList(input, options());
+        if (request === noticeRequest) setBoard(next);
+      } catch (error) {
+        if (request === noticeRequest) showError(error);
+      } finally {
+        openNoticeRequests -= 1;
+        // The newest answer came after every earlier change: the board shows them all.
+        if (request === noticeRequest) changing.clear();
+      }
+    });
+    return noticeQueue;
+  }
+
+  /** A click's change; ignored while the same thing's last change is not on the board. */
+  function changeOnce(what: string, input: QuotaRpcNoticeListInput): void {
+    if (changing.has(what)) return;
+    changing.add(what);
+    void changeNotices(input);
   }
 
   async function loadStatus(sessionID: string | undefined): Promise<void> {
+    const request = ++statusRequest;
     setStatus({ state: "loading" });
     try {
       const output = await rpc().status(sessionID ? { sessionID } : {}, options());
-      setStatus({ state: "ready", text: output.text });
+      if (request === statusRequest) setStatus({ state: "ready", text: output.text });
     } catch (error) {
+      if (request !== statusRequest) return;
       setStatus({ state: "failed", message: sanitizeDisplayText(rpcErrorMessage(error)) });
     }
+  }
+
+  function stopNoticePoll(): void {
+    clearInterval(noticePoll);
+    noticePoll = undefined;
   }
 
   /** Each tab asks the server again when it shows: Limits a refresh, the others their data. */
   function showTab(next: WindowTab): void {
     setTab(next);
     const sessionID = routeSessionID();
+    stopNoticePoll();
     if (next === "limits") void host.quota.refresh("manual", sessionID);
-    if (next === "notices") void changeNotices({});
+    if (next === "notices") {
+      void changeNotices({});
+      // A poll waits while a request is still out, so slow answers don't pile up.
+      noticePoll = setInterval(() => {
+        if (openNoticeRequests === 0) void changeNotices({});
+      }, NOTICE_POLL_MS);
+    }
     if (next === "status") void loadStatus(sessionID);
     if (next === "usage" && sessionID) usage.show(sessionID);
     setSelected(tabOptions()[0]?.id ?? "");
@@ -250,9 +332,9 @@ export function createQuotaWindow(api: WindowHost, host: SurfaceHost): QuotaWind
     if (tab() !== "notices" || !current) return [];
     const unreadIds = current.notices.filter((notice) => !notice.read).map(({ id }) => id);
     const runs = {
-      enabled: () => void changeNotices({ enabled: !current.enabled }),
-      home: () => void changeNotices({ home: !current.home }),
-      readAll: () => void changeNotices({ read: unreadIds }),
+      enabled: () => changeOnce("enabled", { enabled: !current.enabled }),
+      home: () => changeOnce("home", { home: !current.home }),
+      readAll: () => changeOnce("readAll", { read: unreadIds }),
     };
     return noticeOptions(current).map((option) => ({ ...option, run: runs[option.id] }));
   }
@@ -274,6 +356,12 @@ export function createQuotaWindow(api: WindowHost, host: SurfaceHost): QuotaWind
 
   function close(): void {
     setTab(undefined);
+    stopNoticePoll();
+    // Answers still on their way belong to the closed window.
+    noticeRequest += 1;
+    statusRequest += 1;
+    changing.clear();
+    keyboardWanted = false;
     if (focusBefore && !focusBefore.isDestroyed) focusBefore.focus();
     focusBefore = null;
   }
@@ -393,9 +481,15 @@ export function createQuotaWindow(api: WindowHost, host: SurfaceHost): QuotaWind
       api.renderer.root.on("layout-changed", measureRoom);
       onCleanup(() => api.renderer.root.off("layout-changed", measureRoom));
     });
+    api.renderer.on("resize", onResize);
+    onCleanup(() => api.renderer.off("resize", onResize));
+    // This window's own boxes: when OpenCode draws the window again, the new one may already
+    // have set them before this one is cleaned up.
+    let ownBox: BoxRenderable | undefined;
+    let ownScroll: ScrollBoxRenderable | undefined;
     onCleanup(() => {
-      windowBox = undefined;
-      scroll = undefined;
+      if (windowBox === ownBox) windowBox = undefined;
+      if (scroll === ownScroll) scroll = undefined;
     });
 
     // Keys work only while this box has the keyboard; the message box keeps its own keys.
@@ -439,8 +533,28 @@ export function createQuotaWindow(api: WindowHost, host: SurfaceHost): QuotaWind
       <box
         ref={(element: BoxRenderable) => {
           windowBox = element;
-          element.on("focused", () => setHasKeyboard(true));
-          element.on("blurred", () => setHasKeyboard(false));
+          ownBox = element;
+          element.on("focused", () => {
+            keyboardWanted = true;
+            setHasKeyboard(true);
+          });
+          element.on("blurred", () => {
+            setHasKeyboard(false);
+            // Decided once the event that took the keyboard is over: a resize took it (take it
+            // back), or a click elsewhere or a dialog did (leave it). A box drawn again loses it
+            // to its replacement, which takes it back.
+            queueMicrotask(() => {
+              if (windowBox !== element || element.isDestroyed) return;
+              if (resizedThisTurn && keyboardWanted) element.focus();
+              else keyboardWanted = false;
+            });
+          });
+          // Drawn again while it had the keyboard: take it back once the new box is in place.
+          if (keyboardWanted) {
+            setTimeout(() => {
+              if (keyboardWanted && windowBox === element) element.focus();
+            }, 0);
+          }
         }}
         focusable
         height={roomHeight()}
@@ -460,7 +574,12 @@ export function createQuotaWindow(api: WindowHost, host: SurfaceHost): QuotaWind
           <text fg={theme().text.base} wrapMode="none" selectable={false}>
             <b>Quota</b>
           </text>
-          {TABS.map((item) => (
+          {TABS.map((item) => [
+            item.group === "settings" ? (
+              <text fg={theme().border.base} wrapMode="none" selectable={false}>
+                │
+              </text>
+            ) : null,
             <text
               fg={item.tab === tab() ? theme().text.action.primary.selected : theme().text.muted}
               attributes={
@@ -473,8 +592,8 @@ export function createQuotaWindow(api: WindowHost, host: SurfaceHost): QuotaWind
               onMouseUp={() => showTab(item.tab)}
             >
               {item.title}
-            </text>
-          ))}
+            </text>,
+          ])}
           <box flexGrow={1} />
           <text fg={theme().text.muted} selectable={false} onMouseUp={close}>
             esc
@@ -489,6 +608,7 @@ export function createQuotaWindow(api: WindowHost, host: SurfaceHost): QuotaWind
         <scrollbox
           ref={(element: ScrollBoxRenderable) => {
             scroll = element;
+            ownScroll = element;
           }}
           // Basis 0: the tab body gets the room left over and scrolls; it never squeezes the rest.
           flexGrow={1}
@@ -509,11 +629,18 @@ export function createQuotaWindow(api: WindowHost, host: SurfaceHost): QuotaWind
             <NoticesView
               theme={theme()}
               board={board()}
-              toggle={(id, read) => void changeNotices(read ? { unread: [id] } : { read: [id] })}
+              toggle={(id, read) =>
+                changeOnce(`notice ${id}`, read ? { unread: [id] } : { read: [id] })
+              }
             />
           </Show>
           <Show when={tab() === "status"}>
             <StatusView theme={theme()} report={status()} />
+          </Show>
+          <Show when={PLACEHOLDER_TABS.has(tab() ?? "limits")}>
+            <text fg={theme().text.muted} selectable={false}>
+              {"   This tab is not built yet."}
+            </text>
           </Show>
         </scrollbox>
         <box flexDirection="row" gap={2} marginTop={1} flexShrink={0}>

@@ -2,7 +2,8 @@
  * The v6 surfaces end to end: the real server plugin (`src/plugin.ts`) and the real TUI plugin
  * (`src/tui/index.tsx`) on fake OpenCode hosts, joined by a JSON RPC bridge. Three providers:
  * Copilot with only its plan, MiniMax over its quota, and a custom json-v1 source next to a
- * failing one. API keys and a private error body are canaries no surface may show.
+ * failing one. OpenCode's history (a session database) used Anthropic and GitHub Copilot.
+ * API keys and a private error body are canaries no surface may show.
  *
  * Agent tool to plugin: a custom provider an agent replaces is switched off, and the running
  * server stops its requests through the settings reload alone.
@@ -267,6 +268,39 @@ function writeUsageHistory(modelID = "claude-sonnet-4-5"): void {
   });
 }
 
+/**
+ * OpenCode's history for the quick look, in its own database: an hour ago, Anthropic and GitHub
+ * Copilot each answered once.
+ */
+function writeQuickLookHistory(): void {
+  const databasePath = join(mocks.root, "opencode.db");
+  vi.stubEnv("OPENCODE_DB", databasePath);
+  const hourAgo = Date.now() - 60 * 60_000;
+  writeSessionDatabase(databasePath, {
+    sessions: [{ id: "ses_1", created: hourAgo }],
+    messages: [
+      {
+        id: "msg_1",
+        sessionID: "ses_1",
+        created: hourAgo,
+        completed: hourAgo + 1_000,
+        providerID: "anthropic",
+        modelID: "claude-sonnet-4-5",
+        tokens: { input: 1_000_000 },
+      },
+      {
+        id: "msg_2",
+        sessionID: "ses_1",
+        created: hourAgo + 2_000,
+        completed: hourAgo + 3_000,
+        providerID: "github-copilot",
+        modelID: "claude-sonnet-4-5",
+        tokens: { input: 500_000 },
+      },
+    ],
+  });
+}
+
 function expectNoCanary(...outputs: unknown[]): void {
   const text = JSON.stringify(outputs);
   for (const canary of Object.values(CANARIES)) expect(text).not.toContain(canary);
@@ -297,8 +331,9 @@ async function startHosts() {
   const { default: serverPlugin } = await import("../src/plugin.js");
   const events = createQuotaRpcEvents();
   const register = vi.fn(async () => ({ dispose: async () => {}, events: { emit: events.emit } }));
+  // The server's slash commands, and the messages they post (Web, Desktop, the TUI chat form).
   const serverCommands: ServerCommand[] = [];
-  const posted = vi.fn(async (_message: { text: string }) => ({}));
+  const posted = vi.fn(async (_message: { sessionID: string; text: string }) => ({}));
   const disposeServer = await serverPlugin.setup({
     location: { directory: process.cwd() },
     provider: {
@@ -349,11 +384,20 @@ async function startHosts() {
     priority?: number;
     commands: Array<{ bind?: string; run: () => unknown }>;
   }> = [];
-  const renderer: { currentFocusedEditor: { plainText: string; clear(): void } | null } = {
-    currentFocusedEditor: null,
-  };
+  const renderer: {
+    currentFocusedEditor: { plainText: string; clear(): void } | null;
+    width: number;
+    on(): void;
+    off(): void;
+  } = { currentFocusedEditor: null, width: 120, on: () => {}, off: () => {} };
   const toast = vi.fn();
   const dialog = { show: vi.fn(), clear: vi.fn(), prompt: vi.fn(), set: vi.fn() };
+  // Like OpenCode's prompt, the TUI client runs a server slash command in a session.
+  const sessionCommand = vi.fn(async (input: { sessionID: string; name: string; text: string }) =>
+    serverCommands
+      .find((command) => command.name === input.name)
+      ?.execute({ sessionID: input.sessionID, prompt: { text: input.text } }),
+  );
   vi.stubGlobal("React", {
     createElement: (
       type: unknown,
@@ -368,7 +412,7 @@ async function startHosts() {
   const disposeTui = tuiPlugin.setup({
     location: { directory: process.cwd() },
     renderer,
-    client: { rpc: createQuotaRpcBridge(handlers, events) },
+    client: { rpc: createQuotaRpcBridge(handlers, events), session: { command: sessionCommand } },
     theme: THEME,
     storage,
     data: {
@@ -401,6 +445,14 @@ async function startHosts() {
     render: (slot: string, props?: { sessionID?: string }) => renderers.get(slot)?.(props),
     emit: (name: string, data: Record<string, unknown>) => listeners.get(name)?.({ data }),
     command: (id: string) => commands.find((command) => command.id === `quota.${id}`)!,
+    /** The open dialog, drawn again. */
+    renderDialog: () => (dialog.show.mock.calls.at(-1)?.[0] as () => unknown)(),
+    /** Presses a key of the open dialog (its newest modal layer). */
+    pressDialog: (bind: string) =>
+      layers
+        .findLast((layer) => layer.mode === "modal")
+        ?.commands.find((key) => key.bind === bind)
+        ?.run(),
     /** Types `text` in the message box and presses enter. */
     typed: (text: string) => {
       renderer.currentFocusedEditor = {
@@ -424,8 +476,9 @@ async function startHosts() {
       serverCommands
         .find((command) => command.name === name)!
         .execute({ sessionID, prompt: { text } }),
-    posted,
     dialog,
+    sessionCommand,
+    posted,
     toast,
     stored,
     dispose: async () => {
@@ -513,10 +566,12 @@ describe("v6 surfaces on the quota snapshot", () => {
       else process.env[name] = value;
     }
     vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
     await rm(mocks.root, { recursive: true, force: true, maxRetries: 3 });
   });
 
-  it("shows one snapshot in the sidebar, status line, toast, /quota, export and gauges", async () => {
+  it("shows one snapshot in the sidebar, status line, toast, /quota, the window, export and gauges", async () => {
+    writeQuickLookHistory();
     const tui = await startHosts();
     const sidebar = () => tui.render("sidebar.content", { sessionID: "ses_1" });
     // The first look asks the server; the providers answer in the background and the
@@ -570,18 +625,73 @@ describe("v6 surfaces on the quota snapshot", () => {
     expect(toast).toMatchObject({ variant: "info", title: "OpenCode Quota" });
     expect(toast.message).toContain("Quota providers (T… Provider error 503\nSession  1.20K in");
 
-    // /quota opens the quota window above the message box, on its Limits tab: every row with
-    // its bar, percent, reset and pace.
-    await tui.command("window").run();
+    // /quota opens the quick look: one block per provider, OpenCode's usage of the last 7 days
+    // next to the limits. Anthropic has only usage, MiniMax only limits.
+    await tui.command("quick_look").run();
+    expect(tui.dialog.show).toHaveBeenCalledOnce();
+    expect(tui.dialog.set).toHaveBeenCalledWith({ size: "xlarge" });
+    const quickLook = () => words(tui.renderDialog());
+    await vi.waitFor(() =>
+      expect(quickLook()).toContain("● Anthropic $3.00 66.7% of cost · 1.00M tokens · 1 session"),
+    );
+    expect(quickLook()).toEqual(
+      expect.arrayContaining([
+        "Quota Last 7 days Cost Tokens ‹ 7 days ›",
+        "$4.50 Daily cost",
+        "● Copilot (pro) $1.50 33.3% of cost · 500K tokens · 1 session",
+        "Plan ████████████████░░░░ 81% left",
+        "● MiniMax Token Plan — no usage in OpenCode",
+        "5h ░░░░░░░░░│░░░░░░░░░░ 0% left · resets in 2h 14m · using it faster than it refills",
+        "Weekly ████████░░░░░░░░░░░░ 40% left",
+        "● Quota providers (Team) — no usage in OpenCode",
+        "Cost by type",
+        "c/t cost or tokens · ←/→ range · u full usage · s settings · esc close",
+      ]),
+    );
+    // t shows tokens, → the next range; u opens the window on Usage.
+    tui.pressDialog("t");
+    expect(quickLook()).toContain("● Anthropic 1.00M 66.7% of tokens · $3.00 · 1 session");
+    tui.pressDialog("right");
+    await vi.waitFor(() =>
+      expect(quickLook()[0]).toBe("Quota Last 30 days Cost Tokens ‹ 30 days ›"),
+    );
+    tui.pressDialog("u");
+    expect(tui.dialog.clear).toHaveBeenCalledOnce();
     const quotaWindow = () => textLines(tui.render("session.composer.top", { sessionID: "ses_1" }));
+    const usageNote = /^Tokens and what they would cost at API prices, from OpenCode's history\./u;
+    await vi.waitFor(() => expect(quotaWindow()).toContainEqual(expect.stringMatching(usageNote)));
+
+    // /quota_status and /quota_settings open the window on their tab. A click on Limits shows
+    // every row with its bar, percent, reset and pace.
+    await tui.command("status").run();
+    expect(quotaWindow()).toContain(
+      "What quota found and when it last checked. Copy it into a bug report.",
+    );
+    await tui.command("settings").run();
+    expect(quotaWindow()).toEqual(
+      expect.arrayContaining([
+        "How the sidebar, the status line, the toasts and /quota look.",
+        "   This tab is not built yet.",
+      ]),
+    );
+    await tui.command("usage").run();
+    expect(quotaWindow()).toContainEqual(expect.stringMatching(usageNote));
+    const tabs = findAll(
+      tui.render("session.composer.top", { sessionID: "ses_1" }),
+      (node) => node.type === "text" && typeof node.props.onMouseUp === "function",
+    );
+    tabs.find((node) => textLines(node)[0] === "Limits")?.props.onMouseUp();
     await vi.waitFor(() =>
       expect(quotaWindow()).toContain(" Quota providers · Team   Provider error 503"),
     );
     expect(quotaWindow()).toEqual(
       expect.arrayContaining([
         "Limits",
+        "Usage",
         "Notices",
         "Status",
+        "│",
+        "Settings",
         " Copilot · pro   checked just now",
         expect.stringMatching(/^ {3}Plan +█+░+ {2}81% left/u),
         expect.stringMatching(
@@ -590,6 +700,37 @@ describe("v6 surfaces on the quota snapshot", () => {
         "Close",
       ]),
     );
+
+    // The quick look as a toast, and as a message in the session: the TUI runs the server's
+    // /quota there, which posts the same short text as on Web and Desktop. In a 120-column
+    // terminal the toast's text gets 54 columns: a longer line goes on under itself.
+    const settings = tui.stored.get("settings").settings;
+    settings.quickLook = "toast";
+    await tui.command("quick_look").run();
+    await vi.waitFor(() => expect(tui.toast).toHaveBeenCalledTimes(2));
+    const shortText = [
+      "Quota · 7 days · $4.50 · 1.50M tokens",
+      "● Anthropic             $3.00",
+      "● Copilot (pro)         Plan 81% left  $1.50",
+      "● MiniMax Token Plan    5h 0% left · 7d 40% left",
+      "● Quota providers (Te…  Provider error 503",
+      "  30d 64% left",
+    ];
+    expect(tui.toast.mock.calls[1]?.[0]).toMatchObject({
+      variant: "info",
+      message: shortText.join("\n"),
+    });
+    settings.quickLook = "chat";
+    await tui.command("quick_look").run();
+    expect(tui.sessionCommand).toHaveBeenCalledExactlyOnceWith(
+      { sessionID: "ses_1", name: "quota", text: "" },
+      expect.anything(),
+    );
+    await vi.waitFor(() => expect(tui.posted).toHaveBeenCalledOnce());
+    expect(tui.posted.mock.calls[0]?.[0].text.split("\n").slice(0, 2)).toEqual([
+      "[OpenCode Quota report]",
+      "Quota · 7 days · $4.50 · 1.50M tokens",
+    ]);
 
     // The export file (version 2) and the gauges follow the snapshot without asking a provider
     // again.
@@ -646,7 +787,9 @@ describe("v6 surfaces on the quota snapshot", () => {
       expanded,
       sidebar(),
       tui.toast.mock.calls,
+      quickLook(),
       quotaWindow(),
+      tui.posted.mock.calls,
       exported,
       gauges,
       savedSnapshot,

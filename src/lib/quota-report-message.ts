@@ -4,10 +4,10 @@
  * mark every such message, so the server plugin can keep it out of every model request.
  */
 import type { QuotaSnapshot } from "../core/types.js";
+import type { UsageReport } from "../core/usage.js";
 import type { Notice } from "../rpc.js";
-import { DEFAULT_WORDS } from "../view/format.js";
-import { type RowSettings, type SurfaceRows, visibleGroups } from "../view/select.js";
-import { plainLines } from "../view/text.js";
+import { quickLookText } from "../view/quick-look.js";
+import type { RowSettings, SurfaceRows } from "../view/select.js";
 
 /** Metadata key on every quota report message. OpenCode stores message metadata with the message. */
 export const QUOTA_REPORT_METADATA_KEY = "opencodeQuota";
@@ -45,26 +45,20 @@ const NO_DISPLAY_CHOICES: RowSettings = {
   surfaces: { sidebar: EVERY_ROW, collapsed: EVERY_ROW, statusLine: EVERY_ROW, toast: EVERY_ROW },
 };
 
-/** The /quota report of Web and Desktop: every limit in the server's words, then the notices. */
+/**
+ * The /quota report of Web and Desktop: the quick look's short text (`view/quick-look.ts`) for
+ * every provider, then the notices not read yet.
+ */
 export function quotaMessageText(params: {
   snapshot: QuotaSnapshot;
+  usage: UsageReport | undefined;
   notices: Notice[];
   nowMs: number;
 }): string {
-  const { snapshot, nowMs } = params;
-  const words = snapshot.words ?? DEFAULT_WORDS;
-  const groups = visibleGroups(snapshot, NO_DISPLAY_CHOICES, "sidebar", words);
-  const limits =
-    groups.length > 0
-      ? plainLines({ groups, words, nowMs, sessionTokens: snapshot.sessionTokens })
-      : snapshot.providers.length > 0
-        ? ["No quota provider serves the session's current model. Run /quota_status to see why."]
-        : ["No quota providers found. Run /quota_status to see why."];
-  const notices = params.notices.flatMap((notice) => [
-    `- ${notice.message}`,
-    ...(notice.url ? [`  ${notice.url}`] : []),
-  ]);
-  return ["Quota", ...limits, ...(notices.length > 0 ? ["", "Notices", ...notices] : [])].join(
-    "\n",
-  );
+  const { snapshot, usage, nowMs } = params;
+  const quickLook = quickLookText({ snapshot, usage, settings: NO_DISPLAY_CHOICES, nowMs });
+  const notices = params.notices
+    .filter((notice) => !notice.read)
+    .flatMap((notice) => [`- ${notice.message}`, ...(notice.url ? [`  ${notice.url}`] : [])]);
+  return [quickLook, ...(notices.length > 0 ? ["", "Notices", ...notices] : [])].join("\n");
 }
