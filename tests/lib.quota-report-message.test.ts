@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
 
+import type { QuotaRow } from "../src/core/types.js";
 import {
   containsQuotaReport,
   formatQuotaReportMessage,
-  readQuotaReportMetadata,
+  quotaMessageText,
   removeQuotaReports,
 } from "../src/lib/quota-report-message.js";
-import { messageDocument } from "../src/lib/report-document.js";
 
 describe("quota report messages", () => {
   it("wraps the report in a fixed first and last line", () => {
@@ -30,25 +30,69 @@ describe("quota report messages", () => {
     expect(removeQuotaReports("no report")).toBe("no report");
   });
 
-  it("reads only well-formed report metadata", () => {
-    const metadata = {
-      command: "quota",
-      title: "OpenCode Quota",
-      at: 1,
-      document: messageDocument("openai 42%"),
-    };
+  it("writes every limit of the snapshot, then the notices", () => {
+    const nowMs = Date.parse("2026-10-10T12:00:00.000Z");
+    const row = (id: string, fields: Partial<QuotaRow>): QuotaRow => ({
+      id,
+      providerId: "anthropic",
+      label: id.split(".")[1] ?? "",
+      type: "quota",
+      method: "remote_api",
+      authority: "provider_reported",
+      prominence: "primary",
+      ...fields,
+    });
+    const snapshot = {
+      version: 6,
+      providers: [
+        {
+          providerId: "anthropic",
+          label: "Claude",
+          rows: [
+            row("anthropic.5h", {
+              percentRemaining: 58,
+              resetsAt: new Date(nowMs + 134 * 60_000).toISOString(),
+            }),
+            // Web and Desktop have no display settings, so supplementary rows show too.
+            row("anthropic.fable", { percentRemaining: 90, prominence: "supplementary" }),
+          ],
+          checkedAtMs: nowMs,
+          refreshing: false,
+          debug: [],
+        },
+      ],
+      resetNotices: [],
+      generatedAtMs: nowMs,
+      words: {
+        percent: "left",
+        reset: "exact",
+        resetDecimals: 1,
+        detail: "detailed",
+        runsOut: false,
+        onlyCurrentModel: false,
+        sessionTokens: "current",
+      },
+    } as const;
+    const notices = [
+      {
+        id: "a",
+        message: "Copilot moves to AI Credits.",
+        url: "https://example.com/a",
+        read: true,
+      },
+    ];
 
-    expect(readQuotaReportMetadata({ opencodeQuota: metadata })).toEqual(metadata);
-    // No report document, or a malformed one: the TUI has nothing to draw.
-    expect(
-      readQuotaReportMetadata({ opencodeQuota: { ...metadata, document: undefined } }),
-    ).toBeUndefined();
-    expect(
-      readQuotaReportMetadata({ opencodeQuota: { ...metadata, document: "openai 42%" } }),
-    ).toBeUndefined();
-    expect(readQuotaReportMetadata(undefined)).toBeUndefined();
-    expect(readQuotaReportMetadata({ displayText: "hi" })).toBeUndefined();
-    expect(readQuotaReportMetadata({ opencodeQuota: "quota" })).toBeUndefined();
-    expect(readQuotaReportMetadata({ opencodeQuota: { command: "quota" } })).toBeUndefined();
+    expect(quotaMessageText({ snapshot, notices, nowMs }).split("\n")).toEqual([
+      "Quota",
+      "Claude 5h           58% left      2h 14m",
+      "Claude fable        90% left",
+      "",
+      "Notices",
+      "- Copilot moves to AI Credits.",
+      "  https://example.com/a",
+    ]);
+    expect(quotaMessageText({ snapshot: { ...snapshot, providers: [] }, notices: [], nowMs })).toBe(
+      "Quota\nNo quota providers found. Run /quota_status to see why.",
+    );
   });
 });

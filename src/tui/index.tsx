@@ -1,10 +1,10 @@
 /** @jsxImportSource @opentui/solid */
 /**
  * OpenCode Quota's TUI plugin. It draws the server's quota snapshot: the Quota panel in the
- * session sidebar, the status line under the message box (and on Home when turned on), and
- * the toasts. It reads only the quota RPC (`snapshot`, `refresh`, `notices`, the `changed`
- * event) and the display settings in OpenCode's plugin storage. The report dialogs of the
- * slash commands live in `legacy-dialogs.tsx` until the quota window replaces them.
+ * session sidebar, the status line under the message box (and on Home when turned on), the
+ * toasts, and the quota window that `/quota` opens above the message box (`window/`). It reads
+ * only the quota RPC and the display settings in OpenCode's plugin storage. The report dialogs
+ * of the token and pricing commands live in `legacy-dialogs.tsx`.
  */
 import { Plugin } from "@opencode/plugin/tui";
 import type { JSX } from "@opentui/solid";
@@ -13,22 +13,23 @@ import { type ClientHost, createQuotaClient, reportFailure } from "./client.js";
 import { type DisplaySettings, type DisplayStorage, loadDisplaySettings } from "./display.js";
 import {
   type LegacyDialogHost,
-  registerQuotaCommands,
   registerTypedQuotaCommands,
-  showPostedQuotaReport,
-  type TuiEvent,
+  reportCommands,
 } from "./legacy-dialogs.js";
 import { SidebarPanel, type SurfaceHost } from "./sidebar.js";
 import { HomeFooter, StatusLine } from "./status-line.js";
 import type { Theme } from "./theme.js";
 import { createToasts, type TurnEnd } from "./toasts.js";
+import { createQuotaWindow, type WindowHost } from "./window/shell.js";
 
 type SidebarState = { open: boolean };
+type TuiEvent = { data?: Record<string, unknown> };
 
-/** What the plugin needs from OpenCode's TUI context, besides the dialogs' needs. */
+/** What the plugin needs from OpenCode's TUI context, besides the dialogs' and the window's needs. */
 type TuiContext = LegacyDialogHost &
+  WindowHost &
   ClientHost & {
-    theme: Theme & LegacyDialogHost["theme"];
+    theme: Theme & LegacyDialogHost["theme"] & WindowHost["theme"];
     storage: DisplayStorage;
     data: LegacyDialogHost["data"] & {
       on: (event: string, handler: (event: TuiEvent) => void) => () => void;
@@ -40,7 +41,11 @@ type TuiContext = LegacyDialogHost &
           | { append: "app"; render: () => null }
           | { append: "sidebar.content"; render: (props: { sessionID: string }) => JSX.Element }
           | { append: "prompt.footer"; render: (props: { sessionID?: string }) => JSX.Element }
-          | { append: "home.footer.status"; render: () => JSX.Element },
+          | { append: "home.footer.status"; render: () => JSX.Element }
+          | {
+              append: "session.composer.top";
+              render: (props: { sessionID: string }) => JSX.Element;
+            },
       ) => () => void;
     };
   };
@@ -87,6 +92,7 @@ const plugin = Plugin.define({
       isChildSession,
     });
     const host: SurfaceHost = { theme: () => api.theme, display, quota };
+    const quotaWindow = createQuotaWindow(api, host);
 
     let disposeMount: (() => void) | undefined;
     const questionToolCalls = new Set<string>();
@@ -98,8 +104,30 @@ const plugin = Plugin.define({
         // listeners, so each mount replaces the listeners and registers everything again.
         disposeMount?.();
         const stopQuota = quota.start();
-        registerQuotaCommands(api);
-        registerTypedQuotaCommands(api);
+        api.keymap.layer(() => ({
+          mode: "global",
+          commands: [
+            {
+              id: "quota.window",
+              title: "Quota: limits, notices, status",
+              group: "OpenCode Quota",
+              palette: true,
+              run: () => quotaWindow.open("limits"),
+            },
+            {
+              id: "quota.status",
+              title: "Quota status report",
+              group: "OpenCode Quota",
+              palette: true,
+              run: () => quotaWindow.open("status"),
+            },
+            ...reportCommands(api),
+          ],
+        }));
+        registerTypedQuotaCommands(api, {
+          quota: () => quotaWindow.open("limits"),
+          quota_status: () => quotaWindow.open("status"),
+        });
         const afterTurn = (event: TuiEvent, trigger: TurnEnd) => {
           const sessionID = eventSessionID(event);
           if (sessionID) void toasts.afterTurn(trigger, sessionID).catch(reportFailure);
@@ -123,9 +151,6 @@ const plugin = Plugin.define({
           api.data.on("session.tool.failed", (event) => {
             const id = eventToolCallID(event);
             if (id) questionToolCalls.delete(id);
-          }),
-          api.data.on("session.inbox.enqueued", (event) => {
-            void showPostedQuotaReport(api, event).catch(reportFailure);
           }),
         ];
         disposeMount = () => {
@@ -167,12 +192,17 @@ const plugin = Plugin.define({
       append: "home.footer.status",
       render: () => <HomeFooter host={host} />,
     });
+    const disposeWindow = api.ui.slot({
+      append: "session.composer.top",
+      render: (props) => <quotaWindow.Slot sessionID={props.sessionID} />,
+    });
     return () => {
       disposeMount?.();
       disposeApp();
       disposeSidebar();
       disposePrompt();
       disposeHome();
+      disposeWindow();
     };
   },
 });

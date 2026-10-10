@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { QUOTA_DIALOG_COMMANDS } from "../src/lib/quota-dialog-command-specs.js";
+import { REPORT_COMMANDS } from "../src/rpc.js";
 import tuiPlugin from "../src/tui/index.js";
 import { createFakeIntegration } from "./helpers/fake-integration.js";
 
@@ -131,34 +131,34 @@ describe("V2 CLI command boundary", () => {
     rpc.notices.mockReset().mockResolvedValue({ homeLine: "" });
     rpc.command.mockReset().mockResolvedValue({
       state: "output",
-      command: "quota",
-      title: "Quota",
-      output: "Quota ready",
-      dialogSize: "large",
+      command: "tokens_today",
+      title: "Tokens",
+      output: "Tokens ready",
     });
   });
 
-  it("registers the 12 palette commands without slash entries, not V1 server command hooks", () => {
+  it("registers the 11 palette commands without slash entries, not V1 server command hooks", () => {
     const tui = startTui();
-    expect(tui.commands.size).toBe(12);
-    expect([...tui.commands.keys()]).toEqual(
-      QUOTA_DIALOG_COMMANDS.map((item) => `quota.${item.id}`),
-    );
+    expect([...tui.commands.keys()]).toEqual([
+      "quota.window",
+      "quota.status",
+      ...REPORT_COMMANDS.map((item) => `quota.${item.id}`),
+    ]);
+    expect(tui.commands.size).toBe(11);
     expect([...tui.commands.values()].some((item) => item.slash !== undefined)).toBe(false);
-    expect(new Set(QUOTA_DIALOG_COMMANDS.map((item) => item.id)).size).toBe(12);
     expect(tui.context.ui.slot).toHaveBeenCalledWith(expect.objectContaining({ append: "app" }));
     tui.dispose?.();
   });
 
   it("isolates commands from the model transcript and presents quota output locally", async () => {
     const tui = startTui();
-    await tui.commands.get("quota.quota")?.run();
+    await tui.commands.get("quota.tokens_today")?.run();
     expect(rpc.command).toHaveBeenCalledWith(
-      { command: "quota", sessionID: undefined, arguments: undefined },
+      { command: "tokens_today", sessionID: undefined, arguments: undefined },
       expect.objectContaining({ location: { directory: process.cwd() } }),
     );
     expect(tui.show).toHaveBeenCalledOnce();
-    expect(tui.set).toHaveBeenCalledWith({ size: "large" });
+    expect(tui.set).toHaveBeenCalledWith({ size: "xlarge" });
     expect(tui.context.data.session.get).not.toHaveBeenCalled();
     tui.dispose?.();
   });
@@ -188,9 +188,9 @@ describe("V2 CLI command boundary", () => {
   });
 
   it("returns without a dialog when quota is disabled", async () => {
-    rpc.command.mockResolvedValue({ state: "noop", command: "quota", reason: "disabled" });
+    rpc.command.mockResolvedValue({ state: "noop", command: "tokens_today", reason: "disabled" });
     const tui = startTui();
-    await tui.commands.get("quota.quota")?.run();
+    await tui.commands.get("quota.tokens_today")?.run();
     expect(tui.show).not.toHaveBeenCalled();
     expect(tui.toast).not.toHaveBeenCalled();
     tui.dispose?.();
@@ -199,7 +199,7 @@ describe("V2 CLI command boundary", () => {
   it("shows command failures as sanitized TUI error toasts rather than injecting a message", async () => {
     rpc.command.mockRejectedValue({ type: "rpc.internal", message: "quota unavailable" });
     const tui = startTui();
-    await tui.commands.get("quota.quota")?.run();
+    await tui.commands.get("quota.tokens_today")?.run();
     expect(tui.toast).toHaveBeenCalledWith(
       expect.objectContaining({
         variant: "error",
@@ -221,8 +221,11 @@ describe("V2 CLI command boundary", () => {
     tui.slots.get("home.footer.status")?.render();
     tui.listeners.get("session.execution.succeeded")?.({ data: { sessionID: "ses_1" } });
     for (const command of tui.commands.values()) await command.run();
-    await vi.waitFor(() => expect(tui.toast).toHaveBeenCalledOnce());
-    expect(tui.toast.mock.calls[0]?.[0].message).toContain("Copilot Plan");
+    // On Home the quota window only says to open a session; the reply toast shows the quota.
+    const toastMessages = () => tui.toast.mock.calls.map(([toast]) => toast.message as string);
+    await vi.waitFor(() =>
+      expect(toastMessages().filter((message) => message.includes("Copilot Plan"))).toHaveLength(1),
+    );
 
     // The surfaces read the server's snapshot over the RPC; one call serves both of ses_1's.
     expect(rpc.snapshot.mock.calls.filter(([input]) => input.sessionID === "ses_1")).toHaveLength(
@@ -233,7 +236,7 @@ describe("V2 CLI command boundary", () => {
     ]);
     expect(rpc.notices).toHaveBeenCalledOnce();
     // /tokens_between stops at its date prompt, which this fake cancels.
-    expect(rpc.command).toHaveBeenCalledTimes(QUOTA_DIALOG_COMMANDS.length - 1);
+    expect(rpc.command).toHaveBeenCalledTimes(REPORT_COMMANDS.length - 1);
     expect(mocks.readAuthFile).not.toHaveBeenCalled();
     expect(mocks.readAuthFileCached).not.toHaveBeenCalled();
     expect(mocks.readCredentialRows).not.toHaveBeenCalled();

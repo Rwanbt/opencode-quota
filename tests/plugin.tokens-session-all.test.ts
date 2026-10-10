@@ -1,12 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { formatLocalCallTimestamp } from "../src/lib/format-utils.js";
-import type { TokenReportCommandId } from "../src/lib/quota-dialog-command-specs.js";
 import {
   type ReportDocument,
   renderMarkdownReport,
   renderPlainTextReport,
 } from "../src/lib/report-document.js";
+import { REPORT_COMMANDS, type ReportCommandId } from "../src/rpc.js";
 import {
   createAlibabaAuthModuleMock,
   createPluginTestClient as createClient,
@@ -72,7 +72,7 @@ vi.mock("../src/lib/quota-stats-format.js", () => ({
 }));
 
 async function buildTokenDialogOutput(params: {
-  command: TokenReportCommandId;
+  command: Exclude<ReportCommandId, "pricing_refresh">;
   arguments?: string;
   client: ReturnType<typeof createClient>;
   sessionID: string;
@@ -140,8 +140,7 @@ describe("/tokens_session_all command", () => {
 
   it("registers /tokens_session_all in the V2 TUI command palette", async () => {
     const { default: plugin } = await import("../src/tui/index.js");
-    const { QUOTA_DIALOG_COMMANDS } = await import("../src/lib/quota-dialog-command-specs.js");
-    const tokensSessionAllCommand = QUOTA_DIALOG_COMMANDS.find(
+    const tokensSessionAllCommand = REPORT_COMMANDS.find(
       (command) => command.id === "tokens_session_all",
     );
     let commands: Array<{ id: string; title: string }> = [];
@@ -297,24 +296,25 @@ describe("/tokens_session_all command", () => {
   });
 
   it("titles every token report; only /tokens_between has facts the dialog title lacks", async () => {
-    const { TOKEN_REPORT_COMMANDS } = await import("../src/lib/quota-dialog-command-specs.js");
-    for (const spec of TOKEN_REPORT_COMMANDS) {
+    for (const spec of REPORT_COMMANDS) {
+      if (spec.id === "pricing_refresh") continue;
+      const between = spec.id === "tokens_between";
       mocks.buildQuotaStatsReportDocument.mockClear();
       await buildTokenDialogOutput({
         command: spec.id,
-        arguments: spec.kind === "between" ? "2026-01-01 2026-01-15" : undefined,
+        arguments: between ? "2026-01-01 2026-01-15" : undefined,
         client: createClient(),
         sessionID: "ses_parent",
         render: renderMarkdownReport,
       });
       expect(mocks.buildQuotaStatsReportDocument).toHaveBeenCalledWith(
         expect.objectContaining(
-          spec.kind === "between"
+          between
             ? {
                 title: "Tokens used (2026-01-01 .. 2026-01-15) (/tokens_between)",
                 titleDetail: "2026-01-01 .. 2026-01-15",
               }
-            : { title: spec.title, titleDetail: undefined },
+            : { title: `${spec.title} (/${spec.id})`, titleDetail: undefined },
         ),
       );
     }

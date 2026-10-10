@@ -3,7 +3,6 @@ import type { QuotaProviderResult } from "../src/lib/entries.js";
 import { hasOpenAIOAuthCached, queryOpenAIQuota } from "../src/lib/openai.js";
 import { type CredentialRow, readCredentialRows } from "../src/lib/opencode-auth.js";
 import { projectQuotaProviderResults } from "../src/lib/quota-accounting-projection.js";
-import { formatQuotaCommand } from "../src/lib/quota-command-format.js";
 import { openaiProvider } from "../src/providers/openai.js";
 import { expectNotAttempted, visibleEntries } from "./helpers/provider-assertions.js";
 import { createProviderAvailabilityContext } from "./helpers/provider-test-harness.js";
@@ -48,11 +47,6 @@ async function fetchRows(rows: CredentialRow[], config: Record<string, unknown> 
 
 function groupsAndSources(out: QuotaProviderResult) {
   return out.entries.map((entry) => [entry.group, entry.accounting.sourceId]);
-}
-
-/** The /quota text for this result. */
-function quotaCommandText(out: QuotaProviderResult): string {
-  return formatQuotaCommand({ entries: out.entries, errors: out.errors });
 }
 
 beforeEach(() => {
@@ -208,10 +202,6 @@ describe("openai provider", () => {
       ]),
     );
 
-    // Narrow dialogs wrap the sentence; collapsing whitespace keeps the phrase checkable.
-    const collapsed = quotaCommandText(out).replace(/\s+/gu, " ");
-    expect(collapsed).toContain("OpenAI Key");
-    expect(collapsed).toContain("ChatGPT quota unavailable for API key");
     const singleWindow = projectQuotaProviderResults([out], "singleWindow", "summary");
     expect(singleWindow.map((entry) => entry.accounting.sourceId)).toEqual(["key-id"]);
   });
@@ -387,15 +377,9 @@ describe("openai provider", () => {
     expect(out.entries.map((entry) => entry.accounting.sourceId)).toEqual(
       labels.map((_, index) => `key-${index}`),
     );
-    const output = quotaCommandText(out);
-    for (const name of names) {
-      expect(
-        output.split("\n").filter((line) => line === name || line === `→ ${name}`),
-      ).toHaveLength(1);
-    }
-    expect(
-      output.replace(/\s+/gu, " ").match(/ChatGPT quota unavailable for API key/gu),
-    ).toHaveLength(labels.length);
+    expect(out.entries.map((entry) => (entry as { value?: string }).value)).toEqual(
+      labels.map(() => "ChatGPT quota unavailable for API key"),
+    );
   });
 
   it("reports unknown active auth when no stored row is marked active", async () => {

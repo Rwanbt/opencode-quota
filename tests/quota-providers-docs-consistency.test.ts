@@ -231,11 +231,11 @@ describe("quota provider Phase 7 documentation consistency", () => {
 
   it("keeps surface formatters generic", () => {
     for (const path of [
-      "src/lib/quota-command-format.ts",
       "src/view/select.ts",
       "src/view/text.ts",
       "src/tui/sidebar.tsx",
       "src/tui/status-line.tsx",
+      "src/tui/window/limits.ts",
     ]) {
       const formatter = read(path);
       expect(formatter).not.toContain("quota-providers");

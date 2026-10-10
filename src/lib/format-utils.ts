@@ -1,13 +1,7 @@
 /**
- * Shared formatting utilities for quota display.
- *
- * These primitives are used by:
- * - format.ts (classic toast)
- * - toast-format-grouped.ts (grouped toast)
- * - quota-command-format.ts (/quota command)
+ * Shared formatting helpers: numbers, percents, token counts, money, timestamps, model names
+ * and the reset-time decimals setting.
  */
-
-import type { PercentDisplayMode, PercentLabelStyle } from "./types.js";
 
 /**
  * Clamp a number to an integer within [min, max].
@@ -26,51 +20,6 @@ export function clampPercent(n: number): number {
 }
 
 /**
- * Pad string to width, truncating if too long, adding spaces on right if too short.
- */
-export function padRight(str: string, width: number): string {
-  if (str.length >= width) return str.slice(0, width);
-  return str + " ".repeat(width - str.length);
-}
-
-/**
- * Pad string to width, truncating from start if too long, adding spaces on left if too short.
- */
-export function padLeft(str: string, width: number): string {
-  if (str.length >= width) return str.slice(str.length - width);
-  return " ".repeat(width - str.length) + str;
-}
-
-export function wrapDisplayText(text: string, maxWidth: number): string[] {
-  if (maxWidth <= 0) return [];
-  const words = text.trim().split(/\s+/u).filter(Boolean);
-  const lines: string[] = [];
-  let line = "";
-
-  for (const word of words) {
-    if (word.length > maxWidth) {
-      if (line) {
-        lines.push(line);
-        line = "";
-      }
-      for (let offset = 0; offset < word.length; offset += maxWidth) {
-        lines.push(word.slice(offset, offset + maxWidth));
-      }
-      continue;
-    }
-    const next = line ? `${line} ${word}` : word;
-    if (next.length <= maxWidth) {
-      line = next;
-    } else {
-      lines.push(line);
-      line = word;
-    }
-  }
-  if (line) lines.push(line);
-  return lines;
-}
-
-/**
  * Render a progress bar of filled/empty blocks.
  */
 export function bar(percentRemaining: number, width: number): string {
@@ -78,39 +27,6 @@ export function bar(percentRemaining: number, width: number): string {
   const filled = Math.round((p / 100) * width);
   const empty = width - filled;
   return "█".repeat(filled) + "░".repeat(empty);
-}
-
-/**
- * Resolve the displayed percent for toast/sidebar percent rows without
- * changing the underlying provider-normalized percentRemaining value.
- */
-export function resolveDisplayedPercent(
-  percentRemaining: number,
-  mode: PercentDisplayMode = "remaining",
-): number {
-  const remaining = Math.max(0, Math.round(percentRemaining));
-  const used = Math.max(0, Math.round(100 - percentRemaining));
-  return mode === "used" ? used : remaining;
-}
-
-export function formatDisplayedPercentLabel(
-  percentRemaining: number,
-  mode: PercentDisplayMode = "remaining",
-  style: PercentLabelStyle = "full",
-): string {
-  const displayedPercent = resolveDisplayedPercent(percentRemaining, mode);
-  const percent = `${displayedPercent}%`;
-  return style === "bare" ? percent : `${percent} ${mode === "used" ? "used" : "left"}`;
-}
-
-export const DISPLAYED_PERCENT_LABEL_WIDTH = "100% used".length;
-
-export function displayedPercentLabelWidth(style: PercentLabelStyle = "full"): number {
-  return style === "bare" ? "100%".length : DISPLAYED_PERCENT_LABEL_WIDTH;
-}
-
-export function formatQuotaModeHeading(mode: PercentDisplayMode = "remaining"): string {
-  return `Quota [${mode === "used" ? "Used" : "Remaining"}]`;
 }
 
 /**
@@ -135,11 +51,6 @@ export function formatTokenCount(count: number): string {
   return String(count);
 }
 
-/**
- * Shorten model name for compact display.
- *
- * Removes common prefixes/suffixes before truncating with ellipsis.
- */
 export function fmtUsdAmount(n: number): string {
   if (!Number.isFinite(n)) return "$0.00";
   return `$${n.toFixed(2)}`;
@@ -157,81 +68,6 @@ export function formatLocalCallTimestamp(atMs?: number): string {
 
 export function abbreviateDisplayedModelName(name: string): string {
   return name.replace(/antigravity/gi, "agy");
-}
-
-export function shortenModelName(name: string, maxLen: number): string {
-  const abbreviated = abbreviateDisplayedModelName(name);
-  if (abbreviated.length <= maxLen) return abbreviated;
-  // Remove common suffixes before truncating.
-  const s = abbreviated.replace(/-thinking$/i, "").replace(/-preview$/i, "");
-  if (s.length <= maxLen) return s;
-  // Truncate with ellipsis
-  return s.slice(0, maxLen - 1) + "\u2026";
-}
-
-export interface FormatResetCountdownOptions {
-  /**
-   * String to return when ISO timestamp is missing/undefined.
-   * - Classic toast uses "-"
-   * - Grouped toast uses ""
-   */
-  missing?: string;
-  /**
-   * Opt into the legacy compact display instead of the default exact-to-minute
-   * countdown.
-   */
-  compactRounded?: boolean;
-  /**
-   * When set with compactRounded, render the largest active unit with this
-   * many decimal places.
-   */
-  decimals?: number;
-  /** Join exact compound countdown units with spaces. */
-  spaced?: boolean;
-}
-
-const MS_PER_DAY = 86_400_000;
-const MS_PER_HOUR = 3_600_000;
-
-/**
- * Format a reset countdown for toast display.
- *
- * Returns a precise-to-minute value like "2d 5h 14m", "3h 45m", or "14m".
- * When reset time is in the past or invalid, returns "reset".
- */
-export function formatResetCountdown(iso?: string, opts?: FormatResetCountdownOptions): string {
-  if (!iso) return opts?.missing ?? "";
-  const resetDate = new Date(iso);
-  const now = new Date();
-  const diffMs = resetDate.getTime() - now.getTime();
-  if (!Number.isFinite(diffMs) || diffMs <= 0) return "reset";
-
-  // Round up partial minutes so the countdown never understates the time left.
-  const diffMinutes = Math.ceil(diffMs / 60_000);
-  const days = Math.floor(diffMinutes / 1440);
-  const hours = Math.floor((diffMinutes % 1440) / 60);
-  const minutes = diffMinutes % 60;
-
-  if (opts?.compactRounded) {
-    const decimals = opts.decimals;
-    if (isResetTimeDecimals(decimals)) {
-      if (days > 0) return `${(diffMs / MS_PER_DAY).toFixed(decimals)}d`;
-      const formattedHours = (diffMs / MS_PER_HOUR).toFixed(decimals);
-      if (Number(formattedHours) > 0) return `${formattedHours}h`;
-      return `${Math.max(1, Math.ceil(diffMs / 60_000))}m`;
-    }
-
-    if (days > 0) return `${days}d`;
-    const halfHours = Math.ceil(diffMinutes / 30);
-    const h = Math.floor(halfHours / 2);
-    if (h > 0) return halfHours % 2 === 1 ? `${h}.5h` : `${h}h`;
-    return `0.5h`;
-  }
-
-  const separator = opts?.spaced ? " " : "";
-  if (days > 0) return [`${days}d`, `${hours}h`, `${minutes}m`].join(separator);
-  if (hours > 0) return [`${hours}h`, `${minutes}m`].join(separator);
-  return `${minutes}m`;
 }
 
 export const MAX_RESET_TIME_DECIMALS = 4;

@@ -9,7 +9,6 @@ import type {
   QuotaToastEntry,
 } from "./entries.js";
 import { cloneQuotaToastEntry } from "./entries.js";
-import { isFixedWindowProjectionEvidence } from "./quota-exhaustion-projection.js";
 
 export const QUOTA_PROVIDER_CACHE_VERSION = 3 as const;
 
@@ -59,6 +58,26 @@ function hasOnlyKeys(value: Record<string, unknown>, allowed: readonly string[])
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function parseIsoTimestamp(value: unknown): number | null {
+  if (typeof value !== "string" || !ISO_TIMESTAMP_RE.test(value)) return null;
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+/** A fixed window that started before it was observed, ends at the entry's reset, and resets fully. */
+function isFixedWindowProjectionEvidence(value: unknown, resetTimeIso?: string): boolean {
+  if (!isRecord(value)) return false;
+  const keys = ["kind", "startedAtIso", "observedAtIso", "endsAtIso", "fullReset"];
+  if (Object.keys(value).some((key) => !keys.includes(key))) return false;
+  if (value.kind !== "fixed_window" || value.fullReset !== true) return false;
+  const startedAt = parseIsoTimestamp(value.startedAtIso);
+  const observedAt = parseIsoTimestamp(value.observedAtIso);
+  const endsAt = parseIsoTimestamp(value.endsAtIso);
+  if (startedAt === null || observedAt === null || endsAt === null) return false;
+  if (!(startedAt < observedAt && observedAt < endsAt)) return false;
+  return parseIsoTimestamp(resetTimeIso) === endsAt;
 }
 
 function isDenseArray(value: unknown): value is unknown[] {

@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -29,9 +29,11 @@ vi.mock("../src/lib/maintainer-announcements.js", async (importOriginal) => ({
 import {
   __resetMaintainerHomeNoticeForTests,
   homeNoticeLine,
+  listNotices,
+  markNotices,
 } from "../src/lib/maintainer-home-notice.js";
 
-const NOTICE = "Notice: Maintainer announcement available. Run /quota_announcements.";
+const NOTICE = "Notice: 1 unread maintainer notice, see /quota → Notices.";
 const MINUTE = 60_000;
 const MORNING = new Date(2026, 9, 10, 9, 0).getTime();
 
@@ -92,5 +94,29 @@ describe("Home maintainer notice", () => {
       homeNoticeLine({ frequency: "daily", providerIds: [], nowMs: MORNING }),
     ).resolves.toBe("");
     await expect(lineAt(MORNING + 60 * MINUTE)).resolves.toBe(NOTICE);
+  });
+
+  it("keeps the read state in the state dir; the Home line counts only unread notices", async () => {
+    const notice = {
+      id: "copilot-credits",
+      message: "If you use Copilot, GitHub billing is moving to AI Credits.",
+    };
+    await expect(listNotices({ providerIds: ["copilot"] })).resolves.toEqual([
+      { ...notice, read: false },
+    ]);
+
+    // An id that names no bundled notice is not kept.
+    await markNotices(["copilot-credits", "gone"], true);
+    await expect(listNotices({ providerIds: ["copilot"] })).resolves.toEqual([
+      { ...notice, read: true },
+    ]);
+    const file = join(state.root, "state", "opencode-quota", "maintainer-announcements-read.json");
+    expect(JSON.parse(await readFile(file, "utf8"))).toEqual({ read: ["copilot-credits"] });
+    await expect(lineAt(MORNING, "always")).resolves.toBe("");
+    // A day with nothing unread does not use up its showing.
+    await expect(lineAt(MORNING)).resolves.toBe("");
+
+    await markNotices(["copilot-credits"], false);
+    await expect(lineAt(MORNING + MINUTE)).resolves.toBe(NOTICE);
   });
 });

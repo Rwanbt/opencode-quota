@@ -42,11 +42,9 @@ describe("tui dist import graph", () => {
     expect(reached).not.toContain("lib/opencode-auth.js");
     expect(reached).not.toContain("lib/opencode-auth-sqlite.js");
     expect(reached.filter((file) => file.startsWith("providers/"))).toEqual([]);
-    // node:sqlite is allowed: the session and token-history storage (opencode-storage.js ->
-    // opencode-sqlite.js) is reachable through config.js -> quota-providers.js ->
-    // quota-stats.js, but it opens a database only when called, and the TUI never calls it.
-    // It reads no logins: the TUI binds no login source, and no reachable module may query
-    // OpenCode's credential table (only the terminal command's reader does).
+    // It reads no settings files and no logins: no reachable module may query OpenCode's
+    // credential table (only the terminal command's reader does).
+    expect(reached).not.toContain("lib/config.js");
     expect(filesQueryingCredentials(reached)).toEqual([]);
   });
 

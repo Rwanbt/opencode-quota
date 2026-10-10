@@ -28,7 +28,6 @@ Strict `.json` files also work. Not sure which file is active? Run `/quota_statu
 | Show `2d5h14m` instead of `2d 5h 14m`       | `resetTimeSpaced: false`                    |
 | Show reset countdowns as decimals (`5.7d`)  | `resetTimeDecimals: 1`                      |
 | Show extra accounting rows                  | `accountingDetail: "detailed"`              |
-| Keep TUI slash reports in the chat          | `tuiCommandDisplay: "inline"`               |
 | Show or hide session input/output tokens    | `showSessionTokens`                         |
 | Include subagent session tokens             | `sessionTokenScope: "tree"`                 |
 | Allow more time for provider requests       | `requestTimeoutMs: 12000`                   |
@@ -47,7 +46,6 @@ Example:
   "formatStyle": "allWindows",
   "percentDisplayMode": "remaining",
   "quotaProjection": "runway",
-  "tuiCommandDisplay": "inline",
 }
 ```
 
@@ -197,19 +195,13 @@ The sidebar, the status line and toasts draw the server's last quota snapshot wi
 - **Status line:** under the message box, in the room OpenCode's footer leaves free. Each provider shows its lowest window with as much detail as fits; when not all fit, scroll with the mouse wheel or click `‹` and `+N ›`.
 - **Toasts:** after compaction and when every provider fails, for 9 seconds. Toasts appear only in the TUI, never in Web or Desktop.
 
-### TUI settings
-
-| Option                                      | Default              | Meaning |
-| ------------------------------------------- | -------------------- | ------- |
-| `tuiCommandDisplay`                         | `"dialog"`           | Where TUI slash reports appear: `dialog` (popup, no chat message) or `inline` (in the chat). Web and Desktop always use the chat. If a session is open in the TUI and in Web, `dialog` also removes a Web `/quota` report from the chat while the TUI shows that session. |
-
 ### Maintainer notices
 
 | Option                                  | Default   | Meaning |
 | --------------------------------------- | --------- | ------- |
 | `maintainerAnnouncements.enabled`       | `true`    | Show bundled maintainer notices. |
 | `maintainerAnnouncements.home`          | `true`    | Show the count of active notices at the bottom of Home. |
-| `maintainerAnnouncements.homeFrequency` | `"daily"` | `"daily"`: show that Home line on the first Home screen of each day, for 10 minutes. `"always"`: show it on every Home screen. `/quota_announcements` always lists the notices. |
+| `maintainerAnnouncements.homeFrequency` | `"daily"` | `"daily"`: show that Home line on the first Home screen of each day, for 10 minutes. `"always"`: show it on every Home screen. The Notices tab of `/quota` lists every notice. |
 
 ### Provider settings
 

@@ -18,9 +18,9 @@ import {
   readAuthFile,
   readAuthFileCached,
 } from "../src/lib/opencode-auth.js";
-import { QUOTA_DIALOG_COMMANDS } from "../src/lib/quota-dialog-command-specs.js";
 import { formatQuotaReportMessage } from "../src/lib/quota-report-message.js";
 import plugin from "../src/plugin.js";
+import { REPORT_COMMANDS } from "../src/rpc.js";
 import { createFakeIntegration } from "./helpers/fake-integration.js";
 
 type RegisteredTool = {
@@ -136,16 +136,16 @@ describe("V2 server plugin", () => {
     expect(ctx.provider.list).toHaveBeenCalledTimes(0);
   });
 
-  it("registers the same slash commands as the TUI", async () => {
+  it("registers /quota, /quota_status and the report commands for Web and Desktop", async () => {
     const { ctx, commands } = createContext();
 
     await plugin.setup(ctx as never);
-    expect(commands.map((item) => ({ name: item.name, description: item.description }))).toEqual(
-      QUOTA_DIALOG_COMMANDS.map((spec) => ({
-        name: spec.slashName,
-        description: spec.description,
-      })),
-    );
+    expect(commands.map((item) => item.name)).toEqual([
+      "quota",
+      "quota_status",
+      ...REPORT_COMMANDS.map((spec) => spec.id),
+    ]);
+    expect(commands.every((item) => item.description)).toBe(true);
   });
 
   it("posts the report as a user message that never starts a model turn", async () => {
@@ -160,10 +160,14 @@ describe("V2 server plugin", () => {
     vi.spyOn(Date, "now").mockReturnValue(1_790_000_000_000);
 
     await plugin.setup(ctx as never);
-    await runCommand(commands, "quota");
+    await runCommand(commands, "quota_status");
 
     expect(buildOutput).toHaveBeenCalledWith(
-      expect.objectContaining({ command: "quota", sessionID: "session-web", arguments: undefined }),
+      expect.objectContaining({
+        command: "quota_status",
+        sessionID: "session-web",
+        arguments: undefined,
+      }),
     );
     expect(ctx.session.wait).toHaveBeenCalledWith({ sessionID: "session-web" });
     expect(calls).toEqual(["wait", "prompt"]);
@@ -171,15 +175,7 @@ describe("V2 server plugin", () => {
     expect(ctx.session.prompt.mock.calls[0][0]).toEqual({
       sessionID: "session-web",
       text: formatQuotaReportMessage("# Quota\nopenai 42%"),
-      // The TUI sanitizes the document when it draws it.
-      metadata: {
-        opencodeQuota: {
-          command: "quota",
-          title: "OpenCode Quota",
-          at: 1_790_000_000_000,
-          document,
-        },
-      },
+      metadata: { opencodeQuota: { command: "quota_status", at: 1_790_000_000_000 } },
       delivery: "steer",
       resume: false,
     });
@@ -214,10 +210,10 @@ describe("V2 server plugin", () => {
 
   it("posts nothing when the plugin is disabled", async () => {
     const { ctx, commands } = createContext();
-    buildOutput.mockResolvedValue({ state: "noop", command: "quota", reason: "disabled" });
+    buildOutput.mockResolvedValue({ state: "noop", command: "quota_status", reason: "disabled" });
 
     await plugin.setup(ctx as never);
-    await runCommand(commands, "quota");
+    await runCommand(commands, "quota_status");
 
     expect(ctx.session.wait).not.toHaveBeenCalled();
     expect(ctx.session.prompt).not.toHaveBeenCalled();

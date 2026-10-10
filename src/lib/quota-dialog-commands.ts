@@ -1,15 +1,14 @@
+import { type QuotaRpcCommandOutput, REPORT_COMMANDS, type ReportCommandId } from "../rpc.js";
 import {
   formatYmd,
   parseQuotaBetweenArgs,
   startOfLocalDayMs,
   startOfNextLocalDayMs,
+  type Ymd,
 } from "./command-parsing.js";
 import type { RuntimeContextRootHints } from "./config-file-utils.js";
 import { isCursorProviderId } from "./cursor-pricing.js";
-import {
-  BUNDLED_MAINTAINER_ANNOUNCEMENTS,
-  getMaintainerAnnouncementsSummary,
-} from "./maintainer-announcements.js";
+import { getMaintainerAnnouncementsSummary } from "./maintainer-announcements.js";
 import {
   getPricingSnapshotMeta,
   getPricingSnapshotSource,
@@ -20,20 +19,7 @@ import {
   setPricingSnapshotAutoRefresh,
   setPricingSnapshotSelection,
 } from "./modelsdev-pricing.js";
-import { buildQuotaCommandDocument } from "./quota-command-format.js";
 import {
-  QUOTA_DIALOG_COMMANDS_BY_ID,
-  type QuotaDialogCommandId,
-  type QuotaDialogCommandOutputResult,
-  TOKEN_REPORT_COMMANDS,
-  type TokenReportCommandId,
-  type TokenReportCommandSpec,
-} from "./quota-dialog-command-specs.js";
-import { ALL_WINDOWS_FORMAT_STYLE } from "./quota-format-style.js";
-import {
-  type CollectQuotaRenderDataResult,
-  collectConcreteEnabledProviderIds,
-  collectQuotaRenderData,
   collectQuotaStatusLiveProbes,
   matchesQuotaProviderCurrentSelection,
   type QuotaStatusLiveProbe,
@@ -69,101 +55,82 @@ import { getPackageVersion } from "./version.js";
 const TUI_TOKEN_REPORT_MODEL_NAME_WIDTH_REFERENCE = "gemini-3-pro-preview";
 const TUI_TOKEN_REPORT_MODEL_MAX_WIDTH = TUI_TOKEN_REPORT_MODEL_NAME_WIDTH_REFERENCE.length;
 
-const TOKEN_REPORT_COMMANDS_BY_ID: ReadonlyMap<TokenReportCommandId, TokenReportCommandSpec> =
-  (() => {
-    const map = new Map<TokenReportCommandId, TokenReportCommandSpec>();
-    for (const spec of TOKEN_REPORT_COMMANDS) {
-      map.set(spec.id, spec);
-    }
-    return map;
-  })();
+/** The commands this module builds reports for. */
+export type QuotaDialogCommandId = "quota_status" | ReportCommandId;
 
-function isTokenReportCommand(cmd: string): cmd is TokenReportCommandId {
-  return TOKEN_REPORT_COMMANDS_BY_ID.has(cmd as TokenReportCommandId);
-}
+type TokenReportCommandId = Exclude<ReportCommandId, "pricing_refresh">;
+
+type TokenReportCommandSpec =
+  | {
+      template: `/${string}`;
+      title: string;
+      kind: "rolling" | "today" | "all" | "session" | "session_tree";
+      windowMs?: number;
+      topModels?: number;
+      topSessions?: number;
+    }
+  | {
+      template: "/tokens_between";
+      titleForRange: (startYmd: Ymd, endYmd: Ymd) => string;
+      kind: "between";
+    };
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+const TOKEN_REPORT_COMMANDS: Readonly<Record<TokenReportCommandId, TokenReportCommandSpec>> = {
+  tokens_today: {
+    template: "/tokens_today",
+    title: "Tokens used (Today) (/tokens_today)",
+    kind: "today",
+  },
+  tokens_daily: {
+    template: "/tokens_daily",
+    title: "Tokens used (Last 24 Hours) (/tokens_daily)",
+    kind: "rolling",
+    windowMs: DAY_MS,
+  },
+  tokens_weekly: {
+    template: "/tokens_weekly",
+    title: "Tokens used (Last 7 Days) (/tokens_weekly)",
+    kind: "rolling",
+    windowMs: 7 * DAY_MS,
+  },
+  tokens_monthly: {
+    template: "/tokens_monthly",
+    title: "Tokens used (Last 30 Days) (/tokens_monthly)",
+    kind: "rolling",
+    windowMs: 30 * DAY_MS,
+  },
+  tokens_all: {
+    template: "/tokens_all",
+    title: "Tokens used (All Time) (/tokens_all)",
+    kind: "all",
+    topModels: 12,
+    topSessions: 12,
+  },
+  tokens_session: {
+    template: "/tokens_session",
+    title: "Tokens used (Current Session) (/tokens_session)",
+    kind: "session",
+  },
+  tokens_session_all: {
+    template: "/tokens_session_all",
+    title: "Tokens used (Current Session Tree) (/tokens_session_all)",
+    kind: "session_tree",
+  },
+  tokens_between: {
+    template: "/tokens_between",
+    titleForRange: (startYmd, endYmd) =>
+      `Tokens used (${formatYmd(startYmd)} .. ${formatYmd(endYmd)}) (/tokens_between)`,
+    kind: "between",
+  },
+};
 
 /** A command's report: the document the TUI renders and the text everything else shows. */
 type CommandReport = { document: ReportDocument; output: string };
 
 function plainTextReport(document: ReportDocument): CommandReport {
   return { document, output: renderPlainTextReport(document) };
-}
-
-function describeQuotaCommandCurrentSelection(params: {
-  currentModel?: string;
-  currentProviderID?: string;
-}): string {
-  if (isCursorProviderId(params.currentProviderID)) {
-    return `current provider: ${params.currentProviderID}`;
-  }
-  if (params.currentModel) {
-    return `current model: ${params.currentModel}`;
-  }
-  return "current session";
-}
-
-function buildQuotaCommandUnavailableMessage(result: CollectQuotaRenderDataResult): string {
-  const selection = result.selection;
-  if (!selection) {
-    return "Quota unavailable\n\nNo enabled quota providers are configured.\n\nRun /quota_status for diagnostics.";
-  }
-
-  if (selection.filteringByCurrentSelection && selection.filtered.length === 0) {
-    const detail = describeQuotaCommandCurrentSelection({
-      currentModel: selection.currentModel,
-      currentProviderID: selection.currentProviderID,
-    });
-    return `Quota unavailable\n\nNo enabled quota providers matched the ${detail}.\n\nRun /quota_status for diagnostics.`;
-  }
-
-  const availableIds = result.availability
-    .filter((item) => item.ok)
-    .map((item) => item.provider.id);
-
-  if (availableIds.length === 0) {
-    const scopedDetail = selection.filteringByCurrentSelection
-      ? ` for the ${describeQuotaCommandCurrentSelection({
-          currentModel: selection.currentModel,
-          currentProviderID: selection.currentProviderID,
-        })}`
-      : "";
-    return (
-      `Quota unavailable\n\nNo provider data available${scopedDetail}. ` +
-      "Make sure you are logged in to a supported provider (Copilot, OpenAI, etc.).\n\n" +
-      "Run /quota_status for diagnostics."
-    );
-  }
-
-  return (
-    `Quota unavailable\n\nNo provider data available for detected providers (${availableIds.join(", ")}). ` +
-    "This may be a temporary API error.\n\n" +
-    "Run /quota_status for diagnostics."
-  );
-}
-
-async function fetchQuotaCommandData(params: {
-  runtime: QuotaRuntimeContext;
-  setLastSessionTokenError?: (error: SessionTokenError | undefined) => void;
-}): Promise<CollectQuotaRenderDataResult> {
-  const { runtime } = params;
-  const request = createQuotaRuntimeRequestContext(runtime);
-  const quotaResult = await collectQuotaRenderData({
-    client: runtime.client,
-    resolveRuntimeProviderIds: runtime.resolveRuntimeProviderIds,
-    config: runtime.config,
-    configMeta: runtime.configMeta,
-    request,
-    workspaceRoot: runtime.roots.workspaceRoot,
-    surfaceExplicitProviderIssues: false,
-    formatStyle: ALL_WINDOWS_FORMAT_STYLE,
-    providers: runtime.providers,
-  });
-
-  if (runtime.config.showSessionTokens && request.sessionID) {
-    params.setLastSessionTokenError?.(quotaResult.sessionTokenError);
-  }
-
-  return quotaResult;
 }
 
 /** Starts a models.dev price refresh when due and waits for it at most `maxWaitMs`. */
@@ -556,61 +523,12 @@ function buildTokenReportUnavailableReport(params: {
   });
 }
 
-async function buildQuotaAnnouncementsCommandReport(
-  runtime: QuotaRuntimeContext,
-): Promise<CommandReport> {
-  let activeAnnouncements: ReturnType<
-    typeof getMaintainerAnnouncementsSummary
-  >["activeAnnouncements"] = [];
-
-  if (runtime.config.enabled && runtime.config.maintainerAnnouncements.enabled) {
-    const providerIds = await collectConcreteEnabledProviderIds({
-      providers: runtime.providers,
-      ctx: createQuotaProviderRuntimeContext({
-        ...runtime,
-        workspaceRoot: runtime.roots.workspaceRoot,
-      }),
-      enabledProviders: runtime.config.enabledProviders,
-    });
-    const summary = getMaintainerAnnouncementsSummary({
-      announcements: BUNDLED_MAINTAINER_ANNOUNCEMENTS,
-      enabledProviders: providerIds,
-    });
-    activeAnnouncements = summary.activeAnnouncements;
-  }
-
-  const lines: string[] = [];
-
-  if (activeAnnouncements.length === 0) {
-    lines.push("No current announcements.");
-  }
-
-  for (const evaluation of activeAnnouncements) {
-    lines.push(`- ${evaluation.announcement.message}`);
-    if (evaluation.announcement.url) {
-      lines.push(`  ${evaluation.announcement.url}`);
-    }
-  }
-
-  return plainTextReport({
-    heading: { line: "Maintainer announcements" },
-    sections: [{ id: "announcements", blocks: [{ kind: "lines", lines }] }],
-  });
-}
-
-function outputResult(
-  command: QuotaDialogCommandId,
-  report: CommandReport,
-): QuotaDialogCommandOutputResult {
-  const spec = QUOTA_DIALOG_COMMANDS_BY_ID.get(command)!;
-  return {
-    state: "output",
-    command,
-    title: spec.title,
-    output: report.output,
-    document: report.document,
-    dialogSize: spec.dialogSize,
-  };
+function outputResult(command: QuotaDialogCommandId, report: CommandReport): QuotaRpcCommandOutput {
+  const title =
+    command === "quota_status"
+      ? "OpenCode Quota Status"
+      : REPORT_COMMANDS.find((spec) => spec.id === command)!.title;
+  return { state: "output", command, title, output: report.output, document: report.document };
 }
 
 async function buildTokenReportCommandReport(params: {
@@ -621,7 +539,7 @@ async function buildTokenReportCommandReport(params: {
   runtime: QuotaRuntimeContext;
   log?: (message: string, extra?: Record<string, unknown>) => Promise<void>;
 }): Promise<CommandReport> {
-  const spec = TOKEN_REPORT_COMMANDS_BY_ID.get(params.command)!;
+  const spec = TOKEN_REPORT_COMMANDS[params.command];
   const sessionID = params.sessionID;
   const untilMs = params.generatedAtMs;
   await kickPricingRefresh({
@@ -645,7 +563,7 @@ async function buildTokenReportCommandReport(params: {
       if (!parsed.ok) {
         return plainTextReport(
           messageDocument(
-            `Invalid arguments for /${spec.id}\n\n${parsed.error}\n\nExpected: /${spec.id} YYYY-MM-DD YYYY-MM-DD\nExample: /${spec.id} 2026-01-01 2026-01-15`,
+            `Invalid arguments for ${spec.template}\n\n${parsed.error}\n\nExpected: ${spec.template} YYYY-MM-DD YYYY-MM-DD\nExample: ${spec.template} 2026-01-01 2026-01-15`,
           ),
         );
       }
@@ -735,10 +653,9 @@ export async function buildQuotaDialogCommandOutput(params: {
   resolveSessionMeta?: (sessionID: string) => Promise<SessionModelMeta>;
   generatedAtMs?: number;
   lastSessionTokenError?: SessionTokenError;
-  setLastSessionTokenError?: (error: SessionTokenError | undefined) => void;
   log?: (message: string, extra?: Record<string, unknown>) => Promise<void>;
   onDetectedProviderIds?: (providerIds: string[]) => Promise<void>;
-}): Promise<QuotaDialogCommandOutputResult> {
+}): Promise<QuotaRpcCommandOutput> {
   const generatedAtMs = params.generatedAtMs ?? Date.now();
   const runtime = await resolveQuotaRuntimeContext({
     client: params.client,
@@ -752,39 +669,8 @@ export async function buildQuotaDialogCommandOutput(params: {
   setPricingSnapshotAutoRefresh(runtime.config.pricingSnapshot.autoRefresh);
   setPricingSnapshotSelection(runtime.config.pricingSnapshot.source);
 
-  if (!runtime.config.enabled && params.command !== "quota_announcements") {
+  if (!runtime.config.enabled) {
     return { state: "noop", command: params.command, reason: "disabled" };
-  }
-
-  if (params.command === "quota") {
-    const reportData = await fetchQuotaCommandData({
-      runtime,
-      setLastSessionTokenError: params.setLastSessionTokenError,
-    });
-    if (
-      !reportData.data ||
-      (reportData.selection?.filteringByCurrentSelection &&
-        reportData.selection.filtered.length === 0)
-    ) {
-      return outputResult(
-        params.command,
-        plainTextReport(messageDocument(buildQuotaCommandUnavailableMessage(reportData))),
-      );
-    }
-
-    return outputResult(
-      params.command,
-      plainTextReport(
-        buildQuotaCommandDocument({
-          ...reportData.data,
-          generatedAtMs,
-          percentDisplayMode: runtime.config.percentDisplayMode,
-          percentLabelStyle: runtime.config.percentLabelStyle,
-          accountingDetail: runtime.config.accountingDetail,
-          resetTimeSpaced: runtime.config.resetTimeSpaced,
-        }),
-      ),
-    );
   }
 
   if (params.command === "quota_status") {
@@ -799,21 +685,6 @@ export async function buildQuotaDialogCommandOutput(params: {
     return data.document && data.output
       ? outputResult(params.command, { document: data.document, output: data.output })
       : { state: "noop", command: params.command, reason: "disabled" };
-  }
-
-  if (params.command === "quota_announcements") {
-    if ((params.arguments ?? "").trim()) {
-      return outputResult(
-        params.command,
-        plainTextReport(
-          messageDocument(
-            "Invalid arguments for /quota_announcements\n\nThis command does not accept arguments.\n\nUsage: /quota_announcements",
-          ),
-        ),
-      );
-    }
-
-    return outputResult(params.command, await buildQuotaAnnouncementsCommandReport(runtime));
   }
 
   if (params.command === "pricing_refresh") {
@@ -844,19 +715,15 @@ export async function buildQuotaDialogCommandOutput(params: {
     );
   }
 
-  if (isTokenReportCommand(params.command)) {
-    return outputResult(
-      params.command,
-      await buildTokenReportCommandReport({
-        command: params.command,
-        arguments: params.arguments,
-        sessionID: params.sessionID,
-        generatedAtMs,
-        runtime,
-        log: params.log,
-      }),
-    );
-  }
-
-  return { state: "noop", command: params.command, reason: "disabled" };
+  return outputResult(
+    params.command,
+    await buildTokenReportCommandReport({
+      command: params.command,
+      arguments: params.arguments,
+      sessionID: params.sessionID,
+      generatedAtMs,
+      runtime,
+      log: params.log,
+    }),
+  );
 }

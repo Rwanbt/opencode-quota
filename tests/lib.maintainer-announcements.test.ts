@@ -3,7 +3,6 @@ import { describe, expect, it } from "vitest";
 import {
   BUNDLED_MAINTAINER_ANNOUNCEMENTS,
   evaluateMaintainerAnnouncements,
-  formatMaintainerAnnouncementHomeCountLine,
   getActiveMaintainerAnnouncements,
   getMaintainerAnnouncementsSummary,
   getMaintainerAnnouncementTargetProviderIds,
@@ -316,15 +315,5 @@ describe("maintainer announcements", () => {
     expect(summary.activeAnnouncements.map((item) => item.announcement.id)).toEqual([
       "copilot-credits",
     ]);
-  });
-
-  it("formats PRD-exact count-only TUI home lines", () => {
-    expect(formatMaintainerAnnouncementHomeCountLine(0)).toBe("");
-    expect(formatMaintainerAnnouncementHomeCountLine(1)).toBe(
-      "Notice: Maintainer announcement available. Run /quota_announcements.",
-    );
-    expect(formatMaintainerAnnouncementHomeCountLine(3)).toBe(
-      "Notice: 3 maintainer announcements available. Run /quota_announcements.",
-    );
   });
 });
