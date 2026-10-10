@@ -110,7 +110,6 @@ describe("config symlink-preserving writes", () => {
         dir: configDir,
         kind: "opencode",
         preferredFormat: "jsonc",
-        convertJsonToJsonc: true,
       }),
       desiredData: { plugin: ["other", "@slkiser/opencode-quota@latest"] },
     });
@@ -120,31 +119,6 @@ describe("config symlink-preserving writes", () => {
     expect(lstatSync(join(configDir, "opencode.jsonc")).isSymbolicLink()).toBe(true);
     expect(updated).toContain("// keep");
     expect(updated).toContain("@slkiser/opencode-quota@latest");
-  });
-
-  it("fails closed instead of deleting a symlinked JSON source during JSONC conversion", async () => {
-    const root = makeTempDir();
-    const real = join(root, "dotfiles", "opencode.json");
-    const configDir = join(root, "config");
-    mkdirSync(join(root, "dotfiles"), { recursive: true });
-    mkdirSync(configDir, { recursive: true });
-    writeFileSync(real, '{"plugin":[]}\n');
-    symlinkSync(real, join(configDir, "opencode.json"));
-
-    await expect(
-      planConfigDocumentEdit({
-        target: resolveEditableConfigPath({
-          dir: configDir,
-          kind: "opencode",
-          preferredFormat: "jsonc",
-          convertJsonToJsonc: true,
-        }),
-        desiredData: { plugin: ["x"] },
-      }),
-    ).rejects.toThrow(/symlinked config source/);
-    expect(lstatSync(join(configDir, "opencode.json")).isSymbolicLink()).toBe(true);
-    expect(existsSync(join(configDir, "opencode.jsonc"))).toBe(false);
-    expect(readFileSync(real, "utf8")).toBe('{"plugin":[]}\n');
   });
 
   it("fails closed when the link is retargeted after preview", async () => {

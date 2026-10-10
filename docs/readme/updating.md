@@ -12,7 +12,7 @@ Then restart OpenCode and run `/quota_status` (or `npx @slkiser/opencode-quota s
 
 ## Moving from 5.x
 
-Update as above. Your old settings are converted automatically; you don't need to edit anything.
+Update as above; you don't need to edit your settings.
 
 The `init`, `update`, and `provider add` terminal commands are gone; `show` and `status` stay:
 

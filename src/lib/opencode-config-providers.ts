@@ -196,20 +196,18 @@ export async function reconcileDetectedProvidersInGlobalConfig(
     dir: globalConfigDir,
     kind: "opencode",
     preferredFormat: options.preferredFormat ?? projectFormat,
-    convertJsonToJsonc: false,
   });
 
   if (addedProviderIds.length === 0) {
     return { path: target.path, format: target.format, addedProviderIds, changed: false };
   }
 
-  const raw = target.existed ? await readFile(target.sourcePath, "utf8") : "{}\n";
-  const sourceFormat: ConfigFileFormat = target.sourcePath.endsWith(".jsonc") ? "jsonc" : "json";
-  const root = parseConfigDocument(raw, sourceFormat, target.sourcePath);
+  const raw = target.existed ? await readFile(target.path, "utf8") : "{}\n";
+  const root = parseConfigDocument(raw, target.format, target.path);
   if (root.provider !== undefined && !isRecord(root.provider)) {
     throw new ConfigDocumentError(
-      `Cannot add detected providers because provider is not an object: ${target.sourcePath}`,
-      target.sourcePath,
+      `Cannot add detected providers because provider is not an object: ${target.path}`,
+      target.path,
     );
   }
   const provider = isRecord(root.provider) ? { ...root.provider } : {};

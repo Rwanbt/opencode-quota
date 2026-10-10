@@ -15,8 +15,7 @@ export type ConfigWriteTargetReason =
   | "non-regular"
   | "permission"
   | "changed"
-  | "bytes-changed"
-  | "symlink-source";
+  | "bytes-changed";
 
 export interface ConfigWriteHop {
   path: string;
@@ -169,20 +168,6 @@ export async function resolveConfigWriteTarget(path: string): Promise<ConfigWrit
     }
     return { configuredPath, writePath, hops, terminalExisted: true };
   }
-}
-
-export function assertNotSymlinkSource(
-  snapshot: ConfigWriteTargetSnapshot,
-  sourcePath: string,
-): void {
-  if (snapshot.hops.length === 0) {
-    return;
-  }
-  throw new ConfigWriteTargetError(
-    `Refusing to delete a symlinked config source: ${sourcePath}`,
-    sourcePath,
-    "symlink-source",
-  );
 }
 
 async function existingFileMode(path: string): Promise<number> {
