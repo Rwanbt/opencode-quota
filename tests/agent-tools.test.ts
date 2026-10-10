@@ -4,17 +4,24 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { quotaAgentTools } from "../src/agent-tools.js";
+import { bindCredentialSource, type CredentialRow } from "../src/lib/opencode-auth.js";
+import type { RemoteApiQuotaProviderDefinition } from "../src/lib/quota-providers.js";
+import { resolveQuotaProviderApiKey } from "../src/lib/quota-providers-remote.js";
 import { loadSettings, settingsPath } from "../src/settings/index.js";
 
 let root: string;
 let openCodeProviderIds: string[];
+let unbindCredentials: (() => void) | undefined;
+
+/** The variable the user creates for the gateway's key: agents may use only such names. */
+const GATEWAY_VARIABLE = "OPENCODE_QUOTA_MY_GATEWAY_API_KEY";
 
 beforeEach(async () => {
-  // Dots keep the folder name from forming one long random-looking word the output redacts.
+  // Dots keep the folder name from looking like one long token.
   root = await mkdtemp(join(tmpdir(), "quota.agent.tools."));
   vi.stubEnv("OPENCODE_CONFIG_DIR", join(root, "config"));
   vi.stubEnv("XDG_STATE_HOME", join(root, "state"));
-  vi.stubEnv("MY_GATEWAY_API_KEY", "");
+  vi.stubEnv(GATEWAY_VARIABLE, "");
   openCodeProviderIds = ["my-gateway", "openrouter"];
   vi.stubGlobal(
     "fetch",
@@ -25,6 +32,8 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  unbindCredentials?.();
+  unbindCredentials = undefined;
   await rm(root, { recursive: true, force: true });
 });
 
@@ -35,7 +44,7 @@ const GATEWAY = {
   mode: "remote-api",
   url: "https://gateway.example/v1/quota",
   format: "quota-v1",
-  apiKeyEnv: "MY_GATEWAY_API_KEY",
+  apiKeyEnv: GATEWAY_VARIABLE,
 };
 
 const OTHER = {
@@ -84,19 +93,38 @@ function settingsText(): string {
   return readFileSync(settingsPath(), "utf8");
 }
 
-/** A key saved in the global opencode.json, as `provider.<id>.options.apiKey`. */
-function saveOpenCodeKey(providerId: string, apiKey: string): void {
+/** The global opencode.json, with `provider.<id>.options.apiKey` for each entry. */
+function saveOpenCodeKeys(keys: Record<string, string>): void {
   mkdirSync(join(root, "config"), { recursive: true });
-  writeFileSync(
-    join(root, "config", "opencode.json"),
-    JSON.stringify({ provider: { [providerId]: { options: { apiKey } } } }),
+  const provider = Object.fromEntries(
+    Object.entries(keys).map(([providerId, apiKey]) => [providerId, { options: { apiKey } }]),
   );
+  writeFileSync(join(root, "config", "opencode.json"), JSON.stringify({ provider }));
+}
+
+/** OpenCode's saved logins, as the server plugin reads them; `onRead` runs on every read. */
+function bindLogins(logins: Record<string, string>, onRead = () => {}): void {
+  unbindCredentials = bindCredentialSource({
+    kind: "sqlite",
+    async readRows({ integrationIds }) {
+      onRead();
+      return Object.entries(logins)
+        .filter(([integrationId]) => integrationIds.includes(integrationId))
+        .map(
+          ([integrationId, key]): CredentialRow => ({
+            id: integrationId,
+            integrationId,
+            label: "",
+            active: true,
+            value: { type: "api", key },
+          }),
+        );
+    },
+  });
 }
 
 /** A 32-character lowercase hex token, the shape of many API keys. */
 const HEX_TOKEN = "9f86d081884c7d659a2feaa0c55ad015";
-/** A path setting must be absolute; this one hides a key-like folder name. */
-const HEX_PATH = `/opt/${HEX_TOKEN}/claude`;
 
 const GATEWAY_WITHOUT_KEY_VARIABLE = Object.fromEntries(
   Object.entries(GATEWAY).filter(([field]) => field !== "apiKeyEnv"),
@@ -130,12 +158,9 @@ const DAILY_QUOTA = {
 
 describe("quota_settings_get", () => {
   it("lists each setting with its source and allowed values, and key variable names only", async () => {
-    vi.stubEnv("MY_GATEWAY_API_KEY", "gateway-key-value-123");
+    vi.stubEnv(GATEWAY_VARIABLE, "gateway-key-value-123");
     writeSettings(
-      JSON.stringify({
-        words: { percent: "used" },
-        providers: { custom: [GATEWAY, OTHER], anthropic: { binaryPath: HEX_PATH } },
-      }),
+      JSON.stringify({ words: { percent: "used" }, providers: { custom: [GATEWAY, OTHER] } }),
     );
 
     const result = await call("quota_settings_get", {});
@@ -148,7 +173,7 @@ describe("quota_settings_get", () => {
     });
     expect(result.settings?.["words.reset"]).toMatchObject({ value: "exact", from: "default" });
     expect(result.apiKeys).toEqual([
-      { provider: "my-gateway-quota", apiKeyEnv: "MY_GATEWAY_API_KEY", isSet: true },
+      { provider: "my-gateway-quota", apiKeyEnv: GATEWAY_VARIABLE, isSet: true },
       {
         provider: "other-quota",
         apiKeyEnv: null,
@@ -156,10 +181,37 @@ describe("quota_settings_get", () => {
       },
     ]);
     expect(result.text).not.toContain("gateway-key-value-123");
+  });
+
+  it("never shows a key the plugin can read, wherever the file holds it", async () => {
+    vi.stubEnv("MY_SERVICE_TOKEN", "token-from-env-1");
+    vi.stubEnv("ALIAS_VAR", "alias-key-value-77");
+    saveOpenCodeKeys({ openrouter: "router-key-saved-in-opencode", other: "{env:ALIAS_VAR}" });
+    bindLogins({ openrouter: "login-key-in-opencode-db" });
+    const keys = [
+      "token-from-env-1",
+      "alias-key-value-77",
+      "router-key-saved-in-opencode",
+      "login-key-in-opencode-db",
+    ];
+    writeSettings(
+      JSON.stringify({
+        providers: {
+          custom: [
+            { ...OTHER, label: `${keys[0]} ${keys[1]}` },
+            { ...GATEWAY, label: keys[3] },
+          ],
+          anthropic: { binaryPath: `/opt/${keys[2]}/claude` },
+        },
+      }),
+    );
+
+    const result = await call("quota_settings_get", {});
+
     expect(result.settings?.["providers.anthropic.binaryPath"]).toMatchObject({
       value: "/opt/[redacted]/claude",
     });
-    expect(result.text).not.toContain(HEX_TOKEN);
+    for (const key of keys) expect(result.text).not.toContain(key);
   });
 });
 
@@ -181,8 +233,13 @@ describe("quota_settings_set", () => {
     expect(existsSync(join(root, "config", "opencode.json"))).toBe(false);
   });
 
-  it("never shows a key-like value in the diff", async () => {
-    writeSettings(JSON.stringify({ providers: { anthropic: { binaryPath: HEX_PATH } } }));
+  it("never shows a saved key in the diff", async () => {
+    saveOpenCodeKeys({ openrouter: "router-key-saved-in-opencode" });
+    writeSettings(
+      JSON.stringify({
+        providers: { anthropic: { binaryPath: "/opt/router-key-saved-in-opencode/claude" } },
+      }),
+    );
 
     const result = await call("quota_settings_set", {
       patch: { providers: { anthropic: { binaryPath: null } } },
@@ -191,7 +248,7 @@ describe("quota_settings_set", () => {
     expect(result.diff).toEqual([
       { key: "providers.anthropic.binaryPath", before: "/opt/[redacted]/claude", after: "claude" },
     ]);
-    expect(result.text).not.toContain(HEX_TOKEN);
+    expect(result.text).not.toContain("router-key-saved-in-opencode");
   });
 
   it.each([
@@ -272,6 +329,16 @@ describe("quota_provider_add", () => {
       key: "definition.label",
     },
     {
+      name: "a GitHub token",
+      definition: { ...GATEWAY, label: "ghp_0123456789abcdefABCDEF0123456789abcd" },
+      key: "definition.label",
+    },
+    {
+      name: "a Slack token",
+      definition: { ...GATEWAY, label: "xoxb-1234567890-abcdefghij" },
+      key: "definition.label",
+    },
+    {
       name: "a random token in the URL",
       definition: {
         ...GATEWAY,
@@ -285,6 +352,11 @@ describe("quota_provider_add", () => {
       key: "definition.label",
     },
     {
+      name: "a lowercase letter and digit token",
+      definition: { ...GATEWAY, label: "k3j9x2m8q7w1z5n4b6v0c8x2a7" },
+      key: "definition.label",
+    },
+    {
       name: "a key where the variable name belongs",
       definition: { ...GATEWAY, apiKeyEnv: "sk-proj-abcdefghijklmnop1234" },
       key: "definition.apiKeyEnv",
@@ -295,6 +367,30 @@ describe("quota_provider_add", () => {
     expect(result.ok).toBe(false);
     expect(result.issues).toEqual([{ key, message: expect.stringMatching(/secret.*apiKeyEnv/) }]);
     expect(existsSync(settingsPath())).toBe(false);
+  });
+
+  it.each([
+    {
+      name: "a model name",
+      definition: { ...GATEWAY, modelIds: ["Qwen3-Coder-480B-A35B-Instruct-2507"] },
+    },
+    {
+      name: "a model name in the URL",
+      definition: {
+        ...GATEWAY,
+        url: "https://gateway.example/v1/models/Qwen3-Coder-480B-A35B-Instruct-2507/quota",
+      },
+    },
+    {
+      name: "a camelCase field name",
+      definition: { ...GATEWAY, label: "AvailableBalanceUSD2024Total" },
+    },
+    { name: "a UUID", definition: { ...GATEWAY, label: "123e4567-e89b-12d3-a456-426614174000" } },
+    { name: "a version string", definition: { ...GATEWAY, label: "v2.14.0-rc.1+build.20261010" } },
+  ])("saves $name", async ({ definition }) => {
+    const result = await call("quota_provider_add", { definition });
+
+    expect(result).toMatchObject({ ok: true, added: "my-gateway-quota" });
   });
 
   it("rejects an invalid definition with the validator's message", async () => {
@@ -312,52 +408,75 @@ describe("quota_provider_add", () => {
   });
 
   it.each([
+    { name: "no key variable", definition: GATEWAY_WITHOUT_KEY_VARIABLE },
     {
-      name: "no key variable",
-      definition: GATEWAY_WITHOUT_KEY_VARIABLE,
-      issue: {
-        key: "definition.apiKeyEnv",
-        message: /^required .* dedicated environment variable/,
-      },
-    },
-    {
-      name: "a built-in provider's key variable",
+      name: "a built-in provider's variable",
       definition: { ...GATEWAY, apiKeyEnv: "OPENROUTER_API_KEY" },
-      issue: { key: "definition.apiKeyEnv", message: /^OPENROUTER_API_KEY holds a built-in/ },
     },
     {
-      name: "a providerId with a key saved in OpenCode",
-      definition: GATEWAY,
-      issue: { key: "definition.providerId", message: /^OpenCode has a key saved for provider/ },
+      name: "a variable a saved key points to",
+      definition: { ...GATEWAY, apiKeyEnv: "MY_OPENROUTER_API_KEY" },
     },
-  ])("refuses $name: nothing is saved or sent", async ({ definition, issue }) => {
+  ])("refuses $name: nothing is saved or sent", async ({ definition }) => {
     writeSettings(FILE_WITH_COMMENTS);
     vi.stubEnv("OPENROUTER_API_KEY", "router-key-from-env");
-    vi.stubEnv("MY_GATEWAY_API_KEY", "gateway-key");
-    saveOpenCodeKey("my-gateway", "gateway-key-saved-in-opencode");
+    vi.stubEnv("MY_OPENROUTER_API_KEY", "router-key-from-alias");
+    saveOpenCodeKeys({ openrouter: "{env:MY_OPENROUTER_API_KEY}" });
     const fetch = answerWith(200, DAILY_QUOTA);
 
     const result = await call("quota_provider_add", { definition });
 
     expect(result.ok).toBe(false);
     expect(result.issues).toEqual([
-      { key: issue.key, message: expect.stringMatching(issue.message) },
+      {
+        key: "definition.apiKeyEnv",
+        message:
+          "apiKeyEnv must name an environment variable starting with OPENCODE_QUOTA_ that the " +
+          "user creates just for this provider, e.g. OPENCODE_QUOTA_MY_GATEWAY_QUOTA_API_KEY",
+      },
     ]);
     expect(fetch).not.toHaveBeenCalled();
     expect(settingsText()).toBe(FILE_WITH_COMMENTS);
   });
 
-  it("never returns the key, even when the endpoint echoes it", async () => {
-    vi.stubEnv("MY_GATEWAY_API_KEY", "echomeplease42");
+  it("answers the same whether or not OpenCode has a key saved for the provider", async () => {
+    const definition = { ...GATEWAY, apiKeyEnv: "MY_GATEWAY_API_KEY" };
+
+    const without = await call("quota_provider_add", { definition });
+    saveOpenCodeKeys({ "my-gateway": "gateway-key-saved-in-opencode" });
+    bindLogins({ "my-gateway": "gateway-login-in-opencode-db" });
+    const withKey = await call("quota_provider_add", { definition });
+
+    expect(withKey.text).toBe(without.text);
+    expect(withKey.ok).toBe(false);
+  });
+
+  it("adds a provider that never reads a saved key, also when quota fetches it", async () => {
+    saveOpenCodeKeys({ "my-gateway": "gateway-key-saved-in-opencode" });
+    bindLogins({ "my-gateway": "gateway-login-in-opencode-db" });
+
+    const result = await call("quota_provider_add", { definition: GATEWAY });
+
+    expect(result.test).toEqual({
+      ok: false,
+      error: expect.stringMatching(new RegExp(`^No API key: ${GATEWAY_VARIABLE} is not set`)),
+    });
+    const [added] = (await loadSettings()).settings.providers.custom;
+    const definition = added as RemoteApiQuotaProviderDefinition;
+    expect((await resolveQuotaProviderApiKey(definition)).key).toBeUndefined();
+    vi.stubEnv(GATEWAY_VARIABLE, "gateway-key");
+    expect((await resolveQuotaProviderApiKey(definition)).key).toBe("gateway-key");
+  });
+
+  it("never returns the key, even when the endpoint echoes it into a row id", async () => {
+    vi.stubEnv(GATEWAY_VARIABLE, "Echo-Me-Please-42");
     vi.stubGlobal(
       "fetch",
       vi.fn(async (_url: string, init: { headers: Record<string, string> }) => {
         const key = init.headers.Authorization.replace("Bearer ", "");
         const body = {
           version: "quota-v1",
-          entries: [
-            { kind: "percent", name: `Echo ${key}`, resultType: "quota", percentRemaining: 50 },
-          ],
+          entries: [{ kind: "percent", name: key, resultType: "quota", percentRemaining: 50 }],
         };
         return new Response(JSON.stringify(body), {
           headers: { "content-type": "application/json" },
@@ -368,12 +487,12 @@ describe("quota_provider_add", () => {
     const result = await call("quota_provider_add", { definition: GATEWAY });
 
     expect(result.test).toMatchObject({ ok: true, rows: [{ percentRemaining: 50 }] });
-    expect(result.text).not.toContain("echomeplease42");
+    expect(result.text).not.toMatch(/echo.me.please.42/i);
   });
 
   it("adds a provider, tests it once, and replaces it by id while keeping the others", async () => {
     writeSettings(FILE_WITH_COMMENTS);
-    vi.stubEnv("MY_GATEWAY_API_KEY", "gateway-key");
+    vi.stubEnv(GATEWAY_VARIABLE, "gateway-key");
     const fetch = answerWith(200, DAILY_QUOTA);
 
     const added = await call("quota_provider_add", { definition: GATEWAY });
@@ -415,9 +534,8 @@ describe("quota_provider_add", () => {
       ...GATEWAY,
       id: "second-quota",
       providerId: "second-gateway",
-      apiKeyEnv: "SECOND_QUOTA_API_KEY",
+      apiKeyEnv: "OPENCODE_QUOTA_SECOND_API_KEY",
     };
-    vi.stubEnv("SECOND_QUOTA_API_KEY", "");
 
     const results = await Promise.all([
       call("quota_provider_add", { definition: GATEWAY }),
@@ -431,18 +549,41 @@ describe("quota_provider_add", () => {
     expect(settingsText()).toContain("// keep me");
   });
 
-  it("writes back a provider whose providerId is its id, without the providerId", async () => {
-    const { providerId: _, ...sameAsOpenCode } = { ...OTHER, id: "my-router" };
-    writeSettings(JSON.stringify({ providers: { custom: [sameAsOpenCode] } }));
+  it("changes only its own entry, so comments inside the others stay", async () => {
+    const file = FILE_WITH_COMMENTS.replace(
+      '{"id":"other-quota"',
+      '{\n// vendor note\n"id":"other-quota"',
+    );
+    writeSettings(file);
 
     const added = await call("quota_provider_add", { definition: GATEWAY });
+    expect(settingsText()).toContain("// vendor note");
     const removed = await call("quota_provider_remove", { id: "my-gateway-quota" });
 
     expect([added.ok, removed.ok]).toEqual([true, true]);
+    expect(settingsText()).toContain("// vendor note");
+    expect((await loadSettings()).settings.providers.custom.map((item) => item.id)).toEqual([
+      "other-quota",
+    ]);
+  });
+
+  it("writes no filled-in defaults, and no label that only repeats the id", async () => {
+    const { providerId: _, ...sameAsOpenCode } = { ...OTHER, id: "my-router" };
+    writeSettings(JSON.stringify({ providers: { custom: [sameAsOpenCode] } }));
+
+    const result = await call("quota_provider_add", {
+      definition: { ...GATEWAY, label: GATEWAY.id },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(settingsText()).not.toContain('"label"');
     expect(settingsText()).not.toContain('"providerId": "my-router"');
     const loaded = await loadSettings();
     expect(loaded.issues).toEqual([]);
-    expect(loaded.settings.providers.custom.map((item) => item.id)).toEqual(["my-router"]);
+    expect(loaded.settings.providers.custom.map((item) => item.id)).toEqual([
+      "my-router",
+      "my-gateway-quota",
+    ]);
   });
 
   it.each([
@@ -462,6 +603,18 @@ describe("quota_provider_add", () => {
     expect(settingsText()).toBe(file);
   });
 
+  it("changes nothing when the file turns invalid while it runs", async () => {
+    writeSettings(FILE_WITH_COMMENTS);
+    const invalid = FILE_WITH_COMMENTS.replace('"format":"quota-v1"', '"format":"quota-v9"');
+    // Reading OpenCode's logins happens after the tool starts; the user saves a typo meanwhile.
+    bindLogins({}, () => writeSettings(invalid));
+
+    const result = await call("quota_provider_add", { definition: GATEWAY });
+
+    expect(result.ok).toBe(false);
+    expect(settingsText()).toBe(invalid);
+  });
+
   it("keeps a definition whose test fails and says what to fix", async () => {
     openCodeProviderIds = ["openrouter"];
 
@@ -470,7 +623,7 @@ describe("quota_provider_add", () => {
     expect(result.ok).toBe(true);
     expect(result.test).toEqual({
       ok: false,
-      error: expect.stringMatching(/^No API key: MY_GATEWAY_API_KEY is not set/),
+      error: expect.stringMatching(new RegExp(`^No API key: ${GATEWAY_VARIABLE} is not set`)),
     });
     expect(result.notes).toEqual([expect.stringMatching(/OpenCode has no provider "my-gateway"/)]);
     expect(result.message).toMatch(/call quota_provider_add again with the same id/);
@@ -499,7 +652,7 @@ describe("quota_provider_test and quota_provider_remove", () => {
 
   it("tests a saved provider and returns the fetch error", async () => {
     writeSettings(JSON.stringify({ providers: { custom: [GATEWAY] } }));
-    vi.stubEnv("MY_GATEWAY_API_KEY", "gateway-key");
+    vi.stubEnv(GATEWAY_VARIABLE, "gateway-key");
     answerWith(401, { error: "unauthorized" });
 
     const result = await call("quota_provider_test", { id: "my-gateway-quota" });
@@ -509,7 +662,7 @@ describe("quota_provider_test and quota_provider_remove", () => {
 
   it("does not send a key saved in OpenCode for a hand-added provider", async () => {
     writeSettings(FILE_WITH_COMMENTS);
-    saveOpenCodeKey("openrouter", "router-key-saved-in-opencode");
+    saveOpenCodeKeys({ openrouter: "router-key-saved-in-opencode" });
     const fetch = answerWith(200, DAILY_QUOTA);
 
     const result = await call("quota_provider_test", { id: "other-quota" });
