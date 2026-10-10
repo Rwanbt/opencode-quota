@@ -4,13 +4,14 @@
  * session sidebar, the status line under the message box (and on Home when turned on), the
  * toasts, the `/quota` quick look (`quick-look.tsx`), and the quota window that
  * `/quota_usage`, `/quota_status` and `/quota_settings` open above the message box (`window/`).
- * It reads only the quota RPC and the display settings in OpenCode's plugin storage. The report
- * dialogs of the token and pricing commands live in `legacy-dialogs.tsx`.
+ * It reads only the quota RPC and the display settings in OpenCode's plugin storage. The quota
+ * slash commands typed in the prompt run through `legacy-dialogs.tsx`.
  */
 import { Plugin } from "@opencode/plugin/tui";
 import type { JSX } from "@opentui/solid";
 import { onCleanup, Show } from "solid-js";
 import type { QuotaSnapshot } from "../core/types.js";
+import { parseUsageArguments } from "../core/usage-ranges.js";
 import { type ClientHost, createQuotaClient, reportFailure } from "./client.js";
 import {
   applyDisplayImport,
@@ -18,11 +19,7 @@ import {
   type DisplayStorage,
   loadDisplaySettings,
 } from "./display.js";
-import {
-  type LegacyDialogHost,
-  registerTypedQuotaCommands,
-  reportCommands,
-} from "./legacy-dialogs.js";
+import { registerTypedQuotaCommands, type TypedCommandHost } from "./legacy-dialogs.js";
 import { createQuickLook, type QuickLookHost } from "./quick-look.js";
 import { SidebarPanel, type SurfaceHost } from "./sidebar.js";
 import { HomeFooter, StatusLine } from "./status-line.js";
@@ -33,18 +30,18 @@ import { createQuotaWindow, type WindowHost } from "./window/shell.js";
 type SidebarState = { open: boolean };
 type TuiEvent = { data?: Record<string, unknown> };
 
-/** What the plugin needs from OpenCode's TUI context, besides the dialogs' and the window's needs. */
-type TuiContext = LegacyDialogHost &
+/** What the plugin needs from OpenCode's TUI context, besides the window's and typed commands' needs. */
+type TuiContext = TypedCommandHost &
   WindowHost &
   QuickLookHost &
   ClientHost & {
-    theme: Theme & LegacyDialogHost["theme"] & QuickLookHost["theme"];
+    theme: Theme & WindowHost["theme"] & QuickLookHost["theme"];
     storage: DisplayStorage;
-    data: LegacyDialogHost["data"] & {
+    data: WindowHost["data"] & {
       on: (event: string, handler: (event: TuiEvent) => void) => () => void;
       session: { get: (sessionID: string) => { parentID?: string } | undefined };
     };
-    ui: LegacyDialogHost["ui"] & {
+    ui: WindowHost["ui"] & {
       slot: (
         claim:
           | { append: "app"; render: () => null }
@@ -127,9 +124,20 @@ const plugin = Plugin.define({
     const host: SurfaceHost = { theme: () => api.theme, display, quota };
     const quotaWindow = createQuotaWindow(api, host);
     const quickLook = createQuickLook(api, host, quotaWindow);
-    const quotaCommands = {
+    /** `/quota_usage [range]`: the Usage tab, on the typed range; a wrong range says why. */
+    const openUsage = (argumentsText: string) => {
+      if (!argumentsText) {
+        quotaWindow.open("usage");
+        return;
+      }
+      const parsed = parseUsageArguments(argumentsText);
+      if (parsed.ok) quotaWindow.openUsage(parsed);
+      else api.ui.toast.show({ variant: "warning", title: TOAST_TITLE, message: parsed.error });
+    };
+    /** The quota slash commands, by name, with what follows the name. */
+    const quotaCommands: Record<string, (argumentsText: string) => void> = {
       quota: () => quickLook.open(),
-      quota_usage: () => quotaWindow.open("usage"),
+      quota_usage: openUsage,
       quota_status: () => quotaWindow.open("status"),
       quota_settings: () => quotaWindow.open("settings"),
     };
@@ -162,33 +170,31 @@ const plugin = Plugin.define({
               title: "Quota: quick look",
               group: "OpenCode Quota",
               palette: true,
-              run: quotaCommands.quota,
+              run: () => quickLook.open(),
             },
             {
               id: "quota.usage",
-              title: "Quota: usage",
+              title: "Quota usage: tokens and API cost",
               group: "OpenCode Quota",
               palette: true,
-              // The server lists /quota and /quota_status; these two exist only in the TUI.
-              slash: { name: "quota_usage" },
-              run: quotaCommands.quota_usage,
+              run: () => quotaWindow.open("usage"),
             },
             {
               id: "quota.status",
               title: "Quota status report",
               group: "OpenCode Quota",
               palette: true,
-              run: quotaCommands.quota_status,
+              run: () => quotaWindow.open("status"),
             },
             {
               id: "quota.settings",
               title: "Quota: settings",
               group: "OpenCode Quota",
               palette: true,
+              // The server lists /quota, /quota_usage and /quota_status; this one is TUI-only.
               slash: { name: "quota_settings" },
-              run: quotaCommands.quota_settings,
+              run: () => quotaWindow.open("settings"),
             },
-            ...reportCommands(api),
           ],
         }));
         registerTypedQuotaCommands(api, quotaCommands);

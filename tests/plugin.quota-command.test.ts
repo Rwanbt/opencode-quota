@@ -4,8 +4,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { formatLocalCallTimestamp } from "../src/lib/format-utils.js";
-import { renderPlainTextReport } from "../src/lib/report-document.js";
 import { createFakeIntegration } from "./helpers/fake-integration.js";
 import {
   createAlibabaAuthModuleMock,
@@ -57,7 +55,6 @@ vi.mock("../src/lib/opencode-config-providers.js", () => ({
   reconcileDetectedProvidersInGlobalConfig: mocks.reconcileDetectedProvidersInGlobalConfig,
 }));
 
-type Command = "pricing_refresh" | "tokens_between";
 type Tool = {
   name: string;
   execute: (input: unknown, context: { sessionID: string }) => Promise<{ content: string }>;
@@ -90,8 +87,7 @@ const cleanups: Array<() => unknown> = [];
 
 /**
  * Starts the server plugin. `quota` runs the /quota slash command of Web and Desktop and
- * returns the report it posts into the chat; `run` runs a report command over the quota RPC,
- * as the TUI does, and returns its text. Every session uses the model `sessionModel` gives.
+ * returns the report it posts into the chat. Every session uses the model `sessionModel` gives.
  * OpenCode lists the quota providers' ids as its own, and `openCodeProviders` too.
  */
 async function startServer(
@@ -145,22 +141,6 @@ async function startServer(
   ];
   if (!tool) throw new Error("quota_status tool was not registered");
 
-  const run = async (
-    command: Command,
-    params: { sessionID?: string; arguments?: string; subtitle?: string } = {},
-  ): Promise<string> => {
-    const result = (await handlers.command(
-      { command, sessionID: params.sessionID ?? "session-1", arguments: params.arguments },
-      {},
-    )) as { state: string; output: string; document: Parameters<typeof renderPlainTextReport>[0] };
-    expect(result.state).toBe("output");
-    // Every command here renders its document as plain text.
-    expect(renderPlainTextReport(result.document)).toBe(result.output);
-    if (params.subtitle !== undefined) {
-      expect(result.document.heading?.subtitle).toBe(params.subtitle);
-    }
-    return result.output;
-  };
   const quota = async (sessionID = "session-1"): Promise<string> => {
     const command = slashCommands.find((item) => item.name === "quota");
     if (!command) throw new Error("/quota was not registered");
@@ -171,10 +151,10 @@ async function startServer(
     return text.split("\n").slice(1, -1).join("\n");
   };
   const refresh = () => handlers.refresh({ reason: "manual" }, {});
-  return { ctx, tool, run, quota, refresh };
+  return { ctx, tool, quota, refresh };
 }
 
-describe("/quota and the report commands on the server", () => {
+describe("/quota and /quota_status on the server", () => {
   beforeEach(async () => {
     seedDefaultPluginBootstrapMocks(mocks, { resetPluginState: true });
     mocks.reconcileDetectedProvidersInGlobalConfig.mockResolvedValue({ changed: false });
@@ -492,98 +472,5 @@ describe("/quota and the report commands on the server", () => {
 
     expect(fetch).toHaveBeenCalledTimes(2);
     expect(latest).toContain("60% left");
-  });
-
-  it("runs /pricing_refresh with force=true by default and reports bundled pinning", async () => {
-    useSettings({ pricing: { source: "bundled", autoRefreshDays: 7 } });
-    mocks.getPricingSnapshotSource.mockReturnValue("bundled");
-    mocks.maybeRefreshPricingSnapshot.mockResolvedValue({
-      attempted: true,
-      updated: true,
-      state: { version: 1, updatedAt: Date.now(), lastResult: "success" },
-    });
-    const { run } = await startServer();
-    const generatedAtMs = Date.UTC(2026, 0, 2, 3, 4);
-    vi.useFakeTimers({ toFake: ["Date"] });
-    vi.setSystemTime(generatedAtMs);
-
-    const output = await run("pricing_refresh", {
-      subtitle: formatLocalCallTimestamp(generatedAtMs),
-    });
-    vi.useRealTimers();
-
-    expect(mocks.maybeRefreshPricingSnapshot).toHaveBeenCalledWith({
-      reason: "manual",
-      force: true,
-      snapshotSelection: "bundled",
-      allowRefreshWhenSelectionBundled: true,
-    });
-    expect(output.split("\n")).toEqual([
-      `# Pricing Refresh (/pricing_refresh) ${formatLocalCallTimestamp(generatedAtMs)}`,
-      "",
-      "refresh:",
-      "- attempted: true",
-      "- result: success",
-      "- runtime_snapshot_persisted: true",
-      "",
-      "pricing_snapshot:",
-      "- selection: configured=bundled active=bundled",
-      "- active_snapshot: source=https://models.dev/api.json generated_at=2026-01-01T00:00:00.000Z units=USD per 1M tokens",
-      "- runtime_paths: snapshot=/tmp/modelsdev-pricing.runtime.min.json refresh_state=/tmp/modelsdev-pricing.refresh-state.json",
-      "- selection_note: runtime snapshot refreshed locally, but active reports remain pinned to bundled pricing",
-    ]);
-  });
-
-  it("reports a failed /pricing_refresh with its error", async () => {
-    mocks.maybeRefreshPricingSnapshot.mockResolvedValue({
-      attempted: true,
-      updated: false,
-      reason: "fetch_failed",
-      error: "network down",
-      state: { version: 1, updatedAt: Date.now() },
-    });
-    const { run } = await startServer();
-
-    const output = await run("pricing_refresh");
-
-    expect(output).toContain(
-      [
-        "refresh:",
-        "- attempted: true",
-        "- result: fetch_failed",
-        "- runtime_snapshot_persisted: false",
-        "- error: network down",
-        "",
-        "pricing_snapshot:",
-        "- selection: configured=auto active=runtime",
-      ].join("\n"),
-    );
-  });
-
-  it.each([
-    {
-      command: "pricing_refresh" as const,
-      arguments: '{"force":false}',
-      lines: ["Invalid arguments for /pricing_refresh", "This command does not accept arguments."],
-    },
-    {
-      command: "tokens_between" as const,
-      arguments: "not-a-date-range",
-      lines: ["Invalid arguments for /tokens_between"],
-    },
-    {
-      command: "tokens_between" as const,
-      arguments: undefined,
-      lines: ["Expected: /tokens_between YYYY-MM-DD YYYY-MM-DD"],
-    },
-  ])("explains wrong $command arguments ($arguments)", async (params) => {
-    const { run } = await startServer();
-
-    const output = await run(params.command, { arguments: params.arguments });
-
-    for (const line of params.lines) expect(output).toContain(line);
-    if (params.command === "pricing_refresh") {
-      expect(mocks.maybeRefreshPricingSnapshot).not.toHaveBeenCalled();
-    }
   });
 });

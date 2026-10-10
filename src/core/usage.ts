@@ -13,14 +13,21 @@
  *   compaction names no model, so its tokens are unpriced too (provider and model "unknown").
  * - Sessions count conversations: a subagent session counts as part of its top parent.
  * - Ranges and days are local calendar days: "7d" is today and the 6 days before it, and
- *   "between" includes both dates.
+ *   "between" includes both dates. "24h" is the rolling last 24 hours.
  * - Token kinds: cached input = cache reads; uncached input = input + cache writes;
- *   output = output + reasoning; processed = all three.
+ *   output = output + reasoning; processed = all three. By type, input, cache reads, cache
+ *   writes and output (with reasoning) each count on their own.
  * - The history is read in pages, and the plugin's other work runs between pages. Identical
  *   questions share one read: see `usageReport`.
  */
 import { parseCalendarDate } from "../lib/calendar-date.js";
-import { type CostBuckets, getPricingSnapshotSelection } from "../lib/modelsdev-pricing.js";
+import {
+  type CostBuckets,
+  getPricingSnapshotMeta,
+  getPricingSnapshotSelection,
+  maybeRefreshPricingSnapshot,
+  type PricingSnapshotSource,
+} from "../lib/modelsdev-pricing.js";
 import { getOpenCodeDbPath } from "../lib/opencode-db-path.js";
 import {
   type OpenCodeSessionInfo,
@@ -35,16 +42,15 @@ import {
   tokenBucketsFromMessage,
 } from "../lib/token-buckets.js";
 import { calculateUsdFromTokenBuckets } from "../lib/token-cost.js";
+import type { UsageRange } from "./usage-ranges.js";
 
-export type UsageRange =
-  | "today"
-  | "7d"
-  | "30d"
-  | "90d"
-  | "all"
-  | "session"
-  | "session_tree"
-  | "between";
+export {
+  DEFAULT_USAGE_RANGE,
+  parseUsageArguments,
+  USAGE_RANGES,
+  type UsageRange,
+  usageRangeLabel,
+} from "./usage-ranges.js";
 
 export type UsageQuery = {
   range: UsageRange;
@@ -63,7 +69,8 @@ export type UsageTokens = {
   output: number;
 };
 
-export type UsageCostByType = {
+/** Cost or tokens by the kinds that have their own price. */
+export type UsageByType = {
   input: number;
   cacheRead: number;
   cacheWrite: number;
@@ -88,10 +95,18 @@ export type UsageProviderRow = UsageRow & {
   sessions: number;
 };
 
-export type UsageModelRow = UsageRow & { providerID: string; modelID: string; priced: boolean };
-
 /** `date` is a local day like "2026-01-31". */
 export type UsageDayRow = UsageRow & { date: string };
+
+export type UsageModelRow = UsageRow & {
+  providerID: string;
+  modelID: string;
+  priced: boolean;
+  costByType: UsageByType;
+  tokensByType: UsageByType;
+  /** The model's days with usage, oldest first; days without usage are left out. */
+  days: Array<{ date: string; costUsd: number; tokens: number }>;
+};
 
 export type UsageReport = {
   range: UsageRange;
@@ -105,7 +120,8 @@ export type UsageReport = {
     costUsd: number;
     sessions: number;
     tokens: UsageTokens;
-    costByType: UsageCostByType;
+    tokensByType: UsageByType;
+    costByType: UsageByType;
     cacheSavingsUsd: number;
     unpricedTokens: number;
     /** `unpricedTokens` / `tokens.processed`. */
@@ -120,7 +136,9 @@ export type UsageReport = {
 };
 
 /** How many local days the rolling ranges cover, today included. */
-const RANGE_DAYS: Partial<Record<UsageRange, number>> = { today: 1, "7d": 7, "30d": 30, "90d": 90 };
+const RANGE_DAYS: Partial<Record<UsageRange, number>> = { today: 1, "7d": 7, "30d": 30 };
+
+const HOUR_MS = 60 * 60 * 1000;
 
 /** Rows read in one go: one page holds the event loop for a few milliseconds. */
 const PAGE_ROWS = 250;
@@ -134,7 +152,8 @@ type TimeWindow = { sinceMs?: number; untilMs?: number };
 type MessageUse = {
   priced: boolean;
   tokens: UsageTokens;
-  costByType: UsageCostByType;
+  tokensByType: UsageByType;
+  costByType: UsageByType;
   costUsd: number;
   cacheSavingsUsd: number;
 };
@@ -172,6 +191,7 @@ function parseLocalDate(text: string | undefined, field: "from" | "to"): number 
 }
 
 function resolveWindow(query: UsageQuery, nowMs: number): TimeWindow {
+  if (query.range === "24h") return { sinceMs: nowMs - 24 * HOUR_MS, untilMs: nowMs };
   const rangeDays = RANGE_DAYS[query.range];
   if (rangeDays !== undefined) {
     return { sinceMs: localMidnight(nowMs, 1 - rangeDays), untilMs: nowMs };
@@ -225,11 +245,18 @@ function messageUse(buckets: TokenBuckets, rates: CostBuckets | null): MessageUs
     output: buckets.output + buckets.reasoning,
   };
   const processed = tokens.cachedInput + tokens.uncachedInput + tokens.output;
+  const tokensByType = {
+    input: buckets.input,
+    cacheRead: buckets.cache_read,
+    cacheWrite: buckets.cache_write,
+    output: buckets.output + buckets.reasoning,
+  };
   if (!rates) {
     return {
       priced: false,
       tokens: { processed, ...tokens },
-      costByType: { input: 0, cacheRead: 0, cacheWrite: 0, output: 0 },
+      tokensByType,
+      costByType: emptyByType(),
       costUsd: 0,
       cacheSavingsUsd: 0,
     };
@@ -247,6 +274,7 @@ function messageUse(buckets: TokenBuckets, rates: CostBuckets | null): MessageUs
   return {
     priced: true,
     tokens: { processed, ...tokens },
+    tokensByType,
     costByType,
     costUsd: costByType.input + costByType.cacheRead + costByType.cacheWrite + costByType.output,
     // Cache savings: the cache reads at the plain input price, minus what they cost as reads.
@@ -262,6 +290,16 @@ function entryFor<K, V>(map: Map<K, V>, key: K, create: () => V): V {
     map.set(key, value);
   }
   return value;
+}
+
+function emptyByType(): UsageByType {
+  return { input: 0, cacheRead: 0, cacheWrite: 0, output: 0 };
+}
+
+function addByType(sum: UsageByType, part: UsageByType): void {
+  for (const kind of ["input", "cacheRead", "cacheWrite", "output"] as const) {
+    sum[kind] += part[kind];
+  }
 }
 
 function emptyTally(): Tally {
@@ -312,8 +350,8 @@ function isRecent(recent: RecentReport, nowMs: number): boolean {
 }
 
 /**
- * The usage report for `query` at `nowMs`. Identical questions (same database, price list
- * choice, local day and query) share one read of the history: a request made while the same
+ * The usage report for `query` at `nowMs`. Identical questions (same database, price list,
+ * local day and query) share one read of the history: a request made while the same
  * report is being built waits for it, and a finished report answers again for 30 s, so its
  * numbers can be up to 30 s old. A failed report is not kept.
  */
@@ -325,7 +363,8 @@ export async function usageReport(
     if (!isRecent(recent, nowMs)) recentReports.delete(key);
   }
   const { range, sessionID, from, to } = query;
-  const priceList = getPricingSnapshotSelection();
+  // A new price list (another choice or a fresh download) makes a new report.
+  const priceList = [getPricingSnapshotSelection(), getPricingSnapshotMeta().generatedAt];
   // The local day decides where the rolling ranges start: after midnight, a new report.
   const today = localDate(nowMs);
   const key = JSON.stringify([getOpenCodeDbPath(), priceList, today, range, sessionID, from, to]);
@@ -340,23 +379,31 @@ export async function usageReport(
   return report;
 }
 
+type ModelTally = {
+  providerID: string;
+  modelID: string;
+  priced: boolean;
+  tally: Tally;
+  costByType: UsageByType;
+  tokensByType: UsageByType;
+  days: Map<string, { costUsd: number; tokens: number }>;
+};
+
 async function buildUsageReport(query: UsageQuery, nowMs: number): Promise<UsageReport> {
   const window = resolveWindow(query, nowMs);
   const sessionsIndex = await readAllSessionsIndex();
   const sessionIDs = await sessionsToRead(query, sessionsIndex);
 
   const totalTokens: UsageTokens = { processed: 0, cachedInput: 0, uncachedInput: 0, output: 0 };
-  const costByType: UsageCostByType = { input: 0, cacheRead: 0, cacheWrite: 0, output: 0 };
+  const tokensByType = emptyByType();
+  const costByType = emptyByType();
   const total = emptyTally();
   let cacheSavingsUsd = 0;
   const sessions = new Set<string>();
   const topSessionIDs = new Map<string, string>();
   const pricingByModel = new Map<string, ModelPricing>();
   const providers = new Map<string, { tally: Tally; sessions: Set<string> }>();
-  const models = new Map<
-    string,
-    { providerID: string; modelID: string; priced: boolean; tally: Tally }
-  >();
+  const models = new Map<string, ModelTally>();
   const days = new Map<string, Tally>();
   let firstMs = Number.POSITIVE_INFINITY;
   let lastMs = Number.NEGATIVE_INFINITY;
@@ -380,14 +427,14 @@ async function buildUsageReport(query: UsageQuery, nowMs: number): Promise<Usage
       const topSession = entryFor(topSessionIDs, message.sessionID, () =>
         topSessionID(message.sessionID, sessionsIndex),
       );
+      const date = localDate(createdMs);
 
       addUse(total, use);
       for (const kind of ["processed", "cachedInput", "uncachedInput", "output"] as const) {
         totalTokens[kind] += use.tokens[kind];
       }
-      for (const kind of ["input", "cacheRead", "cacheWrite", "output"] as const) {
-        costByType[kind] += use.costByType[kind];
-      }
+      addByType(tokensByType, use.tokensByType);
+      addByType(costByType, use.costByType);
       cacheSavingsUsd += use.cacheSavingsUsd;
       sessions.add(topSession);
 
@@ -402,9 +449,17 @@ async function buildUsageReport(query: UsageQuery, nowMs: number): Promise<Usage
         modelID,
         priced: use.priced,
         tally: emptyTally(),
+        costByType: emptyByType(),
+        tokensByType: emptyByType(),
+        days: new Map(),
       }));
       addUse(model.tally, use);
-      addUse(entryFor(days, localDate(createdMs), emptyTally), use);
+      addByType(model.costByType, use.costByType);
+      addByType(model.tokensByType, use.tokensByType);
+      const modelDay = entryFor(model.days, date, () => ({ costUsd: 0, tokens: 0 }));
+      modelDay.costUsd += use.costUsd;
+      modelDay.tokens += use.tokens.processed;
+      addUse(entryFor(days, date, emptyTally), use);
       firstMs = Math.min(firstMs, createdMs);
       lastMs = Math.max(lastMs, createdMs);
     }
@@ -429,6 +484,7 @@ async function buildUsageReport(query: UsageQuery, nowMs: number): Promise<Usage
       costUsd: total.costUsd,
       sessions: sessions.size,
       tokens: totalTokens,
+      tokensByType,
       costByType,
       cacheSavingsUsd,
       unpricedTokens: total.unpricedTokens,
@@ -442,7 +498,17 @@ async function buildUsageReport(query: UsageQuery, nowMs: number): Promise<Usage
       }))
       .sort((a, b) => byCostThenTokens(a, b) || a.providerID.localeCompare(b.providerID)),
     models: [...models.values()]
-      .map(({ tally, ...model }) => ({ ...model, ...toRow(tally, rowTotal) }))
+      .map((model) => ({
+        providerID: model.providerID,
+        modelID: model.modelID,
+        priced: model.priced,
+        ...toRow(model.tally, rowTotal),
+        costByType: model.costByType,
+        tokensByType: model.tokensByType,
+        days: [...model.days]
+          .map(([date, day]) => ({ date, ...day }))
+          .sort((a, b) => a.date.localeCompare(b.date)),
+      }))
       .sort(
         (a, b) =>
           byCostThenTokens(a, b) ||
@@ -451,4 +517,31 @@ async function buildUsageReport(query: UsageQuery, nowMs: number): Promise<Usage
       ),
     days: dayList.map((date) => ({ date, ...toRow(days.get(date) ?? emptyTally(), rowTotal) })),
   };
+}
+
+/**
+ * Downloads the price list from models.dev now, whatever its age. With the settings on the
+ * built-in price list, the download is kept but reports keep using the built-in one.
+ */
+export async function downloadPrices(
+  source: PricingSnapshotSource,
+): Promise<{ ok: boolean; message: string }> {
+  const result = await maybeRefreshPricingSnapshot({
+    reason: "manual",
+    force: true,
+    snapshotSelection: source,
+    allowRefreshWhenSelectionBundled: true,
+  });
+  if (!result.updated) {
+    const reason = result.error ?? result.reason ?? "unknown reason";
+    return { ok: false, message: `Couldn't download new prices: ${reason}.` };
+  }
+  if (source === "bundled") {
+    return {
+      ok: true,
+      message:
+        "Downloaded new prices. Usage keeps the built-in prices: the pricing source setting is bundled.",
+    };
+  }
+  return { ok: true, message: "Downloaded new prices from models.dev." };
 }

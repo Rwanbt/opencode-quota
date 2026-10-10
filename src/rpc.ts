@@ -7,95 +7,18 @@
  * Methods: `snapshot` (the last known quota, instantly), `refresh`, `notices` (the Home
  * notice line), `noticeList` (the maintainer notices with their read state), `status` (the
  * /quota_status report), `usage` (tokens and cost from OpenCode's history for one range),
- * `command` (the token and pricing reports), `saveSettings` (a patch of the server settings
- * file) and `acknowledgeDisplayImport` (a TUI applied the snapshot's `displayImport`); the
- * `changed` event carries every new snapshot.
+ * `downloadPrices` (a new price list from models.dev), `saveSettings` (a patch of the server
+ * settings file) and `acknowledgeDisplayImport` (a TUI applied the snapshot's `displayImport`);
+ * the `changed` event carries every new snapshot.
  */
 import type { Rpc } from "@opencode/plugin";
 import type { QuotaSnapshot } from "./core/types.js";
 import type { UsageQuery, UsageRange, UsageReport } from "./core/usage.js";
 import { parseCalendarDate } from "./lib/calendar-date.js";
-import type { ReportDocument } from "./lib/report-document.js";
 import type { SettingsIssue } from "./settings/index.js";
 
 export const QUOTA_RPC_ID = "slkiser.opencode-quota";
 
-/**
- * The report commands of the `command` method. The TUI opens their report in a dialog; Web
- * and Desktop get it as a chat message. `title` is the dialog's title.
- */
-export const REPORT_COMMANDS = [
-  {
-    id: "pricing_refresh",
-    title: "OpenCode Quota Pricing Refresh",
-    description: "Refresh the local runtime pricing snapshot from models.dev.",
-  },
-  {
-    id: "tokens_today",
-    title: "Tokens used (Today)",
-    description: "Token + deterministic cost summary for today (calendar day, local timezone).",
-  },
-  {
-    id: "tokens_daily",
-    title: "Tokens used (Last 24 Hours)",
-    description: "Token + deterministic cost summary for the last 24 hours (rolling).",
-  },
-  {
-    id: "tokens_weekly",
-    title: "Tokens used (Last 7 Days)",
-    description: "Token + deterministic cost summary for the last 7 days (rolling).",
-  },
-  {
-    id: "tokens_monthly",
-    title: "Tokens used (Last 30 Days)",
-    description: "Token + deterministic cost summary for the last 30 days (rolling).",
-  },
-  {
-    id: "tokens_all",
-    title: "Tokens used (All Time)",
-    description: "Token + deterministic cost summary for all locally saved OpenCode history.",
-  },
-  {
-    id: "tokens_session",
-    title: "Tokens used (Current Session)",
-    description: "Token + deterministic cost summary for current session only.",
-  },
-  {
-    id: "tokens_session_all",
-    title: "Tokens used (Current Session Tree)",
-    description:
-      "Token + deterministic cost summary for current session and all descendant child/subagent sessions.",
-  },
-  {
-    id: "tokens_between",
-    title: "OpenCode Quota Token Report",
-    description:
-      "Token + deterministic cost report between two YYYY-MM-DD dates (local timezone, inclusive).",
-  },
-] as const;
-
-export type ReportCommandId = (typeof REPORT_COMMANDS)[number]["id"];
-
-export function isReportCommand(command: string): command is ReportCommandId {
-  return REPORT_COMMANDS.some((spec) => spec.id === command);
-}
-
-export type QuotaRpcCommandInput = {
-  command: ReportCommandId;
-  arguments?: string;
-  sessionID?: string;
-};
-export type QuotaRpcCommandOutput =
-  | {
-      state: "output";
-      command: string;
-      title: string;
-      /** The report as text, for the chat, the quota_status tool, and the CLI. */
-      output: string;
-      /** The same report, structured; the TUI dialog renders it. */
-      document: ReportDocument;
-    }
-  | { state: "noop"; command: string; reason: "disabled" };
 export type QuotaRpcSnapshotInput = { sessionID?: string };
 export type QuotaRpcRefreshReason = "poll" | "turn" | "manual";
 export type QuotaRpcRefreshInput = {
@@ -123,6 +46,9 @@ export type QuotaRpcNoticeListInput = {
 export type QuotaRpcNoticeListOutput = { enabled: boolean; home: boolean; notices: Notice[] };
 export type QuotaRpcUsageInput = UsageQuery;
 export type QuotaRpcUsageOutput = { report: UsageReport };
+export type QuotaRpcDownloadPricesInput = Record<string, never>;
+/** `message` says what happened, for a toast. */
+export type QuotaRpcDownloadPricesOutput = { ok: boolean; message: string };
 /** A JSON merge patch of settings.jsonc; file-only keys are refused. */
 export type QuotaRpcSaveSettingsInput = { patch: Record<string, unknown> };
 /** Nothing is saved unless `ok`; `issues` say why. */
@@ -206,9 +132,9 @@ const REFRESH_REASONS: readonly QuotaRpcRefreshReason[] = ["poll", "turn", "manu
 /** What each usage range needs besides itself. */
 const USAGE_RANGE_NEEDS: Record<UsageRange, "nothing" | "sessionID" | "dates"> = {
   today: "nothing",
+  "24h": "nothing",
   "7d": "nothing",
   "30d": "nothing",
-  "90d": "nothing",
   all: "nothing",
   session: "sessionID",
   session_tree: "sessionID",
@@ -241,16 +167,6 @@ export const QuotaRpc = {
     changed: { schema: eventSchema<QuotaRpcSnapshotOutput>(checkSnapshotOutput) },
   },
   methods: {
-    command: {
-      input: schema<QuotaRpcCommandInput>((value) => {
-        if (!isObject(value)) return "input must be an object";
-        if (typeof value.command !== "string" || !isReportCommand(value.command)) {
-          return "command must be a report command id";
-        }
-        return checkOptionalString(value, "arguments") ?? checkOptionalString(value, "sessionID");
-      }),
-      output: schema<QuotaRpcCommandOutput>(checkOutput),
-    },
     snapshot: {
       input: schema<QuotaRpcSnapshotInput>((value) =>
         isObject(value) ? checkOptionalString(value, "sessionID") : "input must be an object",
@@ -305,6 +221,16 @@ export const QuotaRpc = {
       input: schema<QuotaRpcUsageInput>(checkUsageInput),
       output: schema<QuotaRpcUsageOutput>((value) =>
         isObject(value) && isObject(value.report) ? null : "output must carry a report",
+      ),
+    },
+    downloadPrices: {
+      input: schema<QuotaRpcDownloadPricesInput>((value) =>
+        isObject(value) ? null : "input must be an object",
+      ),
+      output: schema<QuotaRpcDownloadPricesOutput>((value) =>
+        isObject(value) && typeof value.ok === "boolean" && typeof value.message === "string"
+          ? null
+          : "output must carry ok and a message",
       ),
     },
     saveSettings: {

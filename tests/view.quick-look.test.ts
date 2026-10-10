@@ -127,6 +127,12 @@ function report(rows: UsageProviderRow[], range: UsageReport["range"] = "7d"): U
         cacheWrite: costUsd * 0.1,
         output: costUsd * 0.4,
       },
+      tokensByType: {
+        input: tokens * 0.3,
+        cacheRead: tokens * 0.5,
+        cacheWrite: tokens * 0.1,
+        output: tokens * 0.1,
+      },
       cacheSavingsUsd: 98.7,
       unpricedTokens: 0,
       unpricedShare: 0,
@@ -272,7 +278,7 @@ describe("quick look: providers", () => {
 describe("quick look: header, totals and keys", () => {
   it("shows the range and marks the picked mode and range as chips", () => {
     const { header } = view();
-    expect(text(header)).toMatch(/^Quota {2}last 7 days +Cost {3}Tokens {5}‹ {2}7 days {2}›$/u);
+    expect(text(header)).toMatch(/^Quota {2}Last 7 days +Cost {3}Tokens {5}‹ {2}7 days {2}›$/u);
     expect(columnsOf(text(header))).toBe(WIDTH_100);
     const chips = header.filter((part) => part.role === "chip").map((part) => part.text);
     expect(chips).toEqual([" Cost ", " 7 days "]);

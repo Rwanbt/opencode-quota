@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
-import { QUOTA_RPC_ID, QuotaRpc, REPORT_COMMANDS } from "../src/rpc.js";
+import { QUOTA_RPC_ID, QuotaRpc } from "../src/rpc.js";
 
 type ValidateResult = { value?: unknown; issues?: ReadonlyArray<{ message: string }> };
 type StandardSchema = {
@@ -37,13 +37,13 @@ describe("quota RPC definition", () => {
     expect(QuotaRpc.id).toBe(QUOTA_RPC_ID);
     expect(Object.keys(QuotaRpc.events)).toEqual(["changed"]);
     expect(Object.keys(methods)).toEqual([
-      "command",
       "snapshot",
       "refresh",
       "notices",
       "noticeList",
       "status",
       "usage",
+      "downloadPrices",
       "saveSettings",
       "acknowledgeDisplayImport",
     ]);
@@ -60,36 +60,6 @@ describe("quota RPC definition", () => {
       );
       expect(schema["~standard"]).not.toHaveProperty("types");
     }
-  });
-
-  it("validates command input", async () => {
-    for (const spec of REPORT_COMMANDS) {
-      await expectAccepted(methods.command.input, { command: spec.id });
-    }
-    await expectAccepted(methods.command.input, {
-      command: "tokens_between",
-      arguments: "2026-01-01 2026-01-15",
-      sessionID: "session-1",
-    });
-    await expectRejected(methods.command.input, 1, "input must be an object");
-    // The quota window shows /quota and /quota_status, so they are no report commands.
-    for (const command of [undefined, "quota_nope", "quota", "quota_status"]) {
-      await expectRejected(
-        methods.command.input,
-        { command },
-        "command must be a report command id",
-      );
-    }
-    await expectRejected(
-      methods.command.input,
-      { command: "tokens_today", arguments: 5 },
-      "arguments must be a string",
-    );
-    await expectRejected(
-      methods.command.input,
-      { command: "tokens_today", sessionID: 5 },
-      "sessionID must be a string",
-    );
   });
 
   it("validates snapshot and refresh input", async () => {
@@ -126,13 +96,6 @@ describe("quota RPC definition", () => {
       { reason: "poll", sessionID: false },
       "sessionID must be a string",
     );
-  });
-
-  it("requires command output to be an object", async () => {
-    await expectAccepted(methods.command.output, { any: "object" });
-    for (const value of [undefined, null, "text", 1, []]) {
-      await expectRejected(methods.command.output, value, "output must be an object");
-    }
   });
 
   it("validates notices input and requires a homeLine string in its output", async () => {
@@ -176,7 +139,7 @@ describe("quota RPC definition", () => {
   });
 
   it("validates usage input", async () => {
-    for (const range of ["today", "7d", "30d", "90d", "all"]) {
+    for (const range of ["today", "24h", "7d", "30d", "all"]) {
       await expectAccepted(methods.usage.input, { range });
     }
     await expectAccepted(methods.usage.input, { range: "session", sessionID: "ses_1" });
@@ -191,11 +154,11 @@ describe("quota RPC definition", () => {
     }
 
     const rangeIssue =
-      "range must be one of today, 7d, 30d, 90d, all, session, session_tree, between";
+      "range must be one of today, 24h, 7d, 30d, all, session, session_tree, between";
     const cases: Array<[unknown, string]> = [
       [null, "input must be an object"],
       [{}, rangeIssue],
-      [{ range: "1y" }, rangeIssue],
+      [{ range: "90d" }, rangeIssue],
       [{ range: "toString" }, rangeIssue],
       [{ range: "all", sessionID: 1 }, "sessionID must be a string"],
       [{ range: "session" }, "sessionID is required for range session"],
@@ -241,10 +204,20 @@ describe("quota RPC definition", () => {
     }
   });
 
-  it("requires a report in usage output", async () => {
+  it("requires a report in usage output, and ok and a message in downloadPrices output", async () => {
     await expectAccepted(methods.usage.output, { report: { range: "all" } });
     for (const value of [undefined, {}, { report: null }, { report: [] }]) {
       await expectRejected(methods.usage.output, value, "output must carry a report");
+    }
+    await expectAccepted(methods.downloadPrices.input, {});
+    await expectRejected(methods.downloadPrices.input, null, "input must be an object");
+    await expectAccepted(methods.downloadPrices.output, { ok: true, message: "Downloaded." });
+    for (const value of [{}, { ok: "yes", message: "" }, { ok: false }]) {
+      await expectRejected(
+        methods.downloadPrices.output,
+        value,
+        "output must carry ok and a message",
+      );
     }
   });
 

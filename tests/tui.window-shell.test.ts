@@ -11,7 +11,9 @@ import { createQuotaWindow, type QuotaWindow } from "../src/tui/window/shell.tsx
 
 type Node = { type: unknown; props: Record<string, any> };
 type Key = { bind: string; run: () => void };
-type Layer = { target: () => unknown; commands: Key[] };
+type Layer = { target: () => unknown; priority?: number; commands: Key[] };
+/** The window's own keys; the Usage tab's sit above them (11). */
+const WINDOW_KEYS_PRIORITY = 10;
 
 const THEME = {
   text: {
@@ -229,12 +231,15 @@ function mount(tree: unknown, box: FakeBox): void {
   findAll(tree, (node) => node.type === "box" && node.props.focusable === true)[0]?.props.ref(box);
 }
 
-/** The newest key layer's key. */
+/** A key of the window's newest key layer. */
 function press(layers: Layer[], bind: string): void {
-  layers
-    .at(-1)
+  windowLayer(layers)
     ?.commands.find((key) => key.bind === bind)
     ?.run();
+}
+
+function windowLayer(layers: Layer[]): Layer | undefined {
+  return layers.filter((layer) => layer.priority === WINDOW_KEYS_PRIORITY).at(-1);
 }
 
 describe("quota window shell", () => {
@@ -420,7 +425,7 @@ describe("quota window shell", () => {
 
     await redraw();
     expect(host.keyboard.current).toBe(windowBox);
-    expect(host.layers.at(-1)?.target()).toBe(windowBox);
+    expect(windowLayer(host.layers)?.target()).toBe(windowBox);
 
     // A click on the message box takes the keyboard on purpose; a later redraw leaves it there.
     messageBox.focus();

@@ -10,7 +10,8 @@
 import { describeError } from "../core/errors.js";
 import { paceOf, paceText } from "../core/pace.js";
 import type { QuotaSnapshot, Words } from "../core/types.js";
-import type { UsageProviderRow, UsageRange, UsageReport } from "../core/usage.js";
+import type { UsageProviderRow, UsageReport } from "../core/usage.js";
+import { USAGE_RANGES, type UsageRange, usageRangeLabel } from "../core/usage-ranges.js";
 import { WINDOWS } from "../core/windows.js";
 import {
   getQuotaProviderDisplayLabel,
@@ -37,7 +38,6 @@ import {
   byTypeBarLines,
   costText,
   dailyChartLines,
-  RANGE_TITLES,
   type UsageMode,
   type UsageRole,
 } from "./usage.js";
@@ -88,8 +88,6 @@ type Block = { name: string; dot: UsageRole; usage?: UsageProviderRow; groups: G
 type Columns = { name: number; label: number };
 
 const SESSION_RANGES: ReadonlySet<UsageRange> = new Set(["session", "session_tree"]);
-/** The usage ranges in picker order: the one list the quick look's ranges come from. */
-const USAGE_RANGES = Object.keys(RANGE_TITLES) as UsageRange[];
 const INDENT = "    ";
 /** The provider name column: as wide as the longest name, within these bounds. */
 const NAME_MIN_WIDTH = 10;
@@ -156,9 +154,9 @@ function clampWidth(width: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, width));
 }
 
-/** "7 days" for "last 7 days": the range's title as the range picker shows it. */
+/** "7 days" for "Last 7 days": the range's label as the range picker shows it. */
 function rangeLabel(range: UsageRange): string {
-  return RANGE_TITLES[range].replace(/^last /u, "");
+  return usageRangeLabel(range).replace(/^Last /u, "");
 }
 
 /**
@@ -188,7 +186,7 @@ function groupServesUsage(
 
 /** The ranges ←/→ step through, in order; the session ones only inside a session. */
 export function quickLookRanges(inSession: boolean): QuickLookRange[] {
-  return USAGE_RANGES.filter(
+  return USAGE_RANGES.map((item) => item.range).filter(
     (range): range is QuickLookRange =>
       range !== "between" && (inSession || !SESSION_RANGES.has(range)),
   );
@@ -259,9 +257,9 @@ function blocksOf(
   return [...usedBlocks, ...quotaBlocks];
 }
 
-/** "Quota  last 7 days" on the left; the Cost/Tokens toggle and the range on the right. */
+/** "Quota  Last 7 days" on the left; the Cost/Tokens toggle and the range on the right. */
 function headerLine(input: QuickLookInput, width: number): QuickLookLine {
-  const left = [span("Quota", "heading"), span(`  ${RANGE_TITLES[input.range]}`, "muted")];
+  const left = [span("Quota", "heading"), span(`  ${usageRangeLabel(input.range)}`, "muted")];
   const right = [
     span(" Cost ", input.mode === "cost" ? "chip" : "muted"),
     span(" ", "muted"),
