@@ -2,9 +2,10 @@
 /**
  * OpenCode Quota's TUI plugin. It draws the server's quota snapshot: the Quota panel in the
  * session sidebar, the status line under the message box (and on Home when turned on), the
- * toasts, and the quota window that `/quota` opens above the message box (`window/`). It reads
- * only the quota RPC and the display settings in OpenCode's plugin storage. The quota slash
- * commands typed in the prompt run through `legacy-dialogs.tsx`.
+ * toasts, the `/quota` quick look (`quick-look.tsx`), and the quota window that
+ * `/quota_usage`, `/quota_status` and `/quota_settings` open above the message box (`window/`).
+ * It reads only the quota RPC and the display settings in OpenCode's plugin storage. The quota
+ * slash commands typed in the prompt run through `legacy-dialogs.tsx`.
  */
 import { Plugin } from "@opencode/plugin/tui";
 import type { JSX } from "@opentui/solid";
@@ -14,6 +15,7 @@ import { parseUsageArguments } from "../core/usage-ranges.js";
 import { type ClientHost, createQuotaClient, reportFailure } from "./client.js";
 import { applyDisplayImport, createDisplayStore, type DisplayStorage } from "./display.js";
 import { registerTypedQuotaCommands, type TypedCommandHost } from "./legacy-dialogs.js";
+import { createQuickLook, type QuickLookHost } from "./quick-look.js";
 import { SidebarPanel, type SurfaceHost } from "./sidebar.js";
 import { HomeFooter, StatusLine } from "./status-line.js";
 import type { Theme } from "./theme.js";
@@ -27,8 +29,9 @@ type TuiEvent = { data?: Record<string, unknown> };
 /** What the plugin needs from OpenCode's TUI context, besides the window's and typed commands' needs. */
 type TuiContext = TypedCommandHost &
   WindowHost &
+  QuickLookHost &
   ClientHost & {
-    theme: Theme & WindowHost["theme"];
+    theme: Theme & WindowHost["theme"] & QuickLookHost["theme"];
     storage: DisplayStorage;
     data: WindowHost["data"] & {
       on: (event: string, handler: (event: TuiEvent) => void) => () => void;
@@ -122,6 +125,7 @@ const plugin = Plugin.define({
       editing: settings,
     };
     const quotaWindow = createQuotaWindow(api, host, settings);
+    const quickLook = createQuickLook(api, host, quotaWindow);
     /** `/quota_usage [range]`: the Usage tab, on the typed range; a wrong range says why. */
     const openUsage = (argumentsText: string) => {
       if (!argumentsText) {
@@ -131,6 +135,13 @@ const plugin = Plugin.define({
       const parsed = parseUsageArguments(argumentsText);
       if (parsed.ok) quotaWindow.openUsage(parsed);
       else api.ui.toast.show({ variant: "warning", title: TOAST_TITLE, message: parsed.error });
+    };
+    /** The quota slash commands, by name, with what follows the name. */
+    const quotaCommands: Record<string, (argumentsText: string) => void> = {
+      quota: () => quickLook.open(),
+      quota_usage: openUsage,
+      quota_status: () => quotaWindow.open("status"),
+      quota_settings: () => quotaWindow.open("settings"),
     };
 
     let disposeMount: (() => void) | undefined;
@@ -157,11 +168,11 @@ const plugin = Plugin.define({
           mode: "global",
           commands: [
             {
-              id: "quota.window",
-              title: "Quota: limits, notices, status",
+              id: "quota.quick_look",
+              title: "Quota: quick look",
               group: "OpenCode Quota",
               palette: true,
-              run: () => quotaWindow.open("limits"),
+              run: () => quickLook.open(),
             },
             {
               id: "quota.usage",
@@ -177,13 +188,18 @@ const plugin = Plugin.define({
               palette: true,
               run: () => quotaWindow.open("status"),
             },
+            {
+              id: "quota.settings",
+              title: "Quota: settings",
+              group: "OpenCode Quota",
+              palette: true,
+              // The server lists /quota, /quota_usage and /quota_status; this one is TUI-only.
+              slash: { name: "quota_settings" },
+              run: () => quotaWindow.open("settings"),
+            },
           ],
         }));
-        registerTypedQuotaCommands(api, {
-          quota: () => quotaWindow.open("limits"),
-          quota_usage: openUsage,
-          quota_status: () => quotaWindow.open("status"),
-        });
+        registerTypedQuotaCommands(api, quotaCommands);
         const afterTurn = (event: TuiEvent, trigger: TurnEnd) => {
           const sessionID = eventSessionID(event);
           if (sessionID) void toasts.afterTurn(trigger, sessionID).catch(reportFailure);

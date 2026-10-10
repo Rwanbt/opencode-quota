@@ -79,7 +79,7 @@ const DROPPED: ReadonlyMap<string, string> = new Map(
   Object.entries({
     enabled: "v6 has no switch of its own; turn the plugin off in OpenCode's plugin list",
     tuiCommandDisplay:
-      "the TUI opens /quota and /quota_status in its quota window and the other reports in a popup",
+      "the TUI shows /quota as a quick look, /quota_status in its quota window, and the other reports in a popup",
     formatStyle: NO_FORMAT_STYLE,
     toastStyle: NO_FORMAT_STYLE,
     "tuiSidebarPanel.formatStyle": NO_FORMAT_STYLE,
@@ -435,7 +435,7 @@ function mapV5Values(values: ReadonlyMap<string, unknown>): {
     toDisplay(
       "opencodeGoWindows",
       "surfaces.*.hidden",
-      "the other OpenCode Go windows are hidden now, not removed: export and /quota still list them",
+      "the other OpenCode Go windows are hidden now, not removed: export and the quota window's Limits tab still list them",
     );
   }
   return { server, display: display as DisplayImport, converted, dropped };
@@ -472,6 +472,11 @@ export async function planV5Conversion(configDir: string): Promise<V5Conversion 
     invalid: firstPerKey(read.invalid),
     notes: files.notes,
   };
+}
+
+/** True for a key v5 had: one v6 converts, drops, ignores, or a v5 group ("tuiSidebarPanel"). */
+export function isV5SettingKey(key: string): boolean {
+  return V5_KEYS.has(key) || DROPPED.has(key) || SILENT.has(key) || V5_GROUPS.has(key);
 }
 
 /**

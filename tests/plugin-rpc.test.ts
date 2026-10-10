@@ -420,6 +420,31 @@ describe("server quota RPC", () => {
     await expect(call("snapshot", {})).resolves.toEqual({ snapshot: withPercentWords("bare") });
   });
 
+  it("tells clients which OpenCode provider each custom definition serves", async () => {
+    useSettings({
+      providers: {
+        enabled: ["copilot", "custom"],
+        custom: [
+          {
+            id: "team-accounting",
+            providerId: "team-gateway",
+            label: "Team",
+            mode: "remote-api",
+            url: "https://team-gateway.example/quota",
+            format: "quota-v1",
+            apiKeyEnv: "V6_TEAM_KEY",
+          },
+        ],
+      },
+    });
+    const { call } = await setupServer();
+
+    const { snapshot } = (await call("snapshot", {})) as { snapshot: QuotaSnapshot };
+    expect(snapshot.customRowProviders).toEqual({
+      "quota-providers.custom.team-accounting.": "team-gateway",
+    });
+  });
+
   it("converts the v5 settings at the first start and offers their looks until a TUI takes them", async () => {
     await rm(SETTINGS_FILE);
     await writeFile(
@@ -776,7 +801,7 @@ describe("server quota RPC", () => {
     const expected =
       active === 0
         ? ""
-        : `Notice: ${active} unread maintainer ${active === 1 ? "notice" : "notices"}, see /quota → Notices.`;
+        : `Notice: ${active} unread maintainer ${active === 1 ? "notice" : "notices"}, see /quota_status → Notices.`;
     useSettings({ announcements: { enabled: true, home: true, homeFrequency: "always" } });
     await expect((await setupServer()).call("notices", {})).resolves.toEqual({
       homeLine: expected,
@@ -903,8 +928,27 @@ describe("server quota RPC", () => {
     });
   });
 
-  it("posts the /quota limits and notices of Web and Desktop into the chat", async () => {
-    useSettings();
+  it("posts the /quota quick look of Web and Desktop into the chat", async () => {
+    const databaseDir = await mkdtemp(join(tmpdir(), "opencode-quota-quick-look-"));
+    onTestFinished(() => rm(databaseDir, { recursive: true, force: true }));
+    const databasePath = join(databaseDir, "opencode.db");
+    vi.stubEnv("OPENCODE_DB", databasePath);
+    const now = Date.now();
+    writeSessionDatabase(databasePath, {
+      sessions: [{ id: "ses_root", created: now - 120_000 }],
+      messages: [
+        {
+          id: "msg_1",
+          sessionID: "ses_root",
+          created: now - 60_000,
+          completed: now - 59_000,
+          providerID: "anthropic",
+          modelID: "claude-sonnet-4-5",
+          tokens: { input: 1_000_000 },
+        },
+      ],
+    });
+    useSettings({ pricing: { source: "bundled", autoRefreshDays: 3 } });
     const { ctx, commands } = await setupServer();
 
     await commands
@@ -920,8 +964,9 @@ describe("server quota RPC", () => {
     ];
     expect(message.text.split("\n")).toEqual([
       "[OpenCode Quota report]",
-      "Quota",
-      "Copilot Plan        81% left",
+      "Quota · 7 days · $3.00 · 1.00M tokens",
+      "● Anthropic  $3.00",
+      "● Copilot    Plan 81% left",
       "[End of OpenCode Quota report]",
     ]);
     expect(message.metadata.opencodeQuota?.command).toBe("quota");

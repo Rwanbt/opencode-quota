@@ -8,6 +8,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Notice } from "../rpc.js";
 import { writeJsonAtomic } from "./atomic-json.js";
+import { withFileLock } from "./file-lock.js";
 import {
   BUNDLED_MAINTAINER_ANNOUNCEMENTS,
   getMaintainerAnnouncementsSummary,
@@ -19,6 +20,7 @@ import { getOpencodeRuntimeDirs } from "./opencode-runtime-paths.js";
 const DAILY_HOME_NOTICE_VISIBLE_MS = 10 * 60_000;
 
 const STATE_FILE_OPTIONS = { trailingNewline: true, directoryMode: 0o700, fileMode: 0o600 };
+const READ_STATE_LOCK_WAIT_MS = 2_000;
 
 type DailyHomeNoticeClaim = { day: string; shownAtMs: number };
 
@@ -42,19 +44,28 @@ async function readNoticeIds(): Promise<Set<string>> {
   }
 }
 
-/** Marks notices read or unread. Only the ids of bundled notices are kept. */
+/**
+ * Marks notices read or unread. Only the ids of bundled notices are kept. The read, change and
+ * write hold the read state's lock, so changes from several windows at once all stay.
+ */
 export async function markNotices(ids: readonly string[], read: boolean): Promise<void> {
   const known = new Set(BUNDLED_MAINTAINER_ANNOUNCEMENTS.map((announcement) => announcement.id));
-  const readIds = await readNoticeIds();
-  for (const id of ids) {
-    if (read) readIds.add(id);
-    else readIds.delete(id);
-  }
-  const kept = [...readIds].filter((id) => known.has(id)).sort();
-  await writeJsonAtomic(
-    statePath("maintainer-announcements-read.json"),
-    { read: kept },
-    STATE_FILE_OPTIONS,
+  const path = statePath("maintainer-announcements-read.json");
+  await withFileLock(
+    `${path}.lock`,
+    async (fence) => {
+      const readIds = await readNoticeIds();
+      for (const id of ids) {
+        if (read) readIds.add(id);
+        else readIds.delete(id);
+      }
+      const kept = [...readIds].filter((id) => known.has(id)).sort();
+      await writeJsonAtomic(path, { read: kept }, { ...STATE_FILE_OPTIONS, beforeCommit: fence });
+    },
+    {
+      waitMs: READ_STATE_LOCK_WAIT_MS,
+      busyMessage: `the notice read state is busy: another window holds ${path}.lock; try again`,
+    },
   );
 }
 
@@ -140,7 +151,7 @@ export async function homeNoticeLine(params: {
   if (unread === 0) return "";
   if (params.frequency === "daily" && !(await claimDailyHomeNotice(nowMs))) return "";
   const count = unread === 1 ? "1 unread maintainer notice" : `${unread} unread maintainer notices`;
-  return `Notice: ${count}, see /quota → Notices.`;
+  return `Notice: ${count}, see /quota_status → Notices.`;
 }
 
 export function __resetMaintainerHomeNoticeForTests(): void {

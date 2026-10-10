@@ -39,6 +39,7 @@ import {
   buildQuotaDialogCommandOutput,
   kickPricingRefresh,
 } from "./lib/quota-dialog-commands.js";
+import { QUOTA_PROVIDERS_AGGREGATE_ID } from "./lib/quota-providers.js";
 import {
   containsQuotaReport,
   formatQuotaReportMessage,
@@ -62,6 +63,7 @@ import {
   type V5Conversion,
   watchSettings,
 } from "./settings/index.js";
+import { DEFAULT_QUICK_LOOK_RANGE } from "./view/quick-look.js";
 import { usageText } from "./view/usage.js";
 
 type ModelMessage = {
@@ -234,14 +236,28 @@ export const QuotaToastPlugin = Plugin.define({
         },
       };
     };
-    // Every snapshot a client gets carries the server's words and the v5 looks still to apply,
-    // and none of the export parts the server keeps for the export file.
-    const forClients = (snapshot: QuotaSnapshot): QuotaSnapshot => ({
-      ...snapshot,
-      providers: snapshot.providers.map(({ exportPart: _serverOnly, ...provider }) => provider),
-      words: loaded.settings.words,
-      ...(displayImport ? { displayImport } : {}),
-    });
+    // Every snapshot a client gets carries the server's words, the OpenCode provider of each
+    // custom definition, and the v5 looks still to apply, and none of the export parts the
+    // server keeps for the export file.
+    const forClients = (snapshot: QuotaSnapshot): QuotaSnapshot => {
+      const custom = loaded.settings.providers.custom;
+      return {
+        ...snapshot,
+        providers: snapshot.providers.map(({ exportPart: _serverOnly, ...provider }) => provider),
+        words: loaded.settings.words,
+        ...(custom.length > 0
+          ? {
+              customRowProviders: Object.fromEntries(
+                custom.map((one) => [
+                  `${QUOTA_PROVIDERS_AGGREGATE_ID}.custom.${one.id}.`,
+                  one.providerId,
+                ]),
+              ),
+            }
+          : {}),
+        ...(displayImport ? { displayImport } : {}),
+      };
+    };
 
     // The usage report with the configured price list. A due price download gets up to
     // 0.75 s to finish first.
@@ -422,7 +438,8 @@ export const QuotaToastPlugin = Plugin.define({
     });
 
     // Web and Desktop list these in their "/" menu and get the report as a chat message. The
-    // TUI runs them in its quota window, so a command typed there never reaches this.
+    // TUI shows /quota, /quota_usage and /quota_status itself; only its "chat" form of the
+    // /quota quick look runs /quota here.
     const postReport = async (sessionID: string, command: string, report: string) => {
       // A message admitted while the AI works is delivered into that turn at its next
       // step, and can make the AI take one more step. Wait until the session is idle.
@@ -443,16 +460,22 @@ export const QuotaToastPlugin = Plugin.define({
     await ctx.command.transform((editor) => {
       editor.add({
         name: "quota",
-        description: "Show your quota limits and the maintainer notices.",
+        description: "Quick look: your quota limits and the last 7 days of usage.",
         async execute(invocation) {
           // /quota waits for the providers that are due a check; the rest show their last rows.
           const model = await sessionModel(invocation.sessionID);
-          const refreshed = await store.refresh({ reason: "poll", model });
-          const snapshot = forClients(await withSessionTokens(refreshed, invocation.sessionID));
+          const snapshot = forClients(await store.refresh({ reason: "poll", model }));
+          // Without OpenCode's history the limits still show.
+          const usage = await loadUsageReport({ range: DEFAULT_QUICK_LOOK_RANGE }).catch(
+            (error) => {
+              console.warn(`[opencode-quota] /quota usage failed: ${logReason(error)}`);
+              return undefined;
+            },
+          );
           const notices = loaded.settings.announcements.enabled
             ? await listNotices({ providerIds: await noticeTargets() })
             : [];
-          const report = quotaMessageText({ snapshot, notices, nowMs: Date.now() });
+          const report = quotaMessageText({ snapshot, usage, notices, nowMs: Date.now() });
           await postReport(invocation.sessionID, "quota", report);
         },
       });

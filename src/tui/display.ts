@@ -1,5 +1,6 @@
 /**
- * The TUI's display settings: what the sidebar, status line and toasts show and how they look.
+ * The TUI's display settings: what the sidebar, status line, toasts and `/quota` show and how
+ * they look.
  * They live only in OpenCode's plugin storage (`context.storage.store("settings")`), which
  * OpenCode saves atomically, keeps across restarts and syncs to every open TUI. The words
  * (percent style, reset style, …) are the server's and come with the snapshot.
@@ -55,7 +56,12 @@ export type DisplaySettings = RowSettings & {
     seconds: number;
     sessionTokens: boolean;
   };
+  /** How `/quota` shows its quick look: a popup, a toast, or a message in the session. */
+  quickLook: QuickLookForm;
 };
+
+export type QuickLookForm = "dialog" | "toast" | "chat";
+const QUICK_LOOK_FORMS: readonly QuickLookForm[] = ["dialog", "toast", "chat"];
 
 /** The stored value; `settings` is missing until display settings were saved once. */
 export type StoredDisplay = { version: number; settings?: DisplaySettings };
@@ -171,6 +177,7 @@ export function defaultDisplaySettings(): DisplaySettings {
     surfaces: Object.fromEntries(SURFACES.map((surface) => [surface, readSurface(undefined)])),
     window: {},
     colors: {},
+    quickLook: "dialog",
   };
   for (const field of FIELDS) putAt(settings, field.path.split("."), field.initial);
   return settings as DisplaySettings;
@@ -195,6 +202,9 @@ export function readDisplaySettings(stored: unknown): DisplaySettings {
     (item): item is WindowChoice => item === "lowest" || isQuotaWindow(item),
   );
   settings.colors = recordOf(from.colors, isColorChoice);
+  if (QUICK_LOOK_FORMS.includes(from.quickLook as QuickLookForm)) {
+    settings.quickLook = from.quickLook as QuickLookForm;
+  }
   const { thresholds } = settings;
   thresholds.warningBelow = Math.max(thresholds.warningBelow, thresholds.lowBelow);
   return settings;

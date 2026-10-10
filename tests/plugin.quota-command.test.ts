@@ -262,7 +262,7 @@ describe("/quota and /quota_status on the server", () => {
     expect(recovered).toContain("69% left");
   });
 
-  it("uses the price list the settings choose, without a price download for /quota", async () => {
+  it("prices the /quota usage with the price list the settings choose, as the token reports do", async () => {
     useSettings({ pricing: { source: "bundled", autoRefreshDays: 7 } });
     const { quota } = await startServer();
 
@@ -270,15 +270,20 @@ describe("/quota and /quota_status on the server", () => {
 
     expect(mocks.setPricingSnapshotSelection).toHaveBeenCalledWith("bundled");
     expect(mocks.setPricingSnapshotAutoRefresh).toHaveBeenCalledWith(7);
-    expect(mocks.maybeRefreshPricingSnapshot).not.toHaveBeenCalled();
+    expect(mocks.maybeRefreshPricingSnapshot).toHaveBeenCalledWith({
+      reason: "tokens",
+      snapshotSelection: "bundled",
+    });
   });
 
   it.each([
-    { words: { percent: "used" }, shows: ["19% used", "2d 5h 14m"], hides: ["81% left"] },
-    { words: { percent: "bare", reset: "compact" }, shows: ["81%", "2d5h14m"], hides: ["left"] },
-  ])("shows /quota in the words the settings choose: $words", async ({ words, shows, hides }) => {
-    vi.useFakeTimers({ toFake: ["Date"] });
-    vi.setSystemTime(new Date("2026-01-15T10:00:00.000Z"));
+    { words: { percent: "used" }, shows: "5h 19% used", hides: "left" },
+    { words: { percent: "bare" }, shows: "5h 81%", hides: "left" },
+  ])("shows /quota in the percent words the settings choose: $words", async ({
+    words,
+    shows,
+    hides,
+  }) => {
     useSettings({ providers: { enabled: ["openai"] }, words });
     mocks.getProviders.mockReturnValue([
       provider(
@@ -290,7 +295,6 @@ describe("/quota and /quota_status on the server", () => {
               name: "OpenAI 5h",
               label: "5h:",
               percentRemaining: 81,
-              resetTimeIso: "2026-01-17T15:14:00.000Z",
             },
           ]),
         ),
@@ -300,9 +304,8 @@ describe("/quota and /quota_status on the server", () => {
 
     const output = await quota();
 
-    for (const text of shows) expect(output).toContain(text);
-    for (const text of hides) expect(output).not.toContain(text);
-    vi.useRealTimers();
+    expect(output).toContain(shows);
+    expect(output).not.toContain(hides);
   });
 
   it.each([
@@ -429,46 +432,6 @@ describe("/quota and /quota_status on the server", () => {
     expect(fetch).toHaveBeenCalledTimes(1);
     expect(first).toContain("95% left");
     expect(second).toContain("95% left");
-  });
-
-  it("keeps the session tokens of concurrent /quota runs apart", async () => {
-    mocks.getProviders.mockReturnValue([
-      provider(
-        "openai",
-        vi.fn().mockResolvedValue(
-          quotaResult([
-            {
-              accounting: TEST_ACCOUNTING,
-              name: "OpenAI 5h",
-              label: "5h:",
-              percentRemaining: 88,
-            },
-          ]),
-        ),
-      ),
-    ]);
-    const answers = new Map<string, (value: unknown) => void>();
-    mocks.fetchSessionTokensForDisplay.mockImplementation(
-      ({ sessionID }: { sessionID: string }) =>
-        new Promise((resolve) => answers.set(sessionID, resolve)),
-    );
-    const { quota } = await startServer();
-
-    const runA = quota("session-a");
-    const runB = quota("session-b");
-    await vi.waitFor(() => expect(answers.size).toBe(2));
-    answers.get("session-b")?.({
-      sessionTokens: { models: [], totalInput: 2222, totalOutput: 22 },
-    });
-    answers.get("session-a")?.({
-      sessionTokens: { models: [], totalInput: 1111, totalOutput: 11 },
-    });
-
-    const [outputA, outputB] = await Promise.all([runA, runB]);
-    expect(outputA).toContain("1.11K in");
-    expect(outputA).not.toContain("2.22K in");
-    expect(outputB).toContain("2.22K in");
-    expect(outputB).not.toContain("1.11K in");
   });
 
   it.each([

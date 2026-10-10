@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -14,7 +15,7 @@ vi.mock("../src/lib/opencode-runtime-paths.js", () => ({
   }),
 }));
 
-// One announcement for Copilot users, active all the time.
+// One announcement for Copilot users and one for Z.ai users, active all the time.
 vi.mock("../src/lib/maintainer-announcements.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/lib/maintainer-announcements.js")>()),
   BUNDLED_MAINTAINER_ANNOUNCEMENTS: [
@@ -23,6 +24,7 @@ vi.mock("../src/lib/maintainer-announcements.js", async (importOriginal) => ({
       message: "If you use Copilot, GitHub billing is moving to AI Credits.",
       providerIds: ["copilot"],
     },
+    { id: "zai-plan", message: "Z.ai changed its plan limits.", providerIds: ["zai"] },
   ],
 }));
 
@@ -33,8 +35,10 @@ import {
   markNotices,
 } from "../src/lib/maintainer-home-notice.js";
 
-const NOTICE = "Notice: 1 unread maintainer notice, see /quota → Notices.";
+const NOTICE = "Notice: 1 unread maintainer notice, see /quota_status → Notices.";
 const MINUTE = 60_000;
+const readStateFile = () =>
+  join(state.root, "state", "opencode-quota", "maintainer-announcements-read.json");
 const MORNING = new Date(2026, 9, 10, 9, 0).getTime();
 
 function lineAt(nowMs: number, frequency: "off" | "daily" | "always" = "daily") {
@@ -118,5 +122,36 @@ describe("Home maintainer notice", () => {
 
     await markNotices(["copilot-credits"], false);
     await expect(lineAt(MORNING + MINUTE)).resolves.toBe(NOTICE);
+  });
+
+  it("keeps both changes when two windows mark notices at the same time", async () => {
+    await Promise.all([markNotices(["copilot-credits"], true), markNotices(["zai-plan"], true)]);
+    expect(JSON.parse(await readFile(readStateFile(), "utf8"))).toEqual({
+      read: ["copilot-credits", "zai-plan"],
+    });
+    const notices = await listNotices({ providerIds: ["copilot", "zai"] });
+    expect(notices.map((notice) => [notice.id, notice.read])).toEqual([
+      ["copilot-credits", true],
+      ["zai-plan", true],
+    ]);
+    expect(existsSync(`${readStateFile()}.lock`)).toBe(false);
+  });
+
+  it("waits while another OpenCode process holds the read state's lock", async () => {
+    const lock = `${readStateFile()}.lock`;
+    await mkdir(join(state.root, "state", "opencode-quota"), { recursive: true });
+    // A live process (this one) under another token: the lock of another window.
+    await writeFile(lock, JSON.stringify({ pid: process.pid, token: "other-window" }));
+    let done = false;
+    const marking = markNotices(["zai-plan"], true).then(() => {
+      done = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(done).toBe(false);
+    expect(existsSync(readStateFile())).toBe(false);
+
+    await rm(lock);
+    await marking;
+    expect(JSON.parse(await readFile(readStateFile(), "utf8"))).toEqual({ read: ["zai-plan"] });
   });
 });

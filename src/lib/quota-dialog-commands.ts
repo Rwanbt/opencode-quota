@@ -13,17 +13,23 @@ import { createQuotaStore } from "../core/store.js";
 import type { DebugDetail, ProviderSnapshot, QuotaSnapshot, SessionModel } from "../core/types.js";
 import { type UsageReport, usageReport } from "../core/usage.js";
 import { getProviders } from "../providers/registry.js";
+import { apiKeyStatusDetails, simpleApiKeyStatusDetails } from "../providers/result-helpers.js";
 import type { Settings, V5Conversion } from "../settings/index.js";
 import { DEFAULT_WORDS } from "../view/format.js";
 import { type RowSettings, type SurfaceRows, visibleGroups } from "../view/select.js";
 import { plainLines } from "../view/text.js";
-import { API_KEY_VENDORS, getApiKeyDiagnostics } from "./api-key-resolver.js";
+import {
+  API_KEY_LOGIN_VENDORS,
+  API_KEY_VENDORS,
+  getApiKeyDiagnostics,
+  getApiKeyLoginDiagnostics,
+} from "./api-key-resolver.js";
+import { inspectCursorAuthPresence } from "./cursor-detection.js";
 import { isCursorProviderId } from "./cursor-pricing.js";
 import { sanitizeDisplayText } from "./display-sanitize.js";
 import type { QuotaProvider, QuotaProviderContext } from "./entries.js";
 import { getMaintainerAnnouncementsSummary } from "./maintainer-announcements.js";
 import {
-  getPricingSnapshotMeta,
   getPricingSnapshotSource,
   getRuntimePricingRefreshStatePath,
   getRuntimePricingSnapshotPath,
@@ -33,8 +39,14 @@ import {
   setPricingSnapshotSelection,
 } from "./modelsdev-pricing.js";
 import { getCredentialSourceDiagnostics } from "./opencode-auth.js";
+import { resolveOpenRouterApiKey } from "./openrouter.js";
 import { getQuotaProviderDisplayLabel, getQuotaProviderRuntimeIds } from "./provider-metadata.js";
-import { buildQuotaStatusReportDocument } from "./quota-status.js";
+import {
+  buildQuotaStatusReportDocument,
+  knownProviderIds,
+  publicPricingMeta,
+  statusPathText,
+} from "./quota-status.js";
 import { type ReportDocument, renderPlainTextReport } from "./report-document.js";
 import { getPackageVersion } from "./version.js";
 
@@ -189,6 +201,41 @@ async function isAvailable(provider: QuotaProvider, ctx: QuotaProviderContext): 
 }
 
 /**
+ * Where an API-key provider (and Cursor) looked for its key, from local reads only, with the
+ * same details its own check writes: whether a key is set, its source, and the files checked.
+ * Nothing for a provider without an API key.
+ */
+async function apiKeySetupDetails(providerId: string): Promise<DebugDetail[]> {
+  if (Object.hasOwn(API_KEY_VENDORS, providerId)) {
+    const vendor = API_KEY_VENDORS[providerId as keyof typeof API_KEY_VENDORS];
+    return simpleApiKeyStatusDetails(await getApiKeyDiagnostics(vendor));
+  }
+  if (Object.hasOwn(API_KEY_LOGIN_VENDORS, providerId)) {
+    const vendor = API_KEY_LOGIN_VENDORS[providerId as keyof typeof API_KEY_LOGIN_VENDORS];
+    return apiKeyStatusDetails(await getApiKeyLoginDiagnostics(vendor));
+  }
+  if (providerId === "openrouter") {
+    const resolved = await resolveOpenRouterApiKey();
+    return simpleApiKeyStatusDetails({
+      configured: Boolean(resolved.key),
+      source: resolved.source,
+      checkedPaths: resolved.checkedPaths,
+      credentialDatabasePaths: resolved.credentialDatabasePaths,
+    });
+  }
+  if (providerId === "cursor") {
+    const auth = await inspectCursorAuthPresence();
+    return [
+      { key: "auth_state", value: auth.state },
+      { key: "auth_selected_path", value: auth.selectedPath ?? "(none)" },
+      { key: "auth_present_paths", value: auth.presentPaths.join(" | ") || "(none)" },
+      { key: "auth_candidate_paths", value: auth.candidatePaths.join(" | ") || "(none)" },
+    ];
+  }
+  return [];
+}
+
+/**
  * What an unavailable provider's setup looks like, from local checks only: whether OpenCode
  * lists the provider and, for an API-key provider, where its key was looked for. No quota
  * request is made.
@@ -205,23 +252,16 @@ async function localSetupDetails(
       const openCodeIds = await ctx.resolveRuntimeProviderIds();
       const found = runtimeIds.filter((id) => openCodeIds.has(id));
       listed =
-        found.length > 0 ? `yes (${found.join(", ")})` : `no (looked for ${runtimeIds.join(", ")})`;
+        found.length > 0 ? `yes found=${found.join(",")}` : `no looked_for=${runtimeIds.join(",")}`;
     } catch {
-      listed = "(OpenCode's provider list could not be read)";
+      listed = "unreadable";
     }
     details.push({ key: "opencode_provider", value: listed });
   }
-  if (Object.hasOwn(API_KEY_VENDORS, providerId)) {
-    try {
-      const vendor = API_KEY_VENDORS[providerId as keyof typeof API_KEY_VENDORS];
-      const key = await getApiKeyDiagnostics(vendor);
-      const parts = [`configured=${key.configured ? "true" : "false"}`];
-      if (key.source) parts.push(`source=${key.source}`);
-      if (key.checkedPaths.length > 0) parts.push(`checked=${key.checkedPaths.join(" | ")}`);
-      details.push({ key: "api_key_diagnostics", value: parts.join(" ") });
-    } catch {
-      details.push({ key: "api_key_diagnostics", value: "(could not be read)" });
-    }
+  try {
+    details.push(...(await apiKeySetupDetails(providerId)));
+  } catch {
+    details.push({ key: "api_key_configured", value: "unreadable" });
   }
   return details;
 }
@@ -372,15 +412,16 @@ export async function buildStatusReportData(params: {
     generatedAtMs: params.generatedAtMs,
   });
 
+  // The payload follows the report's closed vocabulary: known ids, fixed words, known paths.
   const version = (await getPackageVersion()) ?? "unknown";
-  const pricingMeta = getPricingSnapshotMeta();
+  const pricingMeta = publicPricingMeta();
   const payload: QuotaStatusReportPayload = {
     version,
     generatedAt: new Date(params.generatedAtMs).toISOString(),
     config: {
-      settingsPath: loaded.path,
+      settingsPath: statusPathText(loaded.path),
       settingsFileExists: loaded.exists,
-      enabledProviders: settings.providers.enabled,
+      enabledProviders: knownProviderIds(settings.providers.enabled),
       onlyCurrentModel: settings.words.onlyCurrentModel,
       pricingSnapshotSource: settings.pricing.source,
     },
@@ -390,12 +431,12 @@ export async function buildStatusReportData(params: {
       activeSource: getPricingSnapshotSource(),
       snapshot: {
         source: pricingMeta.source,
-        generatedAt:
-          pricingMeta.generatedAt > 0 ? new Date(pricingMeta.generatedAt).toISOString() : null,
+        // "(none)" and "(invalid date)" are no time.
+        generatedAt: /^\d/u.test(pricingMeta.generatedAt) ? pricingMeta.generatedAt : null,
         units: pricingMeta.units,
       },
-      snapshotPath: getRuntimePricingSnapshotPath(),
-      refreshStatePath: getRuntimePricingRefreshStatePath(),
+      snapshotPath: statusPathText(getRuntimePricingSnapshotPath()),
+      refreshStatePath: statusPathText(getRuntimePricingRefreshStatePath()),
     },
     liveProbes: checked.map((provider) => ({
       id: provider.providerId,

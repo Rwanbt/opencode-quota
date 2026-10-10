@@ -212,6 +212,8 @@ async function configurationWriteOptions(
 export async function writeResolvedConfigText(
   snapshot: ConfigWriteTargetSnapshot,
   content: string,
+  beforeCommit?: () => Promise<void>,
 ): Promise<void> {
-  await writeTextAtomic(snapshot.writePath, content, await configurationWriteOptions(snapshot));
+  const options = await configurationWriteOptions(snapshot);
+  await writeTextAtomic(snapshot.writePath, content, { ...options, beforeCommit });
 }
