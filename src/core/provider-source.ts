@@ -25,7 +25,7 @@ import { getProviders } from "../providers/registry.js";
 import type { LoadedSettings, Settings } from "../settings/index.js";
 import { rowsFromProviderResult } from "./rows.js";
 import { matchesQuotaProviderCurrentSelection } from "./selection.js";
-import type { ProviderIdentity, StoreProvider, StoreSource } from "./store.js";
+import type { CheckForExport, ProviderIdentity, StoreProvider, StoreSource } from "./store.js";
 import type { SessionModel } from "./types.js";
 
 export type ProviderSourceHost = {
@@ -203,19 +203,19 @@ function storeProvider(
     async fetch() {
       const result = await provider.fetch(ctx, await cacheContextFor(provider, ctx));
       const fetched = rowsFromProviderResult(provider.id, result);
-      const exportPart = exportProviderFromCheck({
-        providerId: provider.id,
-        label: getQuotaProviderDisplayLabel(provider.id),
-        fetched,
-        checkedAtMs: Date.now(),
-        customDefinitions: ctx.config.quotaProviders ?? [],
-        accounts: result.accounts,
-      });
-      if (!fetched.rowLogins) return { ...fetched, exportPart };
+      const buildExportPart = (check: CheckForExport) =>
+        exportProviderFromCheck({
+          ...check,
+          providerId: provider.id,
+          label: getQuotaProviderDisplayLabel(provider.id),
+          customDefinitions: ctx.config.quotaProviders ?? [],
+          accounts: result.accounts,
+        });
+      if (!fetched.rowLogins) return { ...fetched, buildExportPart };
       return {
         ...fetched,
         rowLogins: await keyedLogins(provider.id, fetched.rowLogins),
-        exportPart,
+        buildExportPart,
       };
     },
   };

@@ -12,11 +12,13 @@ interface QuotaExportEntryBase {
   /**
    * The row id, `${providerId}.${key}`, e.g. "copilot.allowance" or
    * "quota-providers.custom.<definition id>.<key>". It never changes for a row; the rows of
-   * two accounts of one provider share it.
+   * two accounts of one provider share it, and `account` tells them apart.
    */
   id: string;
   /** Provider label, account and row label, e.g. "Copilot (pro) Premium requests". */
   name: string;
+  /** The row's account as the TUI shows it, e.g. "pro"; logins sharing one are "pro", "pro 2". */
+  account?: string;
   /** What the number means (ADR 0001). */
   resultType: RowType;
   /** How the value was acquired (ADR 0001). */

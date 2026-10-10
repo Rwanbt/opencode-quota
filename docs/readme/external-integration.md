@@ -159,14 +159,14 @@ Every entry has these fields:
 
 | Field | Meaning |
 | --- | --- |
-| `id` | The row's stable id, `provider.key` (for example `copilot.allowance`), the same id the TUI's hide, rename and order settings use. The rows of two accounts of one provider share it; `name` tells them apart. |
+| `id` | The row's stable id, `provider.key` (for example `copilot.allowance`), the same id the TUI's hide, rename and order settings use. The rows of two accounts of one provider share it; `account` tells them apart. |
 | `name` | `Provider (account) Label`, for example `Copilot (pro) Premium requests` |
 | `resultType` | `quota` (rate limits too), `usage` (spending too), `budget`, `balance`, or `status` |
 | `acquisitionMethod` | `remote_api`, `dashboard_scrape`, `local_cli`, or `local_estimation` |
 | `ownership` | `maintained`, or `user_configured` for rows from `providers.custom` |
 | `authority` | `provider_reported` or `locally_derived` |
 
-Optional entry fields are `window` (for example `5h`, `Weekly`, `Monthly`) and `resetAt` (Unix seconds). A provider's `error` (and each `errors` message) is the short error text the TUI shows, for example `Sign in again` or `Provider error 503`.
+Optional entry fields are `account`, `window` (for example `5h`, `Weekly`, `Monthly`) and `resetAt` (Unix seconds). `account` is the account the TUI shows, for example `pro`; two logins with the same account get `pro` and `pro 2`, in the export file, `show --json` and the TUI alike. A provider's `error` (and each `errors` message) is the short error text the TUI shows, for example `Sign in again` or `Provider error 503`.
 
 The export file writes each provider's last check, a failed one too. `show --json`, and the export file for a provider not checked since OpenCode's background service started, write the quota OpenCode saved last. Rows from `providers.custom` appear under `providers["quota-providers"]`; after a check, that result also has a `sources` list with each definition's coarse status.
 
@@ -183,6 +183,7 @@ Rows from a `providers.custom` definition appear under `providers["quota-provide
 {
   "id": "quota-providers.custom.openrouter-primary.Monthly",
   "name": "Quota providers (OpenRouter primary) Monthly",
+  "account": "OpenRouter primary",
   "renderType": "percent",
   "percentRemaining": 40
 }
@@ -222,6 +223,7 @@ Each summary is exactly `id`, effective `providerId`, coarse `status`, and `entr
         {
           "id": "copilot.allowance",
           "name": "Copilot (pro) Premium requests",
+          "account": "pro",
           "resultType": "quota",
           "acquisitionMethod": "remote_api",
           "ownership": "maintained",

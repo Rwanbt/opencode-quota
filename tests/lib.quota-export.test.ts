@@ -75,7 +75,8 @@ function exportAfter(
           exportPart: exportProviderFromCheck({
             providerId,
             label: check.label ?? providerId,
-            fetched: check.fetched,
+            rows: check.fetched.rows,
+            ...(check.fetched.error ? { error: check.fetched.error } : {}),
             checkedAtMs: check.checkedAtMs,
             customDefinitions,
             accounts: check.accounts ?? [],
@@ -229,6 +230,7 @@ describe("the export of each provider's last check", () => {
         {
           id: "copilot.allowance",
           name: "Copilot (pro) Premium requests",
+          account: "pro",
           ...REMOTE,
           window: "Monthly",
           resetAt: unix("2026-07-01T00:00:00.000Z"),
@@ -457,6 +459,7 @@ describe("the export of each provider's last check", () => {
     const allowedKeys = new Set([
       "id",
       "name",
+      "account",
       "resultType",
       "acquisitionMethod",
       "ownership",

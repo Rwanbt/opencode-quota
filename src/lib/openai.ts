@@ -105,13 +105,7 @@ function parseRateLimitWindow(
   const endsAtMs = value.resetTimeIso ? Date.parse(value.resetTimeIso) : Number.NaN;
   const startedAtMs = endsAtMs - durationSeconds * 1000;
   if (Number.isFinite(startedAtMs) && startedAtMs < observedAtMs && observedAtMs < endsAtMs) {
-    value.fixedWindow = {
-      kind: "fixed_window",
-      startedAtIso: new Date(startedAtMs).toISOString(),
-      observedAtIso: new Date(observedAtMs).toISOString(),
-      endsAtIso: new Date(endsAtMs).toISOString(),
-      fullReset: true,
-    };
+    value.fixedWindow = { startedAtIso: new Date(startedAtMs).toISOString() };
   }
   return { kind, value };
 }

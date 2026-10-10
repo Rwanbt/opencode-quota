@@ -20,8 +20,9 @@
  *   an account name are numbered here ("Pro", "Pro 2"), by login, so the numbers stay put;
  *   numbers skip names other rows already have.
  * - When a quota window resets between two checks, a reset notice is recorded once.
- * - A fetch may bring its provider's part of the export file; the last check's part is kept
- *   in memory only, never in the file.
+ * - A fetch may bring how to write its provider's part of the export file. The store writes it
+ *   from the check's rows as shown (numbered like the snapshot) and the error it records, and
+ *   keeps the last check's part in memory only, never in the file.
  * - Subscribers hear of every change: a fetch, the rows read from the file at the start, and a
  *   change in which providers are on.
  * - Reads from OpenCode and provider fetches have time limits, so `dispose` always ends.
@@ -71,9 +72,12 @@ export type ProviderFetch = {
   rowLogins?: string[];
   error?: QuotaError;
   debug: DebugDetail[];
-  /** This check's part of the export file. */
-  exportPart?: QuotaExportProvider;
+  /** Writes this check's part of the export file from its rows as shown and its error. */
+  buildExportPart?: (check: CheckForExport) => QuotaExportProvider;
 };
+
+/** One check as the store records it: its rows as shown, its error, and when it was. */
+export type CheckForExport = { rows: QuotaRow[]; error?: QuotaError; checkedAtMs: number };
 
 /** Whose rows a fetch returns. */
 export type ProviderIdentity = {
@@ -528,6 +532,12 @@ export function createQuotaStore(deps: QuotaStoreDeps): QuotaStore {
       found,
     );
     const okAtMs = gotRows ? nowMs : previous?.okAtMs;
+    // The check's own rows, numbered among the kept ones as the snapshot numbers them.
+    const exportPart = result.buildExportPart?.({
+      rows: shownRows(rows).slice(0, fresh.length),
+      ...(error === undefined ? {} : { error }),
+      checkedAtMs: nowMs,
+    });
     entries.set(where.key, {
       providerId: provider.id,
       persist: where.persist,
@@ -538,7 +548,7 @@ export function createQuotaStore(deps: QuotaStoreDeps): QuotaStore {
       // Any error backs off, also when only one of several logins failed.
       failures: error === undefined ? 0 : (previous?.failures ?? 0) + 1,
       debug: result.debug,
-      ...(result.exportPart === undefined ? {} : { exportPart: result.exportPart }),
+      ...(exportPart === undefined ? {} : { exportPart }),
       notices,
       resetSeenAtMs: gotRows
         ? resetSeenTimes(previous, rows, nowMs)

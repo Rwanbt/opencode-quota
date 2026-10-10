@@ -180,7 +180,7 @@ describe("quota provider remote transport", () => {
 });
 
 describe("quota-v1", () => {
-  it("maps strict percent and value rows keyed by their names", async () => {
+  it("maps strict percent and value rows keyed by their names, accepting `right` and `observedAtIso`", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       jsonResponse({
         version: "quota-v1",
@@ -192,6 +192,7 @@ describe("quota-v1", () => {
             percentRemaining: -8,
             label: "Remaining:",
             right: "108/100",
+            observedAtIso: "2026-01-01T00:00:00.000Z",
           },
           { kind: "value", name: "Balance", resultType: "balance", value: "$12.00" },
         ],

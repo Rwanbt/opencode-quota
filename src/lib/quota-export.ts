@@ -1,15 +1,15 @@
 /**
  * The export file (version 3) for scripts and status bars, and `opencode-quota show --json`,
  * written from quota rows. Each check gives its provider's part of the file
- * (`exportProviderFromCheck`): the server keeps that part, in memory only, next to the
- * provider's snapshot, so the file shows the last check, a failed one too. A provider without
- * one (in the terminal command, or before its first check since the server started) is written
- * from its snapshot.
+ * (`exportProviderFromCheck`, from the check's rows as the snapshot shows them): the server
+ * keeps that part, in memory only, next to the provider's snapshot, so the file shows the last
+ * check, a failed one too. A provider without one (in the terminal command, or before its first
+ * check since the server started) is written from its snapshot.
  */
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { describeError } from "../core/errors.js";
-import type { ProviderFetch } from "../core/store.js";
+import type { CheckForExport } from "../core/store.js";
 import type { ProviderSnapshot, QuotaRow, QuotaSnapshot, QuotaWindow } from "../core/types.js";
 import type { AccountResult } from "../providers/contract.js";
 import { rowValueText } from "../view/format.js";
@@ -112,6 +112,9 @@ function rowEntry(providerId: string, providerLabel: string, row: QuotaRow): Quo
       `${providerLabel}${account} ${row.label}`,
       EXPORT_ERROR_MAX_LENGTH,
     ),
+    ...(row.account
+      ? { account: sanitizeSingleLineDisplaySnippet(row.account, EXPORT_ERROR_MAX_LENGTH) }
+      : {}),
     resultType: row.type,
     acquisitionMethod: row.method,
     ownership:
@@ -167,23 +170,20 @@ function exportProvider(
 }
 
 /**
- * A provider's part of the export file from one check: this check's rows, or its error. The
- * custom providers also list each definition, from this check's `accounts`.
+ * A provider's part of the export file from one check: this check's rows as the snapshot
+ * shows them, or its error. The custom providers also list each definition, from this check's
+ * `accounts`.
  */
-export function exportProviderFromCheck(params: {
-  providerId: string;
-  label: string;
-  fetched: ProviderFetch;
-  checkedAtMs: number;
-  customDefinitions: readonly QuotaProviderDefinition[];
-  accounts: readonly AccountResult[];
-}): QuotaExportProvider {
-  const { providerId, label, fetched, checkedAtMs } = params;
-  const part = exportProvider(
-    { providerId, label, rows: fetched.rows, error: fetched.error },
-    checkedAtMs,
-    checkedAtMs,
-  );
+export function exportProviderFromCheck(
+  params: CheckForExport & {
+    providerId: string;
+    label: string;
+    customDefinitions: readonly QuotaProviderDefinition[];
+    accounts: readonly AccountResult[];
+  },
+): QuotaExportProvider {
+  const { providerId, label, rows, error, checkedAtMs } = params;
+  const part = exportProvider({ providerId, label, rows, error }, checkedAtMs, checkedAtMs);
   if (providerId !== QUOTA_PROVIDERS_AGGREGATE_ID) return part;
   return { ...part, sources: customSourceStatuses(params.customDefinitions, params.accounts) };
 }

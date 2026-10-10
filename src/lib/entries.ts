@@ -8,13 +8,9 @@ import type { QuotaProviderDefinition } from "./quota-providers.js";
 import type { ResolvedAuthIdentity } from "./resolved-auth-identity.js";
 import type { RuntimeProviderIdResolver } from "./runtime-provider-ids.js";
 
-/** When a fixed quota window started and ends, as its provider or local state reports it. */
+/** When the current fixed quota window started, as its provider reports it. */
 export interface FixedWindowProjectionEvidence {
-  kind: "fixed_window";
   startedAtIso: string;
-  observedAtIso: string;
-  endsAtIso: string;
-  fullReset: true;
 }
 
 /** Per-model token summary for current session (toast display). */

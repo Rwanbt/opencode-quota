@@ -147,13 +147,7 @@ function parseCreditsWindow(payload: unknown): XaiWindowValue | null {
     endsAtIso !== undefined &&
     Date.parse(startedAtIso) < observedAtMs &&
     observedAtMs < Date.parse(endsAtIso)
-      ? {
-          kind: "fixed_window",
-          startedAtIso,
-          observedAtIso: new Date(observedAtMs).toISOString(),
-          endsAtIso,
-          fullReset: true,
-        }
+      ? { startedAtIso }
       : undefined;
 
   return {

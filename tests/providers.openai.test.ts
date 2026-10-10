@@ -87,19 +87,12 @@ beforeEach(() => {
 
 describe("openai provider", () => {
   it("keeps the 5h window's start for the pace marker", async () => {
-    const observedAtIso = new Date(NOW_MS).toISOString();
-    const fixedWindow = {
-      kind: "fixed_window" as const,
-      startedAtIso: "2025-12-31T22:00:00.000Z",
-      observedAtIso,
-      endsAtIso: "2026-01-01T03:00:00.000Z",
-      fullReset: true as const,
-    };
+    const fixedWindow = { startedAtIso: "2025-12-31T22:00:00.000Z" };
     query.mockResolvedValueOnce({
       success: true,
       label: "OpenAI (Pro)",
       windows: {
-        hourly: { percentRemaining: 42, resetTimeIso: fixedWindow.endsAtIso, fixedWindow },
+        hourly: { percentRemaining: 42, resetTimeIso: "2026-01-01T03:00:00.000Z", fixedWindow },
       },
     });
     readRows.mockResolvedValueOnce([oauthRow("work-id", { label: "Work" })]);
