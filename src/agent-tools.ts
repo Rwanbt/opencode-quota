@@ -434,7 +434,8 @@ function keyVariableRule(id: string): string {
 
 /**
  * The rows the sidebar would show for a definition's entries, or why there are none. Row ids
- * are made from the names and ids in them, so every string in them is redacted first.
+ * are made from the names and ids in them, so every string in them is redacted first, to a
+ * placeholder a row id may hold.
  */
 function testedRows(
   definition: QuotaProviderDefinition,
@@ -449,7 +450,7 @@ function testedRows(
   };
   const fetched = rowsFromLegacyResult(
     QUOTA_PROVIDERS_AGGREGATE_ID,
-    redactStrings(result, redact) as typeof result,
+    redactStrings(result, (text) => redact(text).replaceAll(REDACTED, "redacted")) as typeof result,
   );
   const problems = fetched.debug.map((detail) => detail.value);
   if (fetched.rows.length === 0) {
