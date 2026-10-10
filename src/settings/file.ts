@@ -7,7 +7,15 @@ import { randomUUID } from "node:crypto";
 import { type FSWatcher, type Stats, unwatchFile, watch, watchFile } from "node:fs";
 import { chmod, lstat, mkdir, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
-import { applyEdits, modify, type ParseError, parseTree, printParseErrorCode } from "jsonc-parser";
+import {
+  applyEdits,
+  createScanner,
+  findNodeAtLocation,
+  modify,
+  type ParseError,
+  parseTree,
+  printParseErrorCode,
+} from "jsonc-parser";
 import { writeTextAtomic } from "../lib/atomic-json.js";
 import {
   type ConfigWriteTargetSnapshot,
@@ -118,14 +126,52 @@ export async function loadSettings(options: { projectDir?: string } = {}): Promi
   return { path, exists: false, settings, issues: [], fromFile, conversion, notRead };
 }
 
-type Edit = { path: string[]; value: unknown };
+/** One change at a JSONC path; a number is a list index (-1 appends). */
+export type SettingsFileEdit = { path: Array<string | number>; value: unknown };
+type Edit = SettingsFileEdit;
 
-/** `value: undefined` removes the key, so it takes its default. */
+/** Where the comma after `offset` ends; comments and spaces before it are skipped. */
+function commaEnd(text: string, offset: number): number {
+  const scanner = createScanner(text, true);
+  scanner.setPosition(offset);
+  scanner.scan();
+  return scanner.getTokenOffset() + scanner.getTokenLength();
+}
+
+/**
+ * The text without one list entry, the comments before it and the comma beside it; what
+ * follows keeps its place. (jsonc-parser's own removal cuts the wrong characters around a
+ * list's last entry.)
+ */
+function removeListEntry(text: string, path: Edit["path"]): string {
+  const index = path.at(-1);
+  const root = parseTree(text, [], { allowTrailingComma: true });
+  const list = root && findNodeAtLocation(root, path.slice(0, -1));
+  const entries = list?.type === "array" ? (list.children ?? []) : [];
+  const entry = typeof index === "number" ? entries[index] : undefined;
+  if (!list || !entry || typeof index !== "number") throw new Error("no such list entry");
+  const entryEnd = entry.offset + entry.length;
+  if (entries.length === 1) {
+    return text.slice(0, list.offset + 1) + text.slice(list.offset + list.length - 1);
+  }
+  const previous = entries[index - 1];
+  if (index === entries.length - 1) {
+    return text.slice(0, previous.offset + previous.length) + text.slice(entryEnd);
+  }
+  const start = previous ? commaEnd(text, previous.offset + previous.length) : list.offset + 1;
+  return text.slice(0, start) + text.slice(commaEnd(text, entryEnd));
+}
+
+/** `value: undefined` removes the key (or list entry), so it takes its default. */
 function applySettingsEdits(text: string, edits: readonly Edit[]): string {
   const eol = text.includes("\r\n") ? "\r\n" : "\n";
   let updated = text;
   for (const edit of edits) {
     try {
+      if (edit.value === undefined && typeof edit.path.at(-1) === "number") {
+        updated = removeListEntry(updated, edit.path);
+        continue;
+      }
       const changes = modify(updated, edit.path, edit.value, {
         formattingOptions: { insertSpaces: true, tabSize: 2, eol },
       });
@@ -322,6 +368,11 @@ export async function acknowledgeDisplayImport(id: string): Promise<void> {
 }
 
 type SettingsEdit = (current: Settings) => SettingsPatch | undefined;
+/** From the file text and what it sets: the new text, why nothing is saved, or undefined. */
+type PlanText = (
+  base: string,
+  read: ReturnType<typeof readSettingsText>,
+) => { text: string } | { issues: SettingsIssue[] } | undefined;
 
 /**
  * Merges a patch into settings.jsonc (JSON merge patch: objects merge, null resets). One unknown
@@ -343,11 +394,40 @@ export async function editSettings(
   edit: SettingsEdit,
   options: { allowFileOnly?: boolean } = {},
 ): Promise<SaveResult> {
+  return editWithLock((base, read) => {
+    const patch = edit(structuredClone(read.settings));
+    if (patch === undefined) return undefined;
+    const planned = planEdits(patch, options.allowFileOnly === true);
+    if (planned.issues.length > 0) return { issues: planned.issues };
+    return { text: applySettingsEdits(base, planned.edits) };
+  });
+}
+
+/**
+ * Like `editSettings`, for a change a patch cannot make, such as one entry of a list (the other
+ * entries keep their comments). `edit` gets the settings and the problems read under the lock,
+ * and returns JSONC edits; file-only keys are allowed. Nothing is saved when the result has a
+ * problem the file did not have.
+ */
+export async function editSettingsFile(
+  edit: (current: Settings, issues: readonly SettingsIssue[]) => SettingsFileEdit[] | undefined,
+): Promise<SaveResult> {
+  return editWithLock((base, read) => {
+    const edits = edit(structuredClone(read.settings), read.issues);
+    if (edits === undefined) return undefined;
+    const text = applySettingsEdits(base, edits);
+    const known = new Set(read.issues.map((issue) => `${issue.key}\n${issue.message}`));
+    const added = readSettingsText(text).issues.filter(
+      (issue) => !known.has(`${issue.key}\n${issue.message}`),
+    );
+    return added.length > 0 ? { issues: added } : { text };
+  });
+}
+
+async function editWithLock(plan: PlanText): Promise<SaveResult> {
   const path = settingsPath();
   try {
-    return await withSettingsLock((target) =>
-      editLocked(target, edit, options.allowFileOnly === true),
-    );
+    return await withSettingsLock((target) => editLocked(target, plan));
   } catch (error) {
     return failedSave(`could not save ${path}: ${errorMessage(error)}`);
   }
@@ -361,11 +441,7 @@ function readTarget(target: ConfigWriteTargetSnapshot): Promise<string | undefin
   return target.terminalExisted ? readFile(target.writePath, "utf8") : Promise.resolve(undefined);
 }
 
-async function editLocked(
-  target: ConfigWriteTargetSnapshot,
-  edit: SettingsEdit,
-  allowFileOnly: boolean,
-) {
+async function editLocked(target: ConfigWriteTargetSnapshot, plan: PlanText) {
   const path = target.configuredPath;
   const original = await readTarget(target);
   // A syntax error, or a key set twice or with a dot (an edit would change another one).
@@ -382,13 +458,12 @@ async function editLocked(
   const conversion = original === undefined ? await planV5Conversion(configDir) : undefined;
   const base =
     original ?? (conversion?.sources.length ? convertedFileText(conversion) : newFileText());
-  const before = readSettingsText(base).settings;
-  const patch = edit(structuredClone(before));
-  if (patch === undefined) return { ok: true, issues: [], diff: [] };
-  const planned = planEdits(patch, allowFileOnly);
-  if (planned.issues.length > 0) return { ok: false, issues: planned.issues, diff: [] };
-  const updated = applySettingsEdits(base, planned.edits);
-  const diff = diffSettings(before, readSettingsText(updated).settings);
+  const read = readSettingsText(base);
+  const planned = plan(base, read);
+  if (planned === undefined) return { ok: true, issues: [], diff: [] };
+  if ("issues" in planned) return { ok: false, issues: planned.issues, diff: [] };
+  const updated = planned.text;
+  const diff = diffSettings(read.settings, readSettingsText(updated).settings);
   const issues = (conversion?.notes ?? []).map((message) => ({ key: "$conversion", message }));
   if (updated === original) return { ok: true, issues, diff };
 
