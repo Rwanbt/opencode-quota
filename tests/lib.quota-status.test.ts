@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ProviderSnapshot, QuotaRow } from "../src/core/types.js";
 import type { UsageReport } from "../src/core/usage.js";
+import { API_KEY_LOGIN_VENDORS, API_KEY_VENDORS } from "../src/lib/api-key-resolver.js";
 import type { QuotaProviderContext, QuotaProviderResult } from "../src/lib/entries.js";
 import { formatLocalCallTimestamp } from "../src/lib/format-utils.js";
 import { buildStatusReportData } from "../src/lib/quota-dialog-commands.js";
@@ -152,7 +153,7 @@ describe("buildQuotaStatusReport", () => {
         snapshot("anthropic", { checkedAtMs: NOW }),
         snapshot("copilot"),
         snapshot("openai", {
-          debug: [{ key: "opencode_provider", value: "no (looked for openai)" }],
+          debug: [{ key: "opencode_provider", value: "no looked_for=openai" }],
         }),
       ],
       maintainerAnnouncements: {
@@ -192,7 +193,7 @@ describe("buildQuotaStatusReport", () => {
       ].join("\n"),
     );
     expect(section(text, "openai")).toContain("- state: unavailable\n");
-    expect(section(text, "openai")).toContain("- opencode_provider: no (looked for openai)");
+    expect(section(text, "openai")).toContain("- opencode_provider: no looked_for=openai");
     expect(section(text, "xai")).toBe("xai:\n- state: disabled");
     expect(section(text, "maintainer_announcements")).toBe(
       [
@@ -261,16 +262,26 @@ describe("buildQuotaStatusReport", () => {
 
   it.each([
     {
-      name: "rows with their numbers",
+      name: "rows with their ids, windows and numbers; accounts as numbers",
       provider: snapshot("anthropic", {
         checkedAtMs: NOW,
         okAtMs: NOW,
         rows: [
-          row("anthropic.five_hour", { percentRemaining: 43.4, resetsAt: RESET }),
-          row("anthropic.weekly", { label: "Weekly", account: "work", percentRemaining: 88 }),
+          row("anthropic.five_hour", {
+            window: "five_hour",
+            percentRemaining: 43.4,
+            resetsAt: RESET,
+          }),
+          row("anthropic.weekly", {
+            label: "Weekly",
+            account: "work",
+            window: "week",
+            percentRemaining: 88,
+          }),
           row("anthropic.extra", {
             label: "Extra",
             type: "budget",
+            account: "home",
             used: { decimal: "4.5", unit: { kind: "currency", code: "USD" } },
             limit: { decimal: "20", unit: { kind: "currency", code: "USD" } },
           }),
@@ -281,32 +292,28 @@ describe("buildQuotaStatusReport", () => {
         "- state: ok",
         `- checked_at: ${NOW_ISO}`,
         "- rows: 4",
-        `  - anthropic.five_hour: 5h, 43% left, resets ${RESET}`,
-        "  - anthropic.weekly (work): Weekly, 88% left",
-        "  - anthropic.extra: Extra, 4.5/20 USD",
-        "  - anthropic.flag: Overage, Off, no",
+        `  - anthropic.five_hour: window=five_hour, 43% left, resets ${RESET}`,
+        "  - anthropic.weekly (account 1): window=week, 88% left",
+        "  - anthropic.extra (account 2): 4.5/20 USD",
+        "  - anthropic.flag: no, text not shown",
       ],
-      absent: ["rows from", "error"],
+      absent: ["rows from", "error", "work", "Weekly", "Off"],
     },
     {
-      name: "an error in the shared words, with its detail",
+      name: "an error in the shared words, without its detail",
       provider: snapshot("openai", {
         checkedAtMs: NOW,
         error: { code: "login_expired", detail: "HTTP 401 Unauthorized" },
       }),
-      lines: [
-        "- state: error: Sign in again (login_expired)",
-        "- error_detail: HTTP 401 Unauthorized",
-        "- rows: 0",
-      ],
-      absent: [],
+      lines: ["- state: error: Sign in again (login_expired)", "- rows: 0"],
+      absent: ["Unauthorized", "error_detail"],
     },
     {
-      name: "older rows kept after an error, and the provider's own messages",
+      name: "older rows kept after an error; the provider's message only noted",
       provider: snapshot("copilot", {
         checkedAtMs: NOW,
         okAtMs: NOW - 60_000,
-        rows: [row("copilot.monthly", { label: "Monthly", percentRemaining: 50 })],
+        rows: [row("copilot.monthly", { percentRemaining: 50 })],
         error: { code: "provider_error", status: 503, detail: "Billing endpoint HTTP 503" },
         debug: [
           { key: "deployment", value: "github.com" },
@@ -314,12 +321,12 @@ describe("buildQuotaStatusReport", () => {
         ],
       }),
       lines: [
-        "- state: partial: Provider error 503 (provider_error)",
+        "- state: partial: Provider error 503 (provider_error, http 503)",
         `- checked_at: ${NOW_ISO} (rows from ${new Date(NOW - 60_000).toISOString()})`,
-        "- rows: 1\n  - copilot.monthly: Monthly, 50% left\n- deployment: github.com",
-        "- error: Copilot: Billing endpoint HTTP 503",
+        "- rows: 1\n  - copilot.monthly: 50% left\n- deployment: github.com",
+        "- error: (free text, not shown)",
       ],
-      absent: ["error_detail"],
+      absent: ["Billing"],
     },
     {
       name: "a provider not checked yet",
@@ -331,9 +338,11 @@ describe("buildQuotaStatusReport", () => {
       name: "a long row list, cut",
       provider: snapshot("google-agy", {
         checkedAtMs: NOW,
-        rows: Array.from({ length: 10 }, (_, index) => row(`google-agy.r${index}`)),
+        rows: Array.from({ length: 10 }, (_, index) =>
+          row(`google-agy.r${index}`, { percentRemaining: index }),
+        ),
       }),
-      lines: ["- rows: 10", "  - google-agy.r7: 5h\n  - … (2 more)"],
+      lines: ["- rows: 10", "  - google-agy.r7: 7% left\n  - … (2 more)"],
       absent: ["google-agy.r8"],
     },
   ])("builds a provider section from its snapshot: $name", async ({ provider, lines, absent }) => {
@@ -343,95 +352,249 @@ describe("buildQuotaStatusReport", () => {
     for (const line of absent) expect(text).not.toContain(line);
   });
 
+  const HOME_CANARY = "/Users/CANARYalice";
+  const WINDOWS_HOME_CANARY = "C:\\Users\\CANARYname";
+
   it.each([
-    { key: "access_token", value: SECRET, shown: "- access_token: [redacted]" },
+    { name: "a cookie header with a bare pipe", text: "Cookie: sid=a|CANARY" },
+    { name: "a cookie value with a brace", text: "Cookie: sid=a}CANARY" },
+    { name: "an escaped quote in a JSON password", text: String.raw`{"password":"a\"CANARY"}` },
+    { name: "a bracket in an array of account ids", text: '{"accountIds":["id]CANARY","id2"]}' },
+    { name: "a name in JSON unicode escapes", text: String.raw`{"account\u0049d":"CANARY"}` },
+    { name: "a URL with a key", text: "https://x.example/v1?key=CANARY" },
+    { name: "an email address", text: "alice.CANARY@example.com" },
+    { name: "a provider's own message", text: "Weekly window failed for team CANARY" },
+    { name: "CJK text", text: "账户：CANARY 令牌＝CANARY" },
+    { name: "a terminal escape", text: "probe \u001b[31mCANARY\u0007 failed" },
+    { name: "a terminal escape inside the home dir", text: "/Users/CANARY\u001b[0malice/x" },
+    { name: "a long text ending in the home dir", text: `${"x".repeat(290)} ${HOME_CANARY}/x` },
     {
-      key: "request",
-      value: `Authorization: Bearer ${SECRET}`,
-      shown: "- request: Authorization: [redacted]",
+      name: "a Windows device path to the home dir",
+      text: "\\\\?\\C:\\Users\\CANARYname\\x | \\\\.\\C:\\Users\\CANARYname\\y",
+      home: WINDOWS_HOME_CANARY,
     },
-    { key: "url", value: `https://x.example/?key=${SECRET}`, shown: "?key=[redacted]" },
-    {
-      key: "probe",
-      value: "probe \u001b[31mfailed\u0007\n\twith noise",
-      shown: "- probe: probe failed with noise",
-    },
-  ])("keeps secrets and control characters out of debug detail $key", async ({
-    key,
-    value,
-    shown,
+  ])("never shows free text from a provider or a login: $name", async ({
+    text,
+    home = HOME_CANARY,
   }) => {
-    const text = await report({
+    const free = (key: string) => ({ key, value: text });
+    const output = await report({
+      homeDir: home,
+      currentModel: text,
       providers: [
-        snapshot("chutes", {
+        snapshot("anthropic", {
           checkedAtMs: NOW,
-          debug: [{ key, value }],
-          error: { code: "internal", detail: `failed with api_key=${SECRET}` },
+          rows: [row("anthropic.five_hour", { account: text, label: text, text, flag: true })],
+          error: { code: "provider_error", status: 503, detail: text },
+          debug: [
+            ...["error", "note", "live_fetch_error", "auth_error", "message", "request"].map(free),
+            ...["console_org", "console_server", "username_filter", "cli_version"].map(free),
+            // Structured keys: shown only when the value is a structured fact.
+            ...["auth_source", "api_key_checked_paths", "binary_path", "checked_commands"].map(
+              free,
+            ),
+            { key: "custom_team_check", value: `outcome=failed checked_paths=${text}` },
+          ],
+        }),
+        snapshot("alibaba-token-plan", {
+          checkedAtMs: NOW,
+          error: { code: "local_tool", tool: text, missing: true, detail: text },
         }),
       ],
+      credentialSource: {
+        state: "bound",
+        kind: "opencode-integration-api",
+        lastListError: { at: NOW, detail: text },
+        failures: [
+          {
+            integrationId: text,
+            connectionId: "cred_1",
+            label: text,
+            category: "refresh_failed",
+            detail: text,
+            at: NOW,
+          },
+        ],
+      },
+      usage: {
+        totals: { tokens: { processed: 1_000 }, unpricedShare: 1 },
+        models: [{ providerID: "deepseek", modelID: text, priced: false, unpricedTokens: 1_000 }],
+      } as unknown as UsageReport,
     });
 
-    expect(text).toContain(shown);
-    expect(text).toContain("- error_detail: failed with api_key=[redacted]");
-    expect(text).not.toContain(SECRET);
-    expect(text).not.toContain("\u001b");
+    expect(output).not.toContain("CANARY");
+    expect(output).not.toContain("\u001b");
+    expect(section(output, "anthropic")).toContain("- error: (free text, not shown)");
+    expect(section(output, "anthropic")).toContain("  - anthropic.five_hour (account 1): yes");
+    expect(section(output, "alibaba-token-plan")).toContain(
+      "- state: error: Local tool not found (local_tool)",
+    );
   });
 
   it.each([
     {
-      name: "a login label that is an email address, on a row",
-      provider: snapshot("xai", {
-        checkedAtMs: NOW,
-        rows: [row("xai.monthly", { label: "Monthly", account: "alice.CANARY@example.com" })],
-      }),
-      shown: "  - xai.monthly ([email]): Monthly",
+      name: "a long provider id",
+      overrides: { providers: [snapshot("minimax-china-coding-plan", { checkedAtMs: NOW })] },
+      title: "providers",
+      lines: ["- minimax-china-coding-plan: enabled available"],
     },
     {
-      name: "a token and a cookie in row text",
-      provider: snapshot("xai", {
-        checkedAtMs: NOW,
-        rows: [
-          row("xai.note", {
-            label: "Note",
-            type: "status",
-            text: "token=CANARYtok Cookie: sid=CANARYsid; theme=dark",
+      name: "row ids, windows, numbers and reset times",
+      overrides: {
+        providers: [
+          snapshot("google-gemini-cli", {
+            checkedAtMs: NOW,
+            rows: [
+              row("google-gemini-cli.model.gemini_2_5_pro", {
+                account: "alice@example.com",
+                window: "day",
+                percentRemaining: 12,
+                resetsAt: RESET,
+              }),
+            ],
           }),
         ],
-      }),
-      shown: "  - xai.note: Note, token=[redacted] Cookie: [redacted]",
+      },
+      title: "google-gemini-cli",
+      lines: [
+        `  - google-gemini-cli.model.gemini_2_5_pro (account 1): window=day, 12% left, resets ${RESET}`,
+      ],
     },
     {
-      name: "an email address in an error detail",
-      provider: snapshot("xai", {
-        checkedAtMs: NOW,
-        error: { code: "login_expired", detail: "alice.CANARY@example.com: HTTP 401" },
-      }),
-      shown: "- error_detail: [email]: HTTP 401",
+      name: "model ids from the session and the usage history",
+      overrides: {
+        currentModel: "Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8",
+        usage: {
+          totals: { tokens: { processed: 2_000 }, unpricedShare: 0.5 },
+          models: [
+            {
+              providerID: "deepseek-ai",
+              modelID: "DeepSeek-R1-Distill-Qwen-32B",
+              priced: false,
+              unpricedTokens: 1_000,
+            },
+          ],
+        } as unknown as UsageReport,
+      },
+      title: "",
+      lines: [
+        "- currentModel: Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8",
+        "  - deepseek-ai/DeepSeek-R1-Distill-Qwen-32B: 1.00K tokens",
+      ],
     },
     {
-      name: "an email address in a provider message",
-      provider: snapshot("xai", {
-        debug: [{ key: "error", value: "alice.CANARY@example.com: HTTP 401" }],
-      }),
-      shown: "- error: [email]: HTTP 401",
+      name: "error kinds and HTTP statuses in our words",
+      overrides: {
+        providers: [
+          snapshot("copilot", {
+            checkedAtMs: NOW,
+            error: { code: "provider_error", status: 503, detail: "x" },
+          }),
+          snapshot("xai", {
+            checkedAtMs: NOW,
+            error: { code: "rate_limited", status: 429, retryAtMs: NOW + 90_000 },
+          }),
+          snapshot("anthropic", {
+            checkedAtMs: NOW,
+            error: { code: "local_tool", tool: "Claude CLI", missing: true },
+          }),
+          snapshot("openai", { checkedAtMs: NOW, error: { code: "network" } }),
+        ],
+      },
+      title: "",
+      lines: [
+        "- state: error: Provider error 503 (provider_error, http 503)",
+        "- state: error: Rate limited, retry in 2m (rate_limited, http 429)",
+        "- state: error: Claude CLI not found (local_tool)",
+        "- state: error: Can't reach OpenAI (network)",
+      ],
     },
     {
-      name: "a short session id",
-      provider: snapshot("xai", { debug: [{ key: "session_id", value: "CANARY9" }] }),
-      shown: "- session_id: [id]",
+      name: "file paths, under the home dir as ~",
+      overrides: {
+        providers: [
+          snapshot("anthropic", {
+            debug: [
+              { key: "binary_path", value: "/Users/alice/Library/Application Support/claude" },
+              {
+                key: "checked_commands",
+                value:
+                  'claude --version | /opt/homebrew/bin/claude auth status --json | "/Users/alice/My Tools/claude" -p',
+              },
+              {
+                key: "api_key_checked_paths",
+                value: "env:CHUTES_API_KEY | /Users/alice/.config/opencode/opencode.json",
+              },
+              {
+                key: "custom_production-gateway-us_check",
+                value:
+                  "outcome=success http_status=200 credential_source=env:TEAM_KEY checked_paths=/Users/alice/.config/opencode/opencode.json | /opt/opencode/opencode.json",
+              },
+            ],
+          }),
+        ],
+        homeDir: "/Users/alice",
+      },
+      title: "anthropic",
+      lines: [
+        "- binary_path: ~/Library/Application Support/claude",
+        '- checked_commands: claude --version | /opt/homebrew/bin/claude auth status --json | "~/My Tools/claude" -p',
+        "- api_key_checked_paths: env:CHUTES_API_KEY | ~/.config/opencode/opencode.json",
+        "- custom_production-gateway-us_check: outcome=success http_status=200 credential_source=env:TEAM_KEY checked_paths=~/.config/opencode/opencode.json | /opt/opencode/opencode.json",
+      ],
     },
     {
-      name: "account and team ids in a detail",
-      provider: snapshot("xai", {
-        debug: [{ key: "request", value: "account_id=CANARY1 teamId: CANARY2" }],
-      }),
-      shown: "- request: account_id=[id] teamId: [id]",
+      name: "states, yes/no, counts, amounts, hosts and windows",
+      overrides: {
+        providers: [
+          snapshot("copilot", {
+            debug: [
+              { key: "auth_state", value: "configured" },
+              { key: "api_key_configured", value: "false" },
+              { key: "account_count", value: "2" },
+              { key: "api_host", value: "api.github.com" },
+              { key: "billing_period", value: "2026-10" },
+              { key: "selected_windows", value: "five_hour,weekly" },
+              { key: "api_usage", value: "$1.23 across 45 messages" },
+              {
+                key: "five_hour_usage",
+                value: `status=ok percent_used=12 percent_remaining=88 reset_at=${RESET}`,
+              },
+              { key: "token_expires_at", value: RESET },
+              { key: "alibaba auth configured", value: "true" },
+              {
+                key: "alibaba coding plan local quota",
+                value: `path=/opt/state.json exists=true health=healthy version=1 last_update=${RESET}`,
+              },
+            ],
+          }),
+        ],
+      },
+      title: "copilot",
+      lines: [
+        "- auth_state: configured",
+        "- api_key_configured: false",
+        "- account_count: 2",
+        "- api_host: api.github.com",
+        "- billing_period: 2026-10",
+        "- selected_windows: five_hour,weekly",
+        "- api_usage: $1.23 across 45 messages",
+        `- five_hour_usage: status=ok percent_used=12 percent_remaining=88 reset_at=${RESET}`,
+        `- token_expires_at: ${RESET}`,
+        "- alibaba auth configured: true",
+        `- alibaba coding plan local quota: path=/opt/state.json exists=true health=healthy version=1 last_update=${RESET}`,
+      ],
     },
-  ])("keeps private identities out of a provider section: $name", async ({ provider, shown }) => {
-    const text = await report({ providers: [provider] });
+  ] as Array<{
+    name: string;
+    overrides: Partial<QuotaStatusReportParams>;
+    title: string;
+    lines: string[];
+  }>)("still shows the facts a maintainer needs: $name", async ({ overrides, title, lines }) => {
+    const output = await report(overrides);
+    const text = title ? section(output, title) : output;
 
-    expect(section(text, "xai")).toContain(shown);
-    expect(text).not.toContain("CANARY");
+    for (const line of lines) expect(text).toContain(line);
   });
 
   it.each([
@@ -606,14 +769,14 @@ describe("buildQuotaStatusReport", () => {
       credentialSource: {
         state: "bound",
         kind: "opencode-integration-api",
-        lastListError: { at: 1, detail: "Invalid credential value" },
+        lastListError: { at: 1, detail: "Invalid credential value CANARY" },
         failures: [
           {
             integrationId: "openai",
             connectionId: "cred_1",
             label: "work.CANARY@example.com",
             category: "refresh_failed",
-            detail: "HTTP 401 [redacted]",
+            detail: "HTTP 401 CANARY",
             at: 2,
           },
           {
@@ -621,15 +784,15 @@ describe("buildQuotaStatusReport", () => {
             connectionId: "xai",
             label: "",
             category: "active_failed",
-            detail: "database is locked",
+            detail: "database is locked CANARY",
             at: 3,
           },
         ],
       },
       lines: [
         "- source: opencode-integration-api",
-        "- list_error: Invalid credential value",
-        "- failures: openai:[email]:refresh_failed:HTTP 401 [redacted] | xai::active_failed:database is locked",
+        "- list_error: bad_response at 1970-01-01T00:00:00.001Z",
+        "- failures: openai: refresh_failed at 1970-01-01T00:00:00.002Z | xai: active_failed at 1970-01-01T00:00:00.003Z",
       ],
     },
     {
@@ -779,18 +942,20 @@ describe("buildStatusReportData", () => {
     const { data, text, onDetectedProviderIds } = await statusData();
 
     const syntheticSection = section(text, "synthetic");
-    expect(syntheticSection).toContain("- state: partial: Provider error 503 (provider_error)");
     expect(syntheticSection).toContain(
-      `- rows: 1\n  - synthetic.five_hour: 5h, 84% left, resets ${RESET}`,
+      "- state: partial: Provider error 503 (provider_error, http 503)",
+    );
+    expect(syntheticSection).toContain(
+      `- rows: 1\n  - synthetic.five_hour: window=five_hour, 84% left, resets ${RESET}`,
     );
     expect(syntheticSection).toContain("- api_key_source: env:SYNTHETIC_API_KEY");
     expect(syntheticSection).toContain("- access_token: [redacted]");
-    expect(syntheticSection).toContain("- error: Synthetic: Weekly HTTP 503 Bearer [redacted]");
+    expect(syntheticSection).toContain("- error: (free text, not shown)");
     expect(text).not.toContain(SECRET);
     expect(section(text, "providers")).toContain("- openai: disabled unavailable");
     // An unavailable provider shows local setup details: it is never fetched.
     expect(section(text, "openai")).toContain("- state: unavailable\n");
-    expect(section(text, "openai")).toMatch(/- opencode_provider: no \(looked for openai\b/u);
+    expect(section(text, "openai")).toMatch(/- opencode_provider: no looked_for=openai\b/u);
     expect(section(text, "pricing_snapshot")).toContain("- unpriced_30d: (no usage)");
     expect(syntheticProvider.fetch).toHaveBeenCalledOnce();
     expect(openai.fetch).not.toHaveBeenCalled();
@@ -810,8 +975,43 @@ describe("buildStatusReportData", () => {
 
     for (const id of ["chutes", "synthetic"]) {
       expect(section(text, id)).toContain("- state: unavailable\n");
-      expect(section(text, id)).toContain("- api_key_diagnostics: configured=false");
+      expect(section(text, id)).toContain("- api_key_configured: false\n- api_key_source: (none)");
     }
+  });
+
+  it("shows where every API-key provider looked for its key, without asking it for quota", async () => {
+    const ids = [
+      ...Object.keys(API_KEY_VENDORS),
+      ...Object.keys(API_KEY_LOGIN_VENDORS),
+      "openrouter",
+    ];
+    for (const name of [...Object.values(API_KEY_VENDORS), ...Object.values(API_KEY_LOGIN_VENDORS)]
+      .flatMap((vendor) => vendor.envVars)
+      .concat("OPENROUTER_API_KEY")) {
+      vi.stubEnv(name, "");
+    }
+    vi.stubEnv("ZAI_API_KEY", "zai-test-key");
+    const providers = ids.map((id) => fakeProvider(id, false));
+    registry.providers = providers;
+    const configPath = join(root, "config", "opencode", "opencode.json");
+    mkdirSync(join(root, "config", "opencode"), { recursive: true });
+    writeFileSync(configPath, "{}");
+
+    const { text } = await statusData();
+
+    for (const id of ids) {
+      const lines = section(text, id);
+      expect(lines).toContain("- state: unavailable\n");
+      expect(lines).toContain(
+        id === "zai" ? "- api_key_configured: true" : "- api_key_configured: false",
+      );
+      expect(lines).toContain("- api_key_checked_paths: ");
+      expect(lines).toContain("~/config/opencode/opencode.json");
+    }
+    expect(section(text, "zai")).toContain("- api_key_source: env:ZAI_API_KEY");
+    expect(section(text, "zai")).toContain("- auth_state: configured");
+    expect(text).not.toContain("zai-test-key");
+    for (const provider of providers) expect(provider.fetch).not.toHaveBeenCalled();
   });
 
   it("uses the plugin's availability rule everywhere, and runs no provider that is turned off", async () => {

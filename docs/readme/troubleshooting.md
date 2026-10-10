@@ -17,8 +17,8 @@ OpenCode Quota never reads `auth.json`. Inside OpenCode, it asks OpenCode 2 for 
 In `/quota_status`, the `credential_source` section shows:
 
 - `source`: where logins came from. From the terminal, this is `sqlite`.
-- `list_error`: OpenCode could not list logins.
-- `failures`: each login OpenCode could not return (for example a failed token refresh), as `provider:label:reason:detail`. That login also shows as an error row; log in to that provider again. From the terminal, `list_error` and `failures` stay empty.
+- `list_error`: OpenCode could not list logins: the error's kind and when.
+- `failures`: each login OpenCode could not return (for example a failed token refresh), as `provider: reason at <time>`. That login also shows as an error row; log in to that provider again. From the terminal, `list_error` and `failures` stay empty.
 
 `/quota_status` also shows the `opencode.db` path used for session and token history. `OPENCODE_DB` and `XDG_DATA_HOME` change it. Custom or source builds of OpenCode may use `opencode-<channel>.db`; set `OPENCODE_DB` to that file's path.
 
@@ -54,12 +54,12 @@ The TUI, Web, and Desktop get their numbers from OpenCode's background service. 
 
 ## Provider fixes
 
-Run `/quota_status` first and check that provider's section. Every known provider has a section, named after its id (for example `copilot:` or `opencode-go:`). It shows `state` (`ok`, `partial`, `error`, `not checked`, `unavailable`, or `disabled`), `checked_at`, the `rows` it returned, an `error` line per failed check, and the provider's own details. An `unavailable` provider is not asked for quota; its section shows whether OpenCode lists it (`opencode_provider`) and, for an API-key provider, where the key was looked for (`api_key_diagnostics`). A `disabled` provider (left out of `providers.enabled`) is never asked. Email addresses show as `[email]` and account, team, org, user, and session ids as `[id]`. Setup steps and API-key variable names are in [Providers](providers.md).
+Run `/quota_status` first and check that provider's section. Every known provider has a section, named after its id (for example `copilot:` or `opencode-go:`). It shows `state` (`ok`, `partial`, `error`, `not checked`, `unavailable`, or `disabled`; an error adds its kind and HTTP status, for example `Provider error 503 (provider_error, http 503)`), `checked_at`, the `rows` it returned (id, window, numbers, reset time), and the provider's own details. An `unavailable` provider is not asked for quota; its section shows whether OpenCode lists it (`opencode_provider`) and, for an API-key provider, whether a key is set and where it was looked for (`api_key_configured`, `api_key_source`, `api_key_checked_paths`). A `disabled` provider (left out of `providers.enabled`) is never asked. The report is safe to paste into an issue: logins show as `account 1`, `account 2`, free text (provider messages, response bodies, names, URLs) as `(free text, not shown)`, and secrets and ids as `[redacted]` and `[id]`. Setup steps and API-key variable names are in [Providers](providers.md).
 
 <details>
 <summary><strong>Custom providers</strong></summary>
 
-`/quota_status` lists each definition in the `settings` section as `provider_<id>`: IDs, mode, format and environment variable name (or limits and exact local state path), and model coverage. The `quota-providers` section shows the live check: `state`, the rows, an `error` line per failed definition, and a `custom_<id>_check` line per definition with its outcome, credential source, and checked paths (or local state health). These results are fetched live for the status command; cached results are not substituted.
+`/quota_status` lists each definition in the `settings` section as `provider_<id>`: IDs, mode, format and environment variable name (or limits and exact local state path), and model coverage. The `quota-providers` section shows the live check: `state`, the rows, and a `custom_<id>_check` line per definition with its outcome, HTTP status, credential source, and checked paths (or local state health). These results are fetched live for the status command; cached results are not substituted.
 
 | Symptom                                    | Fix |
 | ------------------------------------------ | --- |
@@ -88,7 +88,7 @@ Run `/quota_status` first and check that provider's section. Every known provide
 <details>
 <summary><strong>GitHub Copilot</strong></summary>
 
-Check the `copilot` section: `pat_state`, `deployment`, `api_host`, `enterprise_host_source`, `billing_model`, `billing_scope`, `quota_api`, `budget_api`, and `token_compatibility_error`.
+Check the `copilot` section: `pat_state`, `deployment`, `api_host`, `enterprise_host_source`, `billing_model`, `billing_scope`, `quota_api`, and `budget_api`.
 
 | Symptom                                           | Fix |
 | ------------------------------------------------- | --- |
@@ -160,10 +160,10 @@ Check the `alibaba-token-plan` section (separate from Alibaba Coding Plan).
 <details>
 <summary><strong>API-key providers (MiniMax, Kimi, Chutes AI, Synthetic, Z.ai, Zhipu, NanoGPT, DeepSeek, OpenRouter)</strong></summary>
 
-- Check the provider's API-key section in `/quota_status` (for example `kimi-code-plan-global:`, `kimi-code-plan-cn:`, or `openrouter:`), which also shows the live check and errors such as HTTP 401.
+- Check the provider's API-key section in `/quota_status` (for example `kimi-code-plan-global:`, `kimi-code-plan-cn:`, or `openrouter:`), which also shows the live check's result, for example `Sign in again (login_expired)` after HTTP 401.
 - Put keys in environment variables or trusted user/global config, never in the project's `opencode.json`. Variable names and rules: [API keys](providers.md#api-keys).
 - Kimi keys go only to their own region's host: see [Kimi Code](providers.md#kimi-code).
-- Synthetic says `Synthetic returned no quota data for this account.`: the quota endpoint returned HTTP 200 `{}`. This is not a bad API key or a Clerk/browser problem, and no 5h or Weekly rows are invented. `/quota_status` shows it on the `error` line.
+- Synthetic says `Synthetic returned no quota data for this account.`: the quota endpoint returned HTTP 200 `{}`. This is not a bad API key or a Clerk/browser problem, and no 5h or Weekly rows are invented. `/quota_status` shows it as `Nothing reported (no_data)`.
 
 </details>
 
@@ -178,7 +178,7 @@ Check the `google-agy` section.
 | Provider not enabled in manual mode | Include `google-agy` in `providers.enabled`. |
 | Login missing                       | Run `opencode auth login google-agy`. |
 | Project missing                     | Set `OPENCODE_AGY_PROJECT_ID` or `provider.google-agy.options.projectId`. |
-| No rows                             | Check `state`, `rows`, and `error`. |
+| No rows                             | Check `state` and `rows`. |
 
 </details>
 
@@ -206,8 +206,8 @@ Check the `xiaomi` section. It shows `config_state`, `config_source`, `config_ch
 | Config not detected                 | Set `MIMO_USAGE_COOKIE` or create trusted user/global `opencode-quota/mimo.json`, then rerun `/quota_status`. |
 | Config is invalid                   | Fix or remove the reported higher-priority source; an invalid source blocks fallback on purpose. |
 | Provider not enabled in manual mode | Include `xiaomi` in `providers.enabled`. |
-| Monthly quota missing               | Make sure the plan is active and check `error`; expired plans are hidden. |
-| Balance or plan details missing     | Check for `state: partial` and its `error` lines. The requests fail independently, so other rows can still show. |
+| Monthly quota missing               | Make sure the plan is active and check `state`; expired plans are hidden. |
+| Balance or plan details missing     | Check for `state: partial`. The requests fail independently, so other rows can still show. |
 | Session expired                     | Sign in again at `platform.xiaomimimo.com`, copy a fresh Cookie header ([how](providers.md#xiaomi-mimo)), and update the same source. |
 
 </details>
@@ -217,19 +217,19 @@ Check the `xiaomi` section. It shows `config_state`, `config_source`, `config_ch
 
 Check the `opencode-go` section:
 
-- `auth_*`: key diagnostics (never the key itself). `selected_windows`: the windows shown. `live_fetch_error`: why the usage API failed.
-- With a Console sign-in: `console_auth_state` and `console_server` describe it, `go_source` shows who answered (`console` or `legacy_key`), and `console_error` shows why the Console failed.
+- `auth_*`: key diagnostics (never the key itself). `selected_windows`: the windows shown. `live_fetch_error`: the usage API failed; `state` shows the error's kind.
+- With a Console sign-in: `console_auth_state` describes it, `go_source` shows who answered (`console` or `legacy_key`), and `console_error` means the Console failed.
 - `opencode_go_state: not_subscribed`: the Console reports no Go subscription (for example HTTP 404 from `/api/go/status`). An HTTP 403 is a failed Console request.
 
 | Symptom                           | Fix |
 | --------------------------------- | --- |
 | Provider not detected             | Run `opencode auth login opencode`, or set an API key ([order](providers.md#opencode-go)). Then rerun `/quota_status`; once Go is detected, `auth_state`, `auth_source`, and `auth_checked_paths` show which key it uses. |
-| `auth_state` is `invalid`         | Run `opencode auth login opencode-go`. A broken `opencode-go` login blocks the legacy `opencode` fallback and shows in `auth_error`. |
-| `OpenCode Console sign-in failed` | Shown only when no API key is set. Run `opencode auth login opencode`, or set an API key. `console_error` has the reason. |
+| `auth_state` is `invalid`         | Run `opencode auth login opencode-go`. A broken `opencode-go` login blocks the legacy `opencode` fallback. |
+| `OpenCode Console sign-in failed` | Shown only when no API key is set. Run `opencode auth login opencode`, or set an API key. |
 | No Go quota, `console_error` set  | The Console request failed and no API key is set (`Not configured` in manual mode). Retry, or set an API key. |
 | API returns 401 or 403            | The usage API rejected the key. Update the source shown by `auth_source`, wait briefly for the credential cache to expire, and rerun `/quota_status`. |
-| Invalid API response              | Check `live_fetch_error`. 5h, Weekly, and Monthly must all be valid; one bad window rejects the whole response. |
-| Request times out or fails        | Check `live_fetch_error`, make sure `https://opencode.ai/zen/go/v1/usage` is reachable, and retry. Raise `checking.requestTimeoutMs` only for timeouts. |
+| Invalid API response              | `state` shows `Unexpected reply (bad_response)`. 5h, Weekly, and Monthly must all be valid; one bad window rejects the whole response. |
+| Request times out or fails        | Check the error's kind in `state`, make sure `https://opencode.ai/zen/go/v1/usage` is reachable, and retry. Raise `checking.requestTimeoutMs` only for timeouts. |
 | Provider missing in manual mode   | Include `opencode-go` in `providers.enabled`. |
 
 </details>
@@ -237,13 +237,13 @@ Check the `opencode-go` section:
 <details>
 <summary><strong>OpenCode Zen</strong></summary>
 
-Check the `opencode` section (OpenCode Zen). `console_auth_state` shows whether OpenCode returned your Console sign-in, `console_server` and `console_org` show which Console and organization Zen reads, and `budget_source` shows whether the budget came from the org budget (`org_budget`) or the credit limit plus this month's usage (`credit_limit`). `live_fetch_error` lists failed Console routes. The token is never shown.
+Check the `opencode` section (OpenCode Zen). `console_auth_state` shows whether OpenCode returned your Console sign-in, and `budget_source` shows whether the budget came from the org budget (`org_budget`) or the credit limit plus this month's usage (`credit_limit`). `live_fetch_error` means a Console route failed. The token, the Console's address, and the organization are never shown.
 
 | Symptom                                                           | Fix |
 | ----------------------------------------------------------------- | --- |
 | Zen does not appear                                               | Run `opencode auth login opencode` and sign in to the Console. An API key alone is not a Console sign-in. To see a hint instead of nothing, include `opencode` in `providers.enabled`. |
 | `OpenCode Console sign-in failed` or `session expired or invalid` | Run `opencode auth login opencode` again. |
-| Wrong organization                                                | Run `opencode auth switch opencode`, or sign in again and pick the organization. Check `console_org`. |
+| Wrong organization                                                | Run `opencode auth switch opencode`, or sign in again and pick the organization. |
 | `OpenCode Console <route> error 403`                              | Your sign-in cannot read that route for this organization. Zen still shows the other rows, unless the route is `billing/status` (the balance). |
 
 </details>

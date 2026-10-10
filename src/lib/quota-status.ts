@@ -3,21 +3,22 @@
  * where the settings come from, what each known provider returned, logins, local files and
  * prices. Every provider section is built the same way from the store's snapshot (state, rows,
  * error, debug details); providers put the facts they want shown in their debug details.
- * Users paste this report into public issues, so the home dir shows as "~" everywhere, and
- * every provider text passes `publicDetail` (no secrets, email addresses or account ids).
+ *
+ * Users paste this report into public issues, so it shows only structured values: states,
+ * numbers, times, ids from this plugin's tables and the snapshot, an error's code, HTTP status
+ * and our own words, and paths. Free text from a provider or a login (messages, response
+ * bodies, names, URLs) is never shown, only that it was there. The home dir shows as "~", and
+ * every debug value also passes `publicDetail`.
  */
 import { stat } from "node:fs/promises";
 import { homedir } from "node:os";
-import { describeError } from "../core/errors.js";
+import { classifyError, describeError, LOCAL_TOOLS } from "../core/errors.js";
 import { publicDebugValue, publicDetail } from "../core/redact.js";
-import type { Amount, ProviderSnapshot, QuotaRow } from "../core/types.js";
+import type { Amount, DebugDetail, ProviderSnapshot, QuotaError, QuotaRow } from "../core/types.js";
 import type { UsageReport } from "../core/usage.js";
 import type { LoadedSettings, Settings, V5Conversion } from "../settings/index.js";
 import { formatShare, formatTokens } from "../view/format.js";
-import {
-  sanitizeSingleLineDisplaySnippet,
-  sanitizeSingleLineDisplayText,
-} from "./display-sanitize.js";
+import { sanitizeSingleLineDisplayText } from "./display-sanitize.js";
 import { replaceHomeDirWithTildeInDocument } from "./home-dir-display.js";
 import type { MaintainerAnnouncementsSummary } from "./maintainer-announcements.js";
 import {
@@ -35,6 +36,7 @@ import type { CredentialSourceDiagnostics } from "./opencode-auth.js";
 import { getOpenCodeDbPath } from "./opencode-db-path.js";
 import { getOpencodeRuntimeDirs } from "./opencode-runtime-paths.js";
 import { getOpenCodeDbStats } from "./opencode-storage.js";
+import { getQuotaProviderDisplayLabel } from "./provider-metadata.js";
 import {
   isMaintainedQuotaProviderTuning,
   type QuotaProviderDefinition,
@@ -53,6 +55,53 @@ import { getPackageVersion } from "./version.js";
 const ROW_LIST_LIMIT = 8;
 /** Models without a price listed in the pricing section; the rest are counted. */
 const UNPRICED_LIST_LIMIT = 5;
+/** Shown instead of a value that is free text. */
+const NOT_SHOWN = "(free text, not shown)";
+
+/** A model, login or integration id: one word of letters, digits and `._:/@+-`. */
+const ID = /^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,127}$/u;
+/** A row id from the store: the provider id, then the row key. */
+const ROW_ID = /^[a-z0-9-]+\.[A-Za-z0-9_.-]{1,150}$/u;
+/** A debug key as providers write them: "auth_state", "custom_team-a_check", "alibaba tier". */
+const DEBUG_KEY = /^(?=.{1,64}$)[A-Za-z0-9_.-]+(?: [A-Za-z0-9_.-]+)*$/u;
+/** Debug keys whose value lists files: "binary_path", "api_key_checked_paths", "config_matches". */
+const PATH_KEY = /(?:^|_)(?:path|paths|matches|commands)$/u;
+/** Words of a debug key whose value is free text: "auth_error", "live_error_1", "message". */
+const FREE_TEXT_KEY_WORDS = new Set(["error", "errors", "message", "note", "reason", "detail"]);
+/** Last words of a debug key whose value names a person or an org: "console_org". */
+const IDENTITY_KEY_ENDS = new Set([
+  "org",
+  "organization",
+  "enterprise",
+  "filter",
+  "label",
+  "email",
+]);
+
+/**
+ * One word of a structured value: a lower-case id or state ("configured", "five_hour",
+ * "opencode.json", "api.github.com"), a number, amount, percent or "used/limit", an ISO time,
+ * env:NAME, a command-line flag, or a marker the filters wrote.
+ */
+const STRUCTURED_WORD = new RegExp(
+  `^(?:${[
+    "[a-z0-9][a-z0-9_.:+-]{0,47}",
+    String.raw`\$?-?\d[\d,]*(?:\.\d+)?%?(?:/\$?\d[\d,]*(?:\.\d+)?)?`,
+    String.raw`\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2})`,
+    "env:[A-Z][A-Z0-9_]{0,63}",
+    "--?[a-z][a-z0-9-]{0,31}",
+    String.raw`\((?:none|unknown)\)`,
+    String.raw`\[(?:redacted|id|email)\]`,
+  ].join("|")})$`,
+  "u",
+);
+
+/**
+ * A file path as this plugin builds them: under the home dir, absolute, or on a drive, maybe
+ * JSON-quoted. A space may only stand inside the path ("Application Support/opencode"), so a
+ * path followed by words is not one.
+ */
+const PATH = /^"?(?:~|[A-Za-z]:|[/\\])[^\s|"'<>`]*(?: [^\s|"'<>`/\\]*[/\\][^\s|"'<>`]*)*"?$/u;
 
 type ProviderAvailability = {
   id: string;
@@ -119,8 +168,13 @@ function kvSection(id: string, rows: ReportKvRow[]): ReportSection {
   return { id, title: `${id}:`, blocks: [{ kind: "kv", rows }] };
 }
 
-function currentModelText(params: QuotaStatusReportParams): string {
-  if (params.currentModel) return params.currentModel;
+/** An id as it is, or a note that it is not one (free text). */
+function idText(id: string, homeDir: string): string {
+  return ID.test(id) ? publicDetail(id, Infinity, homeDir) : NOT_SHOWN;
+}
+
+function currentModelText(params: QuotaStatusReportParams, homeDir: string): string {
+  if (params.currentModel) return idText(params.currentModel, homeDir);
   if (params.sessionModelLookup === "not_found") return "(error: session.get returned no modelID)";
   if (params.sessionModelLookup === "no_session") return "(no session available)";
   return "(unknown)";
@@ -177,7 +231,7 @@ function conversionRows(conversion: V5Conversion): ReportKvRow[] {
 }
 
 /** The settings file, what is wrong in it, the v5 conversion, and what quota is set to do. */
-function settingsSection(params: QuotaStatusReportParams): ReportSection {
+function settingsSection(params: QuotaStatusReportParams, homeDir: string): ReportSection {
   const enabled = params.enabledProviders;
   const rows: ReportKvRow[] = [{ key: "settings_file", value: settingsFileText(params) }];
   for (const issue of params.settings.issues) {
@@ -195,7 +249,7 @@ function settingsSection(params: QuotaStatusReportParams): ReportSection {
   rows.push(
     { key: "enabledProviders", value: enabled === "auto" ? "(auto)" : joinOrNone(enabled) },
     { key: "onlyCurrentModel", value: String(params.onlyCurrentModel) },
-    { key: "currentModel", value: currentModelText(params) },
+    { key: "currentModel", value: currentModelText(params, homeDir) },
     { key: "workspace_root", value: params.workspaceRoot },
   );
   for (const definition of params.quotaProviders ?? []) {
@@ -253,20 +307,30 @@ async function pathsSection(): Promise<ReportSection> {
   ]);
 }
 
+/** An error's code and HTTP status: "provider_error, http 503". */
+function errorKind(error: QuotaError): string {
+  return error.status === undefined ? error.code : `${error.code}, http ${error.status}`;
+}
+
+/**
+ * The login source and its failures: each failed login's integration id, failure kind and
+ * time, never its label (often an email address) or the error's own words.
+ */
 function credentialSourceSection(
   diagnostics: CredentialSourceDiagnostics,
   homeDir: string,
 ): ReportSection {
-  // A login's label is often its email address.
-  const failures = diagnostics.failures.map((failure) =>
-    [failure.integrationId, failure.label, failure.category, failure.detail]
-      .map((part) => publicDetail(part, Infinity, homeDir))
-      .join(":"),
+  const failures = diagnostics.failures.map(
+    (failure) =>
+      `${idText(failure.integrationId, homeDir)}: ${failure.category} at ${isoOrNone(failure.at)}`,
   );
-  const listError = diagnostics.lastListError?.detail;
+  const listError = diagnostics.lastListError;
+  const listErrorText = listError
+    ? `${errorKind(classifyError(listError.detail))} at ${isoOrNone(listError.at)}`
+    : "(none)";
   return kvSection("credential_source", [
     { key: "source", value: diagnostics.state === "bound" ? diagnostics.kind : "unbound" },
-    { key: "list_error", value: listError ? publicDetail(listError, Infinity, homeDir) : "(none)" },
+    { key: "list_error", value: listErrorText },
     { key: "failures", value: joinOrNone(failures) },
   ]);
 }
@@ -278,25 +342,85 @@ function amountText(amount: Amount): string {
   return `${unit.symbol}${amount.decimal}`;
 }
 
-/** A row's numbers in one line, for example "43% left, 57/100 requests, resets 2026-…". */
+/**
+ * A row's facts in one line, for example "window=five_hour, 43% left, 57/100 request,
+ * resets 2026-…". Its label and text are the provider's words: a text value is only noted.
+ */
 function rowFacts(row: QuotaRow): string {
-  const parts: string[] = [row.label];
+  const parts: string[] = [];
+  if (row.window) parts.push(`window=${row.window}`);
   if (row.percentRemaining !== undefined) parts.push(`${Math.round(row.percentRemaining)}% left`);
   if (row.used && row.limit) parts.push(`${row.used.decimal}/${amountText(row.limit)}`);
   if (row.amount) parts.push(amountText(row.amount));
-  if (row.text) parts.push(row.text);
   if (row.flag !== undefined) parts.push(row.flag ? "yes" : "no");
+  if (row.text !== undefined) parts.push("text not shown");
   if (row.resetsAt) parts.push(`resets ${row.resetsAt}`);
   return parts.join(", ");
 }
 
-/** "ok", or the error's short words and code; "partial" when rows came with the error. */
+/**
+ * The error in our own words, with its code and HTTP status: "Provider error 503
+ * (provider_error, http 503)". A local tool is named only when it is one this plugin knows.
+ */
+function errorText(error: QuotaError, providerId: string, nowMs: number): string {
+  const tool =
+    error.tool !== undefined && LOCAL_TOOLS.includes(error.tool) ? error.tool : undefined;
+  const known: QuotaError = { ...error, tool };
+  const words = describeError(known, getQuotaProviderDisplayLabel(providerId), nowMs);
+  return `${words} (${errorKind(error)})`;
+}
+
+/** "ok", or the error in our words; "partial" when rows came with the error. */
 function providerState(provider: ProviderSnapshot, nowMs: number): string {
   if (provider.checkedAtMs === undefined) return provider.refreshing ? "checking" : "not checked";
   const error = provider.error;
   if (!error) return "ok";
-  const words = `${describeError(error, provider.label, nowMs)} (${error.code})`;
+  const words = errorText(error, provider.providerId, nowMs);
   return provider.rows.length > 0 ? `partial: ${words}` : `error: ${words}`;
+}
+
+/** Structured words, split on spaces, commas and "|"; a word may be `name=value`. */
+function isStructuredWords(text: string): boolean {
+  const words = text.split(/[\s,|]+/u).filter(Boolean);
+  return (
+    words.length > 0 &&
+    words.every((word) =>
+      STRUCTURED_WORD.test(/^[a-z][a-z0-9_]{0,47}=(.+)$/u.exec(word)?.[1] ?? word),
+    )
+  );
+}
+
+/**
+ * A path, or a command line of paths and structured words, JSON-quoted where they hold spaces:
+ * "~/.config/x.json", "env:CHUTES_API_KEY", `"~/My Tools/claude" auth status --json`.
+ */
+function isPathOrCommand(part: string): boolean {
+  if (PATH.test(part)) return true;
+  const words = part.match(/"(?:[^"\\]|\\.)*"|[^\s"]+/gu) ?? [];
+  return words.length > 0 && words.every((word) => PATH.test(word) || isStructuredWords(word));
+}
+
+/** Paths and commands joined by " | ": "env:CHUTES_API_KEY | ~/.config/x.json". */
+function isPathList(text: string): boolean {
+  return text.split(" | ").every(isPathOrCommand);
+}
+
+/**
+ * True when a debug value is a structured fact the report may show. A value whose key names
+ * free text or a person never is; a key naming files may list paths, and so may the first
+ * `path=` or `…_paths=` pair of a value and what follows it ("checked_paths=~/a.json | ~/b.json").
+ */
+function isStructuredDetail(item: DebugDetail): boolean {
+  const words = item.key.toLowerCase().split(/[^a-z0-9]+/u);
+  if (words.some((word) => FREE_TEXT_KEY_WORDS.has(word))) return false;
+  if (IDENTITY_KEY_ENDS.has(words.at(-1) ?? "")) return false;
+  if (PATH_KEY.test(item.key)) return isPathList(item.value);
+  const paths = /^(.*?) ?\b(?:[a-z_]*_)?paths?=(.*)$/u.exec(item.value);
+  if (paths) {
+    const [, before = "", list = ""] = paths;
+    return (before === "" || isStructuredWords(before)) && isPathList(list);
+  }
+  return isStructuredWords(item.value);
 }
 
 /**
@@ -316,8 +440,9 @@ function sectionState(
 }
 
 /**
- * One provider's section, the same for every provider: state, rows, error, debug details.
- * Every text from the provider passes `publicDetail`, even when the store already did.
+ * One provider's section, the same for every provider: state, rows, debug details. Rows show
+ * their id, an account number and their facts; a debug detail that is free text shows only its
+ * key. Every debug value shown passes `publicDetail`, even when the store already did.
  */
 function providerSection(
   availability: ProviderAvailability,
@@ -326,9 +451,8 @@ function providerSection(
   homeDir: string,
 ): ReportSection {
   const nowMs = params.generatedAtMs ?? Date.now();
-  const shown = (text: string) => publicDetail(text, Infinity, homeDir);
   const state = sectionState(availability, provider, params.enabledProviders, nowMs);
-  const rows: ReportKvRow[] = [{ key: "state", value: shown(state) }];
+  const rows: ReportKvRow[] = [{ key: "state", value: state }];
   if (!provider) return kvSection(availability.id, rows);
   if (provider.checkedAtMs !== undefined) {
     const lastRows =
@@ -337,36 +461,32 @@ function providerSection(
         : "";
     rows.push({ key: "checked_at", value: `${isoOrNone(provider.checkedAtMs)}${lastRows}` });
   }
-  // The provider's own messages are in its debug "error" details; a fetch that failed outright
-  // (a timeout, a crash) has only the error's detail.
-  const detail = provider.error?.detail;
-  if (detail && !provider.debug.some((item) => item.key === "error")) {
-    rows.push({ key: "error_detail", value: shown(detail) });
-  }
   rows.push({ key: "rows", value: String(provider.rows.length) });
+  // An account is a login's label (often an email address): it shows as its number.
+  const accounts = [...new Set(provider.rows.flatMap((row) => (row.account ? [row.account] : [])))];
   for (const row of provider.rows.slice(0, ROW_LIST_LIMIT)) {
-    // The row id comes from this plugin's key rules; the account is the provider's login label.
-    const id = sanitizeSingleLineDisplayText(row.id);
-    rows.push({
-      key: row.account ? `${id} (${shown(row.account)})` : id,
-      value: shown(rowFacts(row)),
-      indent: 1,
-    });
+    const id = ROW_ID.test(row.id) ? row.id : "(row id not shown)";
+    const account = row.account ? ` (account ${accounts.indexOf(row.account) + 1})` : "";
+    rows.push({ key: `${id}${account}`, value: rowFacts(row), indent: 1 });
   }
   if (provider.rows.length > ROW_LIST_LIMIT) {
     rows.push({ key: `… (${provider.rows.length - ROW_LIST_LIMIT} more)`, indent: 1 });
   }
   for (const item of provider.debug) {
-    rows.push({
-      key: sanitizeSingleLineDisplaySnippet(item.key, 64),
-      value: publicDebugValue(item.key, item.value, Infinity, homeDir),
-    });
+    if (!DEBUG_KEY.test(item.key)) continue;
+    const value = isStructuredDetail(item)
+      ? publicDebugValue(item.key, item.value, Infinity, homeDir)
+      : NOT_SHOWN;
+    rows.push({ key: item.key, value });
   }
   return kvSection(availability.id, rows);
 }
 
-/** The models of the last 30 days without a price: their tokens add no cost. */
-function unpricedRows(usage: UsageReport | null | undefined): ReportKvRow[] {
+/**
+ * The models of the last 30 days without a price: their tokens add no cost. A provider or
+ * model id from OpenCode's history shows when it is one word.
+ */
+function unpricedRows(usage: UsageReport | null | undefined, homeDir: string): ReportKvRow[] {
   if (!usage) return [{ key: "unpriced_30d", value: "(the usage history could not be read)" }];
   const { totals } = usage;
   if (totals.tokens.processed === 0) return [{ key: "unpriced_30d", value: "(no usage)" }];
@@ -374,7 +494,7 @@ function unpricedRows(usage: UsageReport | null | undefined): ReportKvRow[] {
   const unpriced = usage.models.filter((model) => !model.priced);
   const rows: ReportKvRow[] = [{ key: "unpriced_30d", value: summary }];
   for (const model of unpriced.slice(0, UNPRICED_LIST_LIMIT)) {
-    const key = sanitizeSingleLineDisplayText(`${model.providerID}/${model.modelID}`);
+    const key = idText(`${model.providerID}/${model.modelID}`, homeDir);
     rows.push({ key, value: `${formatTokens(model.unpricedTokens)} tokens`, indent: 1 });
   }
   if (unpriced.length > UNPRICED_LIST_LIMIT) {
@@ -383,7 +503,10 @@ function unpricedRows(usage: UsageReport | null | undefined): ReportKvRow[] {
   return rows;
 }
 
-async function pricingSection(params: QuotaStatusReportParams): Promise<ReportSection> {
+async function pricingSection(
+  params: QuotaStatusReportParams,
+  homeDir: string,
+): Promise<ReportSection> {
   const meta = getPricingSnapshotMeta();
   const activeSource = getPricingSnapshotSource();
   const { maxAgeMs } = getPricingRefreshPolicy();
@@ -430,11 +553,16 @@ async function pricingSection(params: QuotaStatusReportParams): Promise<ReportSe
       key: "refresh",
       value: `last_attempt_at=${isoOrNone(refreshState.lastAttemptAt)} last_success_at=${isoOrNone(refreshState.lastSuccessAt)} last_failure_at=${isoOrNone(refreshState.lastFailureAt)} last_result=${refreshState.lastResult ?? "(none)"}`,
     });
-    if (refreshState.lastError) rows.push({ key: "refresh_error", value: refreshState.lastError });
+    if (refreshState.lastError) {
+      rows.push({ key: "refresh_error", value: errorKind(classifyError(refreshState.lastError)) });
+    }
   } else {
     rows.push({ key: "refresh", value: "(no runtime refresh state yet)" });
   }
-  rows.push({ key: "providers", value: listProviders().join(",") }, ...unpricedRows(params.usage));
+  rows.push(
+    { key: "providers", value: listProviders().join(",") },
+    ...unpricedRows(params.usage, homeDir),
+  );
   return kvSection("pricing_snapshot", rows);
 }
 
@@ -449,7 +577,7 @@ export async function buildQuotaStatusReportDocument(
   const version = (await getPackageVersion()) ?? "unknown";
   const snapshots = new Map(params.providers.map((provider) => [provider.providerId, provider]));
   const sections: ReportSection[] = [
-    settingsSection(params),
+    settingsSection(params, homeDir),
     providerListSection(params.providerAvailability),
     ...(params.maintainerAnnouncements
       ? [announcementsSection(params.maintainerAnnouncements)]
@@ -459,7 +587,7 @@ export async function buildQuotaStatusReportDocument(
     ...params.providerAvailability.map((availability) =>
       providerSection(availability, snapshots.get(availability.id), params, homeDir),
     ),
-    await pricingSection(params),
+    await pricingSection(params, homeDir),
   ];
 
   return replaceHomeDirWithTildeInDocument(

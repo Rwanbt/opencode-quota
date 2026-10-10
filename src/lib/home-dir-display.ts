@@ -18,6 +18,9 @@ const HOME_DIR_END = "(?=$|[/\\\\\\s|,;:)\\]\"'`])";
  */
 const HOME_DIR_START = "(?<=^|[\\s\"'`=(\\[:,|])";
 
+/** A Windows device-path prefix before the drive: `\\?\C:\…`, `\\.\C:\…`, JSON-escaped too. */
+const DEVICE_PREFIX = "(?:[/\\\\]{2,4}[?.][/\\\\]{1,2})?";
+
 function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
 }
@@ -34,14 +37,16 @@ function normalizeHomeDir(homeDir: string): string | null {
 
 /**
  * The home dir as a pattern. Spaces in it match any run of whitespace. A Windows home
- * (C:\Users\Alice) also matches in any letter case and with "/", "\" or JSON's escaped "\\"
- * between its parts, as programs and JSON print it: c:/users/alice, "C:\\Users\\Alice".
+ * (C:\Users\Alice) also matches in any letter case, with "/", "\" or JSON's escaped "\\"
+ * between its parts, and after a device prefix, as programs and JSON print it:
+ * c:/users/alice, "C:\\Users\\Alice", \\?\C:\Users\Alice.
  */
 function homeDirPattern(home: string): RegExp {
   const literal = (part: string) => escapeRegExp(part).replace(/\s+/gu, "\\s+");
   const windows = /^[A-Za-z]:/u.test(home) || home.includes("\\");
   const body = windows
-    ? home
+    ? DEVICE_PREFIX +
+      home
         .split(/[/\\]+/u)
         .map(literal)
         .join("(?:\\\\\\\\|[/\\\\])")

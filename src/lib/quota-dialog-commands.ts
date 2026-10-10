@@ -13,11 +13,17 @@ import { createQuotaStore } from "../core/store.js";
 import type { DebugDetail, ProviderSnapshot, QuotaSnapshot, SessionModel } from "../core/types.js";
 import { type UsageReport, usageReport } from "../core/usage.js";
 import { getProviders } from "../providers/registry.js";
+import { apiKeyStatusDetails, simpleApiKeyStatusDetails } from "../providers/result-helpers.js";
 import type { V5Conversion } from "../settings/index.js";
 import { DEFAULT_WORDS } from "../view/format.js";
 import { type RowSettings, type SurfaceRows, visibleGroups } from "../view/select.js";
 import { plainLines } from "../view/text.js";
-import { API_KEY_VENDORS, getApiKeyDiagnostics } from "./api-key-resolver.js";
+import {
+  API_KEY_LOGIN_VENDORS,
+  API_KEY_VENDORS,
+  getApiKeyDiagnostics,
+  getApiKeyLoginDiagnostics,
+} from "./api-key-resolver.js";
 import {
   formatYmd,
   parseQuotaBetweenArgs,
@@ -43,6 +49,7 @@ import {
   setPricingSnapshotSelection,
 } from "./modelsdev-pricing.js";
 import { getCredentialSourceDiagnostics } from "./opencode-auth.js";
+import { resolveOpenRouterApiKey } from "./openrouter.js";
 import { getQuotaProviderDisplayLabel, getQuotaProviderRuntimeIds } from "./provider-metadata.js";
 import {
   QUOTA_DIALOG_COMMANDS_BY_ID,
@@ -281,6 +288,32 @@ async function isAvailable(provider: QuotaProvider, ctx: QuotaProviderContext): 
 }
 
 /**
+ * Where an API-key provider looked for its key, from local reads only, with the same details
+ * its own check writes: whether a key is set, its source, and the files checked. Nothing for a
+ * provider without an API key.
+ */
+async function apiKeySetupDetails(providerId: string): Promise<DebugDetail[]> {
+  if (Object.hasOwn(API_KEY_VENDORS, providerId)) {
+    const vendor = API_KEY_VENDORS[providerId as keyof typeof API_KEY_VENDORS];
+    return simpleApiKeyStatusDetails(await getApiKeyDiagnostics(vendor));
+  }
+  if (Object.hasOwn(API_KEY_LOGIN_VENDORS, providerId)) {
+    const vendor = API_KEY_LOGIN_VENDORS[providerId as keyof typeof API_KEY_LOGIN_VENDORS];
+    return apiKeyStatusDetails(await getApiKeyLoginDiagnostics(vendor));
+  }
+  if (providerId === "openrouter") {
+    const resolved = await resolveOpenRouterApiKey();
+    return simpleApiKeyStatusDetails({
+      configured: Boolean(resolved.key),
+      source: resolved.source,
+      checkedPaths: resolved.checkedPaths,
+      credentialDatabasePaths: resolved.credentialDatabasePaths,
+    });
+  }
+  return [];
+}
+
+/**
  * What an unavailable provider's setup looks like, from local checks only: whether OpenCode
  * lists the provider and, for an API-key provider, where its key was looked for. No quota
  * request is made.
@@ -297,23 +330,16 @@ async function localSetupDetails(
       const openCodeIds = await ctx.resolveRuntimeProviderIds();
       const found = runtimeIds.filter((id) => openCodeIds.has(id));
       listed =
-        found.length > 0 ? `yes (${found.join(", ")})` : `no (looked for ${runtimeIds.join(", ")})`;
+        found.length > 0 ? `yes found=${found.join(",")}` : `no looked_for=${runtimeIds.join(",")}`;
     } catch {
-      listed = "(OpenCode's provider list could not be read)";
+      listed = "unreadable";
     }
     details.push({ key: "opencode_provider", value: listed });
   }
-  if (Object.hasOwn(API_KEY_VENDORS, providerId)) {
-    try {
-      const vendor = API_KEY_VENDORS[providerId as keyof typeof API_KEY_VENDORS];
-      const key = await getApiKeyDiagnostics(vendor);
-      const parts = [`configured=${key.configured ? "true" : "false"}`];
-      if (key.source) parts.push(`source=${key.source}`);
-      if (key.checkedPaths.length > 0) parts.push(`checked=${key.checkedPaths.join(" | ")}`);
-      details.push({ key: "api_key_diagnostics", value: parts.join(" ") });
-    } catch {
-      details.push({ key: "api_key_diagnostics", value: "(could not be read)" });
-    }
+  try {
+    details.push(...(await apiKeySetupDetails(providerId)));
+  } catch {
+    details.push({ key: "api_key_configured", value: "unreadable" });
   }
   return details;
 }
