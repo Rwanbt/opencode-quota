@@ -1,21 +1,27 @@
-import { homedir } from "os";
-import { join } from "path";
+/**
+ * The export file (version 2) for scripts and status bars, and `opencode-quota show --json`.
+ * Each check gives its provider's part of the file as v5 wrote it (`exportProviderFromResult`),
+ * and the server keeps that part, in memory only, next to the provider's snapshot. A provider
+ * without one (in the terminal command, or before its first check since the server started)
+ * is written from its snapshot rows.
+ */
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { describeError } from "../core/errors.js";
 import type { ProviderSnapshot, QuotaRow, QuotaSnapshot } from "../core/types.js";
-import { WINDOWS } from "../core/windows.js";
+import { classifyWindow, WINDOWS } from "../core/windows.js";
 import { rowValueText } from "../view/format.js";
-import { interpretAccountingRow } from "./accounting-format.js";
+import { formatAccountingQuantity } from "./accounting-format.js";
 import { writeJsonAtomic } from "./atomic-json.js";
-import { sanitizeSingleLineDisplaySnippet } from "./display-sanitize.js";
+import { sanitizeDisplayText, sanitizeSingleLineDisplaySnippet } from "./display-sanitize.js";
 import type {
   AccountingWindow,
-  QuotaProvider,
-  QuotaProviderContext,
+  QuotaPercentEntry,
+  QuotaProviderDiagnostic,
   QuotaProviderResult,
   QuotaToastEntry,
 } from "./entries.js";
 import { getOpencodeRuntimeDirs } from "./opencode-runtime-paths.js";
-import { classifyQuotaWindowText } from "./quota-entry-display.js";
 import type {
   QuotaExport,
   QuotaExportEntry,
@@ -24,10 +30,11 @@ import type {
   QuotaExportRawDetail,
   QuotaExportSource,
 } from "./quota-export-types.js";
-import { MAINTAINED_LOCAL_ESTIMATE_IDS, QUOTA_PROVIDERS_AGGREGATE_ID } from "./quota-providers.js";
-import type { QuotaRuntimeContext } from "./quota-runtime-context.js";
-import { createQuotaProviderRuntimeContext } from "./quota-runtime-context.js";
-import { readCachedProviderResult } from "./quota-state.js";
+import {
+  MAINTAINED_LOCAL_ESTIMATE_IDS,
+  QUOTA_PROVIDERS_AGGREGATE_ID,
+  type QuotaProviderDefinition,
+} from "./quota-providers.js";
 
 /** Max length for an exported provider error message after sanitization. */
 const EXPORT_ERROR_MAX_LENGTH = 240;
@@ -43,30 +50,6 @@ const EXPORT_WINDOW_LABELS: Readonly<Record<AccountingWindow, string>> = {
   mcp: "MCP",
   code_review: "Code Review",
 };
-
-/**
- * Builds the provider context used to read cached quota for export.
- *
- * The cache key is derived from these fields, so it MUST match the one the TUI
- * background writer used (`onlyCurrentModel: false`, no session). Otherwise a
- * user with `onlyCurrentModel: true` would compute a different key than the one
- * the cache was written under, turning every provider into "unavailable".
- *
- * Both export surfaces (CLI `show --json` and the TUI periodic writer) must go
- * through this helper so the cache-key contract lives in one place.
- */
-export function createExportProviderContext(runtime: QuotaRuntimeContext): QuotaProviderContext {
-  return createQuotaProviderRuntimeContext({
-    ...runtime,
-    workspaceRoot: runtime.roots.workspaceRoot,
-    config: {
-      ...runtime.config,
-      onlyCurrentModel: false,
-      showSessionTokens: false,
-    },
-    session: {},
-  });
-}
 
 /**
  * Resolves the export file path from a configured value.
@@ -89,9 +72,6 @@ export function resolveExportPath(configured: string): string {
   return configured;
 }
 
-/**
- * Maps a `QuotaToastEntry` to a `QuotaExportEntry`.
- */
 function unixSecondsFromIso(value: string | undefined): number | undefined {
   if (!value) return undefined;
 
@@ -113,55 +93,68 @@ function toExportRawDetail(detail: { key: string; value: string }): QuotaExportR
   };
 }
 
-function getExportWindow(entry: QuotaToastEntry): string | undefined {
+function exportWindow(entry: QuotaToastEntry): string | undefined {
   if (entry.semantic) {
     return entry.semantic.metric.kind === "window"
       ? EXPORT_WINDOW_LABELS[entry.semantic.metric.window]
       : undefined;
   }
-
-  // Legacy entries derive the window only from the explicit row label. The
-  // entry name is human-readable display text and must not be parsed here.
-  const windowKind = classifyQuotaWindowText(entry.label ?? "");
-  return windowKind ? EXPORT_WINDOW_LABELS[windowKind] : undefined;
+  // Without semantics the window comes only from the row label. The entry name is display
+  // text and is never parsed here.
+  const window = classifyWindow(entry.label ?? "");
+  return window && window !== "session" ? EXPORT_WINDOW_LABELS[window] : undefined;
 }
 
+/** A value entry's text; a yes/no entry reads "Enabled" or "Disabled". */
+function entryValueText(entry: Exclude<QuotaToastEntry, QuotaPercentEntry>): string {
+  if (entry.kind === "value") return entry.value;
+  if (entry.kind === "quantity") return formatAccountingQuantity(entry.quantity);
+  return entry.value ? "Enabled" : "Disabled";
+}
+
+/** One entry as v5 exported it; provider text loses terminal escapes and control characters. */
 function toExportEntry(entry: QuotaToastEntry): QuotaExportEntry {
-  const interpretation = interpretAccountingRow(entry, { booleanWording: "generic" });
-  const window = getExportWindow(entry);
+  const window = exportWindow(entry);
   const resetAt = unixSecondsFromIso(entry.resetTimeIso);
+  const { sourceId } = entry.accounting;
   const observedAt = unixSecondsFromIso(entry.accounting.observedAtIso);
   const base = {
-    name: entry.name,
+    name: sanitizeDisplayText(entry.name),
     resultType: entry.accounting.resultType,
     acquisitionMethod: entry.accounting.acquisitionMethod,
     ownership: entry.accounting.ownership,
     authority: entry.accounting.authority,
-    ...(entry.accounting.sourceId ? { sourceId: entry.accounting.sourceId } : {}),
+    ...(sourceId ? { sourceId: sanitizeDisplayText(sourceId) } : {}),
     ...(observedAt !== undefined ? { observedAt } : {}),
     ...(window ? { window } : {}),
     ...(resetAt !== undefined ? { resetAt } : {}),
   };
-
-  if (interpretation.display.kind === "percent") {
-    return {
-      ...base,
-      renderType: "percent",
-      percentRemaining: interpretation.display.percentRemaining,
-    };
+  if (entry.kind === "value" || entry.kind === "quantity" || entry.kind === "boolean") {
+    return { ...base, renderType: "value", value: sanitizeDisplayText(entryValueText(entry)) };
   }
-  return { ...base, renderType: "value", value: interpretation.display.text };
+  return { ...base, renderType: "percent", percentRemaining: entry.percentRemaining };
 }
 
-function buildQuotaProviderStatuses(params: {
-  ctx: QuotaProviderContext;
-  diagnostics?: QuotaProviderResult["diagnostics"];
-}): QuotaExportSource[] {
-  const diagnosticsBySource = new Map(
-    (params.diagnostics ?? []).map((diagnostic) => [diagnostic.sourceId, diagnostic] as const),
-  );
+/** The entries as v5 exported them; one that can't be read (a bad amount) is left out. */
+function exportEntries(entries: readonly QuotaToastEntry[]): QuotaExportEntry[] {
+  return entries.flatMap((entry) => {
+    try {
+      return [toExportEntry(entry)];
+    } catch {
+      return [];
+    }
+  });
+}
 
-  return (params.ctx.config.quotaProviders ?? [])
+/** Each custom definition's status in its configured order, never its URL, key or format. */
+function customSourceStatuses(
+  definitions: readonly QuotaProviderDefinition[],
+  diagnostics: readonly QuotaProviderDiagnostic[] = [],
+): QuotaExportSource[] {
+  const diagnosticsBySource = new Map(
+    diagnostics.map((diagnostic) => [diagnostic.sourceId, diagnostic] as const),
+  );
+  return definitions
     .filter((source) => !(MAINTAINED_LOCAL_ESTIMATE_IDS as readonly string[]).includes(source.id))
     .map((source) => {
       const diagnostic = diagnosticsBySource.get(source.id);
@@ -175,102 +168,57 @@ function buildQuotaProviderStatuses(params: {
 }
 
 /**
- * Builds a `QuotaExport` document by reading cached provider results.
- *
- * Providers are read in parallel from either identity-bound durable cache or
- * the same-runtime-owner latest snapshot retained for uncached/live-local providers.
- * No live network fetches are performed.
+ * A provider's part of the export file from one check, as v5 wrote it: "ok" or "partial" with
+ * its entries, "error" when the check found no entries, and "unavailable" when the provider
+ * could not be asked (it is not set up). The custom providers also list each definition.
  */
-export async function buildQuotaExport(params: {
-  providers: QuotaProvider[];
-  ctx: QuotaProviderContext;
-  ttlMs: number;
-  fromCache: boolean;
-}): Promise<QuotaExport> {
-  const reads = await Promise.all(
-    params.providers.map((provider) =>
-      readCachedProviderResult({
-        provider,
-        ctx: params.ctx,
-        ttlMs: params.ttlMs,
-      }).then((read) => ({ provider, read })),
-    ),
-  );
-
-  const providers: Record<string, QuotaExportProvider> = {};
-  const fetchedAtValues: number[] = [];
-
-  for (const { provider, read } of reads) {
-    const sources =
-      provider.id === "quota-providers"
-        ? buildQuotaProviderStatuses({
-            ctx: params.ctx,
-            ...(read.hit ? { diagnostics: read.result.diagnostics } : {}),
-          })
-        : undefined;
-    const withSources = sources ? { sources } : {};
-
-    if (!read.hit) {
-      providers[provider.id] = { status: "unavailable", ...withSources };
-      continue;
-    }
-
-    const withRawDetails = read.result.rawDetails?.length
-      ? { rawDetails: read.result.rawDetails.map(toExportRawDetail) }
+export function exportProviderFromResult(params: {
+  providerId: string;
+  result: QuotaProviderResult;
+  checkedAtMs: number;
+  customDefinitions: readonly QuotaProviderDefinition[];
+}): QuotaExportProvider {
+  const { result } = params;
+  const withSources =
+    params.providerId === QUOTA_PROVIDERS_AGGREGATE_ID
+      ? {
+          sources: customSourceStatuses(
+            params.customDefinitions,
+            result.attempted ? result.diagnostics : undefined,
+          ),
+        }
       : {};
+  if (!result.attempted) return { status: "unavailable", ...withSources };
 
-    const fetchedAt = Math.floor(read.timestamp / 1000);
-
-    if (read.result.entries.length > 0 && read.result.errors.length > 0) {
-      providers[provider.id] = {
-        status: "partial",
-        fetchedAt,
-        entries: read.result.entries.map(toExportEntry),
-        errors: read.result.errors.map(toExportError),
-        ...withSources,
-        ...withRawDetails,
-      };
-      fetchedAtValues.push(fetchedAt);
-      continue;
-    }
-
-    if (read.result.errors.length > 0 && read.result.entries.length === 0) {
-      providers[provider.id] = {
-        status: "error",
-        fetchedAt,
-        error: sanitizeSingleLineDisplaySnippet(
-          read.result.errors[0].message,
-          EXPORT_ERROR_MAX_LENGTH,
-        ),
-        ...withSources,
-        ...withRawDetails,
-      };
-      fetchedAtValues.push(fetchedAt);
-      continue;
-    }
-
-    const entries = read.result.entries.map(toExportEntry);
-    providers[provider.id] = {
-      status: "ok",
+  const withRawDetails = result.rawDetails?.length
+    ? { rawDetails: result.rawDetails.map(toExportRawDetail) }
+    : {};
+  const fetchedAt = Math.floor(params.checkedAtMs / 1000);
+  if (result.entries.length > 0 && result.errors.length > 0) {
+    return {
+      status: "partial",
       fetchedAt,
-      entries,
+      entries: exportEntries(result.entries),
+      errors: result.errors.map(toExportError),
       ...withSources,
       ...withRawDetails,
     };
-    fetchedAtValues.push(fetchedAt);
   }
-
-  const cacheAgeSeconds =
-    fetchedAtValues.length > 0 ? Math.floor(Date.now() / 1000) - Math.min(...fetchedAtValues) : 0;
-
-  const exportedAt = Math.floor(Date.now() / 1000);
-
+  if (result.errors.length > 0) {
+    return {
+      status: "error",
+      fetchedAt,
+      error: sanitizeSingleLineDisplaySnippet(result.errors[0].message, EXPORT_ERROR_MAX_LENGTH),
+      ...withSources,
+      ...withRawDetails,
+    };
+  }
   return {
-    version: 2,
-    exportedAt,
-    fromCache: params.fromCache,
-    cacheAgeSeconds,
-    providers,
+    status: "ok",
+    fetchedAt,
+    entries: exportEntries(result.entries),
+    ...withSources,
+    ...withRawDetails,
   };
 }
 
@@ -305,10 +253,33 @@ function snapshotEntry(provider: ProviderSnapshot, row: QuotaRow): QuotaExportEn
   };
 }
 
-/**
- * Builds the export document from the quota snapshot: the server's last known rows, so no
- * provider is asked again. A provider that has never answered is "unavailable".
- */
+/** A provider's part written from its snapshot rows; "unavailable" until it first answered. */
+function exportProviderFromSnapshot(
+  provider: ProviderSnapshot,
+  nowMs: number,
+): QuotaExportProvider {
+  const answeredAtMs = provider.okAtMs ?? provider.checkedAtMs;
+  if (answeredAtMs === undefined) return { status: "unavailable" };
+  const fetchedAt = Math.floor(answeredAtMs / 1000);
+  const withRawDetails =
+    provider.debug.length > 0 ? { rawDetails: provider.debug.map(toExportRawDetail) } : {};
+  const entries = provider.rows.map((row) => snapshotEntry(provider, row));
+  if (!provider.error) return { status: "ok", fetchedAt, entries, ...withRawDetails };
+  const error = sanitizeSingleLineDisplaySnippet(
+    describeError(provider.error, provider.label, nowMs),
+    EXPORT_ERROR_MAX_LENGTH,
+  );
+  if (entries.length === 0) return { status: "error", fetchedAt, error, ...withRawDetails };
+  return {
+    status: "partial",
+    fetchedAt,
+    entries,
+    errors: [toExportError({ label: provider.label, message: error })],
+    ...withRawDetails,
+  };
+}
+
+/** Builds the export document from the quota snapshot; no provider is asked again. */
 export function buildQuotaExportFromSnapshot(
   snapshot: QuotaSnapshot,
   nowMs: number = Date.now(),
@@ -316,35 +287,9 @@ export function buildQuotaExportFromSnapshot(
   const providers: Record<string, QuotaExportProvider> = {};
   const fetchedAtValues: number[] = [];
   for (const provider of snapshot.providers) {
-    const answeredAtMs = provider.okAtMs ?? provider.checkedAtMs;
-    if (answeredAtMs === undefined) {
-      providers[provider.providerId] = { status: "unavailable" };
-      continue;
-    }
-    const fetchedAt = Math.floor(answeredAtMs / 1000);
-    fetchedAtValues.push(fetchedAt);
-    const withRawDetails =
-      provider.debug.length > 0 ? { rawDetails: provider.debug.map(toExportRawDetail) } : {};
-    const entries = provider.rows.map((row) => snapshotEntry(provider, row));
-    const error = provider.error
-      ? sanitizeSingleLineDisplaySnippet(
-          describeError(provider.error, provider.label, nowMs),
-          EXPORT_ERROR_MAX_LENGTH,
-        )
-      : undefined;
-    if (error === undefined) {
-      providers[provider.providerId] = { status: "ok", fetchedAt, entries, ...withRawDetails };
-    } else if (entries.length > 0) {
-      providers[provider.providerId] = {
-        status: "partial",
-        fetchedAt,
-        entries,
-        errors: [toExportError({ label: provider.label, message: error })],
-        ...withRawDetails,
-      };
-    } else {
-      providers[provider.providerId] = { status: "error", fetchedAt, error, ...withRawDetails };
-    }
+    const part = provider.exportPart ?? exportProviderFromSnapshot(provider, nowMs);
+    providers[provider.providerId] = part;
+    if (part.status !== "unavailable") fetchedAtValues.push(part.fetchedAt);
   }
   const exportedAt = Math.floor(nowMs / 1000);
   return {

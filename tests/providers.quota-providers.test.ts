@@ -52,9 +52,7 @@ vi.mock("../src/lib/resolved-auth-identity.js", () => ({
   ),
 }));
 
-import { __resetQuotaStateForTests, fetchQuotaProviderResult } from "../src/lib/quota-state.js";
 import { quotaProvidersProvider } from "../src/providers/quota-providers.js";
-import { getProviders } from "../src/providers/registry.js";
 
 function remote(
   id: string,
@@ -109,7 +107,6 @@ function context(
       providers: async () => ({
         data: { providers: availableProviderIds.map((id) => ({ id })) },
       }),
-      get: async () => ({ data: {} }),
     },
   };
   return {
@@ -118,7 +115,6 @@ function context(
     config: {
       anthropicBinaryPath: "claude",
       cursorPlan: "none",
-      opencodeGoWindows: ["rolling", "weekly", "monthly"],
       enabledProviders: "auto",
       quotaProviders: definitions,
       ...overrides,
@@ -129,7 +125,6 @@ function context(
 describe("quota-providers aggregate provider", () => {
   beforeEach(() => {
     runtimeMocks.root = mkdtempSync(join(tmpdir(), "opencode-quota-provider-cache-"));
-    __resetQuotaStateForTests();
     runtimeMocks.resolveQuotaProviderApiKey.mockReset().mockResolvedValue({
       key: "secret",
       source: "opencode.db",
@@ -282,73 +277,6 @@ describe("quota-providers aggregate provider", () => {
       "second",
     ]);
     expect(result.statusDetails).toBeUndefined();
-  });
-
-  it("isolates the production nested remote cache by the winning credential", async () => {
-    const definition = remote("accounted", "provider-one");
-    const ctx = context([definition], ["provider-one"], { providerCacheTtlMs: 60_000 });
-    const provider = getProviders().find((candidate) => candidate.id === "quota-providers");
-    if (!provider) throw new Error("Expected aggregate provider");
-
-    let credential = "account-one";
-    runtimeMocks.resolveQuotaProviderApiKey.mockImplementation(async () => ({
-      key: credential,
-      source: "opencode.db",
-      checkedPaths: [],
-      credentialDatabasePaths: ["/trusted/opencode.db"],
-    }));
-    runtimeMocks.fetchRemoteQuotaProvider.mockImplementation(async (_definition, key) => ({
-      success: true,
-      entries: [
-        key === "account-one" ? percentEntry("Account one", 70) : percentEntry("Account two", 30),
-      ],
-    }));
-
-    const first = await fetchQuotaProviderResult({ provider, ctx, ttlMs: 60_000 });
-    const cached = await fetchQuotaProviderResult({ provider, ctx, ttlMs: 60_000 });
-    credential = "account-two";
-    const second = await fetchQuotaProviderResult({ provider, ctx, ttlMs: 60_000 });
-
-    expect(first.entries[0]?.name).toBe("Account one");
-    expect(cached.entries[0]?.name).toBe("Account one");
-    expect(second.entries[0]?.name).toBe("Account two");
-    expect(runtimeMocks.fetchRemoteQuotaProvider).toHaveBeenCalledTimes(2);
-  });
-
-  it("refreshes mixed local data while retaining remote definition caching", async () => {
-    runtimeMocks.fetchRemoteQuotaProvider.mockResolvedValue({
-      success: true,
-      entries: [valueEntry("Remote", "$5.00")],
-    });
-    let localCall = 0;
-    runtimeMocks.collectLocalQuotaProviderEstimate.mockImplementation(async () => {
-      localCall += 1;
-      return {
-        entries: [percentEntry("Local", 100 - localCall)],
-        state: {
-          version: 1,
-          definitionId: "mixed-local",
-          providerId: "mixed-local",
-          updatedAt: localCall,
-          messages: [],
-        },
-        unpricedMessageCount: 0,
-      };
-    });
-    const ctx = context(
-      [remote("mixed-remote"), local("mixed-local", "Mixed Local")],
-      ["mixed-remote", "mixed-local"],
-      { providerCacheTtlMs: 0 },
-    );
-
-    const first = await quotaProvidersProvider.fetch(ctx);
-    ctx.config.providerCacheTtlMs = 60_000;
-    const second = await quotaProvidersProvider.fetch(ctx);
-
-    expect(runtimeMocks.fetchRemoteQuotaProvider).toHaveBeenCalledTimes(1);
-    expect(runtimeMocks.collectLocalQuotaProviderEstimate).toHaveBeenCalledTimes(2);
-    expect(first.entries.map((entry) => entry.name)).toEqual(["Remote", "Local"]);
-    expect(second.entries.find((entry) => entry.name === "Local")?.percentRemaining).toBe(98);
   });
 
   it("preserves successful entries when another definition fails", async () => {

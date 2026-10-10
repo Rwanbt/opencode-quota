@@ -4,8 +4,8 @@ import { homedir, platform } from "os";
 import { join } from "path";
 import { getPluginSpecFromEntry } from "./config-file-utils.js";
 import { asRecord, isRecord } from "./json-guards.js";
-import { parseJsonOrJsonc } from "./jsonc.js";
 import { getCredentialDatabasePaths, readAuthFile } from "./opencode-auth.js";
+import { parseConfigDocument } from "./opencode-config-editor.js";
 import { getOpencodeRuntimeDirs } from "./opencode-runtime-paths.js";
 import { getQuotaProviderRuntimeIds } from "./provider-metadata.js";
 
@@ -125,12 +125,13 @@ export async function inspectCursorAuthPresence(): Promise<CursorAuthPresence> {
 /** OpenCode 2 reads both the legacy `plugin`/`provider` keys and the native `plugins`/`providers` keys. */
 function inspectOpenCodeConfig(
   raw: string,
-  isJsonc: boolean,
+  path: string,
 ): { matchedPlugin: boolean; matchedProvider: boolean } {
-  const parsed = asRecord(parseJsonOrJsonc(raw, isJsonc));
+  // OpenCode reads both file kinds as JSONC.
+  const parsed = parseConfigDocument(raw, "jsonc", path);
   const pluginSpecs: unknown[] = [
-    ...(Array.isArray(parsed?.plugin) ? parsed.plugin : []),
-    ...(Array.isArray(parsed?.plugins) ? parsed.plugins.map(getPluginSpecFromEntry) : []),
+    ...(Array.isArray(parsed.plugin) ? parsed.plugin : []),
+    ...(Array.isArray(parsed.plugins) ? parsed.plugins.map(getPluginSpecFromEntry) : []),
   ];
   const cursorRuntimeIds = getQuotaProviderRuntimeIds("cursor");
   return {
@@ -138,7 +139,7 @@ function inspectOpenCodeConfig(
       (spec) =>
         typeof spec === "string" && CURSOR_PLUGIN_SPEC_PATTERN.test(spec.trim().toLowerCase()),
     ),
-    matchedProvider: [parsed?.provider, parsed?.providers].some((value) => {
+    matchedProvider: [parsed.provider, parsed.providers].some((value) => {
       const providers = asRecord(value);
       return providers !== null && cursorRuntimeIds.some((id) => Object.hasOwn(providers, id));
     }),
@@ -163,10 +164,7 @@ export async function inspectCursorOpenCodeIntegration(): Promise<CursorOpenCode
 
     try {
       const raw = await readFile(path, "utf8");
-      const { matchedPlugin, matchedProvider } = inspectOpenCodeConfig(
-        raw,
-        path.endsWith(".jsonc"),
-      );
+      const { matchedPlugin, matchedProvider } = inspectOpenCodeConfig(raw, path);
       if (matchedPlugin || matchedProvider) {
         matchedPaths.push(path);
       }

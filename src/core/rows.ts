@@ -7,6 +7,7 @@
  * accounting is a local estimation.
  */
 
+import { sanitizeSingleLineDisplaySnippet } from "../lib/display-sanitize.js";
 import type {
   AccountingAcquisitionMethod,
   AccountingPercentageBasis,
@@ -14,6 +15,7 @@ import type {
   AccountingResultType,
   AccountingSemantic,
   AccountingWindow,
+  QuotaProviderDiagnostic,
   QuotaProviderResult,
   QuotaToastEntry,
   QuotaToastError,
@@ -27,7 +29,7 @@ import {
   type ProviderRow,
 } from "../providers/contract.js";
 import { classifyError } from "./errors.js";
-import { safeDebugValue, safeDetail } from "./redact.js";
+import { publicDebugValue } from "./redact.js";
 import type { ProviderFetch } from "./store.js";
 import type {
   Amount,
@@ -520,9 +522,37 @@ function dropRepeatedRows(candidates: readonly Candidate[], debug: DebugDetail[]
   });
 }
 
-/** Debug details are kept for /quota_status: scrubbed, and redacted where they name a secret. */
+/**
+ * Debug details are kept for /quota_status, as a public issue may show them (see
+ * `publicDetail`): hidden before they are cut, so a cut never leaves part of a hidden value.
+ * A key is a name the adapter or this file chose, so it is only cleaned and shortened.
+ */
 function detail(key: string, value: string): DebugDetail {
-  return { key: safeDetail(key, 64), value: safeDebugValue(key, value, DEBUG_VALUE_MAX_LENGTH) };
+  return {
+    key: sanitizeSingleLineDisplaySnippet(key, 64),
+    value: publicDebugValue(key, value, DEBUG_VALUE_MAX_LENGTH),
+  };
+}
+
+/** One custom definition's check, never its URL or key: outcome, login source, files read. */
+function customCheckDetail(diagnostic: QuotaProviderDiagnostic): DebugDetail {
+  const parts = [`outcome=${diagnostic.outcome}`];
+  if (diagnostic.httpStatus !== undefined) parts.push(`http_status=${diagnostic.httpStatus}`);
+  if (diagnostic.mode === "remote-api") {
+    const paths = new Set([...diagnostic.checkedPaths, ...diagnostic.credentialDatabasePaths]);
+    parts.push(
+      `credential_source=${diagnostic.credentialSource ?? "(none)"}`,
+      `checked_paths=${[...paths].join(" | ") || "(none)"}`,
+    );
+  } else {
+    const lastUpdate = diagnostic.stateLastUpdatedAt;
+    parts.push(
+      `state_health=${diagnostic.stateHealth ?? "missing"}`,
+      `state_version=${diagnostic.stateVersion ?? "(none)"}`,
+      `state_last_update=${lastUpdate ? new Date(lastUpdate).toISOString() : "(none)"}`,
+    );
+  }
+  return detail(`custom_${diagnostic.sourceId}_check`, parts.join(" "));
 }
 
 /**
@@ -575,6 +605,7 @@ export function rowsFromLegacyResult(
   const debug: DebugDetail[] = [
     ...(result.statusDetails ?? []).map((item) => detail(item.key, item.value)),
     ...(result.rawDetails ?? []).map((item) => detail(item.key, item.value)),
+    ...(result.diagnostics ?? []).map(customCheckDetail),
   ];
   const candidates: Candidate[] = [];
   result.entries.forEach((entry, index) => {

@@ -27,10 +27,6 @@ import {
 } from "./contract.js";
 import { statusDetailsFromRecord } from "./result-helpers.js";
 
-export function getAnthropicNoDataMessage(): string {
-  return "Quota unavailable via local Claude CLI or OAuth credentials";
-}
-
 function formatWindowDetail(
   window: { percentRemaining: number; resetTimeIso?: string } | undefined,
 ): string | undefined {

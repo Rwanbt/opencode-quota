@@ -30,7 +30,7 @@ export const chutesProvider: QuotaProvider = {
       checkedPaths: [],
     }));
     const detail = `configured=${diagnostics.configured ? "true" : "false"}${diagnostics.source ? ` source=${diagnostics.source}` : ""}${diagnostics.checkedPaths.length > 0 ? ` checked=${diagnostics.checkedPaths.join(" | ")}` : ""}`;
-    const debug = [{ key: "chutes api key", value: detail }];
+    const debug = [{ key: "api_key_diagnostics", value: detail }];
 
     const result = await queryChutesQuota({ requestTimeoutMs: ctx.config?.requestTimeoutMs });
     if (!result) return { attempted: false, accounts: [], debug };

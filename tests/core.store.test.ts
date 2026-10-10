@@ -405,13 +405,37 @@ describe("quota store", () => {
     store.subscribe(broken);
     const leave = store.subscribe(listener);
     await store.refresh({ reason: "manual" });
-    expect(listener).toHaveBeenCalledOnce();
-    expect(only(listener.mock.calls[0]?.[0]).rows).toEqual([row("allowance", 50)]);
+    // First the providers it has (none checked yet), then the fetched rows.
+    expect(listener).toHaveBeenCalledTimes(2);
+    expect(only(listener.mock.lastCall?.[0]).rows).toEqual([row("allowance", 50)]);
 
     leave();
     await store.refresh({ reason: "manual" });
+    expect(listener).toHaveBeenCalledTimes(2);
+    expect(broken).toHaveBeenCalledTimes(3);
+  });
+
+  it("tells subscribers about the rows read from the file and about providers turned on or off", async () => {
+    const copilot = fakeProvider("copilot");
+    await makeStore([copilot.provider]).refresh({ reason: "manual" });
+
+    const providers = [copilot.provider];
+    const restarted = makeStore(providers, HOUR);
+    const listener = vi.fn();
+    restarted.subscribe(listener);
+    await restarted.snapshot();
     expect(listener).toHaveBeenCalledOnce();
-    expect(broken).toHaveBeenCalledTimes(2);
+    expect(only(listener.mock.lastCall?.[0]).rows).toEqual([row("allowance", 50)]);
+
+    await restarted.snapshot();
+    expect(listener).toHaveBeenCalledOnce();
+
+    providers.push(fakeProvider("openai").provider);
+    await restarted.snapshot();
+    expect(listener).toHaveBeenCalledTimes(2);
+    expect(
+      listener.mock.lastCall?.[0].providers.map((p: { providerId: string }) => p.providerId),
+    ).toEqual(["copilot", "openai"]);
   });
 
   it("merges the file with what other processes saved", async () => {
@@ -564,8 +588,8 @@ describe("quota store", () => {
     expect(copilot.fetch).toHaveBeenCalledTimes(3);
 
     oldAccount.resolve(ok([row("allowance", 10)]));
-    // The refresh started for the old login: whose rows it would show is unknown now.
-    expect(only(await running).rows).toEqual([]);
+    // The refresh started for the old login answers with the new login's rows.
+    expect(only(await running).rows).toEqual([row("allowance", 70)]);
     expect(only(await store.snapshot()).rows).toEqual([row("allowance", 70)]);
     const seen = listener.mock.calls.flatMap(([snapshot]) => only(snapshot).rows);
     expect(seen).not.toContainEqual(row("allowance", 10));
@@ -648,9 +672,8 @@ describe("quota store", () => {
     );
 
     aliceLookup.resolve({ key: "alice", persist: true });
-    const answer = only(await running);
-    expect(answer.rows).toEqual([]);
-    expect(answer).not.toHaveProperty("okAtMs");
+    // The refresh Alice started answers with Bob's rows.
+    expect(only(await running).rows).toEqual([row("allowance", 40)]);
     // Later answers are Bob's.
     copilot.fetch.mockResolvedValue(ok([row("allowance", 99)]));
     expect(only(await store.refresh({ reason: "manual" })).rows).toEqual([row("allowance", 99)]);
@@ -781,8 +804,9 @@ describe("quota store", () => {
 
     // Both operations read who is signed in from the same answer, in the same tick.
     identityRead.resolve({ key: "bob", persist: true });
-    expect(only(await old).rows).toEqual([]);
-    await vi.waitFor(() => expect(copilot.fetch).toHaveBeenCalledOnce());
+    // The older refresh runs again for Bob.
+    expect(only(await old).rows).toEqual([row("allowance", 50)]);
+    expect(copilot.fetch).toHaveBeenCalled();
     await vi.waitFor(() =>
       expect(only(listener.mock.lastCall?.[0]).rows).toEqual([row("allowance", 50)]),
     );
@@ -792,7 +816,8 @@ describe("quota store", () => {
     const copilot = fakeProvider();
     async function firstLook() {
       const store = makeStore([copilot.provider]);
-      const snapshot = await store.snapshot();
+      // Each store names itself with a new server id.
+      const snapshot = { ...(await store.snapshot()), serverId: "" };
       await store.dispose();
       return { snapshot, saved: await readFile(file, "utf8") };
     }

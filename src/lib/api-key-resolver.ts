@@ -170,7 +170,8 @@ export function getGlobalOpencodeConfigCandidatePaths(): ConfigCandidate[] {
   }).map((candidate) => ({ path: candidate.path, isJsonc: candidate.format === "jsonc" }));
 }
 
-async function readConfigCandidate(candidate: ConfigCandidate): Promise<unknown> {
+/** The parsed config of one candidate; undefined when it is missing or does not parse. */
+export async function readConfigCandidate(candidate: ConfigCandidate): Promise<unknown> {
   const result = await readOpenCodeConfigCandidate({
     path: candidate.path,
     format: candidate.isJsonc ? "jsonc" : "json",

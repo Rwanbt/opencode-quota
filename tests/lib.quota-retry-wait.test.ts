@@ -7,11 +7,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { QuotaRow } from "../src/core/types.js";
 import type { QuotaProviderResult, QuotaToastEntry } from "../src/lib/entries.js";
 import type { QuotaRetryEvent } from "../src/lib/quota-retry-wait.js";
+import type { LoadedSettings, Settings } from "../src/settings/index.js";
 import {
-  createConfigModuleMock,
   createPluginRuntimePathsMockModule,
   createProvidersRegistryModuleMock,
-  makeQuotaToastTestConfig,
 } from "./helpers/plugin-test-harness.js";
 
 // A fresh folder per run, so test runs in sibling checkouts never share it.
@@ -26,11 +25,9 @@ const TEST_ACCOUNTING = {
 } as const;
 
 const mocks = vi.hoisted(() => ({
-  loadConfig: vi.fn(),
   getProviders: vi.fn(),
 }));
 
-vi.mock("../src/lib/config.js", () => createConfigModuleMock(mocks.loadConfig));
 vi.mock("../src/providers/registry.js", () =>
   createProvidersRegistryModuleMock(mocks.getProviders),
 );
@@ -39,6 +36,7 @@ vi.mock("../src/lib/opencode-runtime-paths.js", () =>
 );
 
 // Loaded after the mocks above are set up.
+const { defaultSettings } = await import("../src/settings/schema.js");
 const {
   getQuotaResetRetryDelayMs,
   isQuotaLimitError,
@@ -148,10 +146,24 @@ describe("resolveQuotaResetRetryDelayMs", () => {
     };
   }
 
+  let current: LoadedSettings;
+  /** The server settings: the defaults with `edit` applied. */
+  function useSettings(edit: (settings: Settings) => void): void {
+    const settings = defaultSettings();
+    edit(settings);
+    current = {
+      path: "settings.jsonc",
+      exists: true,
+      settings,
+      issues: [],
+      fromFile: [],
+      notRead: [],
+    };
+  }
+  const readSettings = vi.fn(() => current);
   const sourceHost = {
     client: {
       config: {
-        get: async () => ({ data: {} }),
         providers: async () => ({
           data: {
             providers: [{ id: "zai-coding-plan" }, { id: "gateway-a" }, { id: "gateway-b" }],
@@ -159,11 +171,8 @@ describe("resolveQuotaResetRetryDelayMs", () => {
         }),
       },
     },
-    roots: {
-      workspaceRoot: process.cwd(),
-      configRoot: process.cwd(),
-      fallbackDirectory: process.cwd(),
-    },
+    workspaceRoot: process.cwd(),
+    settings: readSettings,
   };
 
   /** The plugin's retry host: a store over today's providers and settings, in memory. */
@@ -205,9 +214,9 @@ describe("resolveQuotaResetRetryDelayMs", () => {
     );
     mocks.getProviders.mockReturnValue([zai, synthetic]);
     // waitForQuotaReset is on by default.
-    mocks.loadConfig.mockResolvedValue(
-      makeQuotaToastTestConfig({ enabledProviders: ["zai", "synthetic"] }),
-    );
+    useSettings((settings) => {
+      settings.providers.enabled = ["zai", "synthetic"];
+    });
 
     await expect(resolve(limitEvent)).resolves.toBe(90 * MINUTE_MS + QUOTA_RESET_RETRY_BUFFER_MS);
     expect(zai.fetch).toHaveBeenCalledTimes(1);
@@ -220,9 +229,10 @@ describe("resolveQuotaResetRetryDelayMs", () => {
       cachePolicy: { kind: "account-neutral" },
     };
     mocks.getProviders.mockReturnValue([zai]);
-    mocks.loadConfig.mockResolvedValue(
-      makeQuotaToastTestConfig({ enabledProviders: ["zai"], minIntervalMs: 60 * MINUTE_MS }),
-    );
+    useSettings((settings) => {
+      settings.providers.enabled = ["zai"];
+      settings.checking.minIntervalMs = 60 * MINUTE_MS;
+    });
 
     const { resolveQuotaResetRetryDelayMs } = await import("../src/lib/quota-retry-wait.js");
     const host = await createHost();
@@ -237,7 +247,9 @@ describe("resolveQuotaResetRetryDelayMs", () => {
   it("ignores rows from an earlier read when the provider fails now", async () => {
     const zai = makeProvider("zai", [window("5h", 0, at(90 * MINUTE_MS))], () => true);
     mocks.getProviders.mockReturnValue([zai]);
-    mocks.loadConfig.mockResolvedValue(makeQuotaToastTestConfig({ enabledProviders: ["zai"] }));
+    useSettings((settings) => {
+      settings.providers.enabled = ["zai"];
+    });
 
     const { resolveQuotaResetRetryDelayMs } = await import("../src/lib/quota-retry-wait.js");
     const host = await createHost();
@@ -258,16 +270,14 @@ describe("resolveQuotaResetRetryDelayMs", () => {
       percentRemaining: percent,
       resetTimeIso: at(resetMs),
     });
-    let cacheTtlMs: number | undefined;
     const custom = {
       ...makeProvider("quota-providers", [], () => true),
-      fetch: vi.fn(async (ctx: { config: { providerCacheTtlMs?: number } }) => {
-        cacheTtlMs = ctx.config.providerCacheTtlMs;
-        return result([
+      fetch: vi.fn(async () =>
+        result([
           customWindow("gateway-a", "Gateway A", 40, 90 * MINUTE_MS),
           customWindow("gateway-b", "Gateway B", 0, 10 * MINUTE_MS),
-        ]);
-      }),
+        ]),
+      ),
     };
     const definition = (id: string) => ({
       id,
@@ -278,20 +288,16 @@ describe("resolveQuotaResetRetryDelayMs", () => {
       url: `https://${id}.example/quota`,
     });
     mocks.getProviders.mockReturnValue([custom]);
-    mocks.loadConfig.mockResolvedValue(
-      makeQuotaToastTestConfig({
-        enabledProviders: ["quota-providers"],
-        minIntervalMs: 60 * MINUTE_MS,
-        quotaProviders: [definition("gateway-a"), definition("gateway-b")],
-      }),
-    );
+    useSettings((settings) => {
+      settings.providers.enabled = ["custom"];
+      settings.checking.minIntervalMs = 60 * MINUTE_MS;
+      settings.providers.custom = [definition("gateway-a"), definition("gateway-b")];
+    });
 
     const onA = { ...limitEvent, model: { id: "model-a", providerID: "gateway-a" } };
     await expect(resolve(onA)).resolves.toBeUndefined();
     const onB = { ...limitEvent, model: { id: "model-b", providerID: "gateway-b" } };
     await expect(resolve(onB)).resolves.toBe(10 * MINUTE_MS + QUOTA_RESET_RETRY_BUFFER_MS);
-    // The store keeps the interval; the aggregate's own cache would return old rows as new.
-    expect(cacheTtlMs).toBe(0);
   });
 
   it("ignores a provider where one of the logins failed: its kept rows are old", async () => {
@@ -301,7 +307,9 @@ describe("resolveQuotaResetRetryDelayMs", () => {
       errors: [{ label: "[Z.ai Work]", message: "Token expired" }],
     });
     mocks.getProviders.mockReturnValue([zai]);
-    mocks.loadConfig.mockResolvedValue(makeQuotaToastTestConfig({ enabledProviders: ["zai"] }));
+    useSettings((settings) => {
+      settings.providers.enabled = ["zai"];
+    });
 
     await expect(resolve(limitEvent)).resolves.toBeUndefined();
   });
@@ -309,29 +317,30 @@ describe("resolveQuotaResetRetryDelayMs", () => {
   it("keeps OpenCode's decision when the setting is off", async () => {
     const zai = makeProvider("zai", [window("5h", 0, at(90 * MINUTE_MS))], () => true);
     mocks.getProviders.mockReturnValue([zai]);
-    mocks.loadConfig.mockResolvedValue(
-      makeQuotaToastTestConfig({ enabledProviders: ["zai"], waitForQuotaReset: false }),
-    );
+    useSettings((settings) => {
+      settings.providers.enabled = ["zai"];
+      settings.checking.waitForQuotaReset = false;
+    });
 
     await expect(resolve(limitEvent)).resolves.toBeUndefined();
     expect(zai.fetch).not.toHaveBeenCalled();
   });
 
-  it("keeps OpenCode's decision for errors that are not limits, without reading config", async () => {
-    mocks.loadConfig.mockResolvedValue(makeQuotaToastTestConfig({ waitForQuotaReset: true }));
+  it("keeps OpenCode's decision for errors that are not limits, without reading settings", async () => {
+    useSettings(() => {});
 
     await expect(
       resolve({ ...limitEvent, error: { type: "provider.transport" } }),
     ).resolves.toBeUndefined();
-    expect(mocks.loadConfig).not.toHaveBeenCalled();
+    expect(readSettings).not.toHaveBeenCalled();
   });
 
   it("keeps OpenCode's decision when the provider still has quota left", async () => {
     const zai = makeProvider("zai", [window("5h", 12, at(90 * MINUTE_MS))], () => true);
     mocks.getProviders.mockReturnValue([zai]);
-    mocks.loadConfig.mockResolvedValue(
-      makeQuotaToastTestConfig({ enabledProviders: ["zai"], waitForQuotaReset: true }),
-    );
+    useSettings((settings) => {
+      settings.providers.enabled = ["zai"];
+    });
 
     await expect(resolve(limitEvent)).resolves.toBeUndefined();
   });

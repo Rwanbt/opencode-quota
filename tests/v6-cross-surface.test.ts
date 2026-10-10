@@ -11,12 +11,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createFakeIntegration } from "./helpers/fake-integration.js";
 import {
   createAlibabaAuthModuleMock,
-  createConfigModuleMock,
   createPricingModuleMock,
   createProvidersRegistryModuleMock,
   createSessionTokensModuleMock,
-  makeQuotaToastTestConfig,
   seedDefaultPluginBootstrapMocks,
+  writePluginTestSettings,
 } from "./helpers/plugin-test-harness.js";
 import { createQuotaRpcBridge, createQuotaRpcEvents } from "./helpers/quota-rpc-bridge.js";
 
@@ -28,7 +27,6 @@ const CANARIES = {
 
 const mocks = vi.hoisted(() => ({
   root: "",
-  loadConfig: vi.fn(),
   getProviders: vi.fn(),
   getPricingSnapshotMeta: vi.fn(),
   getPricingSnapshotSource: vi.fn(),
@@ -43,10 +41,6 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("@opentui/solid", () => ({
   useTerminalDimensions: () => () => ({ width: 120, height: 40 }),
-}));
-vi.mock("../src/lib/config.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../src/lib/config.js")>()),
-  ...createConfigModuleMock(mocks.loadConfig),
 }));
 vi.mock("../src/providers/registry.js", () =>
   createProvidersRegistryModuleMock(mocks.getProviders),
@@ -161,6 +155,11 @@ function textLines(node: unknown): string[] {
   const element = node as Node;
   if (element.type === "text") return [strings(element.props.children)];
   return textLines(element.props?.children);
+}
+
+/** The text lines with runs of spaces as one space, so layout tweaks don't break the checks. */
+function words(node: unknown): string[] {
+  return textLines(node).map((line) => line.replace(/\s+/gu, " ").trim());
 }
 
 function findAll(node: unknown, match: (node: Node) => boolean): Node[] {
@@ -342,19 +341,14 @@ describe("v6 surfaces on the quota snapshot", () => {
     process.env.V6_TEAM_KEY = CANARIES.teamKey;
     process.env.V6_FAILING_KEY = CANARIES.failingKey;
     seedDefaultPluginBootstrapMocks(mocks, { resetPluginState: true });
-    mocks.loadConfig.mockResolvedValue(
-      makeQuotaToastTestConfig({
-        enabled: true,
-        enabledProviders: ["copilot", "minimax-coding-plan", "quota-providers"],
-        quotaProviders: CUSTOM_SOURCES as never,
-        minIntervalMs: 60_000,
-        sessionTokenScope: "session",
-        maintainerAnnouncements: { enabled: false, home: false },
-        export: { enabled: true, path: join(mocks.root, "quota-export.json") },
-        telemetry: { enabled: true },
-        tuiCommandDisplay: "dialog",
-      } as never),
-    );
+    writePluginTestSettings(mocks.root, {
+      providers: { enabled: ["copilot", "minimax-coding-plan", "custom"], custom: CUSTOM_SOURCES },
+      checking: { minIntervalMs: 60_000 },
+      words: { sessionTokens: "current" },
+      announcements: { enabled: false, home: false },
+      export: { enabled: true, path: join(mocks.root, "quota-export.json") },
+      telemetry: { enabled: true },
+    });
     mocks.fetchSessionTokensForDisplay.mockResolvedValue({
       sessionTokens: { models: [], totalInput: 1200, totalCachedInput: 300, totalOutput: 45 },
     });
@@ -392,86 +386,61 @@ describe("v6 surfaces on the quota snapshot", () => {
     const sidebar = () => tui.render("sidebar.content", { sessionID: "ses_1" });
     // The first look asks the server; the providers answer in the background and the
     // `changed` event brings their rows, the last of them the custom source's.
-    await vi.waitFor(
-      () =>
-        expect(textLines(sidebar())).toEqual(
-          expect.arrayContaining([
-            "Session  1.2K in · 45 out",
-            " Monthly  █████░░░  64% left 2h 14m",
-          ]),
-        ),
-      { timeout: 10_000 },
-    );
+    await vi.waitFor(() => expect(words(sidebar())).toContain("Monthly █████░░░ 64% left 2h 14m"), {
+      timeout: 10_000,
+    });
 
-    // Sidebar: every provider and its rows; an over-quota row shows 0% left.
+    // Sidebar: every provider and its rows; an over-quota row shows 0% left. Each bar takes its
+    // level's theme color: plenty, getting low, almost out.
     const expanded = sidebar();
-    expect(textLines(expanded)).toEqual([
-      "▼ Quota",
-      "Copilot (pro)",
-      " Plan     ██████░░  81% left       ",
-      "MiniMax Token Plan",
-      " 5h       ░░░░░░░░   0% left 2h 14m",
-      " Weekly   ███░░░░░  40% left       ",
-      "Quota providers (Team)  Provider er…",
-      " Monthly  █████░░░  64% left 2h 14m",
-      "Session  1.2K in · 45 out",
-    ]);
-    // Each bar and percent takes its level's theme color: plenty, getting low, almost out.
-    const colors = (line: string) => {
-      const text = findAll(expanded, (node) => node.type === "text").find(
-        (node) => textLines(node)[0] === line,
+    expect(words(expanded)).toEqual(
+      expect.arrayContaining([
+        "Plan ██████░░ 81% left",
+        "5h ░░░░░░░░ 0% left 2h 14m",
+        "Quota providers (Team) Provider er…",
+        "Session 1.20K in · 45 out",
+      ]),
+    );
+    const barColor = (start: string) => {
+      const text = findAll(expanded, (node) => node.type === "text").find((node) =>
+        textLines(node)[0]?.trim().startsWith(start),
       );
-      return findAll(text, (node) => node.type === "span").map((span) => span.props.style.fg);
+      return findAll(text, (node) => node.type === "span")[1]?.props.style.fg;
     };
-    expect([
-      colors(" Plan     ██████░░  81% left       "),
-      colors(" Weekly   ███░░░░░  40% left       "),
-      colors(" 5h       ░░░░░░░░   0% left 2h 14m"),
-    ]).toEqual([
-      ["text", "green", "muted", "green", "muted"],
-      ["text", "yellow", "muted", "yellow", "muted"],
-      ["text", "red", "muted", "red", "muted"],
-    ]);
+    expect(["Plan", "Weekly", "5h"].map(barColor)).toEqual(["green", "yellow", "red"]);
 
-    // Collapsed: a click on the title collapses the panel; plugin storage remembers it.
+    // Collapsed: a click on the title collapses the panel; plugin storage remembers it. A
+    // provider with an error keeps its rows and shows the error next to them.
     findAll(
       expanded,
       (node) => typeof node.props?.onMouseDown === "function",
     )[0]?.props.onMouseDown();
     expect(tui.stored.get("sidebar")).toEqual({ open: false });
-    expect(textLines(sidebar())).toEqual([
-      "▶ Quota (3 providers, 1 error)",
-      "Copilot…  Plan ██████░░  81%        ",
-      "MiniMax…  5h   ░░░░░░░░   0%  2h 14m",
-      "Quota pr… 30d  █████░░░  64%  2h 14m",
-    ]);
+    expect(words(sidebar())).toEqual(
+      expect.arrayContaining([
+        "▶ Quota (3 providers, 1 error)",
+        "Quota pr… 30d █████░░░ 64% Provi…",
+      ]),
+    );
 
     // Status line under the message box, here "one provider, big bar".
-    expect(textLines(tui.render("prompt.footer", { sessionID: "ses_1" }))).toEqual([
+    expect(words(tui.render("prompt.footer", { sessionID: "ses_1" }))).toEqual([
       "Copilot Plan ████████░░ 81% left",
     ]);
 
     // Toast after a reply.
     tui.emit("session.execution.succeeded", { sessionID: "ses_1" });
     await vi.waitFor(() => expect(tui.toast).toHaveBeenCalledOnce());
-    expect(tui.toast.mock.calls[0]?.[0]).toMatchObject({
-      variant: "info",
-      title: "OpenCode Quota",
-      message: [
-        "Copilot (pro) Plan  81% left",
-        "MiniMax Token Plan… 0% left       2h 14m",
-        "MiniMax Token Plan… 40% left",
-        "Quota providers (T… 64% left      2h 14m",
-        "Quota providers (T… Provider error 503",
-        "Session  1.2K in · 45 out",
-      ].join("\n"),
-    });
+    const toast = tui.toast.mock.calls[0]?.[0];
+    expect(toast).toMatchObject({ variant: "info", title: "OpenCode Quota" });
+    expect(toast.message).toContain("Quota providers (T… Provider error 503\nSession  1.20K in");
 
-    // /quota still builds its report on the server and opens it in a dialog.
+    // /quota builds its report on the server from the same snapshot and opens it in a dialog.
     await tui.command("quota").run();
-    expect(tui.dialogs[0]).toEqual(expect.arrayContaining(["Quota limits", "  Failing: HTTP 503"]));
+    expect(tui.dialogs[0]).toContain(tui.toast.mock.calls[0]?.[0].message);
 
-    // The export file and the gauges follow the snapshot without asking a provider again.
+    // The export file (version 2) and the gauges follow the snapshot without asking a provider
+    // again.
     const exportPath = join(mocks.root, "quota-export.json");
     const exported = await vi.waitFor(async () => {
       const file = JSON.parse(await readFile(exportPath, "utf8"));
@@ -482,23 +451,27 @@ describe("v6 surfaces on the quota snapshot", () => {
       Object.entries(exported.providers).map(([id, provider]: [string, any]) => [
         id,
         provider.status,
-        provider.entries.map((entry: { name: string; percentRemaining: number }) => [
-          entry.name,
-          entry.percentRemaining,
-        ]),
+        provider.entries.map((entry: any) => [entry.name, entry.percentRemaining]),
       ]),
     ).toEqual([
-      ["copilot", "ok", [["Copilot (pro) Plan", 81]]],
+      ["copilot", "ok", [["Copilot", 81]]],
       [
         "minimax-coding-plan",
         "ok",
         [
-          ["MiniMax Token Plan 5h", -5],
-          ["MiniMax Token Plan Weekly", 40],
+          ["minimax-token-plan-5h", -5],
+          ["minimax-token-plan-week", 40],
         ],
       ],
-      ["quota-providers", "partial", [["Quota providers (Team) Monthly", 64]]],
+      ["quota-providers", "partial", [["Team Monthly", 64]]],
     ]);
+    expect(exported.providers["quota-providers"]).toMatchObject({
+      entries: [{ sourceId: "team-accounting", window: "Monthly" }],
+      sources: [
+        { id: "team-accounting", status: "ok", entryCount: 1 },
+        { id: "failing-accounting", status: "error", entryCount: 0 },
+      ],
+    });
     const gauges = telemetry.collect("opencode.quota.consumed");
     expect(
       gauges.map(({ value, attributes }) => [

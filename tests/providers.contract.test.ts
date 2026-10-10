@@ -6,7 +6,6 @@ import {
   rowsFromProviderResult,
 } from "../src/core/rows.js";
 import type { CredentialRow } from "../src/lib/opencode-auth.js";
-import { normalizeQuotaProviderResult } from "../src/lib/quota-state-codec.js";
 import {
   FIVE_HOUR,
   fetchEachLogin,
@@ -191,10 +190,7 @@ describe("legacyResultFromFetch", () => {
       debug: [{ key: "billing_scope", value: "user" }],
     };
 
-    const legacy = normalizeQuotaProviderResult(legacyResultFromFetch(result, NOW_MS));
-
-    if (legacy === null) throw new Error("the legacy result did not validate");
-    expect(rowsFromLegacyResult("copilot", legacy, NOW_MS)).toEqual(
+    expect(rowsFromLegacyResult("copilot", legacyResultFromFetch(result, NOW_MS), NOW_MS)).toEqual(
       rowsFromProviderResult("copilot", result, NOW_MS),
     );
   });

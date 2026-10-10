@@ -28,7 +28,7 @@ const STATUS_USAGE = [
   "",
   "Exit codes:",
   "  0  success",
-  "  1  error or quota disabled (enabled: false)",
+  "  1  error",
   "  2  no comparable provider data (with --json only)",
 ].join("\n");
 
@@ -122,7 +122,7 @@ export async function runCliStatusCommand(
   return runCliReport({
     cwd: options.cwd ?? process.cwd(),
     failurePrefix: "Failed to generate quota status",
-    build: (runtime) => buildCliStatus({ runtime, providerId, json: parsed.json }),
+    build: (host) => buildCliStatus({ host, providerId, json: parsed.json }),
     stdout,
     stderr,
   });

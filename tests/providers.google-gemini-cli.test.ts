@@ -114,7 +114,7 @@ describe("google gemini cli provider", () => {
     expect(fetched.debug).toContainEqual({
       key: "error",
       value:
-        "[Gemini CLI work@example.com] (active): Gemini CLI sign-in could not be refreshed: refresh_failed: HTTP 400. Run `opencode auth login google`.",
+        "[Gemini CLI [email]] (active): Gemini CLI sign-in could not be refreshed: refresh_failed: HTTP 400. Run `opencode auth login google`.",
     });
   });
 

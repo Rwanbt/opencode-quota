@@ -32,9 +32,6 @@ export type {
   CopilotEnterpriseUsageResult,
   CopilotOrganizationUsageResult,
   CopilotQuotaResult,
-  MaintainerAnnouncementsConfig,
-  PricingSnapshotSource,
-  QuotaToastConfig,
-  SessionTokenScope,
 } from "./lib/types.js";
 export { default } from "./plugin.js";
+export type { Settings, SettingsPatch } from "./settings/index.js";

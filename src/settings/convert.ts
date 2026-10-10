@@ -8,7 +8,14 @@ import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { type ParseError, parse } from "jsonc-parser";
-import { checkSetting, SETTINGS_SCHEMA, type Settings, setPath, settingsFrom } from "./schema.js";
+import {
+  type CheckedSetting,
+  checkSetting,
+  SETTINGS_SCHEMA,
+  type Settings,
+  setPath,
+  settingsFrom,
+} from "./schema.js";
 
 /** A v5 key that moved: `to` is a dotted key of settings.jsonc or of the TUI display settings. */
 export type ConvertedKey = { key: string; to: string; where: "server" | "display"; note?: string };
@@ -64,13 +71,13 @@ const SIDECAR_NAMES = ["quota-toast.jsonc", "quota-toast.json"] as const;
 const HOST_FILE_NAMES = ["opencode.json", "opencode.jsonc"] as const;
 
 const NO_FORMAT_STYLE =
-  "no v6 equivalent: the sidebar shows every row and the collapsed sidebar one per provider; hide rows in the /quota window";
+  "no v6 equivalent: the sidebar shows every row and the collapsed sidebar one per provider";
 
 /** v5 keys v6 does not keep, and why. */
 const DROPPED: ReadonlyMap<string, string> = new Map(
   Object.entries({
     enabled: "v6 has no switch of its own; turn the plugin off in OpenCode's plugin list",
-    tuiCommandDisplay: "/quota always opens the quota window in v6",
+    tuiCommandDisplay: "TUI reports always open in a popup",
     formatStyle: NO_FORMAT_STYLE,
     toastStyle: NO_FORMAT_STYLE,
     "tuiSidebarPanel.formatStyle": NO_FORMAT_STYLE,
@@ -289,7 +296,9 @@ function readV5Values(sources: readonly V5Source[]): {
         if (check(value)) values.set(key, value);
         else invalid.push({ key, reason: `${JSON.stringify(value)} was not valid in v5 either` });
       } else {
-        const checked = checkSetting(check, value);
+        // v5 took no null; v6 reads null as "unset", which would erase an earlier file's value.
+        const v5Rejects = { issues: [{ key: check, message: "null was not valid in v5 either" }] };
+        const checked: CheckedSetting = value === null ? v5Rejects : checkSetting(check, value);
         for (const issue of checked.issues) {
           invalid.push({ key: issue.key.replace(check, key), reason: issue.message });
         }
@@ -432,7 +441,7 @@ function firstPerKey(list: readonly SkippedKey[]): SkippedKey[] {
 /** The v5 global settings converted in memory (nothing is written), or undefined when none. */
 export async function planV5Conversion(configDir: string): Promise<V5Conversion | undefined> {
   const files = await readV5GlobalFiles(configDir);
-  if (files.sources.length === 0 && !files.sidecarSeen) return undefined;
+  if (files.sources.length === 0 && !files.sidecarSeen && !files.malformed) return undefined;
 
   const read = readV5Values(files.sources);
   const mapped = mapV5Values(read.values);

@@ -17,7 +17,7 @@ import {
   sliceColumns,
   truncateColumns,
 } from "./columns.js";
-import { formatShare, formatTokens, formatUsd } from "./numbers.js";
+import { formatShare, formatTokens, formatUsd } from "./format.js";
 
 /** What the view counts: money at API prices, or processed tokens. */
 export type UsageMode = "cost" | "tokens";

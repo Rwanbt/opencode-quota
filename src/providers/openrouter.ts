@@ -1,10 +1,4 @@
-import {
-  isPercentEntry,
-  isValueEntry,
-  type QuotaProvider,
-  type QuotaProviderContext,
-  type QuotaToastEntry,
-} from "../lib/entries.js";
+import type { QuotaProvider, QuotaProviderContext, QuotaToastEntry } from "../lib/entries.js";
 import {
   hasOpenRouterApiKeyConfigured,
   queryOpenRouterQuota,
@@ -26,8 +20,10 @@ function keyRow(entry: QuotaToastEntry): ProviderRow[] {
     authority: "provider_reported",
     prominence: "primary",
   } as const;
-  if (isValueEntry(entry)) return [{ ...row, text: entry.value }];
-  if (isPercentEntry(entry)) return [{ ...row, percentRemaining: entry.percentRemaining }];
+  if (entry.kind === "value") return [{ ...row, text: entry.value }];
+  if (entry.kind === undefined || entry.kind === "percent") {
+    return [{ ...row, percentRemaining: entry.percentRemaining }];
+  }
   return [];
 }
 

@@ -97,23 +97,24 @@ These show only your own member API key's usage, not the whole organization's.
 - `Quota` covers quota and rate-limit windows; JSON tells them apart.
 - OpenCode Zen, NanoGPT, Xiaomi MiMo, Kilo Gateway, DeepSeek, and Cursor keep quota, rate limit, budget, usage, spend, credits, and balance as separate rows. A balance is not remaining allowance, and spend is not a budget percentage.
 - Money uses uppercase currency codes such as `USD 12.50` or `CNY 8.25`. OpenCode Quota never converts, combines, or picks a preferred currency.
-- `accountingDetail: "detailed"` adds supplementary balance, status, and spend rows. See [Show accounting detail](configuration.md#show-accounting-detail).
-- Which rows can show a **Runs out** estimate: see [Estimate when fixed quota runs out](configuration.md#estimate-when-fixed-quota-runs-out).
+- `words.detail: "detailed"` adds supplementary balance, status, and spend rows. See [All settings](configuration.md#all-settings).
 
 ## Custom providers
 
 Custom providers can report quota, rate limit, usage, spend, budget, balance, or status. Ask your agent to add a custom provider: paste this into OpenCode and replace `<provider>`:
 
 ```text
-Add a custom OpenCode Quota provider for <provider>. Follow docs/readme/providers.md#custom-providers in https://github.com/slkiser/opencode-quota, put the definition in quotaProviders in my global quota settings, never put a key or other secret in it, then run the quota_status tool and fix what it reports.
+Add a custom OpenCode Quota provider for <provider> with the quota_provider_add tool, following docs/readme/providers.md#custom-providers in https://github.com/slkiser/opencode-quota. Never put a key or other secret in the definition: set apiKeyEnv to the name of a new environment variable starting with OPENCODE_QUOTA_ that holds only this key (for example OPENCODE_QUOTA_MYVENDOR_API_KEY). The tool saves the definition, tests it once and returns the rows or the error; fix what it reports and add it again with the same id until it shows rows.
 ```
 
-To edit it yourself, put definitions in `quotaProviders` in the global `opencode-quota/quota-toast.jsonc` (or `.json`); without that file, use `experimental.quotaToast.quotaProviders` in the global OpenCode config. Restart OpenCode after editing.
+The agent tools change only OpenCode Quota's own settings file (through a symlink, its target), never `opencode.json`; testing a local-estimate provider also updates its state file. A provider added by an agent reads its key only from an environment variable whose name starts with `OPENCODE_QUOTA_`, which you create just for it; a definition holding anything that looks like a key is refused. `quota_provider_test` and `quota_provider_remove` take a provider's `id`.
+
+To edit it yourself, put definitions in `providers.custom` in `settings.jsonc` ([where](configuration.md#where-settings-live)). Changes apply without a restart.
 
 - **Remote API:** real quota data from a supported endpoint (formats below).
 - **Local estimate:** counts matching completed OpenCode requests in 1–16 windows, with optional spend estimates. `utc-day` resets at UTC midnight; `rolling` uses `durationMinutes` (up to 366 days). Every window needs `requestLimit`; `usdBudget` is optional.
-- **Credentials:** the variable named by `apiKeyEnv`, then trusted global `provider.<providerId>.options.apiKey`, then an API-key login saved in OpenCode 2 (`opencode.db`) for that provider id. Project secrets are never read.
-- With `enabledProviders: "auto"`, definitions run automatically. A manual list must include `quota-providers` plus every built-in provider you still want.
+- **Credentials:** the variable named by `apiKeyEnv`, then trusted global `provider.<providerId>.options.apiKey`, then an API-key login saved in OpenCode 2 (`opencode.db`) for that provider id; a variable whose name starts with `OPENCODE_QUOTA_` is the only source. Project secrets are never read.
+- With `providers.enabled: "auto"`, definitions run automatically. A list must include `custom` plus every built-in provider you still want.
 - A custom model provider still needs its normal OpenCode provider/model config. `/connect` → **Other** stores its credential, not its model setup.
 - OpenRouter is built in. A custom OpenRouter definition only helps if you need a different endpoint or label.
 - Alibaba Personal Token Plan uses the reserved `alibaba-token-plan` ID and stays a separate official-CLI provider; it is not a local-estimate tuning target.
@@ -123,58 +124,60 @@ See [Configuration](configuration.md#custom-providers) for a complete example an
 <details>
 <summary><strong>Recipes: Vercel AI Gateway, Moonshot, Poe</strong></summary>
 
-Add the providers you use to `quotaProviders` in `quota-toast.jsonc`, then set the key variable (or use an API-key login saved in OpenCode):
+Add the providers you use to `providers.custom` in `settings.jsonc`, then set the key variable (or use an API-key login saved in OpenCode):
 
 ```jsonc
 {
-  "quotaProviders": [
-    {
-      // Vercel AI Gateway: team credit balance and total spend, in USD.
-      "id": "vercel-credits",
-      "providerId": "vercel",
-      "label": "Vercel AI Gateway",
-      "mode": "remote-api",
-      "url": "https://ai-gateway.vercel.sh/v1/credits",
-      "format": "json-v1",
-      "apiKeyEnv": "AI_GATEWAY_API_KEY",
-      "adapter": {
-        "mappings": [
-          { "resultType": "balance", "name": "Balance", "label": "Balance:", "unit": "USD", "unitPosition": "suffix", "metric": { "type": "value", "valueType": "balance", "value": { "path": ["balance"] } } },
-          { "resultType": "spend", "name": "Spend", "label": "Spend:", "unit": "USD", "unitPosition": "suffix", "metric": { "type": "value", "valueType": "spend", "value": { "path": ["total_used"] } } }
-        ]
+  "providers": {
+    "custom": [
+      {
+        // Vercel AI Gateway: team credit balance and total spend, in USD.
+        "id": "vercel-credits",
+        "providerId": "vercel",
+        "label": "Vercel AI Gateway",
+        "mode": "remote-api",
+        "url": "https://ai-gateway.vercel.sh/v1/credits",
+        "format": "json-v1",
+        "apiKeyEnv": "AI_GATEWAY_API_KEY",
+        "adapter": {
+          "mappings": [
+            { "resultType": "balance", "name": "Balance", "label": "Balance:", "unit": "USD", "unitPosition": "suffix", "metric": { "type": "value", "valueType": "balance", "value": { "path": ["balance"] } } },
+            { "resultType": "spend", "name": "Spend", "label": "Spend:", "unit": "USD", "unitPosition": "suffix", "metric": { "type": "value", "valueType": "spend", "value": { "path": ["total_used"] } } }
+          ]
+        }
+      },
+      {
+        // Moonshot / Kimi API platform (not Kimi Code, which is built in): available balance, in USD.
+        "id": "moonshot-balance",
+        "providerId": "moonshotai",
+        "label": "Moonshot",
+        "mode": "remote-api",
+        "url": "https://api.moonshot.ai/v1/users/me/balance",
+        "format": "json-v1",
+        "apiKeyEnv": "MOONSHOT_API_KEY",
+        "adapter": {
+          "mappings": [
+            { "resultType": "balance", "name": "Balance", "label": "Balance:", "unit": "USD", "unitPosition": "suffix", "metric": { "type": "value", "valueType": "balance", "value": { "path": ["data", "available_balance"] } } }
+          ]
+        }
+      },
+      {
+        // Poe: point balance (points, not money).
+        "id": "poe-points",
+        "providerId": "poe",
+        "label": "Poe",
+        "mode": "remote-api",
+        "url": "https://api.poe.com/usage/current_balance",
+        "format": "json-v1",
+        "apiKeyEnv": "POE_API_KEY",
+        "adapter": {
+          "mappings": [
+            { "resultType": "balance", "name": "Points", "label": "Points:", "unit": "points", "unitPosition": "suffix", "metric": { "type": "value", "valueType": "balance", "value": { "path": ["current_point_balance"] } } }
+          ]
+        }
       }
-    },
-    {
-      // Moonshot / Kimi API platform (not Kimi Code, which is built in): available balance, in USD.
-      "id": "moonshot-balance",
-      "providerId": "moonshotai",
-      "label": "Moonshot",
-      "mode": "remote-api",
-      "url": "https://api.moonshot.ai/v1/users/me/balance",
-      "format": "json-v1",
-      "apiKeyEnv": "MOONSHOT_API_KEY",
-      "adapter": {
-        "mappings": [
-          { "resultType": "balance", "name": "Balance", "label": "Balance:", "unit": "USD", "unitPosition": "suffix", "metric": { "type": "value", "valueType": "balance", "value": { "path": ["data", "available_balance"] } } }
-        ]
-      }
-    },
-    {
-      // Poe: point balance (points, not money).
-      "id": "poe-points",
-      "providerId": "poe",
-      "label": "Poe",
-      "mode": "remote-api",
-      "url": "https://api.poe.com/usage/current_balance",
-      "format": "json-v1",
-      "apiKeyEnv": "POE_API_KEY",
-      "adapter": {
-        "mappings": [
-          { "resultType": "balance", "name": "Points", "label": "Points:", "unit": "points", "unitPosition": "suffix", "metric": { "type": "value", "valueType": "balance", "value": { "path": ["current_point_balance"] } } }
-        ]
-      }
-    }
-  ]
+    ]
+  }
 }
 ```
 
@@ -384,7 +387,7 @@ claude auth login
 claude auth status
 ```
 
-- OpenCode Quota runs `claude` from OpenCode's `PATH`, or else the first working one of `~/.claude/local/claude`, `~/.local/bin/claude`, `/opt/homebrew/bin/claude`, and `/usr/local/bin/claude` (not on Windows). If Claude lives elsewhere, or on Windows when `claude` is not on OpenCode's `PATH`, set `anthropicBinaryPath`. `/quota_status` shows the one it ran as `binary_path`.
+- OpenCode Quota runs `claude` from OpenCode's `PATH`, or else the first working one of `~/.claude/local/claude`, `~/.local/bin/claude`, `/opt/homebrew/bin/claude`, and `/usr/local/bin/claude` (not on Windows). If Claude lives elsewhere, or on Windows when `claude` is not on OpenCode's `PATH`, set `providers.anthropic.binaryPath`. `/quota_status` shows the one it ran as `binary_path`.
 - When Claude Code does not expose quota windows itself, quota comes from Anthropic's OAuth usage endpoint, using the first usable token: OpenCode's own `anthropic` login, then Claude Code's credentials. `/quota_status` shows which one as `oauth_credential_source`.
 - **Claude Usage Credits:** a separate monthly group when that response includes enabled Usage Credits with numeric utilization. Missing or invalid credit data never changes the regular 5-hour and weekly rows.
 - **Fable:** a separate weekly row when Anthropic returns that model-scoped window. It is never guessed from your plan name. See [Claude Fable models on your plan](https://support.claude.com/en/articles/15424964-claude-fable-models-on-your-plan).
@@ -405,11 +408,11 @@ Restart OpenCode, run `/connect`, choose **Cursor**, then sign in with **Cursor 
 
 Cursor estimates the current billing cycle from your local OpenCode history:
 
-- With all models known and an allowance (`cursorPlan` or `cursorIncludedApiUsd`), it shows an **API budget** percentage with used, limit, and remaining USD.
+- With all models known and an allowance (`providers.cursor.plan` or `providers.cursor.includedApiUsd`), it shows an **API budget** percentage with used, limit, and remaining USD.
 - Without an allowance, it shows **API spend**.
 - If any Cursor model is unknown, it shows only **Known API spend** plus a partial-data issue, never a percentage or a total.
 - **Auto+Composer spend** is a supplementary row shown in detailed output when there is room.
-- Set `cursorBillingCycleStartDay` to your billing day; otherwise the cycle is the local calendar month.
+- Set `providers.cursor.billingCycleStartDay` to your billing day; otherwise the cycle is the local calendar month.
 
 <a id="alibaba-personal-token-plan"></a>
 
@@ -427,7 +430,7 @@ bl auth login --console
 - On Windows, use WSL. Native `bl.exe` and `.cmd` shims are not supported in this release.
 - Team plans, China-only `alibaba-token-plan-cn` runtimes, and cookie-based console scraping are not supported.
 - After switching the CLI's console account, restart OpenCode or wait for the next live check.
-- With a manual provider list, include `alibaba-token-plan` in `enabledProviders`.
+- With a manual provider list, include `alibaba-token-plan` in `providers.enabled`.
 
 OpenCode Quota's Google integrations use independent community companion plugins. They are not endorsed by Google.
 
@@ -442,7 +445,7 @@ opencode auth login google-agy
 ```
 
 - It shows the companion's grouped weekly and five-hour windows for each account. AGY logins copied from OpenCode 1 keep working.
-- With a manual provider list, include `google-agy` in `enabledProviders`.
+- With a manual provider list, include `google-agy` in `providers.enabled`.
 - If the login has no project id, set `OPENCODE_AGY_PROJECT_ID`, or `providers.google-agy.settings.projectId` in your user/global `opencode.json` (the OpenCode 1 form `provider.google-agy.options.projectId` also works).
 
 <a id="gemini-cli"></a>
@@ -457,7 +460,7 @@ Use companion plugin [`opencode-gemini-auth`](https://github.com/jenslys/opencod
 opencode auth login google
 ```
 
-If you use manual provider selection, include `google-gemini-cli` in `enabledProviders`.
+If you use manual provider selection, include `google-gemini-cli` in `providers.enabled`.
 
 <a id="deepseek"></a>
 
@@ -468,7 +471,7 @@ Shows your on-demand account balance from `GET https://api.deepseek.com/user/bal
 - Each valid **Total balance** is its own currency row. Detailed output can add **Granted balance** and **Topped-up balance**. Currencies are never added up or converted.
 - With no valid total balance, it shows the API's availability status. A malformed number becomes a partial-data issue, not zero.
 - Key: `DEEPSEEK_API_KEY`, or `provider.deepseek.options.apiKey` in trusted user/global config (for example `"{env:DEEPSEEK_API_KEY}"`). See [API keys](#api-keys).
-- With a manual provider list, include `deepseek` in `enabledProviders`.
+- With a manual provider list, include `deepseek` in `providers.enabled`.
 
 <a id="nanogpt"></a>
 
@@ -482,7 +485,7 @@ Shows your on-demand account balance from `GET https://api.deepseek.com/user/bal
 
 ### Kilo Gateway
 
-Create an API key in your Kilo personal profile, then set `KILO_API_KEY` (or use trusted user/global `provider.kilo.options.apiKey`, or a `kilo` API-key login saved in OpenCode 2). The provider id is `kilo`; with a manual provider list, include `kilo` in `enabledProviders`.
+Create an API key in your Kilo personal profile, then set `KILO_API_KEY` (or use trusted user/global `provider.kilo.options.apiKey`, or a `kilo` API-key login saved in OpenCode 2). The provider id is `kilo`; with a manual provider list, include `kilo` in `providers.enabled`.
 
 It checks the `kiloPass.getState` endpoint first, then shows:
 
@@ -573,7 +576,7 @@ API key order:
 - Without an API key: a sign-in OpenCode cannot return shows as an error, and a failed Console call (including HTTP 403) shows no Go quota.
 - If the Console reports no Go subscription (for example HTTP 404), no Go rows appear.
 - A window with API status `rate-limited` is shown as used up (0% left) with its reset time. Other windows stay visible.
-- `opencodeGoWindows` picks which of **Five-hour**, **Weekly**, and **Monthly** appear everywhere. The collapsed sidebar shows the window with the least left.
+- Go shows **Five-hour**, **Weekly**, and **Monthly**. The collapsed sidebar shows the window with the least left.
 - Old workspace/cookie setups (`OPENCODE_GO_WORKSPACE_ID`, `OPENCODE_GO_AUTH_COOKIE`, and the global `opencode-quota/opencode-go.json` file) are not read and cannot be converted to an API key. Remove them once Go works.
 
 <a id="opencode-zen"></a>
@@ -587,11 +590,11 @@ Zen uses your OpenCode Console sign-in from OpenCode 2; no cookie or workspace I
 3. Check it with `/quota_status` in OpenCode, or `opencode-quota status` in a terminal.
 
 - Inside OpenCode, an expired token is refreshed; the terminal command does not refresh it.
-- An OpenCode API key alone is not a Console sign-in. Without a sign-in, auto mode skips Zen; include `opencode` in `enabledProviders` to see a sign-in hint instead.
+- An OpenCode API key alone is not a Console sign-in. Without a sign-in, auto mode skips Zen; include `opencode` in `providers.enabled` to see a sign-in hint instead.
 - Zen reads unofficial Console routes (`/api/billing/status`, `/api/billing/account`, `/api/billing/auto-recharge`, `/api/budgets/org`, and `/api/usage/cost-by-day`), so OpenCode may change them.
-- **Monthly budget:** a percentage with used, limit, and remaining USD. It uses the org budget (`/api/budgets/org`) and its reset date when that has a positive limit and usable spend. Otherwise it uses the Console credit limit (`/api/billing/account`) plus this month's usage costs (`/api/usage/cost-by-day`). `opencodeMonthlyLimit` in `quota-toast.json` overrides the budget from either source.
+- **Monthly budget:** a percentage with used, limit, and remaining USD. It uses the org budget (`/api/budgets/org`) and its reset date when that has a positive limit and usable spend. Otherwise it uses the Console credit limit (`/api/billing/account`) plus this month's usage costs (`/api/usage/cost-by-day`). `providers.opencode.monthlyLimitUsd` in `settings.jsonc` overrides the budget from either source.
 - **Balance:** always required. It is supplementary when a budget percentage exists, and primary otherwise (next to a **Monthly spend** row when this month's usage is known).
 - **Auto-reload:** a supplementary enabled/disabled row. Its amount and trigger stay in diagnostics.
 - If a non-balance route fails, Zen still shows the balance, hides only the rows that need the failed data, and lists the failed route as an error.
-- `accountingDetail: "detailed"` shows the supplementary balance and auto-reload rows. The old `opencodeZenDisplay` setting is gone and is ignored; use `accountingDetail` instead.
+- `words.detail: "detailed"` shows the supplementary balance and auto-reload rows.
 - The old `opencode-quota/opencode.json` file and `OPENCODE_WORKSPACE_ID` / `OPENCODE_AUTH_COOKIE` variables are no longer read. Remove the file after Zen works. The variables may also belong to OpenCode's workspace feature, so remove them only if they held Zen credentials.

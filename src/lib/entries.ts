@@ -1,8 +1,8 @@
 import type { ProviderFetchResult } from "../providers/contract.js";
+import type { CursorQuotaPlan } from "./cursor-pricing.js";
 import type { QuotaProviderDefinition } from "./quota-providers.js";
 import type { ResolvedAuthIdentity } from "./resolved-auth-identity.js";
 import type { RuntimeProviderIdResolver } from "./runtime-provider-ids.js";
-import type { CursorQuotaPlan, OpenCodeGoWindowKey } from "./types.js";
 
 /**
  * Normalized quota output model.
@@ -191,64 +191,6 @@ export type QuotaToastEntry =
   | QuotaQuantityEntry
   | QuotaBooleanEntry;
 
-export function isValueEntry(e: QuotaToastEntry): e is QuotaValueEntry {
-  return e.kind === "value";
-}
-
-export function isQuantityEntry(e: QuotaToastEntry): e is QuotaQuantityEntry {
-  return e.kind === "quantity";
-}
-
-export function isBooleanEntry(e: QuotaToastEntry): e is QuotaBooleanEntry {
-  return e.kind === "boolean";
-}
-
-export function isPercentEntry(e: QuotaToastEntry): e is QuotaPercentEntry {
-  return e.kind === undefined || e.kind === "percent";
-}
-
-export function cloneAccountingUnit(unit: AccountingUnit): AccountingUnit {
-  return { ...unit };
-}
-
-export function cloneAccountingQuantity(quantity: AccountingQuantity): AccountingQuantity {
-  return { decimal: quantity.decimal, unit: cloneAccountingUnit(quantity.unit) };
-}
-
-export function cloneAccountingSemantic(semantic: AccountingSemantic): AccountingSemantic {
-  return { metric: { ...semantic.metric }, prominence: semantic.prominence };
-}
-
-export function cloneAccountingBasisFact(fact: AccountingBasisFact): AccountingBasisFact {
-  return { quantity: cloneAccountingQuantity(fact.quantity), authority: fact.authority };
-}
-
-export function cloneAccountingPercentageBasis(
-  basis: AccountingPercentageBasis,
-): AccountingPercentageBasis {
-  return {
-    ...(basis.used ? { used: cloneAccountingBasisFact(basis.used) } : {}),
-    ...(basis.limit ? { limit: cloneAccountingBasisFact(basis.limit) } : {}),
-    ...(basis.remaining ? { remaining: cloneAccountingBasisFact(basis.remaining) } : {}),
-  };
-}
-
-export function cloneQuotaToastEntry(entry: QuotaToastEntry): QuotaToastEntry {
-  return {
-    ...entry,
-    accounting: { ...entry.accounting },
-    ...(entry.semantic ? { semantic: cloneAccountingSemantic(entry.semantic) } : {}),
-    ...(isPercentEntry(entry) && entry.basis
-      ? { basis: cloneAccountingPercentageBasis(entry.basis) }
-      : {}),
-    ...(isPercentEntry(entry) && entry.fixedWindow
-      ? { fixedWindow: { ...entry.fixedWindow } }
-      : {}),
-    ...(isPercentEntry(entry) && entry.runway ? { runway: { ...entry.runway } } : {}),
-    ...(isQuantityEntry(entry) ? { quantity: cloneAccountingQuantity(entry.quantity) } : {}),
-  };
-}
-
 export interface QuotaToastError {
   /** Short label that will be rendered as "label: message". */
   label: string;
@@ -363,7 +305,6 @@ export interface QuotaProviderContext {
   client: {
     config: {
       providers: () => Promise<{ data?: { providers: Array<{ id: string }> } }>;
-      get: () => Promise<{ data?: { model?: string } }>;
     };
   };
   resolveRuntimeProviderIds: RuntimeProviderIdResolver;
@@ -377,12 +318,9 @@ export interface QuotaProviderContext {
     cursorPlan: CursorQuotaPlan;
     cursorIncludedApiUsd?: number;
     cursorBillingCycleStartDay?: number;
-    opencodeGoWindows?: OpenCodeGoWindowKey[];
     opencodeMonthlyLimit?: number;
     requestTimeoutMs?: number;
-    /** Provider-result cache TTL used by aggregate remote definitions. */
-    providerCacheTtlMs?: number;
-    /** True when requestTimeoutMs came from user config rather than DEFAULT_CONFIG. */
+    /** True when the settings file sets checking.requestTimeoutMs (not its default). */
     requestTimeoutMsConfigured?: boolean;
     onlyCurrentModel?: boolean;
     currentModel?: string;

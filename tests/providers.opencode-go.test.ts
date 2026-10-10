@@ -182,24 +182,18 @@ describe("OpenCode Go with an API key", () => {
     expect(http).not.toHaveBeenCalled();
   });
 
-  it.each([
-    { windows: undefined, rows: USAGE_ROWS },
-    { windows: ["monthly", "rolling"], rows: [USAGE_ROWS[0], USAGE_ROWS[2]] },
-  ])("asks the Go API with the env key and shows the windows $windows", async ({
-    windows,
-    rows,
-  }) => {
+  it("asks the Go API with the env key and shows every window", async () => {
     process.env.OPENCODE_API_KEY = "go-key";
     const http = fakeHttp(() => USAGE_REPLY);
 
-    const fetched = await fetchRows(opencodeGoProvider, { opencodeGoWindows: windows });
+    const fetched = await fetchRows(opencodeGoProvider);
 
     expect(http).toHaveBeenCalledOnce();
     const [requestUrl, init] = http.mock.calls[0] ?? [];
     expect(String(requestUrl)).toBe(GO_USAGE_URL);
     expect(requestHeader(init, "Authorization")).toBe("Bearer go-key");
     expect(fetched.error).toBeUndefined();
-    expect(rowSummary(fetched.rows)).toEqual(rows);
+    expect(rowSummary(fetched.rows)).toEqual(USAGE_ROWS);
   });
 
   it.each([
@@ -294,12 +288,12 @@ describe("OpenCode Go with stored keys", () => {
       return USAGE_REPLY;
     });
 
-    const fetched = await fetchRows(opencodeGoProvider, { opencodeGoWindows: ["rolling"] });
+    const fetched = await fetchRows(opencodeGoProvider);
 
-    expect(rowSummary(fetched.rows)).toEqual([
-      ["opencode-go.five_hour", "Work", "5h", "five_hour", 87.5, "2026-10-10T12:30:00.000Z"],
-    ]);
-    expect(fetched.rowLogins).toEqual(["work"]);
+    expect(rowSummary(fetched.rows)).toEqual(
+      USAGE_ROWS.map((row) => [row[0], "Work", ...row.slice(2)]),
+    );
+    expect(fetched.rowLogins).toEqual(["work", "work", "work"]);
     // The broken login comes first, so its error is the one shown.
     expect(fetched.error?.code).toBe("not_configured");
     expect(fetched.debug.filter((item) => item.key === "error")).toEqual([
@@ -318,21 +312,21 @@ describe("OpenCode Go with stored keys", () => {
         keyLogin("go", "opencode-go", "shared-key", { updated: 2 }),
         keyLogin("alias", "opencode", "shared-key", { updated: 1 }),
       ],
-      rowLogins: ["go"],
+      login: "go",
     },
     {
       name: "a key under the legacy `opencode` id alone is used",
       logins: [keyLogin("alias", "opencode", "legacy-key")],
-      rowLogins: ["alias"],
+      login: "alias",
     },
-  ])("$name", async ({ logins, rowLogins }) => {
+  ])("$name", async ({ logins, login }) => {
     world.storeLogins(logins);
     const http = fakeHttp(() => USAGE_REPLY);
 
-    const fetched = await fetchRows(opencodeGoProvider, { opencodeGoWindows: ["rolling"] });
+    const fetched = await fetchRows(opencodeGoProvider);
 
     expect(http).toHaveBeenCalledOnce();
-    expect(fetched.rowLogins).toEqual(rowLogins);
+    expect(fetched.rowLogins).toEqual([login, login, login]);
   });
 });
 

@@ -37,7 +37,6 @@ vi.mock("../src/lib/google-gemini-cli.js", async (importOriginal) => ({
 }));
 
 import { legacyResultFromFetch, rowsFromProviderResult } from "../src/core/rows.js";
-import { normalizeQuotaProviderResult } from "../src/lib/quota-state-codec.js";
 import type { ProviderFetchResult } from "../src/providers/contract.js";
 import { googleAgyProvider } from "../src/providers/google-agy.js";
 import { googleGeminiCliProvider } from "../src/providers/google-gemini-cli.js";
@@ -255,8 +254,7 @@ describe("google remaining counts", () => {
       config: {},
     } as never)) as ProviderFetchResult;
 
-    const legacy = normalizeQuotaProviderResult(legacyResultFromFetch(result));
-    expect(legacy?.entries.map((entry) => entry.right)).toEqual([right]);
+    expect(legacyResultFromFetch(result).entries.map((entry) => entry.right)).toEqual([right]);
     expect(
       rowsFromProviderResult(flavor.provider.id, result).rows.map((row) => row.remaining),
     ).toEqual([remaining]);
