@@ -313,10 +313,12 @@ export const NODE_WALKER: Walker<Node> = {
 
 /** A file sets a key twice: reading uses the last valid value, saving refuses. */
 export const DUPLICATE_KEY = "duplicate key; the last valid value is used";
+/** A name with a dot ("words.percent") is not read (settings nest), and saving refuses it. */
+export const DOTTED_KEY = "a key with a dot is not read; nest it instead";
 
 /**
- * The settings an object sets, as dotted keys in order. Unknown and duplicate keys become
- * issues; a group set to something other than an object becomes an assignment of the group
+ * The settings an object sets, as dotted keys in order. Unknown, duplicate and dotted keys
+ * become issues; a group set to something other than an object becomes an assignment of the group
  * key, so the caller decides (an issue when reading, a reset when a patch says null).
  */
 export function flattenSettings<T>(
@@ -331,7 +333,12 @@ export function flattenSettings<T>(
     const key = prefix ? `${prefix}.${name}` : name;
     if (names.has(name)) issues.push({ key, message: DUPLICATE_KEY });
     names.add(name);
-    if (Object.hasOwn(RULES, key)) {
+    if (name.includes(".")) {
+      issues.push({
+        key: `${prefix ? `${prefix}.` : ""}${JSON.stringify(name)}`,
+        message: DOTTED_KEY,
+      });
+    } else if (Object.hasOwn(RULES, key)) {
       assignments.push({ key, value: walker.leaf(child) });
     } else if (GROUPS.has(key) && walker.entries(child)) {
       const nested = flattenSettings(walker, child, key);

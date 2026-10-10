@@ -11,6 +11,7 @@ export {
   editSettings,
   type LoadedSettings,
   loadSettings,
+  type PendingDisplayImport,
   pendingDisplayImport,
   type SaveResult,
   type SettingsChange,

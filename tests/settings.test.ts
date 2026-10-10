@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import {
   chmodSync,
   existsSync,
@@ -139,21 +140,31 @@ describe("loadSettings", () => {
     expect(loaded.fromFile).not.toContain(key);
   });
 
-  it("reports a key set twice, uses its last valid value, and refuses to save", async () => {
-    const path = writeSettings('{ "words": { "percent": "used", "percent": "huge" } }');
+  it.each([
+    {
+      file: '{ "words": { "percent": "used", "percent": "huge" } }',
+      issue: { key: "words.percent", message: "duplicate key; the last valid value is used" },
+      percent: "used",
+    },
+    {
+      file: '{ "words": { "percent": "left" }, "words.percent": "used" }',
+      issue: { key: '"words.percent"', message: "a key with a dot is not read; nest it instead" },
+      percent: "left",
+    },
+  ])("reports $issue.key in $file and refuses to save until it is fixed", async (row) => {
+    const path = writeSettings(row.file);
 
     const loaded = await loadSettings();
     const result = await saveSettings({ words: { percent: "bare" } });
 
-    expect(loaded.settings.words.percent).toBe("used");
-    expect(loaded.issues).toEqual([
-      { key: "words.percent", message: "duplicate key; the last valid value is used" },
-      { key: "words.percent", message: 'expected one of: "left", "remaining", "bare", "used"' },
-    ]);
+    expect(loaded.settings.words.percent).toBe(row.percent);
+    expect(loaded.issues[0]).toEqual(row.issue);
     expect(result).toMatchObject({ ok: false, diff: [] });
+    const problem = row.issue.message.split(";")[0];
     expect(result.issues[0]?.message).toBe(
-      `${path}: words.percent: duplicate key; fix it first, nothing was saved`,
+      `${path}: ${row.issue.key}: ${problem}; fix it first, nothing was saved`,
     );
+    expect(readFileSync(path, "utf8")).toBe(row.file);
   });
 
   it("keeps the known provider ids and names the unknown ones", async () => {
@@ -301,7 +312,7 @@ describe("saveSettings", () => {
     expect(readFileSync(path, "utf8")).toBe('{ "words": { "percent": "used" ');
   });
 
-  it("applies every patch when saves run at once, after taking over a stale lock", async () => {
+  it("applies every patch when saves run at once, after taking over an old empty lock", async () => {
     const lock = `${writeSettings("{}")}.lock`;
     writeFileSync(lock, "");
     utimesSync(lock, 0, 0);
@@ -321,6 +332,39 @@ describe("saveSettings", () => {
     expect(existsSync(lock)).toBe(false);
   });
 
+  it.each([
+    {
+      owner: "a process that ended",
+      pid: () => spawnSync(process.execPath, ["-e", ""]).pid,
+      ok: true,
+    },
+    { owner: "a live process, however old the lock", pid: () => process.pid, ok: false },
+  ])("takes over a lock held by $owner only when that owner is gone", async ({ pid, ok }) => {
+    const lock = `${writeSettings("{}")}.lock`;
+    const text = JSON.stringify({ pid: pid(), token: "theirs" });
+    writeFileSync(lock, text);
+    utimesSync(lock, 0, 0);
+
+    const result = await saveSettings({ words: { percent: "used" } });
+
+    expect(result.ok).toBe(ok);
+    expect(result.issues[0]?.message ?? "").toMatch(ok ? /^$/ : /the settings file is busy/);
+    expect(existsSync(lock) && readFileSync(lock, "utf8")).toBe(ok ? false : text);
+  });
+
+  it("releases the lock only while it still holds its own token", async () => {
+    const lock = `${writeSettings("{}")}.lock`;
+    const theirs = JSON.stringify({ pid: process.pid, token: "theirs" });
+
+    const result = await editSettings(() => {
+      writeFileSync(lock, theirs);
+      return { words: { percent: "used" } };
+    });
+
+    expect(result.ok).toBe(true);
+    expect(readFileSync(lock, "utf8")).toBe(theirs);
+  });
+
   it("builds each edit from the settings it saves over, so overlapping edits both survive", async () => {
     writeSettings('{ "providers": { "enabled": ["copilot"] } }');
     const add = (id: string) => (current: Settings) => ({
@@ -334,8 +378,8 @@ describe("saveSettings", () => {
     expect([...enabled].sort()).toEqual(["copilot", "cursor", "zai"]);
   });
 
-  it.skipIf(process.platform === "win32")(
-    "writes through a symlinked file, keeps the link, and makes the target 0600",
+  it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+    "writes through a symlink in a read-only folder, locks the target, and makes it 0600",
     async () => {
       const target = join(root, "dotfiles", "quota.jsonc");
       mkdirSync(dirname(target), { recursive: true });
@@ -343,10 +387,16 @@ describe("saveSettings", () => {
       chmodSync(target, 0o644);
       mkdirSync(dirname(settingsPath()), { recursive: true });
       symlinkSync(target, settingsPath());
+      chmodSync(dirname(settingsPath()), 0o500);
+      let lockedTarget = false;
 
-      const result = await saveSettings({ words: { reset: "short" } });
+      const result = await editSettings(() => {
+        lockedTarget = existsSync(`${target}.lock`);
+        return { words: { reset: "short" } };
+      }).finally(() => chmodSync(dirname(settingsPath()), 0o700));
 
       expect(result.ok).toBe(true);
+      expect(lockedTarget).toBe(true);
       expect(lstatSync(settingsPath()).isSymbolicLink()).toBe(true);
       expect(readFileSync(target, "utf8")).toContain("// from my dotfiles");
       expect(readFileSync(target, "utf8")).toContain('"reset": "short"');
@@ -414,6 +464,18 @@ describe("watchSettings", () => {
       expect(seen[0]?.settings.words.percent).toBe("used");
     },
   );
+
+  it("ignores other files in its folder, such as a v5 sidecar", async () => {
+    const sidecar = join(dirname(settingsPath()), "quota-toast.jsonc");
+    mkdirSync(dirname(sidecar), { recursive: true });
+    writeFileSync(sidecar, '{ "percentDisplayMode": "used" }');
+    const { seen } = await watchAll();
+
+    writeFileSync(sidecar, '{ "percentDisplayMode": "remaining" }');
+    await sleep(600);
+
+    expect(seen).toEqual([]);
+  });
 
   it("never calls back after close, even with a change pending", async () => {
     const path = writeSettings("{}");
