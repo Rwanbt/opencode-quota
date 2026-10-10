@@ -3,12 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const TEST_ACCOUNTING = {
-  resultType: "quota",
-  acquisitionMethod: "remote_api",
-  ownership: "maintained",
-  authority: "provider_reported",
-} as const;
+import type { ProviderRow } from "../src/providers/contract.js";
+import { answer, percentRow } from "./helpers/fake-answers.js";
 
 const { mockProviders, runtimeDirs } = vi.hoisted(() => ({
   mockProviders: [] as any[],
@@ -66,28 +62,21 @@ function createCaptureStream() {
   };
 }
 
-/** The Synthetic provider; its check answers with `entries` and `errors`. */
+/** The Synthetic provider; its check answers with `rows` and `errors`. */
 function synthetic(
-  entries: object[] = [
-    {
-      accounting: TEST_ACCOUNTING,
-      name: "Synthetic Weekly",
-      label: "Weekly:",
-      percentRemaining: 75,
-    },
-  ],
-  errors: object[] = [],
+  rows: ProviderRow[] = [percentRow("weekly", "Weekly", 75)],
+  errors: string[] = [],
   available = true,
 ) {
   return {
     id: "synthetic",
     cachePolicy: { kind: "account-neutral" as const },
     isAvailable: vi.fn().mockResolvedValue(available),
-    fetch: vi.fn(async () => ({ attempted: true, entries, errors })),
+    fetch: vi.fn(async () => answer({ name: "Synthetic", rows, errors })),
   };
 }
 
-const FAILED_CHECK = [{ label: "Synthetic", message: "quota endpoint unavailable" }];
+const FAILED_CHECK = ["quota endpoint unavailable"];
 
 describe("runCliStatusCommand", () => {
   let tempDir: string;
@@ -170,7 +159,7 @@ describe("runCliStatusCommand", () => {
         source: getPricingSnapshotSelection(),
         maxAgeMs: getPricingRefreshPolicy().maxAgeMs,
       });
-      return { attempted: true, entries: [], errors: [] };
+      return answer();
     });
     mockProviders.push(provider);
 
@@ -321,7 +310,7 @@ describe("runCliStatusCommand", () => {
     const provider = synthetic();
     provider.fetch.mockImplementation(async () => {
       sourceDuringRun = getCredentialSourceDiagnostics();
-      return { attempted: true, entries: [], errors: [] };
+      return answer();
     });
     mockProviders.push(provider);
 

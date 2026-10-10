@@ -1,9 +1,4 @@
-import type {
-  AccountingAcquisitionMethod,
-  AccountingAuthority,
-  AccountingOwnership,
-  AccountingResultType,
-} from "./entries.js";
+import type { RowAuthority, RowMethod, RowType } from "../core/types.js";
 
 /**
  * Export types for external tool consumption.
@@ -14,20 +9,16 @@ import type {
  */
 
 interface QuotaExportEntryBase {
-  /** Human-readable row label (same as QuotaToastEntry.name after projection). */
+  /** Provider label, account and row label, e.g. "Copilot (pro) Premium requests". */
   name: string;
-  /** Provider-neutral accounting meaning. */
-  resultType: AccountingResultType;
-  /** How the value was acquired. */
-  acquisitionMethod: AccountingAcquisitionMethod;
+  /** What the number means (ADR 0001). */
+  resultType: RowType;
+  /** How the value was acquired (ADR 0001). */
+  acquisitionMethod: RowMethod;
   /** Whether the source definition is maintained or user-configured. */
-  ownership: AccountingOwnership;
+  ownership: "maintained" | "user_configured";
   /** Whether the value was provider-reported or locally derived. */
-  authority: AccountingAuthority;
-  /** Stable configured source identity for rows from an aggregate provider. */
-  sourceId?: string;
-  /** Unix seconds when the source observed the value. */
-  observedAt?: number;
+  authority: RowAuthority;
   /**
    * Normalized window label when the entry has one: "Monthly", "Weekly", "5h", "RPM", etc.
    * Absent when there is only one window for the provider.

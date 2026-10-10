@@ -23,7 +23,7 @@ vi.mock("../src/lib/cursor-usage.js", () => ({
   getCurrentCursorUsageSummary: vi.fn(),
 }));
 
-import { legacyResultFromFetch, rowsFromProviderResult } from "../src/core/rows.js";
+import { rowsFromProviderResult } from "../src/core/rows.js";
 import { inspectCursorOpenCodeIntegration } from "../src/lib/cursor-detection.js";
 import { getCurrentCursorUsageSummary } from "../src/lib/cursor-usage.js";
 import { isCanonicalProviderAvailable } from "../src/lib/provider-availability.js";
@@ -142,26 +142,15 @@ describe("cursor provider", () => {
   });
 
   it.each([
-    ["a configured start day", "configured_day", CYCLE_START, { observedAtIso: OBSERVED_AT }],
-    ["the calendar month", "calendar_month", undefined, undefined],
-  ] as const)("dates the cycle from %s only when it is fixed", async (_name, source, startedAt, fixedWindow) => {
+    ["a configured start day", "configured_day", CYCLE_START],
+    ["the calendar month", "calendar_month", undefined],
+  ] as const)("dates the cycle from %s only when it is fixed", async (_name, source, startedAt) => {
     const result = await fetchCursor(
       { cursorPlan: "pro", cursorBillingCycleStartDay: 1 },
       usageSummary({ apiCost: 5, source }),
     );
 
     expect(rowsFromProviderResult("cursor", result).rows[0]?.windowStartedAt).toBe(startedAt);
-    // The legacy converter dates the window from when the history was read, not from now.
-    const [entry] = legacyResultFromFetch(result, Date.parse(OBSERVED_AT) + 60_000).entries;
-    expect(entry && "fixedWindow" in entry ? entry.fixedWindow : undefined).toEqual(
-      fixedWindow && {
-        kind: "fixed_window",
-        startedAtIso: CYCLE_START,
-        observedAtIso: fixedWindow.observedAtIso,
-        endsAtIso: RESET,
-        fullReset: true,
-      },
-    );
   });
 
   it.each([

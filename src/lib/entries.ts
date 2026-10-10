@@ -5,12 +5,12 @@ import type { ResolvedAuthIdentity } from "./resolved-auth-identity.js";
 import type { RuntimeProviderIdResolver } from "./runtime-provider-ids.js";
 
 /**
- * Normalized quota output model.
- *
- * Providers should map their internal quota shapes into these types so that
- * formatting and toast display stays universal across providers.
+ * The provider interface, and the legacy result the custom providers still return (built-in
+ * providers return the row contract, `ProviderFetchResult`). `core/rows.ts` turns both into
+ * v6 rows.
  */
 
+/** What a custom row means; custom configs may still say `rate_limit` and `spend` (ADR 0001). */
 export type AccountingResultType =
   | "quota"
   | "rate_limit"
@@ -20,83 +20,11 @@ export type AccountingResultType =
   | "balance"
   | "status";
 
-export type AccountingAcquisitionMethod =
-  | "remote_api"
-  | "dashboard_scrape"
-  | "local_cli"
-  | "local_runtime_accounting"
-  | "local_estimation";
+export type AccountingAcquisitionMethod = "remote_api" | "local_estimation";
 
 export type AccountingOwnership = "maintained" | "user_configured";
 
 export type AccountingAuthority = "provider_reported" | "locally_derived";
-
-export type AccountingProminence = "primary" | "supplementary";
-
-export type AccountingWindow =
-  | "rpm"
-  | "hour"
-  | "five_hour"
-  | "day"
-  | "week"
-  | "month"
-  | "year"
-  | "mcp"
-  | "code_review";
-
-export type AccountingComponent =
-  | "current_balance"
-  | "total_balance"
-  | "cash_balance"
-  | "gift_balance"
-  | "granted_balance"
-  | "topped_up_balance"
-  | "remaining_credits"
-  | "auto_reload"
-  | "auto_reload_amount"
-  | "auto_reload_trigger";
-
-export type AccountingMetric =
-  | { kind: "aggregate" }
-  | { kind: "window"; window: AccountingWindow }
-  | { kind: "component"; component: AccountingComponent }
-  | { kind: "named"; name: string };
-
-export interface AccountingSemantic {
-  metric: AccountingMetric;
-  prominence: AccountingProminence;
-}
-
-export type AccountingCountUnit =
-  | "request"
-  | "token"
-  | "credit"
-  | "message"
-  | "interaction"
-  | "unit";
-
-export type AccountingUnit =
-  | { kind: "currency"; code: string }
-  | { kind: "count"; unit: AccountingCountUnit }
-  | { kind: "custom"; symbol: string };
-
-export interface AccountingQuantity {
-  decimal: string;
-  unit: AccountingUnit;
-}
-
-export type AccountingFactAuthority = AccountingAuthority | "user_configured";
-
-export interface AccountingBasisFact {
-  quantity: AccountingQuantity;
-  authority: AccountingFactAuthority;
-}
-
-export interface AccountingPercentageBasis {
-  used?: AccountingBasisFact;
-  limit?: AccountingBasisFact;
-  remaining?: AccountingBasisFact;
-}
 
 export interface AccountingMetadata {
   /** What the row represents, independent of its percent/value render shape. */
@@ -107,12 +35,13 @@ export interface AccountingMetadata {
   ownership: AccountingOwnership;
   /** Whether the value came from the provider or was derived locally. */
   authority: AccountingAuthority;
-  /** Stable configured source identity when one aggregate provider owns multiple sources. */
+  /** The custom definition id the row came from. */
   sourceId?: string;
   /** Source observation time only; never application fetch or cache time. */
   observedAtIso?: string;
 }
 
+/** When a fixed quota window started and ends, as its provider or local state reports it. */
 export interface FixedWindowProjectionEvidence {
   kind: "fixed_window";
   startedAtIso: string;
@@ -121,84 +50,39 @@ export interface FixedWindowProjectionEvidence {
   fullReset: true;
 }
 
-export type QuotaRunwayProjection =
-  | { kind: "before_reset"; projectedAtIso: string }
-  | { kind: "lasts_past_reset" };
-
-export interface GroupedQuotaEntryMeta {
-  /** Required provider-neutral accounting semantics for this row. */
+interface QuotaEntryMeta {
   accounting: AccountingMetadata;
-  /** Optional provider/account group header for grouped toast and /quota output. */
+  /** "<source label> <row name>"; the row name after the group is the fallback row key. */
+  name: string;
+  /** The custom source's label: the row's account. */
   group?: string;
-  /** Optional row label inside the group, e.g. "5h:" or "Usage:". */
+  /** The row label, e.g. "Daily:". */
   label?: string;
-  /** Optional legacy label for verbose command output when it differs from resultType. */
-  metricLabel?: string;
-  /** Complete provider-neutral row semantics. Rich providers require this on every row. */
-  semantic?: AccountingSemantic;
-  /** Optional compact right-hand summary for legacy and configured providers only. */
+  /** A compact "used/limit" summary, e.g. "26/100" or "$2.00/$10.00". */
   right?: string;
-  /** Optional stable row priority within a group; lower values render first. */
-  sortPriority?: number;
-  /** Optional stable row key from configured ids (custom local windows), for v6 row ids. */
+  /** The row key from configured ids (a local window's id, a json-v1 mapping's name). */
   rowKey?: string;
+  resetTimeIso?: string;
 }
 
-type SemanticGroupedQuotaEntryMeta = Omit<GroupedQuotaEntryMeta, "semantic"> & {
-  semantic: AccountingSemantic;
-};
-
-export type QuotaPercentEntry = GroupedQuotaEntryMeta & {
-  /** The optional discriminant preserves the existing percent-entry shape. */
+export type QuotaPercentEntry = QuotaEntryMeta & {
   kind?: "percent";
-  name: string;
   /** Remaining quota as a percentage (may be below 0 when over quota). */
   percentRemaining: number;
-  /** Optional typed operands. Renderers never derive a percentage from these facts. */
-  basis?: AccountingPercentageBasis;
-  resetTimeIso?: string;
-  /** Internal provider evidence for fixed-window exhaustion projection. */
   fixedWindow?: FixedWindowProjectionEvidence;
-  /** Presentation-only projection. Provider caches must never persist this field. */
-  runway?: QuotaRunwayProjection;
 };
 
-export type QuotaValueEntry = GroupedQuotaEntryMeta & {
-  /** Legacy formatted text value. */
+export type QuotaValueEntry = QuotaEntryMeta & {
   kind: "value";
-  name: string;
   value: string;
-  resetTimeIso?: string;
 };
 
-export type QuotaQuantityEntry = SemanticGroupedQuotaEntryMeta & {
-  kind: "quantity";
-  name: string;
-  quantity: AccountingQuantity;
-  resetTimeIso?: string;
-};
-
-export type QuotaBooleanEntry = SemanticGroupedQuotaEntryMeta & {
-  kind: "boolean";
-  name: string;
-  value: boolean;
-  resetTimeIso?: string;
-};
-
-export type QuotaToastEntry =
-  | QuotaPercentEntry
-  | QuotaValueEntry
-  | QuotaQuantityEntry
-  | QuotaBooleanEntry;
+export type QuotaToastEntry = QuotaPercentEntry | QuotaValueEntry;
 
 export interface QuotaToastError {
   /** Short label that will be rendered as "label: message". */
   label: string;
   message: string;
-  /** Whether a later refresh may succeed without user action. */
-  retryable?: boolean;
-  /** Intentional diagnostics remain verbose but do not count as compact-status issues. */
-  kind?: "intentional-filter";
 }
 
 /** Per-model token summary for current session (toast display). */
@@ -217,26 +101,6 @@ export interface SessionTokensData {
   totalCachedInput?: number;
   totalCombinedInput?: number;
   totalOutput: number;
-}
-
-export interface QuotaProviderStatusDetail {
-  readonly key: string;
-  readonly value: string;
-}
-
-export interface QuotaProviderPresentation {
-  singleWindowDisplayName?: string;
-  singleWindowShowRight?: boolean;
-  /**
-   * A family label that display projections should replace with a generic
-   * quota label. Raw provider entries remain unchanged.
-   */
-  redundantQuotaFamily?: string;
-  /**
-   * When set to "preserve", the provider's entries are kept individually
-   * (one per window) even in single-window format styles.
-   */
-  classicStrategy?: "preserve";
 }
 
 export interface QuotaProviderDiagnostic {
@@ -283,16 +147,8 @@ export interface QuotaProviderResult {
   attempted: boolean;
   entries: QuotaToastEntry[];
   errors: QuotaToastError[];
-  /** Internal provider diagnostics; not projected into normal presentation/export surfaces. */
+  /** Each custom definition's check, for /quota_status and the export's source list. */
   diagnostics?: QuotaProviderDiagnostic[];
-  /**
-   * Safe, single-line provider details from this fetch attempt. Diagnostic consumers
-   * may reuse them, but must not refetch when details are absent.
-   */
-  statusDetails?: readonly QuotaProviderStatusDetail[];
-  /** Safe provider-owned facts preserved in cache and JSON exports, never human presentation. */
-  rawDetails?: readonly QuotaProviderStatusDetail[];
-  presentation?: QuotaProviderPresentation;
 }
 
 export interface QuotaProviderMatchContext {
@@ -352,7 +208,7 @@ export interface QuotaProvider {
   /** Best-effort availability check (no network if possible) */
   isAvailable: (ctx: QuotaProviderContext) => Promise<boolean>;
 
-  /** Fetch quota for this provider: on the row contract, or as a legacy result. */
+  /** Fetch quota: built-in providers return the row contract, custom providers a legacy result. */
   fetch: (
     ctx: QuotaProviderContext,
     cacheContext?: QuotaProviderCacheContext,

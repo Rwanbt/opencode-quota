@@ -71,7 +71,7 @@ export type ProviderFetch = {
   rowLogins?: string[];
   error?: QuotaError;
   debug: DebugDetail[];
-  /** This check's part of the export file (version 2). */
+  /** This check's part of the export file. */
   exportPart?: QuotaExportProvider;
 };
 

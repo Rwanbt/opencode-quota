@@ -1,11 +1,10 @@
 import { readFile } from "fs/promises";
-
+import type { DebugDetail } from "../core/types.js";
 import { sanitizeDisplayText } from "../lib/display-sanitize.js";
-import type { QuotaProviderStatusDetail } from "../lib/entries.js";
 
 export function statusDetailsFromRecord(
   values: Readonly<Record<string, string | undefined>>,
-): QuotaProviderStatusDetail[] {
+): DebugDetail[] {
   return Object.entries(values).flatMap(([key, value]) =>
     value === undefined ? [] : [{ key, value }],
   );
@@ -17,7 +16,7 @@ export function configStatusDetails(diagnostics: {
   checkedPaths: readonly string[];
   missing?: string | null;
   error?: string | null;
-}): QuotaProviderStatusDetail[] {
+}): DebugDetail[] {
   return statusDetailsFromRecord({
     config_state: diagnostics.state,
     config_source: diagnostics.source ?? "(none)",
@@ -32,7 +31,7 @@ export function simpleApiKeyStatusDetails(diagnostics: {
   source: string | null;
   checkedPaths: readonly string[];
   credentialDatabasePaths: readonly string[];
-}): QuotaProviderStatusDetail[] {
+}): DebugDetail[] {
   return statusDetailsFromRecord({
     api_key_configured: diagnostics.configured ? "true" : "false",
     api_key_source: diagnostics.source ?? "(none)",
@@ -47,7 +46,7 @@ export function apiKeyStatusDetails(diagnostics: {
   checkedPaths: readonly string[];
   credentialDatabasePaths: readonly string[];
   error?: string;
-}): QuotaProviderStatusDetail[] {
+}): DebugDetail[] {
   return statusDetailsFromRecord({
     auth_state: diagnostics.state,
     api_key_configured: diagnostics.state === "configured" ? "true" : "false",

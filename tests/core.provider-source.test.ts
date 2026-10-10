@@ -7,10 +7,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { keyedLogins, loadProviderSource } from "../src/core/provider-source.js";
 import { createQuotaStore } from "../src/core/store.js";
 import type { QuotaRow } from "../src/core/types.js";
-import type { QuotaProvider, QuotaProviderResult } from "../src/lib/entries.js";
+import type { QuotaProvider } from "../src/lib/entries.js";
 import { buildQuotaExportFromSnapshot } from "../src/lib/quota-export.js";
 import { __resetResolvedAuthIdentityForTests } from "../src/lib/resolved-auth-identity.js";
+import type { ProviderFetchResult } from "../src/providers/contract.js";
 import { defaultSettings } from "../src/settings/index.js";
+import { answer, percentRow } from "./helpers/fake-answers.js";
 
 const runtime = vi.hoisted(() => ({ root: "" }));
 const registry = vi.hoisted(() => ({ providers: [] as unknown[] }));
@@ -107,27 +109,21 @@ describe("export after a failed check", () => {
   });
 
   it("shows the provider's last failure, not its kept rows, until a check works again", async () => {
-    const accounting = {
-      resultType: "quota",
-      acquisitionMethod: "remote_api",
-      ownership: "maintained",
-      authority: "provider_reported",
-    } as const;
-    const left = (percentRemaining: number): QuotaProviderResult => ({
-      attempted: true,
-      entries: [{ accounting, name: "Claude", label: "Weekly:", percentRemaining }],
-      errors: [],
-    });
-    const answers: QuotaProviderResult[] = [
+    const left = (percentRemaining: number) =>
+      answer({
+        name: "Claude",
+        rows: [percentRow("weekly", "Weekly", percentRemaining, { window: "week" })],
+      });
+    const answers: ProviderFetchResult[] = [
       left(80),
-      { attempted: true, entries: [], errors: [{ label: "Claude", message: "HTTP 503" }] },
+      answer({ name: "Claude", errors: ["HTTP 503"] }),
       left(70),
     ];
     const provider: QuotaProvider = {
       id: "anthropic",
       cachePolicy: { kind: "account-neutral" },
       isAvailable: async () => true,
-      fetch: async () => answers.shift() as QuotaProviderResult,
+      fetch: async () => answers.shift() as ProviderFetchResult,
     };
     registry.providers = [provider];
     const loaded = {
@@ -151,9 +147,12 @@ describe("export after a failed check", () => {
 
     expect(await checkThenExport()).toMatchObject({
       status: "ok",
-      entries: [{ name: "Claude", window: "Weekly", percentRemaining: 80 }],
+      entries: [{ name: "Anthropic Weekly", window: "Weekly", percentRemaining: 80 }],
     });
-    expect(await checkThenExport()).toMatchObject({ status: "error", error: "HTTP 503" });
+    expect(await checkThenExport()).toMatchObject({
+      status: "error",
+      error: "Provider error 503",
+    });
     expect(await checkThenExport()).toMatchObject({
       status: "ok",
       entries: [{ percentRemaining: 70 }],

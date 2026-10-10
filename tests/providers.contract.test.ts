@@ -1,10 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import {
-  legacyResultFromFetch,
-  rowsFromLegacyResult,
-  rowsFromProviderResult,
-} from "../src/core/rows.js";
+import { rowsFromProviderResult } from "../src/core/rows.js";
 import type { CredentialRow } from "../src/lib/opencode-auth.js";
 import {
   FIVE_HOUR,
@@ -13,7 +9,6 @@ import {
   type ProviderFetchResult,
   type ProviderRow,
   quotaRow,
-  WEEKLY,
 } from "../src/providers/contract.js";
 
 const NOW_MS = Date.parse("2026-01-01T12:00:00.000Z");
@@ -120,7 +115,7 @@ describe("rowsFromProviderResult on the row contract", () => {
   });
 });
 
-describe("legacyResultFromFetch", () => {
+describe("each row kind as a v6 row", () => {
   const ROWS: Array<[string, ProviderRow]> = [
     ["a percent row with its window start", FIVE_HOUR_ROW],
     [
@@ -176,40 +171,18 @@ describe("legacyResultFromFetch", () => {
     ],
   ];
 
-  it.each(ROWS)("keeps %s through the legacy pipeline", (_name, row) => {
+  it.each(ROWS)("keeps %s", (_name, row) => {
     const result: ProviderFetchResult = {
       attempted: true,
-      accounts: [
-        { name: "[Copilot alice] (pro)", login: "alice-id", rows: [row], errors: [] },
-        {
-          name: "Copilot",
-          rows: [{ ...quotaRow({ ...WEEKLY, percentRemaining: 5 }) }],
-          errors: [],
-        },
-      ],
+      accounts: [{ name: "[Copilot alice] (pro)", login: "alice-id", rows: [row], errors: [] }],
       debug: [{ key: "billing_scope", value: "user" }],
     };
+    const { key, ...fields } = row;
 
-    expect(rowsFromLegacyResult("copilot", legacyResultFromFetch(result, NOW_MS), NOW_MS)).toEqual(
-      rowsFromProviderResult("copilot", result, NOW_MS),
-    );
-  });
-
-  it("keeps errors, with their account names, and not-set-up", () => {
-    const result: ProviderFetchResult = {
-      attempted: true,
-      accounts: [{ name: "Copilot", rows: [], errors: [{ message: "HTTP 503", retryable: true }] }],
-      debug: [],
-    };
-
-    expect(legacyResultFromFetch(result, NOW_MS)).toEqual({
-      attempted: true,
-      entries: [],
-      errors: [{ label: "Copilot", message: "HTTP 503", retryable: true }],
-      statusDetails: [],
-    });
-    expect(legacyResultFromFetch({ attempted: false, accounts: [], debug: [] })).toMatchObject({
-      attempted: false,
+    expect(rowsFromProviderResult("copilot", result, NOW_MS)).toEqual({
+      rows: [{ ...fields, id: `copilot.${key}`, providerId: "copilot", account: "alice (pro)" }],
+      rowLogins: ["alice-id"],
+      debug: [{ key: "billing_scope", value: "user" }],
     });
   });
 });

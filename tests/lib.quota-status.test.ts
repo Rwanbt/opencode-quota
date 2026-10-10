@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ProviderSnapshot, QuotaRow } from "../src/core/types.js";
 import type { UsageReport } from "../src/core/usage.js";
-import type { QuotaProviderContext, QuotaProviderResult } from "../src/lib/entries.js";
+import type { QuotaProviderContext } from "../src/lib/entries.js";
 import { formatLocalCallTimestamp } from "../src/lib/format-utils.js";
 import { buildStatusReportData } from "../src/lib/quota-dialog-commands.js";
 import {
@@ -14,8 +14,10 @@ import {
 } from "../src/lib/quota-status.js";
 import { getPackageVersion } from "../src/lib/version.js";
 import { chutesProvider } from "../src/providers/chutes.js";
+import type { ProviderFetchResult } from "../src/providers/contract.js";
 import { syntheticProvider } from "../src/providers/synthetic.js";
 import { defaultSettings, loadSettings, type V5Conversion } from "../src/settings/index.js";
+import { answer, percentRow } from "./helpers/fake-answers.js";
 
 const registry = vi.hoisted(() => ({ providers: [] as unknown[] }));
 
@@ -715,37 +717,25 @@ describe("buildStatusReportData", () => {
   function fakeProvider(
     id: string,
     available: boolean | ((ctx: QuotaProviderContext) => boolean),
-    result?: QuotaProviderResult,
+    result?: ProviderFetchResult,
   ) {
     return {
       id,
       isAvailable: vi.fn(async (ctx: QuotaProviderContext) =>
         typeof available === "function" ? available(ctx) : available,
       ),
-      fetch: vi.fn(async () => result ?? { attempted: true, entries: [], errors: [] }),
+      fetch: vi.fn(async () => result ?? answer()),
     };
   }
 
   const synthetic = () =>
     fakeProvider("synthetic", true, {
-      attempted: true,
-      entries: [
-        {
-          accounting: {
-            resultType: "quota",
-            acquisitionMethod: "remote_api",
-            ownership: "maintained",
-            authority: "provider_reported",
-          },
-          name: "Synthetic 5h",
-          group: "Synthetic",
-          label: "5h:",
-          percentRemaining: 84,
-          resetTimeIso: RESET,
-        },
-      ],
-      errors: [{ label: "Synthetic", message: `Weekly HTTP 503 Bearer ${SECRET}` }],
-      statusDetails: [
+      ...answer({
+        name: "Synthetic",
+        rows: [percentRow("five_hour", "5h", 84, { resetsAt: RESET })],
+        errors: [`Weekly HTTP 503 Bearer ${SECRET}`],
+      }),
+      debug: [
         { key: "api_key_source", value: "env:SYNTHETIC_API_KEY" },
         { key: "access_token", value: SECRET },
       ],

@@ -39,7 +39,6 @@ function creditsRow(window: XaiWindowValue): ProviderRow {
     percentRemaining: window.percentRemaining,
     resetsAt: window.resetTimeIso,
     windowStartedAt: window.fixedWindow?.startedAtIso,
-    observedAt: window.fixedWindow?.observedAtIso,
   });
 }
 

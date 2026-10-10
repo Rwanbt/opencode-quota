@@ -36,7 +36,7 @@ vi.mock("../src/lib/google-gemini-cli.js", async (importOriginal) => ({
   inspectGeminiCliCompanionPresence: mocks.gemini.inspectCompanion,
 }));
 
-import { legacyResultFromFetch, rowsFromProviderResult } from "../src/core/rows.js";
+import { rowsFromProviderResult } from "../src/core/rows.js";
 import type { ProviderFetchResult } from "../src/providers/contract.js";
 import { googleAgyProvider } from "../src/providers/google-agy.js";
 import { googleGeminiCliProvider } from "../src/providers/google-gemini-cli.js";
@@ -213,35 +213,27 @@ const PLAIN = { kind: "count", unit: "unit" } as const;
 
 describe("google remaining counts", () => {
   it.each([
-    ["Google AGY", { remainingAmount: "1200" }, "1,200 left", { decimal: "1200", unit: PLAIN }],
-    ["Google AGY", {}, undefined, undefined],
+    ["Google AGY", { remainingAmount: "1200" }, { decimal: "1200", unit: PLAIN }],
+    ["Google AGY", {}, undefined],
     [
       "Gemini CLI",
       { remainingAmount: "1200", tokenType: "TOKENS" },
-      "1,200 left TOKENS",
       { decimal: "1200", unit: TOKENS },
     ],
     [
       "Gemini CLI",
       { remainingAmount: "0042", tokenType: "requests" },
-      "42 left",
       { decimal: "42", unit: REQUESTS },
     ],
-    [
-      "Gemini CLI",
-      { remainingAmount: "1234567" },
-      "1,234,567 left",
-      { decimal: "1234567", unit: PLAIN },
-    ],
+    ["Gemini CLI", { remainingAmount: "1234567" }, { decimal: "1234567", unit: PLAIN }],
     [
       "Gemini CLI",
       { remainingAmount: "12.5", tokenType: "TOKENS" },
-      "12.5 left TOKENS",
       { decimal: "12.5", unit: TOKENS },
     ],
-    ["Google AGY", { remainingAmount: "007.250" }, "7.25 left", { decimal: "7.25", unit: PLAIN }],
-    ["Gemini CLI", { tokenType: "TOKENS" }, undefined, undefined],
-  ])("%s %j shows %j and keeps the count", async (name, fields, right, remaining) => {
+    ["Google AGY", { remainingAmount: "007.250" }, { decimal: "7.25", unit: PLAIN }],
+    ["Gemini CLI", { tokenType: "TOKENS" }, undefined],
+  ])("%s %j keeps the count", async (name, fields, remaining) => {
     const flavor = PROVIDERS.find((candidate) => candidate.name === name);
     if (!flavor) throw new Error(`no provider ${name}`);
     flavor.lib.query.mockResolvedValueOnce({
@@ -254,7 +246,6 @@ describe("google remaining counts", () => {
       config: {},
     } as never)) as ProviderFetchResult;
 
-    expect(legacyResultFromFetch(result).entries.map((entry) => entry.right)).toEqual([right]);
     expect(
       rowsFromProviderResult(flavor.provider.id, result).rows.map((row) => row.remaining),
     ).toEqual([remaining]);

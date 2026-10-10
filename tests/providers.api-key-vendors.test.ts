@@ -5,7 +5,6 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { legacyResultFromFetch } from "../src/core/rows.js";
 import type { QuotaProvider } from "../src/lib/entries.js";
 import { isCanonicalProviderAvailable } from "../src/lib/provider-availability.js";
 import { chutesProvider } from "../src/providers/chutes.js";
@@ -552,9 +551,8 @@ it("nanogpt marks a failure of both endpoints retryable when one of them may rec
 
   const result = await nanoGptProvider.fetch({ config: { requestTimeoutMs: 5_000 } } as never);
 
-  expect(legacyResultFromFetch(result as ProviderFetchResult).errors).toEqual([
+  expect((result as ProviderFetchResult).accounts.flatMap((account) => account.errors)).toEqual([
     {
-      label: "NanoGPT",
       message:
         "Usage: NanoGPT API error 502: bad gateway; Balance: NanoGPT API error 401: Unauthorized",
       retryable: true,

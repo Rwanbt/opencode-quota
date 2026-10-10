@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { formatLocalCallTimestamp } from "../src/lib/format-utils.js";
 import { renderPlainTextReport } from "../src/lib/report-document.js";
+import { answer, NOT_SET_UP, percentRow } from "./helpers/fake-answers.js";
 import { createFakeIntegration } from "./helpers/fake-integration.js";
 import {
   createAlibabaAuthModuleMock,
@@ -77,8 +78,9 @@ function provider(id: string, fetch: ReturnType<typeof vi.fn>, extra: object = {
   return { id, isAvailable: vi.fn().mockResolvedValue(true), fetch, ...extra };
 }
 
-function quotaResult(entries: object[], errors: object[] = []) {
-  return { attempted: true, entries, errors };
+/** The custom providers' legacy answer. */
+function customResult(entries: object[]) {
+  return { attempted: true, entries, errors: [] };
 }
 
 /** Each server's cleanup; run after every test, before its folder goes. */
@@ -242,11 +244,7 @@ describe("/quota command behavior", () => {
     const fetch = vi
       .fn()
       .mockRejectedValueOnce(new Error("temporary failure"))
-      .mockResolvedValueOnce(
-        quotaResult([
-          { accounting: TEST_ACCOUNTING, name: "OpenAI 5h", label: "5h:", percentRemaining: 69 },
-        ]),
-      );
+      .mockResolvedValueOnce(answer({ name: "OpenAI", rows: [percentRow("five_hour", "5h", 69)] }));
     mocks.getProviders.mockReturnValue([provider("openai", fetch)]);
     const { run, refresh } = await startServer();
 
@@ -284,15 +282,10 @@ describe("/quota command behavior", () => {
       provider(
         "openai",
         vi.fn().mockResolvedValue(
-          quotaResult([
-            {
-              accounting: TEST_ACCOUNTING,
-              name: "OpenAI 5h",
-              label: "5h:",
-              percentRemaining: 81,
-              resetTimeIso: "2026-01-17T15:14:00.000Z",
-            },
-          ]),
+          answer({
+            name: "OpenAI",
+            rows: [percentRow("five_hour", "5h", 81, { resetsAt: "2026-01-17T15:14:00.000Z" })],
+          }),
         ),
       ),
     ]);
@@ -310,15 +303,10 @@ describe("/quota command behavior", () => {
       name: "an error without rows",
       id: "alibaba-coding-plan",
       fetch: vi.fn().mockResolvedValue(
-        quotaResult(
-          [],
-          [
-            {
-              label: "Alibaba Coding Plan",
-              message: "Unsupported Alibaba Coding Plan tier: max",
-            },
-          ],
-        ),
+        answer({
+          name: "Alibaba Coding Plan",
+          errors: ["Unsupported Alibaba Coding Plan tier: max"],
+        }),
       ),
       line: "Alibaba Coding Plan",
     },
@@ -331,7 +319,7 @@ describe("/quota command behavior", () => {
     {
       name: "nothing reported",
       id: "anthropic",
-      fetch: vi.fn().mockResolvedValue({ attempted: false, entries: [], errors: [] }),
+      fetch: vi.fn().mockResolvedValue(NOT_SET_UP),
       line: "Anthropic",
     },
   ])("shows a line for a provider with $name", async ({ id, fetch, line }) => {
@@ -349,11 +337,7 @@ describe("/quota command behavior", () => {
     useSettings({ words: { onlyCurrentModel: true } });
     const fetch = vi
       .fn()
-      .mockResolvedValue(
-        quotaResult([
-          { accounting: TEST_ACCOUNTING, name: "Cursor API", label: "API:", percentRemaining: 50 },
-        ]),
-      );
+      .mockResolvedValue(answer({ name: "Cursor", rows: [percentRow("api", "API", 50)] }));
     mocks.getProviders.mockReturnValue([
       provider("cursor", fetch, { matchesCurrentModel: (model?: string) => model === "auto" }),
     ]);
@@ -391,7 +375,7 @@ describe("/quota command behavior", () => {
       percentRemaining,
     });
     // One check reads every source; only the rows shown depend on the session's model.
-    const fetch = vi.fn().mockResolvedValue(quotaResult([entry("alpha", 61), entry("beta", 32)]));
+    const fetch = vi.fn().mockResolvedValue(customResult([entry("alpha", 61), entry("beta", 32)]));
     mocks.getProviders.mockReturnValue([provider("quota-providers", fetch)]);
     let model = { id: "model-a", providerID: "alpha-gateway" };
     const { run } = await startServer({
@@ -413,11 +397,7 @@ describe("/quota command behavior", () => {
   it("answers /quota of every session from one check while the rows are fresh", async () => {
     const fetch = vi
       .fn()
-      .mockResolvedValue(
-        quotaResult([
-          { accounting: TEST_ACCOUNTING, name: "OpenAI 5h", label: "5h:", percentRemaining: 95 },
-        ]),
-      );
+      .mockResolvedValue(answer({ name: "OpenAI", rows: [percentRow("five_hour", "5h", 95)] }));
     mocks.getProviders.mockReturnValue([
       provider("openai", fetch, { cachePolicy: { kind: "account-neutral" } }),
     ]);
@@ -435,16 +415,9 @@ describe("/quota command behavior", () => {
     mocks.getProviders.mockReturnValue([
       provider(
         "openai",
-        vi.fn().mockResolvedValue(
-          quotaResult([
-            {
-              accounting: TEST_ACCOUNTING,
-              name: "OpenAI 5h",
-              label: "5h:",
-              percentRemaining: 88,
-            },
-          ]),
-        ),
+        vi
+          .fn()
+          .mockResolvedValue(answer({ name: "OpenAI", rows: [percentRow("five_hour", "5h", 88)] })),
       ),
     ]);
     const answers = new Map<string, (value: unknown) => void>();
@@ -474,28 +447,19 @@ describe("/quota command behavior", () => {
   it.each([
     {
       id: "alibaba-coding-plan",
-      entry: (percentRemaining: number) => ({
-        accounting: TEST_ACCOUNTING,
-        name: "Alibaba Coding Plan (Lite) Weekly",
-        label: "Weekly:",
-        percentRemaining,
-      }),
+      entry: (percentRemaining: number) =>
+        answer({
+          name: "Alibaba Coding Plan (Lite)",
+          rows: [percentRow("weekly", "Weekly", percentRemaining)],
+        }),
     },
     {
       id: "cursor",
-      entry: (percentRemaining: number) => ({
-        accounting: TEST_ACCOUNTING,
-        name: "Cursor API (Pro)",
-        label: "API:",
-        semantic: { metric: { kind: "named", name: "API" }, prominence: "primary" },
-        percentRemaining,
-      }),
+      entry: (percentRemaining: number) =>
+        answer({ name: "Cursor (Pro)", rows: [percentRow("api", "API", percentRemaining)] }),
     },
   ])("counts $id usage again on every /quota", async ({ id, entry }) => {
-    const fetch = vi
-      .fn()
-      .mockResolvedValueOnce(quotaResult([entry(70)]))
-      .mockResolvedValueOnce(quotaResult([entry(60)]));
+    const fetch = vi.fn().mockResolvedValueOnce(entry(70)).mockResolvedValueOnce(entry(60));
     mocks.getProviders.mockReturnValue([provider(id, fetch)]);
     mocks.resolveAlibabaCodingPlanAuthCached.mockResolvedValue({
       state: "configured",

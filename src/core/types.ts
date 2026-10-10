@@ -107,11 +107,11 @@ export type ProviderSnapshot = {
   /** Why the last attempt failed. */
   error?: QuotaError;
   refreshing: boolean;
-  /** Provider facts for /quota_status and the export only. */
+  /** Provider facts for /quota_status only. */
   debug: DebugDetail[];
   /**
-   * This provider's part of the export file from its last check in this server process
-   * (version 2, as v5 wrote it). Kept in memory only and never sent to clients.
+   * This provider's part of the export file from its last check in this server process.
+   * Kept in memory only and never sent to clients.
    */
   exportPart?: QuotaExportProvider;
 };

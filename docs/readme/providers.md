@@ -492,7 +492,7 @@ It checks the `kiloPass.getState` endpoint first, then shows:
 - **Active Kilo Pass with credits:** one **Credits** percentage with used, limit, and remaining USD, plus the reset when available.
 - **Active pass with zero credits:** one **Remaining credits** USD value, with the reset.
 - **No active pass:** one **Total balance** USD row, with no invented usage, percentage, or reset.
-- Base, usage, bonus, remaining, overage, and reset source values stay in `/quota_status` and JSON `rawDetails`.
+- Base, usage, bonus, remaining, overage, and reset source values stay in `/quota_status`.
 
 <a id="kimi-code"></a>
 

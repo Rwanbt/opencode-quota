@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { legacyResultFromFetch, rowsFromProviderResult } from "../src/core/rows.js";
+import { rowsFromProviderResult } from "../src/core/rows.js";
 import type { QuotaRow } from "../src/core/types.js";
 import { hasOpenAIOAuthCached, queryOpenAIQuota } from "../src/lib/openai.js";
 import { type CredentialRow, readCredentialRows } from "../src/lib/opencode-auth.js";
@@ -73,10 +73,7 @@ beforeEach(() => {
 });
 
 describe("openai provider", () => {
-  it.each([
-    ["at once", 0],
-    ["after another login answered slowly", 90_000],
-  ])("dates the 5h window from when OpenAI measured it when converted %s", async (_when, delayMs) => {
+  it("keeps the 5h window's start for the pace marker", async () => {
     const observedAtIso = new Date(NOW_MS).toISOString();
     const fixedWindow = {
       kind: "fixed_window" as const,
@@ -96,9 +93,9 @@ describe("openai provider", () => {
 
     const result = (await openaiProvider.fetch({ config: {} } as never)) as ProviderFetchResult;
 
-    expect(legacyResultFromFetch(result, NOW_MS + delayMs).entries).toMatchObject([
-      { fixedWindow },
-    ]);
+    expect(rowsFromProviderResult("openai", result, NOW_MS).rows[0]?.windowStartedAt).toBe(
+      fixedWindow.startedAtIso,
+    );
   });
 
   it("is not set up without a stored login", async () => {

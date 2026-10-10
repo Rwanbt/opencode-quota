@@ -7,7 +7,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { QuotaRow } from "../src/core/types.js";
 import type { QuotaProviderResult, QuotaToastEntry } from "../src/lib/entries.js";
 import type { QuotaRetryEvent } from "../src/lib/quota-retry-wait.js";
+import type { ProviderRow } from "../src/providers/contract.js";
 import type { LoadedSettings, Settings } from "../src/settings/index.js";
+import { answer, percentRow } from "./helpers/fake-answers.js";
 import {
   createPluginRuntimePathsMockModule,
   createProvidersRegistryModuleMock,
@@ -62,17 +64,14 @@ function row(key: string, percentRemaining: number | undefined, resetsAt?: strin
   };
 }
 
-function window(label: string, percentRemaining: number, resetTimeIso?: string): QuotaToastEntry {
-  return {
-    accounting: TEST_ACCOUNTING,
-    name: label,
-    label: `${label}:`,
-    percentRemaining,
-    ...(resetTimeIso ? { resetTimeIso } : {}),
-  };
+const WINDOW_KEYS = { "5h": "five_hour", Weekly: "weekly" } as const;
+
+function window(label: keyof typeof WINDOW_KEYS, percentRemaining: number, resetsAt: string) {
+  return percentRow(WINDOW_KEYS[label], label, percentRemaining, { resetsAt });
 }
 
-function result(entries: QuotaToastEntry[]): QuotaProviderResult {
+/** The custom providers' legacy answer. */
+function customResult(entries: QuotaToastEntry[]): QuotaProviderResult {
   return { attempted: true, entries, errors: [] };
 }
 
@@ -133,16 +132,12 @@ describe("resolveQuotaResetRetryDelayMs", () => {
     error: { type: "provider.quota", status: 429 },
   };
 
-  function makeProvider(
-    id: string,
-    entries: QuotaToastEntry[],
-    matches: (model: string) => boolean,
-  ) {
+  function makeProvider(id: string, rows: ProviderRow[], matches: (model: string) => boolean) {
     return {
       id,
       isAvailable: vi.fn().mockResolvedValue(true),
       matchesCurrentModel: vi.fn(matches),
-      fetch: vi.fn().mockResolvedValue(result(entries)),
+      fetch: vi.fn().mockResolvedValue(answer({ name: id, rows })),
     };
   }
 
@@ -273,7 +268,7 @@ describe("resolveQuotaResetRetryDelayMs", () => {
     const custom = {
       ...makeProvider("quota-providers", [], () => true),
       fetch: vi.fn(async () =>
-        result([
+        customResult([
           customWindow("gateway-a", "Gateway A", 40, 90 * MINUTE_MS),
           customWindow("gateway-b", "Gateway B", 0, 10 * MINUTE_MS),
         ]),
@@ -302,10 +297,12 @@ describe("resolveQuotaResetRetryDelayMs", () => {
 
   it("ignores a provider where one of the logins failed: its kept rows are old", async () => {
     const zai = makeProvider("zai", [window("5h", 0, at(90 * MINUTE_MS))], () => true);
-    zai.fetch.mockResolvedValue({
-      ...result([window("5h", 0, at(90 * MINUTE_MS))]),
-      errors: [{ label: "[Z.ai Work]", message: "Token expired" }],
-    });
+    zai.fetch.mockResolvedValue(
+      answer(
+        { name: "Z.ai", rows: [window("5h", 0, at(90 * MINUTE_MS))] },
+        { name: "[Z.ai Work]", errors: ["Token expired"] },
+      ),
+    );
     mocks.getProviders.mockReturnValue([zai]);
     useSettings((settings) => {
       settings.providers.enabled = ["zai"];

@@ -7,7 +7,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { afterEach, beforeEach, vi } from "vitest";
+import { afterEach, beforeEach, expect, vi } from "vitest";
 
 import { rowsFromProviderResult } from "../../src/core/rows.js";
 import type { Amount, QuotaRow } from "../../src/core/types.js";
@@ -15,6 +15,7 @@ import type { QuotaProvider } from "../../src/lib/entries.js";
 import { bindCredentialSource, notifyCredentialsChanged } from "../../src/lib/opencode-auth.js";
 import { createSqliteCredentialSource } from "../../src/lib/opencode-auth-sqlite.js";
 import { type CredentialDatabaseRow, writeCredentialDatabase } from "./credential-database.js";
+import { isLedgerRowKey } from "./provider-assertions.js";
 
 /** Environment variables a vendor may read a key, cookie or folder from. */
 const PROVIDER_ENV_NAMES = [
@@ -134,7 +135,10 @@ export function requestHeader(init: RequestInit | undefined, name: string): stri
   return new Headers(init?.headers).get(name);
 }
 
-/** The provider's fetch, as the store gets it: rows with ids and accounts, the error, debug. */
+/**
+ * The provider's fetch, as the store gets it: rows with ids and accounts, the error, debug.
+ * Fails the test when a row key is not one of the provider's `PROVIDER_ROW_KEYS`.
+ */
 export async function fetchRows(
   provider: Pick<QuotaProvider, "id" | "fetch">,
   config: Record<string, unknown> = {},
@@ -142,7 +146,11 @@ export async function fetchRows(
   const result = await provider.fetch({
     config: { requestTimeoutMs: 5_000, enabledProviders: "auto", ...config },
   } as never);
-  return rowsFromProviderResult(provider.id, result, Date.now());
+  const fetched = rowsFromProviderResult(provider.id, result, Date.now());
+  for (const row of fetched.rows) {
+    expect(isLedgerRowKey(provider.id, row.id.slice(provider.id.length + 1)), row.id).toBe(true);
+  }
+  return fetched;
 }
 
 function amountText(amount: Amount | undefined): string | undefined {

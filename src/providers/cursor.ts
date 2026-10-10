@@ -139,12 +139,7 @@ export const cursorProvider: QuotaProvider = {
         limit: usd(includedApiUsd),
         remaining: usd(Math.max(0, includedApiUsd - usage.api.costUsd)),
         resetsAt,
-        ...(fixedWindow
-          ? {
-              windowStartedAt: new Date(usage.window.sinceMs).toISOString(),
-              observedAt: new Date(usage.observedAtMs).toISOString(),
-            }
-          : {}),
+        ...(fixedWindow ? { windowStartedAt: new Date(usage.window.sinceMs).toISOString() } : {}),
       });
     } else {
       const label = hasPartialApiCoverage ? "Known API" : "API";

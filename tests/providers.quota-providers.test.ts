@@ -276,7 +276,6 @@ describe("quota-providers aggregate provider", () => {
       "first",
       "second",
     ]);
-    expect(result.statusDetails).toBeUndefined();
   });
 
   it("preserves successful entries when another definition fails", async () => {

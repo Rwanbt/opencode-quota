@@ -148,16 +148,16 @@ The command and export file both use JSON schema version `2`. Every provider has
 | `error` | The provider failed | `fetchedAt`, a safe `error` message |
 | `unavailable` | No matching cached data exists | none required |
 
-A percentage entry uses `renderType: "percent"` and `percentRemaining`. A value entry uses `renderType: "value"` and `value`. Internally typed quantities flatten into formatted value strings (for example, `USD 12.50`), and booleans flatten to `Enabled` or `Disabled`.
+A percentage entry uses `renderType: "percent"` and `percentRemaining`. A value entry uses `renderType: "value"` and `value`: the value text the TUI shows (for example, `$12.50 left` or `$2.50/$10.00`), and `Enabled` or `Disabled` for a yes/no row.
 
 - Scripts must not assume the first row is a percentage or that a provider has only one row. Select `renderType`, `resultType`, and any other field you need.
 - The `words` settings never change JSON. It has every row, so supplementary rows can add more value entries.
 - Version 2 does not expose internal metrics, row prominence, used/limit/remaining basis facts, or per-fact authority.
 - Threshold checks use percentage rows only.
 
-The export file writes each provider's last check as the provider reported it. Optional entry fields include `window`, `resetAt`, `observedAt`, and `sourceId`. A provider can also include `rawDetails`: curated, safe provider facts that stay out of normal quota displays. Rows from `providers.custom` appear under `providers["quota-providers"]` with their `sourceId`, and that result has a `sources` list so tools can match each row to its definition.
+Each entry's `name` reads `Provider (account) Label`, for example `Copilot (pro) Premium requests`. `resultType` is `quota`, `usage`, `budget`, `balance`, or `status`; `acquisitionMethod` is `remote_api`, `dashboard_scrape`, `local_cli`, or `local_estimation`. Optional entry fields are `window` and `resetAt`. A provider's `error` (and each `errors` message) is the short error text the TUI shows, for example `Sign in again` or `Provider error 503`.
 
-`show --json` builds its entries from the quota OpenCode saved last, and so does the export file for a provider not checked since OpenCode's background service started: names read `Provider (account) Label`, `resultType` is `quota`, `usage`, `budget`, `balance`, or `status`, and there is no `observedAt`, `sourceId`, or `sources` list.
+The export file writes each provider's last check, a failed one too. `show --json`, and the export file for a provider not checked since OpenCode's background service started, write the quota OpenCode saved last. Rows from `providers.custom` appear under `providers["quota-providers"]`; after a check, that result also has a `sources` list with each definition's coarse status.
 
 Treat `status: "partial"` as incomplete.
 
@@ -166,11 +166,11 @@ Secrets, credentials, URLs, checked paths, and raw provider responses remain exc
 <details>
 <summary><strong>Configured source details</strong></summary>
 
-In the export file, rows from a `providers.custom` definition appear under `providers["quota-providers"]` and keep their stable `sourceId`:
+In the export file, rows from a `providers.custom` definition appear under `providers["quota-providers"]`, named after the definition's label:
 
 ```json
 {
-  "sourceId": "openrouter-primary",
+  "name": "Quota providers (OpenRouter primary) Monthly",
   "renderType": "percent",
   "percentRemaining": 40
 }
@@ -208,7 +208,7 @@ Each summary is exactly `id`, effective `providerId`, coarse `status`, and `entr
       "fetchedAt": 1748735958,
       "entries": [
         {
-          "name": "Copilot Premium Requests",
+          "name": "Copilot (pro) Premium requests",
           "resultType": "quota",
           "acquisitionMethod": "remote_api",
           "ownership": "maintained",

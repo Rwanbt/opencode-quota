@@ -3,12 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const TEST_ACCOUNTING = {
-  resultType: "quota",
-  acquisitionMethod: "remote_api",
-  ownership: "maintained",
-  authority: "provider_reported",
-} as const;
+import { answer, percentRow } from "./helpers/fake-answers.js";
 
 const { authMocks, mockProviders, runtimeDirs } = vi.hoisted(() => ({
   authMocks: {
@@ -152,18 +147,11 @@ describe("runCliShowCommand", () => {
       id: "synthetic",
       cachePolicy: { kind: "account-neutral" as const },
       isAvailable: vi.fn().mockResolvedValue(true),
-      fetch: vi.fn().mockResolvedValue({
-        attempted: true,
-        entries: [
-          {
-            accounting: TEST_ACCOUNTING,
-            name: "Synthetic Weekly",
-            label: "Weekly:",
-            percentRemaining: 75,
-          },
-        ],
-        errors: [],
-      }),
+      fetch: vi
+        .fn()
+        .mockResolvedValue(
+          answer({ name: "Synthetic", rows: [percentRow("weekly", "Weekly", 75)] }),
+        ),
     };
     mockProviders.push(provider);
     writeSettings({ providers: { enabled: ["synthetic"] } });
@@ -195,7 +183,7 @@ describe("runCliShowCommand", () => {
       fetch: vi.fn(async () => {
         const maxAgeMs = getPricingRefreshPolicy().maxAgeMs;
         seen.push({ source: getPricingSnapshotSelection(), maxAgeMs });
-        return { attempted: true, entries: [], errors: [] };
+        return answer();
       }),
     });
     writeSettings({
@@ -234,18 +222,7 @@ describe("runCliShowCommand", () => {
       fetch: vi.fn(async () => {
         rowsDuringRun = await readCredentialRows(["synthetic"]);
         sourceDuringRun = getCredentialSourceDiagnostics();
-        return {
-          attempted: true,
-          entries: [
-            {
-              accounting: TEST_ACCOUNTING,
-              name: "Synthetic Weekly",
-              label: "Weekly:",
-              percentRemaining: 75,
-            },
-          ],
-          errors: [],
-        };
+        return answer({ name: "Synthetic", rows: [percentRow("weekly", "Weekly", 75)] });
       }),
     };
     mockProviders.push(provider);
@@ -281,18 +258,16 @@ describe("runCliShowCommand", () => {
       id: "copilot",
       cachePolicy: { kind: "account-neutral" as const },
       isAvailable: vi.fn().mockResolvedValue(true),
-      fetch: vi.fn().mockResolvedValue({
-        attempted: true,
-        entries: [
-          { accounting: TEST_ACCOUNTING, name: "Copilot Premium Requests", percentRemaining: 50 },
-        ],
-        errors: [],
-      }),
+      fetch: vi
+        .fn()
+        .mockResolvedValue(
+          answer({ name: "Copilot", rows: [percentRow("allowance", "Premium requests", 50)] }),
+        ),
     };
     const openAiProvider = {
       id: "openai",
       isAvailable: vi.fn().mockResolvedValue(true),
-      fetch: vi.fn().mockResolvedValue({ attempted: true, entries: [], errors: [] }),
+      fetch: vi.fn().mockResolvedValue(answer()),
     };
     mockProviders.push(openAiProvider, copilotProvider);
     writeSettings({ providers: { enabled: ["openai"] } });
@@ -364,13 +339,11 @@ describe("runCliShowCommand", () => {
         const response = await ctx.client.config.providers();
         return response.data.providers.some((item: { id: string }) => item.id === "github-copilot");
       }),
-      fetch: vi.fn().mockResolvedValue({
-        attempted: true,
-        entries: [
-          { accounting: TEST_ACCOUNTING, name: "Copilot Premium Requests", percentRemaining: 88 },
-        ],
-        errors: [],
-      }),
+      fetch: vi
+        .fn()
+        .mockResolvedValue(
+          answer({ name: "Copilot", rows: [percentRow("allowance", "Premium requests", 88)] }),
+        ),
     };
     mockProviders.push(provider);
     writeFileSync(
@@ -403,18 +376,11 @@ describe("runCliShowCommand", () => {
       id: "synthetic",
       cachePolicy: { kind: "account-neutral" as const },
       isAvailable: vi.fn().mockResolvedValue(true),
-      fetch: vi.fn().mockResolvedValue({
-        attempted: true,
-        entries: [
-          {
-            accounting: TEST_ACCOUNTING,
-            name: "Synthetic",
-            label: "Weekly:",
-            percentRemaining: 75,
-          },
-        ],
-        errors: [],
-      }),
+      fetch: vi
+        .fn()
+        .mockResolvedValue(
+          answer({ name: "Synthetic", rows: [percentRow("weekly", "Weekly", 75)] }),
+        ),
     };
     mockProviders.push(provider);
     writeSettings({ providers: { enabled: ["synthetic"] } });
