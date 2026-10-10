@@ -149,7 +149,7 @@ describe("loadSettings", () => {
     },
     {
       file: '{ "words": { "percent": "left" }, "words.percent": "used" }',
-      issue: { key: '"words.percent"', message: "a key with a dot is not read; nest it instead" },
+      issue: { key: "$top", message: "a key with a dot is not read (key 2); nest it instead" },
       percent: "left",
     },
   ])("reports $issue.key in $file and refuses to save until it is fixed", async (row) => {
@@ -184,14 +184,14 @@ describe("loadSettings", () => {
 
     expect(loaded.issues).toEqual([
       {
-        key: "wordz",
+        key: "$top",
         message:
-          "unknown setting; valid: version, providers, checking, words, pricing, announcements, export, telemetry",
+          "unknown setting (key 1); valid: version, providers, checking, words, pricing, announcements, export, telemetry",
       },
       {
-        key: "words.percnt",
+        key: "words",
         message:
-          "unknown setting; valid in words: percent, reset, resetDecimals, detail, runsOut, onlyCurrentModel, sessionTokens",
+          "unknown setting (key 1); valid in words: percent, reset, resetDecimals, detail, runsOut, onlyCurrentModel, sessionTokens",
       },
       { key: "checking", message: "expected an object" },
     ]);

@@ -189,7 +189,7 @@ The provider also includes a summary for every configured source:
 ]
 ```
 
-Each summary is exactly `id`, effective `providerId`, coarse `status`, and `entryCount`. A source can be `ok` after producing valid rows while failed mapping candidates can still make the aggregate provider `partial`.
+Each summary is exactly `id`, effective `providerId`, coarse `status`, and `entryCount`, plus `"enabled": false` for a switched-off definition (its `status` is `unavailable`). A source can be `ok` after producing valid rows while failed mapping candidates can still make the aggregate provider `partial`.
 
 </details>
 

@@ -538,6 +538,26 @@ describe("buildQuotaStatusReport", () => {
       absent: ["private.example", "private-adapter-literal"],
     },
     {
+      name: "a switched-off custom provider as off, with where to switch it on",
+      overrides: {
+        quotaProviders: [
+          {
+            id: "my-gateway-quota",
+            providerId: "my-gateway",
+            label: "My Gateway",
+            mode: "remote-api",
+            url: "https://gateway.example/v1/quota",
+            format: "quota-v1",
+            enabled: false,
+          },
+        ],
+      },
+      lines: [
+        "- provider_my-gateway-quota: provider_id=my-gateway off (switch on in /quota_settings → Providers)",
+      ],
+      absent: ["gateway.example"],
+    },
+    {
       name: "the v5 settings this server converted and wrote",
       overrides: {
         conversion: conversion({
