@@ -6,6 +6,8 @@
  * Settings are placeholders. While it is focused (it is after opening; click it to give it the
  * keyboard again) its keys work: ↑↓ select or scroll, space/enter use a line, ←/→ change it,
  * tab switches tabs, esc closes. Closing gives the keyboard back to whatever had it before.
+ * Notices asks the server again every 15 seconds while it shows, so a new notice or a change
+ * made in another window appears.
  */
 import {
   type BoxRenderable,
@@ -31,6 +33,7 @@ import { type NoticeBoard, noticeOptions } from "./notices.js";
 import { LimitsView, NoticesView, type StatusReport, StatusView } from "./views.js";
 
 const RPC_TIMEOUT_MS = 60_000;
+const NOTICE_POLL_MS = 15_000;
 /** Columns inside the window until it knows its real width. */
 const DEFAULT_WIDTH = 120;
 
@@ -111,6 +114,8 @@ export type WindowHost = {
       on(event: "layout-changed", listener: () => void): void;
       off(event: "layout-changed", listener: () => void): void;
     };
+    on(event: "resize", listener: () => void): void;
+    off(event: "resize", listener: () => void): void;
     currentFocusedRenderable: Renderable | null;
     copyToClipboardOSC52(text: string): boolean;
   };
@@ -159,6 +164,28 @@ export function createQuotaWindow(api: WindowHost, host: SurfaceHost): QuotaWind
   let scroll: ScrollBoxRenderable | undefined;
   /** What had the keyboard before the window opened (the message box), so closing gives it back. */
   let focusBefore: Renderable | null = null;
+  /**
+   * The window had the keyboard and nothing took it on purpose. A resize across the sidebar's
+   * breakpoint makes OpenCode give the keyboard to its message box, and OpenCode can draw the
+   * window again (a new box); the window then takes the keyboard back.
+   */
+  let keyboardWanted = false;
+  /** The terminal was resized in this turn of the event loop. */
+  let resizedThisTurn = false;
+  const onResize = () => {
+    resizedThisTurn = true;
+    setTimeout(() => {
+      resizedThisTurn = false;
+    }, 0);
+  };
+  /** Numbers the notice and status requests; only the newest one's answer shows. */
+  let noticeRequest = 0;
+  let statusRequest = 0;
+  /** Notice requests not answered yet. */
+  let openNoticeRequests = 0;
+  /** The notice requests run one after another, so changes reach the server in click order. */
+  let noticeQueue: Promise<void> = Promise.resolve();
+  let noticePoll: ReturnType<typeof setInterval> | undefined;
 
   // The RPC client is made per call, so nothing reaches OpenCode during plugin setup.
   const rpc = () => api.client.rpc(QuotaRpc);
@@ -178,31 +205,53 @@ export function createQuotaWindow(api: WindowHost, host: SurfaceHost): QuotaWind
       message: sanitizeDisplayText(rpcErrorMessage(error)),
     });
 
-  /** Asks for the notices, after making the given changes. */
-  async function changeNotices(input: QuotaRpcNoticeListInput): Promise<void> {
-    try {
-      setBoard(await rpc().noticeList(input, options()));
-    } catch (error) {
-      showError(error);
-    }
+  /** Asks for the notices, after making the given changes, once the earlier requests are done. */
+  function changeNotices(input: QuotaRpcNoticeListInput): Promise<void> {
+    const request = ++noticeRequest;
+    openNoticeRequests += 1;
+    noticeQueue = noticeQueue.then(async () => {
+      try {
+        const next = await rpc().noticeList(input, options());
+        if (request === noticeRequest) setBoard(next);
+      } catch (error) {
+        if (request === noticeRequest) showError(error);
+      } finally {
+        openNoticeRequests -= 1;
+      }
+    });
+    return noticeQueue;
   }
 
   async function loadStatus(sessionID: string | undefined): Promise<void> {
+    const request = ++statusRequest;
     setStatus({ state: "loading" });
     try {
       const output = await rpc().status(sessionID ? { sessionID } : {}, options());
-      setStatus({ state: "ready", text: output.text });
+      if (request === statusRequest) setStatus({ state: "ready", text: output.text });
     } catch (error) {
+      if (request !== statusRequest) return;
       setStatus({ state: "failed", message: sanitizeDisplayText(rpcErrorMessage(error)) });
     }
+  }
+
+  function stopNoticePoll(): void {
+    clearInterval(noticePoll);
+    noticePoll = undefined;
   }
 
   /** Each tab asks the server again when it shows: Limits a refresh, the others their data. */
   function showTab(next: WindowTab): void {
     setTab(next);
     const sessionID = routeSessionID();
+    stopNoticePoll();
     if (next === "limits") void host.quota.refresh("manual", sessionID);
-    if (next === "notices") void changeNotices({});
+    if (next === "notices") {
+      void changeNotices({});
+      // A poll waits while a request is still out, so slow answers don't pile up.
+      noticePoll = setInterval(() => {
+        if (openNoticeRequests === 0) void changeNotices({});
+      }, NOTICE_POLL_MS);
+    }
     if (next === "status") void loadStatus(sessionID);
     setSelected(tabOptions()[0]?.id ?? "");
     scroll?.scrollTo(0);
@@ -263,6 +312,11 @@ export function createQuotaWindow(api: WindowHost, host: SurfaceHost): QuotaWind
 
   function close(): void {
     setTab(undefined);
+    stopNoticePoll();
+    // Answers still on their way belong to the closed window.
+    noticeRequest += 1;
+    statusRequest += 1;
+    keyboardWanted = false;
     if (focusBefore && !focusBefore.isDestroyed) focusBefore.focus();
     focusBefore = null;
   }
@@ -382,9 +436,15 @@ export function createQuotaWindow(api: WindowHost, host: SurfaceHost): QuotaWind
       api.renderer.root.on("layout-changed", measureRoom);
       onCleanup(() => api.renderer.root.off("layout-changed", measureRoom));
     });
+    api.renderer.on("resize", onResize);
+    onCleanup(() => api.renderer.off("resize", onResize));
+    // This window's own boxes: when OpenCode draws the window again, the new one may already
+    // have set them before this one is cleaned up.
+    let ownBox: BoxRenderable | undefined;
+    let ownScroll: ScrollBoxRenderable | undefined;
     onCleanup(() => {
-      windowBox = undefined;
-      scroll = undefined;
+      if (windowBox === ownBox) windowBox = undefined;
+      if (scroll === ownScroll) scroll = undefined;
     });
 
     // Keys work only while this box has the keyboard; the message box keeps its own keys.
@@ -426,8 +486,28 @@ export function createQuotaWindow(api: WindowHost, host: SurfaceHost): QuotaWind
       <box
         ref={(element: BoxRenderable) => {
           windowBox = element;
-          element.on("focused", () => setHasKeyboard(true));
-          element.on("blurred", () => setHasKeyboard(false));
+          ownBox = element;
+          element.on("focused", () => {
+            keyboardWanted = true;
+            setHasKeyboard(true);
+          });
+          element.on("blurred", () => {
+            setHasKeyboard(false);
+            // Decided once the event that took the keyboard is over: a resize took it (take it
+            // back), or a click elsewhere or a dialog did (leave it). A box drawn again loses it
+            // to its replacement, which takes it back.
+            queueMicrotask(() => {
+              if (windowBox !== element || element.isDestroyed) return;
+              if (resizedThisTurn && keyboardWanted) element.focus();
+              else keyboardWanted = false;
+            });
+          });
+          // Drawn again while it had the keyboard: take it back once the new box is in place.
+          if (keyboardWanted) {
+            setTimeout(() => {
+              if (keyboardWanted && windowBox === element) element.focus();
+            }, 0);
+          }
         }}
         focusable
         height={roomHeight()}
@@ -481,6 +561,7 @@ export function createQuotaWindow(api: WindowHost, host: SurfaceHost): QuotaWind
         <scrollbox
           ref={(element: ScrollBoxRenderable) => {
             scroll = element;
+            ownScroll = element;
           }}
           // Basis 0: the tab body gets the room left over and scrolls; it never squeezes the rest.
           flexGrow={1}

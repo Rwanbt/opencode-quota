@@ -68,7 +68,7 @@ Restart OpenCode. Coming from 5.x? See [Updating](docs/readme/updating.md).
 > - OpenCode 1 is no longer supported. OpenCode 1 users stay on 4.x (`@slkiser/opencode-quota@4`).
 > - Logins come from OpenCode 2, never from `auth.json`. If a provider is missing, log in again.
 > - Web and Desktop get the slash commands, but no toasts or panels.
-> - TUI reports open in a popup. To keep them in the chat, set `tuiCommandDisplay: "inline"`.
+> - TUI reports open in a popup or in the quota window, and leave no chat message.
 > - OpenCode Zen uses your OpenCode Console sign-in: `opencode auth login opencode`.
 
 Full list: [Moving to OpenCode 2](docs/readme/updating.md#moving-to-opencode-2).

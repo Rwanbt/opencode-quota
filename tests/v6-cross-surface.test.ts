@@ -282,7 +282,7 @@ async function startHosts() {
   const { default: tuiPlugin } = await import("../src/tui/index.tsx");
   const disposeTui = tuiPlugin.setup({
     location: { directory: process.cwd() },
-    renderer: { currentFocusedEditor: null },
+    renderer: { currentFocusedEditor: null, on: () => {}, off: () => {} },
     client: { rpc: createQuotaRpcBridge(handlers, events), session: { command: sessionCommand } },
     theme: THEME,
     storage,
