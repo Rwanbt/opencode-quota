@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import { validateQuotaProviders } from "../src/lib/quota-providers.js";
 import {
   hasMarkdownLinkTo,
+  readFencedCodeBlocks,
   readMarkdownParagraphContaining,
   readMarkdownSection,
 } from "./helpers/markdown-document.js";
@@ -166,10 +167,39 @@ describe("quota provider Phase 7 documentation consistency", () => {
     );
     expect(externalJsonBasics).toContain('"version": 2');
     expect(externalJsonBasics).toContain('providers["quota-providers"]');
-    expect(externalJsonBasics).toContain('ownership: "user_configured"');
+    expect(externalJsonBasics).toContain("`providers.custom` definition");
     expect(external).not.toContain("custom-sources");
     expect(external).not.toContain("Custom-provider");
     expect(external).not.toContain("quotaProviders");
+    expect(externalJsonBasics).toContain('"sourceId": "openrouter-primary"');
+    expect(externalJsonBasics).toContain('"sources": [');
+    expect(externalJsonBasics).toContain('"id": "openrouter-primary"');
+    expect(externalJsonBasics).toContain('"entryCount": 1');
+    const sourceSummaryBlock = readFencedCodeBlocks(externalJsonBasics).find(
+      (block) => block.info === "json" && block.content.includes('"sources"'),
+    );
+    if (sourceSummaryBlock === undefined) throw new Error("Source summary JSON example not found");
+    const sourceSummaryExample = JSON.parse(`{${sourceSummaryBlock.content}}`) as {
+      sources: Array<Record<string, unknown>>;
+    };
+    expect(sourceSummaryExample.sources).toHaveLength(1);
+    expect(Object.keys(sourceSummaryExample.sources[0]).sort()).toEqual(
+      ["id", "providerId", "status", "entryCount"].sort(),
+    );
+
+    const sourceSummaryRule = readMarkdownParagraphContaining(
+      externalJsonBasics,
+      "Each summary",
+      "`providerId`",
+      "`status`",
+      "`entryCount`",
+    );
+    expect(sourceSummaryRule).toMatch(/\bexactly\b/i);
+    expect(sourceSummaryRule).toMatch(/\beffective `providerId`/i);
+    expect(sourceSummaryRule).toMatch(/\bcoarse `status`/i);
+    expect(sourceSummaryRule).toMatch(
+      /failed mapping candidates?[\s\S]*aggregate provider[\s\S]*`partial`/i,
+    );
     expect(
       readMarkdownParagraphContaining(externalJsonBasics, "raw provider responses", "public JSON"),
     ).toMatch(/raw provider responses[\s\S]*\b(?:excluded|omitted) from public JSON\b/i);

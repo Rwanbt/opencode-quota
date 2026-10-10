@@ -162,6 +162,23 @@ describe("Gemini CLI quota buckets", () => {
     ]);
   });
 
+  it("reports a bucket object that is not a list as that account's error", async () => {
+    mocks.readAuthFileCached.mockResolvedValueOnce({
+      google: { type: "oauth", refresh: "refresh-token|project-1|", email: "alice@example.com" },
+    });
+    mocks.fetchResponse.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => ({ buckets: {} }),
+    });
+
+    await expect(queryGeminiCliQuota()).resolves.toEqual({
+      success: true,
+      buckets: [],
+      errors: [{ email: "alice@example.com", error: "buckets.filter is not a function" }],
+    });
+  });
+
   it("reports no data when every account answers without buckets", async () => {
     mocks.readAuthFileCached.mockResolvedValueOnce({
       google: { type: "oauth", refresh: "refresh-token|project-1" },

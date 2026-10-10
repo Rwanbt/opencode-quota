@@ -3,7 +3,8 @@
  * vocabulary. The server builds these; the TUI, Web text and the CLI only read them. Every
  * value is plain JSON, because snapshots travel over the RPC and are saved to disk.
  */
-import type { DisplayImport } from "../settings/index.js";
+import type { QuotaExportProvider } from "../lib/quota-export-types.js";
+import type { PendingDisplayImport } from "../settings/index.js";
 
 /** What a row's number means (ADR 0001: the 7 legacy result types become 5). */
 export type RowType = "quota" | "budget" | "usage" | "balance" | "status";
@@ -108,6 +109,11 @@ export type ProviderSnapshot = {
   refreshing: boolean;
   /** Provider facts for /quota_status and the export only. */
   debug: DebugDetail[];
+  /**
+   * This provider's part of the export file from its last check in this server process
+   * (version 2, as v5 wrote it). Kept in memory only and never sent to clients.
+   */
+  exportPart?: QuotaExportProvider;
 };
 
 /** A quota window that reset since the last check; each TUI shows it once (by `id`). */
@@ -158,8 +164,15 @@ export type QuotaSnapshot = {
   sessionTokens?: SessionTokens;
   /** The server's words; clients use their defaults until the server sends them. */
   words?: Words;
-  /** The v5 looks the settings conversion found, until a TUI applied them. */
-  displayImport?: DisplayImport;
+  /**
+   * The v5 looks the settings conversion found (`display`, empty when it found none), until a
+   * TUI applied them and acknowledged their `id`.
+   */
+  displayImport?: PendingDisplayImport;
   resetNotices: ResetNotice[];
   generatedAtMs: number;
+  /** Random for each server start; revisions compare only within one server. */
+  serverId: string;
+  /** Grows with every snapshot the server builds: of two, the higher revision is newer. */
+  revision: number;
 };

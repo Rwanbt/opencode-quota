@@ -225,8 +225,10 @@ describe("quota RPC definition", () => {
     for (const value of [{}, { ok: "yes", issues: [] }, { ok: true }]) {
       await expectRejected(methods.saveSettings.output, value, "output must carry ok and issues");
     }
-    await expectAccepted(methods.acknowledgeDisplayImport.input, {});
-    await expectRejected(methods.acknowledgeDisplayImport.input, 1, "input must be an object");
+    await expectAccepted(methods.acknowledgeDisplayImport.input, { id: "import-1" });
+    for (const value of [1, {}, { id: 1 }]) {
+      await expectRejected(methods.acknowledgeDisplayImport.input, value, "input must carry an id");
+    }
   });
 
   it("requires a snapshot in snapshot and refresh output and in the changed event", async () => {

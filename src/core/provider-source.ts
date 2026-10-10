@@ -13,6 +13,7 @@ import {
   getQuotaProviderDisplayLabel,
   isLiveLocalUsageProviderId,
 } from "../lib/provider-metadata.js";
+import { exportProviderFromResult } from "../lib/quota-export.js";
 import {
   cloneQuotaProviders,
   QUOTA_PROVIDERS_AGGREGATE_ID,
@@ -174,7 +175,13 @@ function storeProvider(
     },
     async fetch() {
       const result = await provider.fetch(ctx, await cacheContextFor(provider, ctx));
-      const fetched = rowsFromLegacyResult(provider.id, result);
+      const exportPart = exportProviderFromResult({
+        providerId: provider.id,
+        result,
+        checkedAtMs: Date.now(),
+        customDefinitions: ctx.config.quotaProviders ?? [],
+      });
+      const fetched = { ...rowsFromLegacyResult(provider.id, result), exportPart };
       if (!fetched.rowLogins) return fetched;
       return { ...fetched, rowLogins: await keyedLogins(provider.id, fetched.rowLogins) };
     },

@@ -1,3 +1,8 @@
+type MarkdownCodeBlock = {
+  info: string;
+  content: string;
+};
+
 function readFencedLineMask(lines: string[]): boolean[] {
   const mask = lines.map(() => false);
   let fenceCharacter: "`" | "~" | undefined;
@@ -78,6 +83,36 @@ export function readMarkdownParagraphContaining(document: string, ...concepts: s
     throw new Error(`Paragraph not found for concepts: ${concepts.join(", ")}`);
   }
   return paragraph;
+}
+
+export function readFencedCodeBlocks(document: string): MarkdownCodeBlock[] {
+  const lines = document.split("\n");
+  const blocks: MarkdownCodeBlock[] = [];
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const openingFence = lines[index].match(/^ {0,3}(`{3,}|~{3,})\s*([^\s]*)\s*$/);
+    if (openingFence === null) continue;
+
+    const fenceCharacter = openingFence[1][0];
+    const fenceLength = openingFence[1].length;
+    const content: string[] = [];
+    index += 1;
+    while (index < lines.length) {
+      const closingFence = lines[index].match(/^ {0,3}(`+|~+)\s*$/)?.[1];
+      if (
+        closingFence !== undefined &&
+        closingFence[0] === fenceCharacter &&
+        closingFence.length >= fenceLength
+      ) {
+        break;
+      }
+      content.push(lines[index]);
+      index += 1;
+    }
+    blocks.push({ info: openingFence[2], content: content.join("\n") });
+  }
+
+  return blocks;
 }
 
 export function hasMarkdownLinkTo(document: string, destination: string): boolean {

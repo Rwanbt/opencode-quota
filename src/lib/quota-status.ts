@@ -13,7 +13,7 @@ import { publicDebugValue, publicDetail } from "../core/redact.js";
 import type { Amount, ProviderSnapshot, QuotaRow } from "../core/types.js";
 import type { UsageReport } from "../core/usage.js";
 import type { LoadedSettings, Settings, V5Conversion } from "../settings/index.js";
-import { formatShare, formatTokens } from "../view/numbers.js";
+import { formatShare, formatTokens } from "../view/format.js";
 import { sanitizeSingleLineDisplayText } from "./display-sanitize.js";
 import { replaceHomeDirWithTildeInDocument } from "./home-dir-display.js";
 import type { MaintainerAnnouncementsSummary } from "./maintainer-announcements.js";

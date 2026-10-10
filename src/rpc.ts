@@ -47,7 +47,8 @@ export type QuotaRpcUsageOutput = { report: UsageReport };
 export type QuotaRpcSaveSettingsInput = { patch: Record<string, unknown> };
 /** Nothing is saved unless `ok`; `issues` say why. */
 export type QuotaRpcSaveSettingsOutput = { ok: boolean; issues: SettingsIssue[] };
-export type QuotaRpcAcknowledgeInput = Record<string, never>;
+/** The `id` of the snapshot's `displayImport` that the TUI applied. */
+export type QuotaRpcAcknowledgeInput = { id: string };
 export type QuotaRpcAcknowledgeOutput = Record<string, never>;
 
 type StandardValueSchema = Extract<Rpc.PortableValueSchema, { "~standard": unknown }>;
@@ -207,7 +208,7 @@ export const QuotaRpc = {
     },
     acknowledgeDisplayImport: {
       input: schema<QuotaRpcAcknowledgeInput>((value) =>
-        isObject(value) ? null : "input must be an object",
+        isObject(value) && typeof value.id === "string" ? null : "input must carry an id",
       ),
       output: schema<QuotaRpcAcknowledgeOutput>(checkOutput),
     },

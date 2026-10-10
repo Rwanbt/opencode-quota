@@ -26,10 +26,13 @@ import {
   renderableSections,
   renderKvRow,
 } from "../lib/report-document.js";
-import { QuotaRpc, type QuotaRpcCommandInput, type QuotaRpcCommandOutput } from "../rpc.js";
-import { rpcErrorMessage } from "./client.js";
-
-const RPC_TIMEOUT_MS = 60_000;
+import { QuotaRpc } from "../rpc.js";
+import {
+  type QuotaRpcClient,
+  quotaCallOptions,
+  type RpcLocationHost,
+  rpcErrorMessage,
+} from "./client.js";
 
 export type TuiEvent = { data?: Record<string, unknown> };
 type Toast = {
@@ -52,19 +55,11 @@ type DialogTheme = {
   text: { base: RGBA; muted: RGBA; action: { primary: { focused: RGBA; selected: RGBA } } };
   background: { action: { primary: { focused: RGBA } } };
 };
-type QuotaRpcCallOptions = { location: { directory: string }; signal: AbortSignal };
-
 /** What the report dialogs need from the TUI context. */
-export type LegacyDialogHost = {
-  location?: { directory: string };
+export type LegacyDialogHost = RpcLocationHost & {
   renderer: { currentFocusedEditor: { plainText: string; clear: () => void } | null };
   client: {
-    rpc: (definition: typeof QuotaRpc) => {
-      command: (
-        input: QuotaRpcCommandInput,
-        options: QuotaRpcCallOptions,
-      ) => Promise<QuotaRpcCommandOutput>;
-    };
+    rpc: (definition: typeof QuotaRpc) => Pick<QuotaRpcClient, "command">;
     session: {
       inbox: { cancel: (input: { sessionID: string; inboxID: string }) => Promise<void> };
     };
@@ -97,32 +92,10 @@ export type LegacyDialogHost = {
 };
 
 type TuiContext = LegacyDialogHost;
-type QuotaRpcClient = ReturnType<LegacyDialogHost["client"]["rpc"]>;
 
 function getSessionID(event: TuiEvent): string | undefined {
   const sessionID = event.data?.sessionID;
   return typeof sessionID === "string" && sessionID ? sessionID : undefined;
-}
-
-/**
- * The server plugin computes every quota surface; the TUI asks it over the quota RPC. The
- * RPC client is made per call, never during setup. Each call names the TUI's location, so
- * the server uses that folder's settings, and gives up after a minute.
- */
-function quotaRpc(context: TuiContext): QuotaRpcClient {
-  return context.client.rpc(QuotaRpc);
-}
-
-function defaultLocation(context: TuiContext): { directory: string } {
-  if (!context.data.location) throw new Error("OpenCode gave the TUI no location");
-  return context.data.location.default();
-}
-
-function quotaRpcOptions(context: TuiContext): QuotaRpcCallOptions {
-  return {
-    location: context.location ?? defaultLocation(context),
-    signal: AbortSignal.timeout(RPC_TIMEOUT_MS),
-  };
 }
 
 /** OpenCode's dialog widths (dialogWidth in its ui/dialog.tsx). */
@@ -428,10 +401,10 @@ async function runQuotaCommand(
   }
 
   try {
-    const result = await quotaRpc(context).command(
-      { command, arguments: argumentsText, sessionID },
-      quotaRpcOptions(context),
-    );
+    // The server plugin builds every report; the TUI asks it over the quota RPC.
+    const result = await context.client
+      .rpc(QuotaRpc)
+      .command({ command, arguments: argumentsText, sessionID }, quotaCallOptions(context));
     if (result.state === "noop") return;
     await showQuotaOutputDialog(context, {
       title: result.title,

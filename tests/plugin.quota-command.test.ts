@@ -416,10 +416,10 @@ describe("/quota command behavior", () => {
     });
 
     const [outputA, outputB] = await Promise.all([runA, runB]);
-    expect(outputA).toContain("1.1K in");
-    expect(outputA).not.toContain("2.2K in");
-    expect(outputB).toContain("2.2K in");
-    expect(outputB).not.toContain("1.1K in");
+    expect(outputA).toContain("1.11K in");
+    expect(outputA).not.toContain("2.22K in");
+    expect(outputB).toContain("2.22K in");
+    expect(outputB).not.toContain("1.11K in");
   });
 
   it.each([

@@ -405,13 +405,37 @@ describe("quota store", () => {
     store.subscribe(broken);
     const leave = store.subscribe(listener);
     await store.refresh({ reason: "manual" });
-    expect(listener).toHaveBeenCalledOnce();
-    expect(only(listener.mock.calls[0]?.[0]).rows).toEqual([row("allowance", 50)]);
+    // First the providers it has (none checked yet), then the fetched rows.
+    expect(listener).toHaveBeenCalledTimes(2);
+    expect(only(listener.mock.lastCall?.[0]).rows).toEqual([row("allowance", 50)]);
 
     leave();
     await store.refresh({ reason: "manual" });
+    expect(listener).toHaveBeenCalledTimes(2);
+    expect(broken).toHaveBeenCalledTimes(3);
+  });
+
+  it("tells subscribers about the rows read from the file and about providers turned on or off", async () => {
+    const copilot = fakeProvider("copilot");
+    await makeStore([copilot.provider]).refresh({ reason: "manual" });
+
+    const providers = [copilot.provider];
+    const restarted = makeStore(providers, HOUR);
+    const listener = vi.fn();
+    restarted.subscribe(listener);
+    await restarted.snapshot();
     expect(listener).toHaveBeenCalledOnce();
-    expect(broken).toHaveBeenCalledTimes(2);
+    expect(only(listener.mock.lastCall?.[0]).rows).toEqual([row("allowance", 50)]);
+
+    await restarted.snapshot();
+    expect(listener).toHaveBeenCalledOnce();
+
+    providers.push(fakeProvider("openai").provider);
+    await restarted.snapshot();
+    expect(listener).toHaveBeenCalledTimes(2);
+    expect(
+      listener.mock.lastCall?.[0].providers.map((p: { providerId: string }) => p.providerId),
+    ).toEqual(["copilot", "openai"]);
   });
 
   it("merges the file with what other processes saved", async () => {
@@ -792,7 +816,8 @@ describe("quota store", () => {
     const copilot = fakeProvider();
     async function firstLook() {
       const store = makeStore([copilot.provider]);
-      const snapshot = await store.snapshot();
+      // Each store names itself with a new server id.
+      const snapshot = { ...(await store.snapshot()), serverId: "" };
       await store.dispose();
       return { snapshot, saved: await readFile(file, "utf8") };
     }

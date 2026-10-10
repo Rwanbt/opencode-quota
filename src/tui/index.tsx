@@ -4,12 +4,11 @@
  * session sidebar, the status line under the message box (and on Home when turned on), and
  * the toasts. It uses only the quota RPC (`snapshot`, `refresh`, `notices`,
  * `acknowledgeDisplayImport`, the `changed` event) and the display settings in OpenCode's
- * plugin storage. The report dialogs of the slash commands live in `legacy-dialogs.tsx` until
- * the quota window replaces them.
+ * plugin storage. The report dialogs of the slash commands live in `legacy-dialogs.tsx`.
  */
 import { Plugin } from "@opencode/plugin/tui";
 import type { JSX } from "@opentui/solid";
-import { Show } from "solid-js";
+import { onCleanup, Show } from "solid-js";
 import type { QuotaSnapshot } from "../core/types.js";
 import { type ClientHost, createQuotaClient, reportFailure } from "./client.js";
 import {
@@ -103,8 +102,8 @@ const plugin = Plugin.define({
         message: SETTINGS_CONVERTED_MESSAGE,
         duration: SETTINGS_CONVERTED_TOAST_MS,
       });
-      applyDisplayImport(api.storage, displayImport)
-        .then(() => quota.acknowledgeDisplayImport())
+      applyDisplayImport(api.storage, displayImport.display)
+        .then(() => quota.acknowledgeDisplayImport(displayImport.id))
         .catch(reportFailure);
     };
     const quota = createQuotaClient(api, (snapshot) => {
@@ -126,7 +125,7 @@ const plugin = Plugin.define({
       render: () => {
         // OpenCode mounts this slot again when it reconnects to its server, which can also
         // happen right after it starts. Leaving a mount drops its keymap layers and event
-        // listeners, so each mount replaces the listeners and registers everything again.
+        // listeners, so each mount stops the last one's and registers everything again.
         disposeMount?.();
         const stopQuota = quota.start();
         // The first snapshot carries the converted v5 looks (`displayImport`). Ask for it once
@@ -169,11 +168,18 @@ const plugin = Plugin.define({
             void showPostedQuotaReport(api, event).catch(reportFailure);
           }),
         ];
-        disposeMount = () => {
+        let disposed = false;
+        const dispose = () => {
+          if (disposed) return;
+          disposed = true;
+          if (disposeMount === dispose) disposeMount = undefined;
           stopQuota();
+          toasts.cancel();
           for (const stop of listeners) stop();
           questionToolCalls.clear();
         };
+        disposeMount = dispose;
+        onCleanup(dispose);
         return null;
       },
     });

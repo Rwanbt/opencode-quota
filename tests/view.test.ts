@@ -82,6 +82,26 @@ const ZEN = provider("opencode", "OpenCode Zen", [
   }),
 ]);
 const ROUTER = provider("openrouter", "OpenRouter", [], { error: { code: "login_expired" } });
+/** Two accounts whose last check timed out, so both keep their rows from before. */
+const TWO_ACCOUNTS = provider(
+  "copilot",
+  "Copilot",
+  [
+    row("copilot.allowance", {
+      account: "work",
+      label: "Plan",
+      window: "month",
+      percentRemaining: 40,
+    }),
+    row("copilot.allowance", {
+      account: "home",
+      label: "Plan",
+      window: "month",
+      percentRemaining: 90,
+    }),
+  ],
+  { error: { code: "timeout" } },
+);
 
 function snapshot(providers: ProviderSnapshot[], extra: Partial<QuotaSnapshot> = {}) {
   return { version: 6, providers, resetNotices: [], generatedAtMs: NOW, ...extra } as const;
@@ -194,6 +214,10 @@ describe("view format", () => {
     { text: "Claude", width: 9, expected: "Claude   " },
     { text: "OpenRouter", width: 9, expected: "OpenRout…" },
     { text: "Copilot (pro)", width: 9, expected: "Copilot… " },
+    // Wide characters take two columns; a letter with its accent is never split.
+    { text: "日本語プロバイダ", width: 9, expected: "日本語プ…" },
+    { text: "日本語", width: 7, expected: "日本語 " },
+    { text: "e\u0301e\u0301e\u0301e\u0301", width: 3, expected: "e\u0301e\u0301…" },
   ])("fits $text in $width columns", ({ text, width, expected }) => {
     expect(fitToWidth(text, width)).toBe(expected);
   });
@@ -278,6 +302,15 @@ describe("view select", () => {
     ]);
   });
 
+  it("shows the error of a provider with several accounts once, on its first account", () => {
+    const groups = visibleGroups(snapshot([TWO_ACCOUNTS]), settings(), "sidebar", words());
+    expect(groups.map((group) => [group.title, group.rows.length, group.error?.code])).toEqual([
+      ["Copilot (work)", 1, "timeout"],
+      ["Copilot (home)", 1, undefined],
+    ]);
+    expect(collapsedTitle(groups)).toBe("▶ Quota (1 provider, 1 error)");
+  });
+
   it.each([
     { choice: undefined, expected: "Weekly" },
     { choice: "five_hour", expected: "5h" },
@@ -318,7 +351,7 @@ describe("view text", () => {
       "OpenCode Zen",
       " Balance  $1,240.50 left",
       "OpenRouter  Sign in again",
-      "Session  12K in · 2.1K out",
+      "Session  12.3K in · 2.10K out",
     ]);
     // The bar of the row with 12% left is drawn in the "low" level color.
     const weekly = lines.find((line) => line.id === "anthropic.weekly");
@@ -368,6 +401,51 @@ describe("view text", () => {
     ]);
   });
 
+  it("shows the error next to the rows kept from before, collapsed and on the status line", () => {
+    const expired = { ...CLAUDE, error: { code: "login_expired" } } as const;
+    const collapsed = collapsedLines({
+      groups: groups("collapsed", [expired]),
+      layout: display.layout,
+      words: DEFAULT_WORDS,
+      nowMs: NOW,
+      width: 50,
+      window: {},
+    });
+    expect(collapsed.map(lineText)).toEqual(["Claude    7d   █░░░░░░░  12%  Sign in again"]);
+    const status = statusInput([expired]);
+    expect(
+      ["full", "numbers"].map((level) =>
+        lineText(statusLayout(status, 200, 0, level as "full").shown[0]!),
+      ),
+    ).toEqual(["Claude █░░░░ 12% Sign in again", "Claude 12% ⚠"]);
+    expect(lineText(bigStatusLine(status)!)).toBe("Claude 7d █░░░░░░░░░ 12% left · Sign in again");
+  });
+
+  it("shows the error of a provider with several accounts on the big bar and the status line", () => {
+    const input = statusInput([TWO_ACCOUNTS]);
+    expect(lineText(bigStatusLine(input)!)).toBe(
+      "Copilot (work) 30d ████░░░░░░ 40% left · Timed out",
+    );
+    expect(statusLayout(input, 30, 0, "auto").shown.map(lineText)).toEqual([
+      "Copilot (work) 40% ⚠",
+    ]);
+    // Cut short, the line keeps the error's mark.
+    expect(statusLayout(input, 9, 0, "auto").shown.map(lineText)).toEqual(["C… ⚠"]);
+  });
+
+  it("cuts the first provider short when it does not fit, so the arrows stay", () => {
+    const layout = statusLayout(statusInput(), 14, 0, "auto");
+    expect([layout.shown.map(lineText), layout.hiddenAfter]).toEqual([["Clau… 12%"], 2]);
+  });
+
+  it("measures the status line in terminal columns", () => {
+    const wide = provider("kimi", "月之暗面", [
+      row("kimi.week", { window: "week", percentRemaining: 70 }),
+    ]);
+    const layout = statusLayout(statusInput([wide, CLAUDE]), 24, 0, "numbers");
+    expect([layout.shown.map(lineText), layout.hiddenAfter]).toEqual([["月之暗面 70%"], 1]);
+  });
+
   it.each([
     { room: 200, level: "full", first: "Claude █░░░░ 12% 3d 4h", shown: 3 },
     { room: 75, level: "bar", first: "Claude █░░░░ 12%", shown: 3 },
@@ -411,7 +489,9 @@ describe("view text", () => {
 
   it("draws the one-provider status line with a big bar", () => {
     expect(lineText(bigStatusLine(statusInput())!)).toBe("Claude 7d █░░░░░░░░░ 12% left · 3d 4h");
-    expect(bigStatusLine(statusInput([ROUTER]))).toBeUndefined();
+    // Without a percent row it shows the error (or value) instead of a bar.
+    expect(lineText(bigStatusLine(statusInput([ROUTER]))!)).toBe("OpenRouter Sign in again");
+    expect(bigStatusLine(statusInput([]))).toBeUndefined();
   });
 
   it("writes plain lines for toasts and the CLI, errors and session tokens last", () => {
@@ -427,7 +507,7 @@ describe("view text", () => {
       "Claude Weekly       12% left      3d 4h",
       "OpenCode Zen Balan… $1,240.50 left",
       "OpenRouter          Sign in again",
-      "Session  12K in · 2.1K out",
+      "Session  12.3K in · 2.10K out",
     ]);
   });
 });

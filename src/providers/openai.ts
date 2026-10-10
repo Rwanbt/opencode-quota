@@ -9,6 +9,7 @@ import {
   type OpenAIOAuthLogin,
   type OpenAIResult,
   queryOpenAIQuota,
+  readOpenAIAuthCached,
   resolveOpenAIOAuth,
 } from "../lib/openai.js";
 import {
@@ -22,6 +23,7 @@ import { modelProviderIncludesAny } from "../lib/provider-model-matching.js";
 import { resolveQuotaProviderSessionModelIdentity } from "../lib/quota-providers.js";
 import type { AuthData } from "../lib/types.js";
 import {
+  attemptedErrorResult,
   attemptedResult,
   groupedPercentWindowEntries,
   notAttemptedResult,
@@ -123,6 +125,47 @@ function activeLoginStatusDetails(
   };
 }
 
+function quotaWindowEntries(
+  group: string,
+  result: Extract<OpenAIResult, { success: true }>,
+  sourceId: string | undefined,
+) {
+  return groupedPercentWindowEntries({
+    group,
+    accounting: {
+      resultType: "rate_limit",
+      acquisitionMethod: "remote_api",
+      ownership: "maintained",
+      authority: "provider_reported",
+      ...(sourceId ? { sourceId } : {}),
+    },
+    windows: [
+      { window: result.windows.hourly, suffix: "5h", label: "5h:" },
+      { window: result.windows.weekly, suffix: "Weekly", label: "Weekly:" },
+      { window: result.windows.monthly, suffix: "Monthly", label: "Monthly:" },
+      { window: result.windows.codeReview, suffix: "Code Review", label: "Code Review:" },
+    ],
+  });
+}
+
+/**
+ * Without any listed login, OpenCode can still report an active OpenAI
+ * sign-in (one its connection list does not show), so query that one.
+ */
+async function fetchActiveLoginQuota(
+  requestTimeoutMs: number | undefined,
+): Promise<QuotaProviderResult> {
+  const auth = await readOpenAIAuthCached();
+  if (auth.state === "none") return notAttemptedResult();
+  const result = await queryOpenAIQuota({ requestTimeoutMs, auth });
+  if (!result.success) {
+    return attemptedErrorResult("OpenAI", result.error, { retryable: result.retryable });
+  }
+  return attemptedResult(quotaWindowEntries(result.label, result, undefined), [], {
+    singleWindowDisplayName: result.label,
+  });
+}
+
 export const openaiProvider: QuotaProvider = {
   id: "openai",
 
@@ -203,24 +246,7 @@ export const openaiProvider: QuotaProvider = {
         if (result?.success === false) {
           errors.push({ label: name, message: result.error });
         } else if (result) {
-          entries.push(
-            ...groupedPercentWindowEntries({
-              group: name,
-              accounting: {
-                resultType: "rate_limit",
-                acquisitionMethod: "remote_api",
-                ownership: "maintained",
-                authority: "provider_reported",
-                ...(row.id ? { sourceId: row.id } : {}),
-              },
-              windows: [
-                { window: result.windows.hourly, suffix: "5h", label: "5h:" },
-                { window: result.windows.weekly, suffix: "Weekly", label: "Weekly:" },
-                { window: result.windows.monthly, suffix: "Monthly", label: "Monthly:" },
-                { window: result.windows.codeReview, suffix: "Code Review", label: "Code Review:" },
-              ],
-            }),
-          );
+          entries.push(...quotaWindowEntries(name, result, row.id));
         }
       } else if (row.resolveError !== undefined) {
         errors.push({
@@ -237,7 +263,7 @@ export const openaiProvider: QuotaProvider = {
     return withStatusDetails(
       entries.length > 0 || errors.length > 0
         ? attemptedResult(entries, errors)
-        : notAttemptedResult(),
+        : await fetchActiveLoginQuota(requestTimeoutMs),
       statusDetailsFromRecord(activeLoginStatusDetails(rows, logins)),
     );
   },

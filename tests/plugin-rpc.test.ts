@@ -387,9 +387,17 @@ describe("server quota RPC", () => {
     });
     const offered = (await first.call("snapshot", {})) as { snapshot: QuotaSnapshot };
     expect(offered.snapshot.words?.percent).toBe("used");
-    expect(offered.snapshot.displayImport).toEqual({ toast: { afterReply: "off" } });
+    expect(offered.snapshot.displayImport).toEqual({
+      id: expect.any(String),
+      display: { toast: { afterReply: "off" } },
+    });
 
-    await expect(first.call("acknowledgeDisplayImport", {})).resolves.toEqual({});
+    // Only the offered looks' id takes them.
+    await expect(first.call("acknowledgeDisplayImport", { id: "other" })).resolves.toEqual({});
+    const kept = (await first.call("snapshot", {})) as { snapshot: QuotaSnapshot };
+    expect(kept.snapshot.displayImport).toEqual(offered.snapshot.displayImport);
+    const id = offered.snapshot.displayImport?.id;
+    await expect(first.call("acknowledgeDisplayImport", { id })).resolves.toEqual({});
     const taken = (await first.call("snapshot", {})) as { snapshot: QuotaSnapshot };
     expect(taken.snapshot).not.toHaveProperty("displayImport");
 
@@ -553,13 +561,19 @@ describe("server quota RPC", () => {
     useSettings({ export: { enabled: true, path: exportPath } });
     const enabled = await setupServer();
     await enabled.call("refresh", { reason: "manual" });
-    await vi.waitFor(() => expect(existsSync(exportPath)).toBe(true));
-    const exported = JSON.parse(await readFile(exportPath, "utf8"));
-    expect(exported).toMatchObject({
-      version: 2,
-      fromCache: true,
-      providers: { copilot: { status: "ok", entries: [{ name: "Copilot Plan" }] } },
+    // The snapshot before the check is written first; the check's own part follows.
+    await vi.waitFor(async () => {
+      expect(JSON.parse(await readFile(exportPath, "utf8"))).toMatchObject({
+        version: 2,
+        fromCache: true,
+        providers: {
+          copilot: { status: "ok", entries: [{ name: "Copilot", percentRemaining: 81 }] },
+        },
+      });
     });
+    // The parts stay on the server: no client gets them.
+    expect(JSON.stringify(await enabled.call("snapshot", {}))).not.toContain("exportPart");
+    expect(JSON.stringify(enabled.emit.mock.calls)).not.toContain("exportPart");
   });
 
   it("runs palette commands on the server and returns their output", async () => {

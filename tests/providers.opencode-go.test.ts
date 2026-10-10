@@ -45,11 +45,13 @@ vi.mock("../src/lib/opencode-auth.js", async (importOriginal) => ({
   readCredentialRows: vi.fn().mockResolvedValue([]),
 }));
 
+import { rowsFromLegacyResult } from "../src/core/rows.js";
 import { readCredentialRows } from "../src/lib/opencode-auth.js";
 import {
   __resetOpenCodeGoNotSubscribedForTests,
   opencodeGoProvider,
 } from "../src/providers/opencode-go.js";
+import { DEFAULT_WORDS, percentText } from "../src/view/format.js";
 
 const NOT_SUBSCRIBED = {
   success: false,
@@ -80,6 +82,19 @@ function successfulResult() {
       usagePercent: 80,
       percentRemaining: 20,
       resetTimeIso: "2026-09-01T04:00:00.000Z",
+    },
+  };
+}
+
+/** All three windows, with the weekly one rate-limited (exhausted). */
+function rateLimitedWeeklyResult() {
+  return {
+    ...successfulResult(),
+    weekly: {
+      status: "rate-limited" as const,
+      usagePercent: 100,
+      percentRemaining: 0,
+      resetTimeIso: "2026-08-16T16:00:00.000Z",
     },
   };
 }
@@ -491,14 +506,7 @@ describe("opencode-go provider", () => {
   });
 
   it("reports every window, a rate-limited one too, with each window's usage", async () => {
-    const result = successfulResult();
-    result.weekly = {
-      status: "rate-limited" as const,
-      usagePercent: 100,
-      percentRemaining: 0,
-      resetTimeIso: "2026-08-16T16:00:00.000Z",
-    };
-    mocks.queryOpenCodeGoQuota.mockResolvedValueOnce(result);
+    mocks.queryOpenCodeGoQuota.mockResolvedValueOnce(rateLimitedWeeklyResult());
 
     const out = await runFetch();
 
@@ -572,6 +580,33 @@ describe("opencode-go provider", () => {
       expect(JSON.stringify(out)).not.toContain("EntitlementError");
     }
     expect(mocks.queryOpenCodeGoQuota).toHaveBeenCalledTimes(1);
+  });
+
+  it("hides a not-subscribed result from rows but keeps it in safe diagnostics", async () => {
+    mocks.queryOpenCodeGoQuota.mockResolvedValueOnce(NOT_SUBSCRIBED);
+
+    const fetched = rowsFromLegacyResult("opencode-go", await runFetch());
+
+    expect(fetched.rows).toEqual([]);
+    expect(fetched.error).toBeUndefined();
+    expect(fetched.debug).toContainEqual(NOT_SUBSCRIBED_DETAIL);
+    expect(JSON.stringify(fetched)).not.toMatch(/EntitlementError|provider-test-token/u);
+  });
+
+  it("shows a rate-limited window as used 100% next to its healthy siblings", async () => {
+    mocks.queryOpenCodeGoQuota.mockResolvedValueOnce(rateLimitedWeeklyResult());
+
+    const { rows, error } = rowsFromLegacyResult("opencode-go", await runFetch());
+
+    const used = { ...DEFAULT_WORDS, percent: "used" as const };
+    expect(error).toBeUndefined();
+    expect(
+      rows.map((row) => [row.window, percentText(used, row.percentRemaining ?? -1, true)]),
+    ).toEqual([
+      ["five_hour", "12% used"],
+      ["week", "100% used"],
+      ["month", "80% used"],
+    ]);
   });
 
   it("queries again after the credential changes, including when the original returns", async () => {

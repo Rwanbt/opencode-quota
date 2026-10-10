@@ -36,10 +36,17 @@ function provider(fields: Partial<ProviderSnapshot> = {}): ProviderSnapshot {
 }
 
 function snapshot(providers: ProviderSnapshot[], generatedAtMs = NOW): QuotaSnapshot {
-  return { version: 6, providers, resetNotices: [], generatedAtMs };
+  return {
+    version: 6,
+    providers,
+    resetNotices: [],
+    generatedAtMs,
+    serverId: "server",
+    revision: generatedAtMs,
+  };
 }
 
-describe("export built from the quota snapshot", () => {
+describe("export built from the quota snapshot rows", () => {
   it.each([
     { name: "ok", given: provider(), status: "ok" },
     { name: "partial", given: provider({ error: { code: "timeout" } }), status: "partial" },
@@ -81,6 +88,13 @@ describe("export built from the quota snapshot", () => {
       ],
       errors: [{ label: "Copilot", message: "Timed out" }],
     });
+  });
+
+  it("writes a provider's part from its last check as it is, rows or not", () => {
+    const exportPart = { status: "error", fetchedAt: 1_000, error: "HTTP 503" } as const;
+    const exported = buildQuotaExportFromSnapshot(snapshot([provider({ exportPart })]), NOW);
+    expect(exported.providers.copilot).toEqual(exportPart);
+    expect(exported.cacheAgeSeconds).toBe(Math.floor(NOW / 1000) - 1_000);
   });
 });
 

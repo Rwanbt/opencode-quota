@@ -104,14 +104,16 @@ These show only your own member API key's usage, not the whole organization's.
 Custom providers can report quota, rate limit, usage, spend, budget, balance, or status. Ask your agent to add a custom provider: paste this into OpenCode and replace `<provider>`:
 
 ```text
-Add a custom OpenCode Quota provider for <provider>. Follow docs/readme/providers.md#custom-providers in https://github.com/slkiser/opencode-quota, put the definition in providers.custom in my OpenCode Quota settings.jsonc, never put a key or other secret in it, then run the quota_status tool and fix what it reports.
+Add a custom OpenCode Quota provider for <provider> with the quota_provider_add tool, following docs/readme/providers.md#custom-providers in https://github.com/slkiser/opencode-quota. Never put a key or other secret in the definition: set apiKeyEnv to the name of a new environment variable starting with OPENCODE_QUOTA_ that holds only this key (for example OPENCODE_QUOTA_MYVENDOR_API_KEY). The tool saves the definition, tests it once and returns the rows or the error; fix what it reports and add it again with the same id until it shows rows.
 ```
+
+The agent tools change only OpenCode Quota's own settings file (through a symlink, its target), never `opencode.json`; testing a local-estimate provider also updates its state file. A provider added by an agent reads its key only from an environment variable whose name starts with `OPENCODE_QUOTA_`, which you create just for it; a definition holding anything that looks like a key is refused. `quota_provider_test` and `quota_provider_remove` take a provider's `id`.
 
 To edit it yourself, put definitions in `providers.custom` in `settings.jsonc` ([where](configuration.md#where-settings-live)). Changes apply without a restart.
 
 - **Remote API:** real quota data from a supported endpoint (formats below).
 - **Local estimate:** counts matching completed OpenCode requests in 1–16 windows, with optional spend estimates. `utc-day` resets at UTC midnight; `rolling` uses `durationMinutes` (up to 366 days). Every window needs `requestLimit`; `usdBudget` is optional.
-- **Credentials:** the variable named by `apiKeyEnv`, then trusted global `provider.<providerId>.options.apiKey`, then an API-key login saved in OpenCode 2 (`opencode.db`) for that provider id. Project secrets are never read.
+- **Credentials:** the variable named by `apiKeyEnv`, then trusted global `provider.<providerId>.options.apiKey`, then an API-key login saved in OpenCode 2 (`opencode.db`) for that provider id; a variable whose name starts with `OPENCODE_QUOTA_` is the only source. Project secrets are never read.
 - With `providers.enabled: "auto"`, definitions run automatically. A list must include `custom` plus every built-in provider you still want.
 - A custom model provider still needs its normal OpenCode provider/model config. `/connect` → **Other** stores its credential, not its model setup.
 - OpenRouter is built in. A custom OpenRouter definition only helps if you need a different endpoint or label.

@@ -151,13 +151,47 @@ The command and export file both use JSON schema version `2`. Every provider has
 A percentage entry uses `renderType: "percent"` and `percentRemaining`. A value entry uses `renderType: "value"` and `value`. Internally typed quantities flatten into formatted value strings (for example, `USD 12.50`), and booleans flatten to `Enabled` or `Disabled`.
 
 - Scripts must not assume the first row is a percentage or that a provider has only one row. Select `renderType`, `resultType`, and any other field you need.
-- The `words` settings never change JSON. It has every row of the snapshot, so supplementary rows can add more value entries.
+- The `words` settings never change JSON. It has every row, so supplementary rows can add more value entries.
 - Version 2 does not expose internal metrics, row prominence, used/limit/remaining basis facts, or per-fact authority.
 - Threshold checks use percentage rows only.
 
-Both are built from the server's quota snapshot. Optional entry fields are `window` and `resetAt`; `resultType` is `quota`, `usage`, `budget`, `balance`, or `status`. A provider can also include `rawDetails`: curated, safe provider facts that stay out of normal quota displays. Rows from `providers.custom` appear under `providers["quota-providers"]` with `ownership: "user_configured"`. Treat `status: "partial"` as incomplete.
+The export file writes each provider's last check as the provider reported it. Optional entry fields include `window`, `resetAt`, `observedAt`, and `sourceId`. A provider can also include `rawDetails`: curated, safe provider facts that stay out of normal quota displays. Rows from `providers.custom` appear under `providers["quota-providers"]` with their `sourceId`, and that result has a `sources` list so tools can match each row to its definition.
+
+`show --json` builds its entries from the quota OpenCode saved last, and so does the export file for a provider not checked since OpenCode's background service started: names read `Provider (account) Label`, `resultType` is `quota`, `usage`, `budget`, `balance`, or `status`, and there is no `observedAt`, `sourceId`, or `sources` list.
+
+Treat `status: "partial"` as incomplete.
 
 Secrets, credentials, URLs, checked paths, and raw provider responses remain excluded from public JSON. Use `/quota_status` for live diagnostics.
+
+<details>
+<summary><strong>Configured source details</strong></summary>
+
+In the export file, rows from a `providers.custom` definition appear under `providers["quota-providers"]` and keep their stable `sourceId`:
+
+```json
+{
+  "sourceId": "openrouter-primary",
+  "renderType": "percent",
+  "percentRemaining": 40
+}
+```
+
+The provider also includes a summary for every configured source:
+
+```json
+"sources": [
+  {
+    "id": "openrouter-primary",
+    "providerId": "openrouter",
+    "status": "ok",
+    "entryCount": 1
+  }
+]
+```
+
+Each summary is exactly `id`, effective `providerId`, coarse `status`, and `entryCount`. A source can be `ok` after producing valid rows while failed mapping candidates can still make the aggregate provider `partial`.
+
+</details>
 
 <details>
 <summary><strong>Small JSON example</strong></summary>

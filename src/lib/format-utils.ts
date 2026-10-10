@@ -1,6 +1,6 @@
 /**
  * Small text helpers for the reports, the dialog tables and the providers: clamping, padding,
- * wrapping, bars, token counts, amounts and times.
+ * wrapping, bars, amounts and times.
  */
 
 export type PercentDisplayMode = "remaining" | "used";
@@ -68,28 +68,7 @@ export function bar(percentRemaining: number, width: number): string {
   return "█".repeat(filled) + "░".repeat(empty);
 }
 
-/**
- * Format a token count with K/M suffix for compactness.
- *
- * Examples:
- * - 500 -> "500"
- * - 1500 -> "1.5K"
- * - 15000 -> "15K"
- * - 1500000 -> "1.5M"
- */
-export function formatTokenCount(count: number): string {
-  if (count >= 1_000_000) {
-    return `${(count / 1_000_000).toFixed(1)}M`;
-  }
-  if (count >= 10_000) {
-    return `${(count / 1_000).toFixed(0)}K`;
-  }
-  if (count >= 1_000) {
-    return `${(count / 1_000).toFixed(1)}K`;
-  }
-  return String(count);
-}
-
+/** A dollar amount with two decimals ("$12.50"); "$0.00" for a non-finite number. */
 export function fmtUsdAmount(n: number): string {
   if (!Number.isFinite(n)) return "$0.00";
   return `$${n.toFixed(2)}`;

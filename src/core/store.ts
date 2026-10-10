@@ -18,9 +18,14 @@
  *   an account name are numbered here ("Pro", "Pro 2"), by login, so the numbers stay put;
  *   numbers skip names other rows already have.
  * - When a quota window resets between two checks, a reset notice is recorded once.
+ * - A fetch may bring its provider's part of the export file; the last check's part is kept
+ *   in memory only, never in the file.
+ * - Subscribers hear of every change: a fetch, the rows read from the file at the start, and a
+ *   change in which providers are on.
  * - Reads from OpenCode and provider fetches have time limits, so `dispose` always ends.
  */
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import type { QuotaExportProvider } from "../lib/quota-export-types.js";
 import { classifyError } from "./errors.js";
 import {
   joinNotices,
@@ -64,6 +69,8 @@ export type ProviderFetch = {
   rowLogins?: string[];
   error?: QuotaError;
   debug: DebugDetail[];
+  /** This check's part of the export file (version 2). */
+  exportPart?: QuotaExportProvider;
 };
 
 /** Whose rows a fetch returns. */
@@ -125,7 +132,7 @@ export type QuotaStore = {
   dispose(): Promise<void>;
 };
 
-type Entry = SavedEntry & { persist: boolean };
+type Entry = SavedEntry & { persist: boolean; exportPart?: QuotaExportProvider };
 
 /** Where a provider's rows live for its current identity. */
 type ResolvedKey = { key: string; persist: boolean };
@@ -326,6 +333,12 @@ export function createQuotaStore(deps: QuotaStoreDeps): QuotaStore {
   let loaded: Promise<void> | undefined;
   let writing: Promise<void> | undefined;
   let writeAgain = false;
+  /** Names this store in its snapshots, so a TUI can tell a restarted server apart. */
+  const serverId = randomUUID();
+  /** The last snapshot's revision; each next snapshot gets one more. */
+  let revision = 0;
+  /** The provider ids subscribers last heard of; undefined until the first snapshot. */
+  let heardProviders: string | undefined;
 
   function track<T>(promise: Promise<T>): Promise<T> {
     tasks.add(promise);
@@ -365,7 +378,7 @@ export function createQuotaStore(deps: QuotaStoreDeps): QuotaStore {
 
   async function writeFile(file: string): Promise<void> {
     const saved = new Map<string, SavedEntry>();
-    for (const [key, { persist: keep, ...entry }] of entries) {
+    for (const [key, { persist: keep, exportPart: _memoryOnly, ...entry }] of entries) {
       if (keep) saved.set(key, entry);
     }
     try {
@@ -422,7 +435,10 @@ export function createQuotaStore(deps: QuotaStoreDeps): QuotaStore {
         keys.set(provider.id, await resolveKey(provider));
       }),
     );
-    return { generation: startedIn, source, keys };
+    const operation = { generation: startedIn, source, keys };
+    // The rows read from the file, or a provider turned on or off, are news to subscribers.
+    if (providerIdsOf(operation) !== heardProviders) emit(operation);
+    return operation;
   }
 
   /** The snapshot an operation sees; a stale one shows no rows (whose they are is unknown). */
@@ -445,9 +461,18 @@ export function createQuotaStore(deps: QuotaStoreDeps): QuotaStore {
         ...(entry?.error === undefined ? {} : { error: entry.error }),
         refreshing: fetching.has(provider.id),
         debug: entry?.debug ?? [],
+        ...(entry?.exportPart === undefined ? {} : { exportPart: entry.exportPart }),
       };
     });
-    const snapshot: QuotaSnapshot = { version: 6, providers, resetNotices, generatedAtMs: nowMs };
+    revision += 1;
+    const snapshot: QuotaSnapshot = {
+      version: 6,
+      providers,
+      resetNotices,
+      generatedAtMs: nowMs,
+      serverId,
+      revision,
+    };
     const providerIdsForModel = operation.source.providerIdsForModel;
     if (model && (model.id || model.providerID) && providerIdsForModel) {
       const shown = new Set(providers.map((provider) => provider.providerId));
@@ -456,8 +481,13 @@ export function createQuotaStore(deps: QuotaStoreDeps): QuotaStore {
     return snapshot;
   }
 
+  function providerIdsOf(operation: Operation): string {
+    return JSON.stringify(operation.source.providers.map((provider) => provider.id));
+  }
+
   function emit(operation: Operation): void {
     if (listeners.size === 0 || !isCurrent(operation)) return;
+    heardProviders = providerIdsOf(operation);
     const snapshot = buildSnapshot(operation);
     for (const listener of listeners) {
       try {
@@ -497,6 +527,7 @@ export function createQuotaStore(deps: QuotaStoreDeps): QuotaStore {
       // Any error backs off, also when only one of several logins failed.
       failures: error === undefined ? 0 : (previous?.failures ?? 0) + 1,
       debug: result.debug,
+      ...(result.exportPart === undefined ? {} : { exportPart: result.exportPart }),
       notices,
       resetSeenAtMs: gotRows
         ? resetSeenTimes(previous, rows, nowMs)

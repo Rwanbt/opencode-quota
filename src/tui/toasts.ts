@@ -3,6 +3,10 @@
  * the display settings say so: after compaction and when every provider fails by default;
  * after each reply, after a question, and on a limit reset only when turned on. Toasts are
  * plain text (OpenCode colors only their border).
+ *
+ * Reset notices that arrive together show as one toast. While a turn's toast is being made,
+ * they wait and show after it, so the turn's toast does not replace them at once. When the TUI
+ * leaves its server, waiting notices are dropped unshown, so a later snapshot can bring them.
  */
 import type { QuotaSnapshot, ResetNotice } from "../core/types.js";
 import { WINDOWS } from "../core/windows.js";
@@ -33,10 +37,15 @@ export type ToastHost = {
 };
 
 export type Toasts = {
-  /** A turn ended in `sessionID`: refresh quota, then show the toast the settings ask for. */
+  /**
+   * A turn ended in `sessionID`: refresh quota, then show the toast the settings ask for,
+   * then the reset notices that arrived meanwhile.
+   */
   afterTurn(trigger: TurnEnd, sessionID: string): Promise<void>;
-  /** Shows the reset notices of a snapshot that this TUI has not shown yet. */
+  /** Shows the reset notices of a snapshot that this TUI has not shown yet, in one toast. */
   showResetNotices(snapshot: QuotaSnapshot): void;
+  /** The TUI left its server: drops the notices still waiting, as not shown. */
+  cancel(): void;
 };
 
 function wantsTurnToast(display: DisplaySettings, trigger: TurnEnd, anyLow: boolean): boolean {
@@ -61,50 +70,74 @@ export function createToasts(host: ToastHost): Toasts {
   const shownNotices = new Set<string>();
   /** The "every provider fails" toast shows once until some provider answers again. */
   let allFailShown = false;
+  /** Turns whose toast is being made; reset notices wait for them. */
+  let turnsRunning = 0;
+  let waitingNotices: Array<{ id: string; message: string }> = [];
+
+  function showNotices(): void {
+    if (turnsRunning > 0 || waitingNotices.length === 0) return;
+    host.show({
+      variant: "success",
+      title: "Quota available",
+      message: waitingNotices.map((notice) => notice.message).join("\n"),
+      duration: host.display().toast.seconds * 1000,
+    });
+    waitingNotices = [];
+  }
+
+  async function turnToast(trigger: TurnEnd, sessionID: string): Promise<void> {
+    const snapshot = await host.quota.refresh("turn", sessionID);
+    const display = host.display();
+    if (!snapshot || !display.surfaces.toast.enabled) return;
+    const words = snapshot.words ?? DEFAULT_WORDS;
+    const nowMs = now();
+    const groups = visibleGroups(snapshot, display, "toast", words);
+    const allFail =
+      snapshot.providers.length > 0 && snapshot.providers.every((provider) => provider.error);
+    if (!allFail) allFailShown = false;
+    const anyLow = groups.some((group) =>
+      group.rows.some(
+        ({ row }) =>
+          row.percentRemaining !== undefined &&
+          levelOf(row.percentRemaining, display.thresholds) !== "good",
+      ),
+    );
+    const duration = display.toast.seconds * 1000;
+    if (wantsTurnToast(display, trigger, anyLow)) {
+      const message = plainLines({
+        groups,
+        words,
+        nowMs,
+        ...(display.toast.sessionTokens && snapshot.sessionTokens
+          ? { sessionTokens: snapshot.sessionTokens }
+          : {}),
+      }).join("\n");
+      if (message) host.show({ variant: "info", title: TOAST_TITLE, message, duration });
+      return;
+    }
+    if (allFail && display.toast.whenAllFail && !allFailShown) {
+      allFailShown = true;
+      const message = plainLines({ groups: groups.filter((group) => group.error), words, nowMs });
+      if (message.length > 0) {
+        host.show({
+          variant: "error",
+          title: TOAST_TITLE,
+          message: message.join("\n"),
+          duration,
+        });
+      }
+    }
+  }
 
   return {
     async afterTurn(trigger, sessionID) {
       if (host.isChildSession(sessionID)) return;
-      const snapshot = await host.quota.refresh("turn", sessionID);
-      const display = host.display();
-      if (!snapshot || !display.surfaces.toast.enabled) return;
-      const words = snapshot.words ?? DEFAULT_WORDS;
-      const nowMs = now();
-      const groups = visibleGroups(snapshot, display, "toast", words);
-      const allFail =
-        snapshot.providers.length > 0 && snapshot.providers.every((provider) => provider.error);
-      if (!allFail) allFailShown = false;
-      const anyLow = groups.some((group) =>
-        group.rows.some(
-          ({ row }) =>
-            row.percentRemaining !== undefined &&
-            levelOf(row.percentRemaining, display.thresholds) !== "good",
-        ),
-      );
-      const duration = display.toast.seconds * 1000;
-      if (wantsTurnToast(display, trigger, anyLow)) {
-        const message = plainLines({
-          groups,
-          words,
-          nowMs,
-          ...(display.toast.sessionTokens && snapshot.sessionTokens
-            ? { sessionTokens: snapshot.sessionTokens }
-            : {}),
-        }).join("\n");
-        if (message) host.show({ variant: "info", title: TOAST_TITLE, message, duration });
-        return;
-      }
-      if (allFail && display.toast.whenAllFail && !allFailShown) {
-        allFailShown = true;
-        const message = plainLines({ groups: groups.filter((group) => group.error), words, nowMs });
-        if (message.length > 0) {
-          host.show({
-            variant: "error",
-            title: TOAST_TITLE,
-            message: message.join("\n"),
-            duration,
-          });
-        }
+      turnsRunning += 1;
+      try {
+        await turnToast(trigger, sessionID);
+      } finally {
+        turnsRunning -= 1;
+        showNotices();
       }
     },
 
@@ -117,13 +150,14 @@ export function createToasts(host: ToastHost): Toasts {
           display.toast.resetNotice === "all" ||
           (display.toast.resetNotice === "weekly" && notice.window === "week");
         if (!wanted || !display.surfaces.toast.enabled || notice.atMs < startedAtMs) continue;
-        host.show({
-          variant: "success",
-          title: "Quota available",
-          message: resetMessage(notice, snapshot, display),
-          duration: display.toast.seconds * 1000,
-        });
+        waitingNotices.push({ id: notice.id, message: resetMessage(notice, snapshot, display) });
       }
+      showNotices();
+    },
+
+    cancel() {
+      for (const notice of waitingNotices) shownNotices.delete(notice.id);
+      waitingNotices = [];
     },
   };
 }

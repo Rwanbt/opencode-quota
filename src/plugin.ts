@@ -5,7 +5,9 @@
  * the export file and the OpenTelemetry gauges from each snapshot. Inside OpenCode, logins are
  * read only here, through OpenCode's integration API.
  */
+import { randomUUID } from "node:crypto";
 import { Plugin } from "@opencode/plugin";
+import { quotaAgentTools } from "./agent-tools.js";
 import { snapshotFilePath } from "./core/persist.js";
 import {
   loadProviderSource,
@@ -49,9 +51,9 @@ import { QuotaRpc, type QuotaRpcCommandOutput } from "./rpc.js";
 import {
   acknowledgeDisplayImport,
   convertV5,
-  type DisplayImport,
   type LoadedSettings,
   loadSettings,
+  type PendingDisplayImport,
   pendingDisplayImport,
   saveSettings,
   type V5Conversion,
@@ -135,10 +137,11 @@ export const QuotaToastPlugin = Plugin.define({
     // holds the settings it read last; every reader takes them from here.
     const conversion = await convertV5Settings();
     let loaded: LoadedSettings = await loadSettings({ projectDir });
-    // The v5 looks the conversion found, sent with every snapshot until a TUI applied them.
-    // An empty one still tells the TUI that the settings were converted.
-    let displayImport: DisplayImport | undefined =
-      (await pendingDisplayImport()) ?? (conversion?.written ? {} : undefined);
+    // The v5 looks the conversion found, sent with every snapshot until a TUI applied them and
+    // acknowledged their id. Empty looks still tell the TUI that the settings were converted.
+    let displayImport: PendingDisplayImport | undefined =
+      (await pendingDisplayImport()) ??
+      (conversion?.written ? { id: randomUUID(), display: {} } : undefined);
 
     // In auto mode, /quota_status reports the providers it detected. The slash commands and
     // the tool add them to the global OpenCode config; the TUI palette (via RPC) never writes it.
@@ -219,9 +222,11 @@ export const QuotaToastPlugin = Plugin.define({
         },
       };
     };
-    // Every snapshot a client gets carries the server's words and the v5 looks still to apply.
+    // Every snapshot a client gets carries the server's words and the v5 looks still to apply,
+    // and none of the export parts the server keeps for the export file.
     const forClients = (snapshot: QuotaSnapshot): QuotaSnapshot => ({
       ...snapshot,
+      providers: snapshot.providers.map(({ exportPart: _serverOnly, ...provider }) => provider),
       words: loaded.settings.words,
       ...(displayImport ? { displayImport } : {}),
     });
@@ -293,10 +298,10 @@ export const QuotaToastPlugin = Plugin.define({
           if (result.ok) applySettings(await loadSettings({ projectDir }));
           return { ok: result.ok, issues: result.issues };
         }),
-      acknowledgeDisplayImport: () =>
+      acknowledgeDisplayImport: (input) =>
         logRpcFailure("acknowledgeDisplayImport", async () => {
-          displayImport = undefined;
-          await acknowledgeDisplayImport();
+          if (displayImport?.id === input.id) displayImport = undefined;
+          await acknowledgeDisplayImport(input.id);
           return {};
         }),
     });
@@ -336,6 +341,11 @@ export const QuotaToastPlugin = Plugin.define({
     applySettings(await loadSettings({ projectDir }));
 
     await ctx.tool.transform((editor) => {
+      // Agent tools: read and change the settings file, add, test and remove custom providers.
+      const host = {
+        openCodeProviderIds: async () => (await ctx.provider.list()).data.map(({ id }) => id),
+      };
+      for (const tool of quotaAgentTools(host)) editor.add(tool);
       editor.add({
         name: "quota_status",
         description: "Diagnostics for toast, TUI, pricing and local storage.",
