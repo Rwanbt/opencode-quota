@@ -6,11 +6,7 @@ import { parse as parseJsonc } from "jsonc-parser";
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import type { QuotaSnapshot } from "../src/core/types.js";
 import type { UsageReport } from "../src/core/usage.js";
-import {
-  messageDocument,
-  type ReportDocument,
-  renderPlainTextReport,
-} from "../src/lib/report-document.js";
+import { messageDocument } from "../src/lib/report-document.js";
 import { createFakeIntegration } from "./helpers/fake-integration.js";
 import {
   createAlibabaAuthModuleMock,
@@ -173,18 +169,20 @@ describe("server quota RPC", () => {
     await rm(TEST_RUNTIME_ROOT, { recursive: true, force: true, maxRetries: 3 });
   });
 
-  it("registers the quota RPC with its seven methods during setup", async () => {
+  it("registers the quota RPC with its nine methods during setup", async () => {
     const { QuotaRpc } = await import("../src/rpc.js");
     const { definition, handlers } = await setupServer();
 
     expect(definition).toBe(QuotaRpc);
     expect(definition.id).toBe("slkiser.opencode-quota");
     expect(Object.keys(definition.methods)).toEqual([
-      "command",
       "snapshot",
       "refresh",
       "notices",
+      "noticeList",
+      "status",
       "usage",
+      "downloadPrices",
       "saveSettings",
       "acknowledgeDisplayImport",
     ]);
@@ -407,6 +405,189 @@ describe("server quota RPC", () => {
     expect(later.snapshot).not.toHaveProperty("displayImport");
   });
 
+  it("drops a check that ran across a settings change that turned its provider off", async () => {
+    useSettings({
+      providers: { enabled: ["copilot", "openai"] },
+      checking: { minIntervalMs: 60_000 },
+    });
+    let answerCopilot: (result: unknown) => void = () => {};
+    const slowCopilot = vi.fn(
+      () =>
+        new Promise((resolve) => {
+          answerCopilot = resolve;
+        }),
+    );
+    mocks.getProviders.mockReturnValue([
+      {
+        id: "copilot",
+        cachePolicy: { kind: "account-neutral" },
+        isAvailable: vi.fn().mockResolvedValue(true),
+        fetch: slowCopilot,
+      },
+      {
+        id: "openai",
+        cachePolicy: { kind: "account-neutral" },
+        isAvailable: vi.fn().mockResolvedValue(true),
+        fetch: vi.fn().mockResolvedValue({
+          attempted: true,
+          entries: [{ accounting: TEST_ACCOUNTING, name: "OpenAI", percentRemaining: 60 }],
+          errors: [],
+        }),
+      },
+    ]);
+    const { call, emit } = await setupServer();
+    const providerIds = (snapshot: QuotaSnapshot) =>
+      snapshot.providers.map((provider) => provider.providerId);
+    const emitted = () =>
+      emit.mock.calls.map(([, data]) =>
+        providerIds((data as { snapshot: QuotaSnapshot }).snapshot),
+      );
+    const running = call("refresh", { reason: "manual" }) as Promise<{ snapshot: QuotaSnapshot }>;
+    await vi.waitFor(() => expect(slowCopilot).toHaveBeenCalledOnce());
+    emit.mockClear();
+
+    useSettings({ providers: { enabled: ["openai"] }, checking: { minIntervalMs: 60_000 } });
+    await vi.waitFor(() => expect(emitted().at(-1)).toEqual(["openai"]), { timeout: 5_000 });
+    answerCopilot({
+      attempted: true,
+      entries: [{ accounting: TEST_ACCOUNTING, name: "Copilot", percentRemaining: 70 }],
+      errors: [],
+    });
+
+    // The refresh asked for before the change answers with the settings of now.
+    expect(providerIds((await running).snapshot)).toEqual(["openai"]);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(emitted().filter((ids) => ids.includes("copilot"))).toEqual([]);
+    const now = (await call("snapshot", {})) as { snapshot: QuotaSnapshot };
+    expect(providerIds(now.snapshot)).toEqual(["openai"]);
+  });
+
+  it("checks with the price list the settings choose, and again at once when it changes", async () => {
+    useSettings({ pricing: { source: "bundled", autoRefreshDays: 5 } });
+    const pricing = await import("../src/lib/modelsdev-pricing.js");
+    const seen: string[] = [];
+    const fetch = vi.fn(async () => {
+      const days = pricing.getPricingRefreshPolicy().maxAgeMs / (24 * 60 * 60 * 1000);
+      seen.push(`${pricing.getPricingSnapshotSelection()} ${days}`);
+      return { attempted: true, entries: [], errors: [] };
+    });
+    mocks.getProviders.mockReturnValue([
+      { id: "copilot", isAvailable: vi.fn().mockResolvedValue(true), fetch },
+    ]);
+    const { call } = await setupServer();
+
+    await call("refresh", { reason: "poll" });
+    expect(seen).toEqual(["bundled 5"]);
+
+    // Local estimates use prices: another price list checks every provider again.
+    useSettings({
+      checking: { minIntervalMs: 60_000 },
+      pricing: { source: "runtime", autoRefreshDays: 2 },
+    });
+    await vi.waitFor(() => expect(seen).toEqual(["bundled 5", "runtime 2"]), { timeout: 5_000 });
+  });
+
+  it("checks again at once when the time limit changes, also when set to its default", async () => {
+    useSettings({ checking: { minIntervalMs: 60_000 } });
+    const seen: unknown[] = [];
+    const fetch = vi.fn(async (ctx: { config: Record<string, unknown> }) => {
+      seen.push([ctx.config.requestTimeoutMs, ctx.config.requestTimeoutMsConfigured]);
+      if (seen.length === 1) throw new Error("Request timeout after 5s");
+      return {
+        attempted: true,
+        entries: [{ accounting: TEST_ACCOUNTING, name: "Copilot", percentRemaining: 40 }],
+        errors: [],
+      };
+    });
+    mocks.getProviders.mockReturnValue([
+      {
+        id: "copilot",
+        cachePolicy: { kind: "account-neutral" },
+        isAvailable: vi.fn().mockResolvedValue(true),
+        fetch,
+      },
+    ]);
+    const { call } = await setupServer();
+    const failed = (await call("refresh", { reason: "manual" })) as { snapshot: QuotaSnapshot };
+    expect(failed.snapshot.providers[0]?.error?.code).toBe("timeout");
+
+    // The default time limit, now set in the file: providers use a configured limit.
+    useSettings({ checking: { minIntervalMs: 60_000, requestTimeoutMs: 5_000 } });
+    await vi.waitFor(() => expect(seen).toHaveLength(2), { timeout: 5_000 });
+    expect(seen[1]).toEqual([5_000, true]);
+
+    // A longer limit after the timeout: no interval or backoff waits for it.
+    useSettings({ checking: { minIntervalMs: 60_000, requestTimeoutMs: 30_000 } });
+    await vi.waitFor(() => expect(seen).toHaveLength(3), { timeout: 5_000 });
+    expect(seen[2]).toEqual([30_000, true]);
+    const now = (await call("snapshot", {})) as { snapshot: QuotaSnapshot };
+    expect(now.snapshot.providers[0]).not.toHaveProperty("error");
+  });
+
+  it("checks no provider again when the file lists the same check settings in another order", async () => {
+    useSettings({ checking: { minIntervalMs: 60_000, requestTimeoutMs: 5_000 } });
+    const fetch = vi.fn(async () => ({
+      attempted: true,
+      entries: [{ accounting: TEST_ACCOUNTING, name: "Copilot", percentRemaining: 40 }],
+      errors: [],
+    }));
+    mocks.getProviders.mockReturnValue([
+      {
+        id: "copilot",
+        cachePolicy: { kind: "account-neutral" },
+        isAvailable: vi.fn().mockResolvedValue(true),
+        fetch,
+      },
+    ]);
+    const { call, emit } = await setupServer();
+    await call("refresh", { reason: "manual" });
+    expect(fetch).toHaveBeenCalledOnce();
+
+    // The same check settings in another order, and new words: the words show at once.
+    useSettings({
+      checking: { requestTimeoutMs: 5_000, minIntervalMs: 60_000 },
+      words: { percent: "used" },
+    });
+    await vi.waitFor(
+      () => expect(emit).toHaveBeenCalledWith("changed", { snapshot: withPercentWords("used") }),
+      { timeout: 5_000 },
+    );
+
+    // A refresh joins any check still running; the provider is not due for a minute.
+    await call("refresh", { reason: "poll" });
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+
+  it("offers the v5 looks a save kept when it finished the conversion", async () => {
+    // A v5 sidecar that does not parse, and v5 settings in opencode.json: the start converts
+    // them in memory only, and the first save writes settings.jsonc and keeps the looks.
+    await rm(SETTINGS_FILE);
+    await writeFile(`${TEST_RUNTIME_ROOT}/config/opencode-quota/quota-toast.jsonc`, "{ broken");
+    await writeFile(
+      `${TEST_RUNTIME_ROOT}/config/opencode.json`,
+      JSON.stringify({
+        experimental: { quotaToast: { enabledProviders: ["copilot"], showOnIdle: false } },
+      }),
+    );
+    const { call, emit } = await setupServer();
+    const before = (await call("snapshot", {})) as { snapshot: QuotaSnapshot };
+    expect(before.snapshot).not.toHaveProperty("displayImport");
+    emit.mockClear();
+
+    await expect(
+      call("saveSettings", { patch: { words: { percent: "used" } } }),
+    ).resolves.toMatchObject({ ok: true });
+
+    const offered = { id: expect.any(String), display: { toast: { afterReply: "off" } } };
+    await vi.waitFor(() =>
+      expect(emit).toHaveBeenCalledWith("changed", {
+        snapshot: expect.objectContaining({ displayImport: offered }),
+      }),
+    );
+    const after = (await call("snapshot", {})) as { snapshot: QuotaSnapshot };
+    expect(after.snapshot.displayImport).toEqual(offered);
+  });
+
   it("names the providers of the session's model in the snapshot", async () => {
     useSettings({ providers: { enabled: ["copilot", "openai"] } });
     mocks.getProviders.mockReturnValue(
@@ -536,11 +717,17 @@ describe("server quota RPC", () => {
   });
 
   it("serves the Home notice line only when the Home notice is on", async () => {
-    const { formatMaintainerAnnouncementHomeCountLine, getMaintainerAnnouncementsSummary } =
-      await import("../src/lib/maintainer-announcements.js");
-    const expected = formatMaintainerAnnouncementHomeCountLine(
-      getMaintainerAnnouncementsSummary({ enabledProviders: ["copilot"] }).activeCount,
+    const { BUNDLED_MAINTAINER_ANNOUNCEMENTS, getMaintainerAnnouncementsSummary } = await import(
+      "../src/lib/maintainer-announcements.js"
     );
+    const active = getMaintainerAnnouncementsSummary({
+      enabledProviders: ["copilot"],
+      announcements: BUNDLED_MAINTAINER_ANNOUNCEMENTS,
+    }).activeCount;
+    const expected =
+      active === 0
+        ? ""
+        : `Notice: ${active} unread maintainer ${active === 1 ? "notice" : "notices"}, see /quota → Notices.`;
     useSettings({ announcements: { enabled: true, home: true, homeFrequency: "always" } });
     await expect((await setupServer()).call("notices", {})).resolves.toEqual({
       homeLine: expected,
@@ -548,6 +735,60 @@ describe("server quota RPC", () => {
 
     useSettings({ announcements: { enabled: true, home: false } });
     await expect((await setupServer()).call("notices", {})).resolves.toEqual({ homeLine: "" });
+  });
+
+  it("lists the notices, saves their read state and the notice settings", async () => {
+    useSettings({ announcements: { enabled: true, home: true } });
+    const { call } = await setupServer();
+    const first = (await call("noticeList", {})) as {
+      enabled: boolean;
+      home: boolean;
+      notices: Array<{ id: string; read: boolean }>;
+    };
+    expect(first).toMatchObject({ enabled: true, home: true });
+    const ids = first.notices.map((notice) => notice.id);
+
+    const read = (await call("noticeList", { read: ids, home: false })) as typeof first;
+    expect(read.home).toBe(false);
+    expect(read.notices.every((notice) => notice.read)).toBe(true);
+    const saved = await readFile(SETTINGS_FILE, "utf8");
+    expect(saved).toContain('"home": false');
+
+    // With notices off, none is listed.
+    await expect(call("noticeList", { enabled: false })).resolves.toEqual({
+      enabled: false,
+      home: false,
+      notices: [],
+    });
+  });
+
+  it("serves the /quota_status report as text, and never writes the global config", async () => {
+    useSettings({ providers: { enabled: "auto" } });
+    const dialogModule = await import("../src/lib/quota-dialog-commands.js");
+    vi.spyOn(dialogModule, "buildQuotaDialogCommandOutput").mockImplementation(async (params) => {
+      await params.onDetectedProviderIds?.(["copilot"]);
+      return {
+        state: "output",
+        command: params.command,
+        title: "OpenCode Quota Status",
+        output: "status \u001b[31mreport",
+        document: messageDocument("status"),
+      };
+    });
+    const { call, commands } = await setupServer();
+
+    await expect(call("status", { sessionID: "session-1" })).resolves.toEqual({
+      text: "status report",
+    });
+    expect(mocks.reconcileDetectedProvidersInGlobalConfig).not.toHaveBeenCalled();
+
+    // The slash command of Web and Desktop adds the detected providers.
+    const slash = commands.find((command) => command.name === "quota_status");
+    await slash?.execute({ sessionID: "session-1", prompt: { text: "" } });
+    expect(mocks.reconcileDetectedProvidersInGlobalConfig).toHaveBeenCalledWith({
+      configRootDir: process.cwd(),
+      detectedProviderIds: ["copilot"],
+    });
   });
 
   it("writes the export file from each new snapshot only when the export is enabled", async () => {
@@ -576,69 +817,66 @@ describe("server quota RPC", () => {
     expect(JSON.stringify(enabled.emit.mock.calls)).not.toContain("exportPart");
   });
 
-  it("runs palette commands on the server and returns their output", async () => {
-    useSettings();
+  it.each([
+    {
+      name: "downloads new prices whatever their age, and says when the settings keep the built-in ones",
+      source: "bundled" as const,
+      refresh: { attempted: true, updated: true, state: { version: 1, updatedAt: 1 } },
+      answer: {
+        ok: true,
+        message:
+          "Downloaded new prices. Usage keeps the built-in prices: the pricing source setting is bundled.",
+      },
+    },
+    {
+      name: "reports a failed price download with its error",
+      source: "auto" as const,
+      refresh: {
+        attempted: true,
+        updated: false,
+        reason: "fetch_failed",
+        error: "network down",
+        state: { version: 1, updatedAt: 1 },
+      },
+      answer: { ok: false, message: "Couldn't download new prices: network down." },
+    },
+  ])("$name", async ({ source, refresh, answer }) => {
+    useSettings({ pricing: { source, autoRefreshDays: 3 } });
+    mocks.maybeRefreshPricingSnapshot.mockResolvedValue(refresh);
     const { call } = await setupServer();
 
-    const output = (await call("command", { command: "quota", sessionID: "session-1" })) as {
-      output: string;
-      document: ReportDocument;
-    };
-    expect(output).toEqual(
-      expect.objectContaining({
-        state: "output",
-        command: "quota",
-        title: "OpenCode Quota",
-        dialogSize: "xlarge",
-      }),
-    );
-    expect(output.output).toContain("Copilot");
-    expect(renderPlainTextReport(output.document)).toBe(output.output);
-  });
-
-  it("never writes detected providers to the global config from the palette", async () => {
-    useSettings({ providers: { enabled: "auto" } });
-    const dialogModule = await import("../src/lib/quota-dialog-commands.js");
-    vi.spyOn(dialogModule, "buildQuotaDialogCommandOutput").mockImplementation(async (params) => {
-      await params.onDetectedProviderIds?.(["copilot"]);
-      return {
-        state: "output",
-        command: params.command,
-        title: "OpenCode Quota Status",
-        output: "status",
-        document: messageDocument("status"),
-        dialogSize: "xlarge",
-      };
-    });
-    const { call, commands } = await setupServer();
-
-    await call("command", { command: "quota_status", sessionID: "session-1" });
-    expect(mocks.reconcileDetectedProvidersInGlobalConfig).not.toHaveBeenCalled();
-
-    const slash = commands.find((command) => command.name === "quota_status");
-    await slash?.execute({ sessionID: "session-1", prompt: { text: "" } });
-    expect(mocks.reconcileDetectedProvidersInGlobalConfig).toHaveBeenCalledWith({
-      configRootDir: process.cwd(),
-      detectedProviderIds: ["copilot"],
+    await expect(call("downloadPrices", {})).resolves.toEqual(answer);
+    expect(mocks.maybeRefreshPricingSnapshot).toHaveBeenCalledWith({
+      reason: "manual",
+      force: true,
+      snapshotSelection: source,
+      allowRefreshWhenSelectionBundled: true,
     });
   });
 
-  it("returns a failed palette command as output instead of an RPC error", async () => {
+  it("posts the /quota limits and notices of Web and Desktop into the chat", async () => {
     useSettings();
-    const dialogModule = await import("../src/lib/quota-dialog-commands.js");
-    vi.spyOn(dialogModule, "buildQuotaDialogCommandOutput").mockRejectedValue(
-      new Error("quota \u001b[31mbroke"),
-    );
-    const { call } = await setupServer();
+    const { ctx, commands } = await setupServer();
 
-    await expect(call("command", { command: "quota" })).resolves.toEqual({
-      state: "output",
-      command: "quota",
-      title: "OpenCode Quota",
-      output: "quota broke",
-      document: messageDocument("quota broke"),
-      dialogSize: "xlarge",
-    });
+    await commands
+      .find((command) => command.name === "quota")
+      ?.execute({
+        sessionID: "session-1",
+        prompt: { text: "" },
+      });
+
+    expect(ctx.session.wait).toHaveBeenCalledWith({ sessionID: "session-1" });
+    const [message] = ctx.session.prompt.mock.calls[0] as [
+      { text: string; metadata: Record<string, { command: string }> },
+    ];
+    expect(message.text.split("\n")).toEqual([
+      "[OpenCode Quota report]",
+      "Quota",
+      "Copilot Plan        81% left",
+      "[End of OpenCode Quota report]",
+    ]);
+    expect(message.metadata.opencodeQuota?.command).toBe("quota");
+    expect(commands.map((command) => command.name)).not.toContain("quota_announcements");
   });
 
   it("treats a session the server cannot find as a session without a model", async () => {
@@ -671,11 +909,11 @@ describe("server quota RPC", () => {
       },
     ]);
     const project = `${TEST_RUNTIME_ROOT}/project`;
-    const { call, handlers } = await setupServer(undefined, project);
+    const { call } = await setupServer(undefined, project);
 
     // The store's refresh, then /quota_status, which checks every provider itself.
     await call("refresh", { reason: "manual" });
-    await handlers.command({ command: "quota_status", sessionID: "session-1" }, callContext);
+    await call("status", { sessionID: "session-1" });
 
     expect(workspaceRoots).toHaveLength(2);
     expect(new Set(workspaceRoots)).toEqual(new Set([project]));

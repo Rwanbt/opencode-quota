@@ -7,9 +7,11 @@
  * - Refreshes are single-flight per provider and keep a minimum interval (30 s after a turn,
  *   none for a manual or retry refresh); failures back off from 1 to 15 minutes, or until the
  *   provider's own retry time.
- * - Every snapshot, refresh and login-change pass is one operation: it reads the providers and
- *   who each one is signed in as once, and keeps both to its end. A login change starts a new
- *   generation; an operation of an older one stores nothing and shows no rows.
+ * - Every snapshot, refresh, login-change and settings-change pass is one operation: it reads
+ *   the providers and who each one is signed in as once, and keeps both to its end. A login or
+ *   settings change starts a new generation: an operation of an older one stores nothing and
+ *   tells subscribers nothing, and a snapshot or refresh it was answering answers with the
+ *   providers and rows of the new one.
  * - Rows and reset notices belong to an identity (account plus provider settings). Those of
  *   another identity are never shown; those whose identity can't be saved stay in memory and
  *   go on a login change.
@@ -97,6 +99,8 @@ export type StoreSource = {
   minIntervalMs: number;
   /** The providers serving a session's model, from the same settings read as `providers`. */
   providerIdsForModel?: (model: SessionModel) => string[];
+  /** By provider id, the row id prefixes serving a session's model (`currentModelRowPrefixes`). */
+  rowPrefixesForModel?: (model: SessionModel) => Record<string, string[]>;
 };
 
 export type RefreshReason = "poll" | "turn" | "manual" | "retry";
@@ -128,6 +132,12 @@ export type QuotaStore = {
   subscribe(listener: (snapshot: QuotaSnapshot) => void): () => void;
   /** A login changed: identities are resolved again and memory-only rows are dropped. */
   invalidateIdentity(): void;
+  /**
+   * The settings changed: running work is superseded and the providers are read again. With
+   * `recheck` (another time limit, interval or price list), every provider's backoff is cleared
+   * and each one is checked again at once.
+   */
+  settingsChanged(options: { recheck: boolean }): void;
   /** Refuses new work and waits for running operations and the last file write. */
   dispose(): Promise<void>;
 };
@@ -473,10 +483,11 @@ export function createQuotaStore(deps: QuotaStoreDeps): QuotaStore {
       serverId,
       revision,
     };
-    const providerIdsForModel = operation.source.providerIdsForModel;
+    const { providerIdsForModel, rowPrefixesForModel } = operation.source;
     if (model && (model.id || model.providerID) && providerIdsForModel) {
       const shown = new Set(providers.map((provider) => provider.providerId));
       snapshot.currentModelProviderIds = providerIdsForModel(model).filter((id) => shown.has(id));
+      if (rowPrefixesForModel) snapshot.currentModelRowPrefixes = rowPrefixesForModel(model);
     }
     return snapshot;
   }
@@ -599,10 +610,35 @@ export function createQuotaStore(deps: QuotaStoreDeps): QuotaStore {
     );
   }
 
+  /** An operation of the current generation: a login or settings change meanwhile reads again. */
+  async function prepareCurrent(): Promise<Operation> {
+    for (;;) {
+      const operation = await prepare();
+      if (isCurrent(operation)) return operation;
+    }
+  }
+
+  /**
+   * Starts a new generation: running operations store and tell nothing more, and a new pass
+   * reads the providers and logins, tells subscribers, then refreshes for `reason`.
+   */
+  function supersede(reason: RefreshReason, failure: string): void {
+    generation += 1;
+    inFlight.clear();
+    // Subscribers see the new providers and rows (or none) before any fetch, then fresh ones.
+    start(async () => {
+      const operation = await prepare();
+      emit(operation);
+      await runRefresh(operation, { reason });
+    }).catch((error) => {
+      log(`${failure}: ${errorMessage(error)}`);
+    });
+  }
+
   return {
     snapshot(options = {}) {
       return start(async () => {
-        const operation = await prepare();
+        const operation = await prepareCurrent();
         if (options.refresh !== false) {
           track(runRefresh(operation, { reason: "poll" })).catch((error) => {
             log(`background quota refresh failed: ${errorMessage(error)}`);
@@ -614,10 +650,13 @@ export function createQuotaStore(deps: QuotaStoreDeps): QuotaStore {
 
     refresh(options) {
       return start(async () => {
-        const operation = await prepare();
+        const operation = await prepareCurrent();
         await runRefresh(operation, options);
         await flush();
-        return buildSnapshot(operation, options.model);
+        // A login or settings change dropped what this pass fetched: the answer shows the
+        // providers and rows of now, and the new pass's rows follow as events.
+        const answering = isCurrent(operation) ? operation : await prepareCurrent();
+        return buildSnapshot(answering, options.model);
       });
     },
 
@@ -630,19 +669,21 @@ export function createQuotaStore(deps: QuotaStoreDeps): QuotaStore {
 
     invalidateIdentity() {
       if (disposed) return;
-      generation += 1;
-      inFlight.clear();
       for (const [key, entry] of entries) {
         if (!entry.persist) entries.delete(key);
       }
-      // Subscribers see the new account's rows (or none) before any fetch, then fresh ones.
-      start(async () => {
-        const operation = await prepare();
-        emit(operation);
-        await runRefresh(operation, { reason: "poll" });
-      }).catch((error) => {
-        log(`quota refresh after a login change failed: ${errorMessage(error)}`);
-      });
+      supersede("poll", "quota refresh after a login change failed");
+    },
+
+    settingsChanged({ recheck }) {
+      if (disposed) return;
+      if (!recheck) {
+        supersede("poll", "quota refresh after a settings change failed");
+        return;
+      }
+      for (const entry of entries.values()) entry.failures = 0;
+      // A manual refresh waits for no interval: every provider is checked again now.
+      supersede("manual", "quota recheck after a settings change failed");
     },
 
     async dispose() {

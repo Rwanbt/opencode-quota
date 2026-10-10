@@ -31,7 +31,10 @@ export function matchesQuotaProviderCurrentSelection(params: {
 
     return Boolean(
       params.quotaProviders?.some(
-        (source) => source.providerId === params.currentProviderID && source.modelIds === undefined,
+        (source) =>
+          source.enabled !== false &&
+          source.providerId === params.currentProviderID &&
+          source.modelIds === undefined,
       ),
     );
   }

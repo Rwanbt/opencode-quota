@@ -372,9 +372,13 @@ function providerIdsText(ids: readonly string[]): string {
 /**
  * A custom provider definition as its number, mode and model count: "custom 1 (remote-api,
  * 3 models)". Its id, provider id, URL, key, env variable and model ids are never shown. A
- * definition that tunes a maintained provider names that provider.
+ * definition that tunes a maintained provider names that provider. A switched-off definition
+ * says so and where to switch it on.
  */
 function customProviderText(definition: QuotaProviderDefinition, number: number): string {
+  if (definition.enabled === false) {
+    return `custom ${number} off (switch on in /quota_settings → Providers)`;
+  }
   const mode = definition.mode === "remote-api" ? "remote-api" : "local-estimate";
   const models = definition.modelIds
     ? countText(definition.modelIds.length, "model", "models")

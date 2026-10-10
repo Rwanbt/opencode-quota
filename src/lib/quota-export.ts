@@ -157,12 +157,14 @@ function customSourceStatuses(
   return definitions
     .filter((source) => !(MAINTAINED_LOCAL_ESTIMATE_IDS as readonly string[]).includes(source.id))
     .map((source) => {
-      const diagnostic = diagnosticsBySource.get(source.id);
+      // A switched-off definition is never fetched, so any result for it is old.
+      const diagnostic = source.enabled === false ? undefined : diagnosticsBySource.get(source.id);
       return {
         id: source.id,
         providerId: source.providerId,
         status: !diagnostic ? "unavailable" : diagnostic.outcome === "success" ? "ok" : "error",
         entryCount: diagnostic?.entryCount ?? 0,
+        ...(source.enabled === false ? { enabled: false as const } : {}),
       };
     });
 }

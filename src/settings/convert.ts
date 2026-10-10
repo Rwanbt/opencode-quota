@@ -77,7 +77,8 @@ const NO_FORMAT_STYLE =
 const DROPPED: ReadonlyMap<string, string> = new Map(
   Object.entries({
     enabled: "v6 has no switch of its own; turn the plugin off in OpenCode's plugin list",
-    tuiCommandDisplay: "TUI reports always open in a popup",
+    tuiCommandDisplay:
+      "the TUI opens /quota and /quota_status in its quota window and the other reports in a popup",
     formatStyle: NO_FORMAT_STYLE,
     toastStyle: NO_FORMAT_STYLE,
     "tuiSidebarPanel.formatStyle": NO_FORMAT_STYLE,

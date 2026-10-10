@@ -67,7 +67,8 @@ Rules:
 - Local estimates support 1–16 UTC-day or rolling request windows. Counters live under `~/.local/state/opencode/opencode-quota/quota-providers/`.
 - Automatic models.dev matching runs first. Add `pricingModelMap` only when it cannot find one clear model. `pricingModelMap` cannot override a successful automatic match.
 - If any request cannot be priced, request counts stay visible and the budget percentage is reported unavailable.
-- Credentials resolve from `apiKeyEnv`, trusted global `provider.<providerId>.options.apiKey`, then API-key logins saved in OpenCode 2 (`opencode.db`); an `apiKeyEnv` starting with `OPENCODE_QUOTA_` is the only source.
+- Credentials resolve from `apiKeyEnv`, trusted global `provider.<providerId>.options.apiKey`, then API-key logins saved in OpenCode 2 (`opencode.db`).
+- `"enabled": false` switches a definition off: it is never fetched, its key is never sent, and `/quota_status` shows it as off. Without `enabled` (or with `true`) it is on. Providers an agent adds start switched off; switch one on by setting `"enabled": true` in `opencode-quota/settings.jsonc`, or in `/quota_settings` → **Providers**.
 - Definitions run automatically with `providers.enabled: "auto"`. A list must include `custom` and every built-in provider you still want.
 - To tune maintained estimates, use the reserved `alibaba-coding-plan` ID and its window shape. Do not add a duplicate normal provider block.
 - Not accepted: project secrets, scripts, methods, custom headers, templates, executable mappings, regular expressions, JSONPath, and automatic endpoint discovery.
@@ -158,18 +159,18 @@ Provider credentials (API keys, cookies, tokens) are never set here. See [API ke
 | `words.resetDecimals`    | `1`         | `0`–`4` decimals for `decimal`. |
 | `words.detail`           | `"summary"` | `detailed` also shows supplementary accounting rows. |
 | `words.runsOut`          | `false`     | No effect: no surface shows a runs-out estimate. |
-| `words.onlyCurrentModel` | `false`     | Show only the providers that serve the session's current model, when they can be found. |
-| `words.sessionTokens`    | `"current"` | `tree` adds every subagent session to the session tokens, counted once. It does not change `/tokens_session` or `/tokens_session_all`. |
+| `words.onlyCurrentModel` | `false`     | Show only the providers that serve the session's current model, when they can be found. Of the custom providers, only those whose `providerId` and `modelIds` serve it. |
+| `words.sessionTokens`    | `"current"` | `tree` adds every subagent session to the session tokens, counted once. It does not change the `session` and `session_tree` ranges of `/quota_usage`. |
 
 ### Pricing, notices, export and telemetry
 
 | Setting                         | Default   | Meaning |
 | ------------------------------- | --------- | ------- |
-| `pricing.source`                | `"auto"`  | Token pricing for `/tokens_*`: `auto`, `bundled`, or `runtime`. |
+| `pricing.source`                | `"auto"`  | Token pricing for `/quota_usage` and the local estimates (Cursor, custom local providers): `auto`, `bundled`, or `runtime`. |
 | `pricing.autoRefreshDays`       | `7`       | Refresh local pricing after this many days. |
 | `announcements.enabled`         | `true`    | Show bundled maintainer notices. |
 | `announcements.home`            | `true`    | Show the count of active notices at the bottom of Home. |
-| `announcements.homeFrequency`   | `"daily"` | `"daily"`: show that Home line on the first Home screen of each day, for 10 minutes. `"always"`: show it on every Home screen. `/quota_announcements` always lists the notices. |
+| `announcements.homeFrequency`   | `"daily"` | `"daily"`: show that Home line on the first Home screen of each day, for 10 minutes. `"always"`: show it on every Home screen. The Notices tab of `/quota` lists every notice. |
 | `export.enabled`                | `false`   | Write a JSON file each time the quota snapshot changes. |
 | `export.path`                   | `""`      | Empty uses `$XDG_CACHE_HOME/opencode/quota-export.json`. Otherwise an absolute or `~/` path. |
 | `telemetry.enabled`             | `false`   | Publish quota and cache-age gauges through OpenCode's global OpenTelemetry `MeterProvider`. No extra provider calls. |

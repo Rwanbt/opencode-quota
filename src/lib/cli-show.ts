@@ -1,6 +1,6 @@
 /**
- * `opencode-quota show` and the frame every terminal report runs in: the settings, the
- * logins from OpenCode's database, and the providers OpenCode knows.
+ * `opencode-quota show` and the frame every terminal report runs in: the settings (prices
+ * included), the logins from OpenCode's database, and the providers OpenCode knows.
  */
 import { resolve } from "path";
 import type { ProviderSourceHost } from "../core/provider-source.js";
@@ -18,6 +18,7 @@ import { bindCredentialSource } from "./opencode-auth.js";
 import { createSqliteCredentialSource } from "./opencode-auth-sqlite.js";
 import { loadConfiguredProviderIds } from "./opencode-config-providers.js";
 import { getQuotaProviderShape } from "./provider-metadata.js";
+import { applyPricingSettings } from "./quota-dialog-commands.js";
 
 export interface RunCliShowCommandOptions {
   argv?: string[];
@@ -210,6 +211,7 @@ export async function runCliReport(params: {
     const roots = resolveCliRoots(params.cwd);
     // The terminal reads the settings as they are; only OpenCode writes the v5 conversion.
     const loaded = await loadSettings({ projectDir: roots.workspaceRoot });
+    applyPricingSettings(loaded.settings.pricing);
     const host: ProviderSourceHost = {
       client: createCliQuotaClient({
         configRootDir: roots.configRoot,

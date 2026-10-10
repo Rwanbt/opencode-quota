@@ -446,7 +446,10 @@ async function editLocked(target: ConfigWriteTargetSnapshot, plan: PlanText) {
   const original = await readTarget(target);
   // A syntax error, or a key set twice or with a dot (an edit would change another one).
   const blocking = readSettingsText(original ?? "{}").issues.find(
-    (issue) => issue.key === "$file" || [DUPLICATE_KEY, DOTTED_KEY].includes(issue.message),
+    (issue) =>
+      issue.key === "$file" ||
+      issue.message === DUPLICATE_KEY ||
+      issue.message.startsWith(DOTTED_KEY),
   );
   if (blocking) {
     const where = blocking.key === "$file" ? "" : `${blocking.key}: `;

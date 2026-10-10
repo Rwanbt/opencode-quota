@@ -97,7 +97,7 @@ describe("alibaba-coding-plan provider", () => {
     expect(computeAlibabaCodingPlanQuota as any).toHaveBeenCalledWith({ state: {}, tier: "lite" });
   });
 
-  it("passes quotaProviders request-limit tuning to the maintained provider", async () => {
+  it("passes switched-on quotaProviders request-limit tuning to the maintained provider", async () => {
     const { readAuthFileCached } = await import("../src/lib/opencode-auth.js");
     const { computeAlibabaCodingPlanQuota, readAlibabaCodingPlanQuotaState } = await import(
       "../src/lib/alibaba-coding-plan-local-quota.js"
@@ -113,46 +113,51 @@ describe("alibaba-coding-plan provider", () => {
       monthly: { used: 0, limit: 20000, percentRemaining: 100 },
     });
 
-    await alibabaCodingPlanProvider.fetch({
-      config: {
-        quotaProviders: [
-          {
-            id: "alibaba-coding-plan",
-            providerId: "alibaba-coding-plan",
-            label: "alibaba-coding-plan",
-            mode: "local-estimate",
-            windows: [
-              {
-                id: "five-hour",
-                label: "5h",
-                type: "rolling",
-                durationMinutes: 300,
-                requestLimit: 2000,
-              },
-              {
-                id: "weekly",
-                label: "Weekly",
-                type: "rolling",
-                durationMinutes: 10080,
-                requestLimit: 10000,
-              },
-              {
-                id: "monthly",
-                label: "Monthly",
-                type: "rolling",
-                durationMinutes: 43200,
-                requestLimit: 20000,
-              },
-            ],
-          },
-        ],
-      },
-    } as any);
+    const tuning = {
+      id: "alibaba-coding-plan",
+      providerId: "alibaba-coding-plan",
+      label: "alibaba-coding-plan",
+      mode: "local-estimate",
+      windows: [
+        {
+          id: "five-hour",
+          label: "5h",
+          type: "rolling",
+          durationMinutes: 300,
+          requestLimit: 2000,
+        },
+        {
+          id: "weekly",
+          label: "Weekly",
+          type: "rolling",
+          durationMinutes: 10080,
+          requestLimit: 10000,
+        },
+        {
+          id: "monthly",
+          label: "Monthly",
+          type: "rolling",
+          durationMinutes: 43200,
+          requestLimit: 20000,
+        },
+      ],
+    };
+
+    await alibabaCodingPlanProvider.fetch({ config: { quotaProviders: [tuning] } } as any);
 
     expect(computeAlibabaCodingPlanQuota as any).toHaveBeenCalledWith({
       state: {},
       tier: "pro",
       limits: { fiveHour: 2000, weekly: 10000, monthly: 20000 },
+    });
+
+    // A switched-off tuning is not applied: the tier's own limits count.
+    await alibabaCodingPlanProvider.fetch({
+      config: { quotaProviders: [{ ...tuning, enabled: false }] },
+    } as any);
+    expect(computeAlibabaCodingPlanQuota as any).toHaveBeenLastCalledWith({
+      state: {},
+      tier: "pro",
     });
   });
 

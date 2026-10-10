@@ -92,6 +92,14 @@ describe("quota provider Phase 7 documentation consistency", () => {
       expect(document).toContain("providers.custom");
     }
 
+    // Keys are still read on this computer to hide them from agent answers, so the docs promise
+    // only that a switched-off provider's key is never sent; the file is how to switch it on.
+    for (const section of [configurationCustomProviders, providerGuideCustomProviders]) {
+      expect(section).not.toMatch(/key is never read|nothing reads its key/);
+      expect(section).toContain("its key is never sent");
+      expect(section).toContain('"enabled": true` in `opencode-quota/settings.jsonc`');
+    }
+
     expect(configurationCustomProviders).toContain("`providers.custom` in `settings.jsonc`");
     expect(
       readMarkdownParagraphContaining(
@@ -236,6 +244,7 @@ describe("quota provider Phase 7 documentation consistency", () => {
       "src/view/text.ts",
       "src/tui/sidebar.tsx",
       "src/tui/status-line.tsx",
+      "src/tui/window/limits.ts",
     ]) {
       const formatter = read(path);
       expect(formatter).not.toContain("quota-providers");
