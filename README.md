@@ -81,8 +81,10 @@ Type these in OpenCode. Add dates after the command, like `/tokens_between 2026-
 
 | Command                                 | What it shows                                        |
 | --------------------------------------- | ---------------------------------------------------- |
-| `/quota`                                | Quota window: limits, maintainer notices, status     |
+| `/quota`                                | Quick look: limits next to the last 7 days of usage  |
+| `/quota_usage`                          | TUI: quota window, Usage tab                         |
 | `/quota_status`                         | Setup check: logins, providers, pricing, and notices |
+| `/quota_settings`                       | TUI: quota window, Settings tab                      |
 | `/pricing_refresh`                      | Refreshes token pricing from `models.dev`            |
 | `/tokens_today`                         | Tokens used today                                    |
 | `/tokens_daily`                         | Tokens used in the last 24 hours                     |

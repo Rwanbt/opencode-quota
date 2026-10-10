@@ -79,7 +79,8 @@ const PART_MARKS: Record<UsagePart, string> = {
   output: "█",
 };
 
-const RANGE_TITLES: Record<UsageRange, string> = {
+/** What each range is called; the quick look offers them in this order. */
+export const RANGE_TITLES: Record<UsageRange, string> = {
   today: "today",
   "7d": "last 7 days",
   "30d": "last 30 days",
@@ -129,7 +130,7 @@ function plural(count: number, word: string): string {
 }
 
 /** A row's cost, or "no price" when all its tokens come from models without a price. */
-function costText(row: UsageRow): string {
+export function costText(row: UsageRow): string {
   return row.tokens > 0 && row.unpricedTokens >= row.tokens ? "no price" : formatUsd(row.costUsd);
 }
 
@@ -269,11 +270,11 @@ function chartColumns(
 }
 
 /**
- * The daily chart: a title, `CHART_ROWS` rows of block characters (one column per day, or per
- * few days when the days do not fit) with the top value on the left, a baseline with 0, and a
+ * The daily chart: a title, `rows` rows of block characters (one column per day, or per few
+ * days when the days do not fit) with the top value on the left, a baseline with 0, and a
  * date axis. Nothing when the range has fewer than two days or nothing to draw.
  */
-function chartLines(view: View, width: number): UsageLine[] {
+function chartLines(view: View, width: number, rows = CHART_ROWS): UsageLine[] {
   const { days } = view.report;
   const amountOf = (day: UsageDayRow) => (view.mode === "cost" ? day.costUsd : day.tokens);
   const formatAmount = view.mode === "cost" ? formatUsd : formatTokens;
@@ -295,15 +296,15 @@ function chartLines(view: View, width: number): UsageLine[] {
   const columnStart = (index: number) => Math.floor((index * chartWidth) / columns.length);
   // Each column's height in eighths of a row; a day above 0 always shows.
   const eighths = columns.map((column) =>
-    column.amount <= 0 ? 0 : Math.max(1, Math.round((column.amount / max) * CHART_ROWS * 8)),
+    column.amount <= 0 ? 0 : Math.max(1, Math.round((column.amount / max) * rows * 8)),
   );
 
   const [daily, amount] =
     view.mode === "cost" ? ["Daily cost", "Cost"] : ["Daily tokens", "Tokens"];
   const title = daysPerColumn === 1 ? daily : `${amount} per ${daysPerColumn} days`;
   const lines: UsageLine[] = [[span(title, "heading")]];
-  for (let row = 0; row < CHART_ROWS; row += 1) {
-    const below = (CHART_ROWS - 1 - row) * 8;
+  for (let row = 0; row < rows; row += 1) {
+    const below = (rows - 1 - row) * 8;
     const cells = columns.map((_, index) => {
       const fill = Math.min(8, Math.max(0, eighths[index] - below));
       const cell = fill === 0 ? " " : BLOCKS[fill - 1];
@@ -582,6 +583,35 @@ function buildView(
   return sections
     .flatMap((lines, index) => (index === 0 ? lines : [[], ...lines]))
     .map((line) => clip(line, width));
+}
+
+function viewOf(report: UsageReport, mode: UsageMode): View {
+  return {
+    report,
+    mode,
+    breakdown: "model",
+    thisYear: new Date(report.generatedAtMs).getFullYear(),
+  };
+}
+
+/** The daily chart alone, `rows` tall, each line at most `width`: the quick look's small chart. */
+export function dailyChartLines(
+  report: UsageReport,
+  options: { mode: UsageMode; width: number; rows: number },
+): UsageLine[] {
+  return chartLines(viewOf(report, options.mode), options.width, options.rows).map((line) =>
+    clip(line, options.width),
+  );
+}
+
+/** Cost (or tokens) by type alone: its heading, the bar and the legend, each at most `width`. */
+export function byTypeBarLines(
+  report: UsageReport,
+  options: { mode: UsageMode; width: number },
+): UsageLine[] {
+  return byTypeLines(viewOf(report, options.mode), options.width).map((line) =>
+    clip(line, options.width),
+  );
 }
 
 /** The usage view for the TUI Usage tab: lines of role-tagged spans, each at most `width`. */

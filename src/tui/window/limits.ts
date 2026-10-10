@@ -10,6 +10,7 @@ import {
   type BarShape,
   barParts,
   DEFAULT_WORDS,
+  evenUseCell,
   fit,
   formatDuration,
   percentText,
@@ -49,10 +50,7 @@ function markedBar(
     ...[...filled].map((text): Segment => ({ text, role: "bar", percent })),
     ...[...empty].map((text): Segment => ({ text, role: "empty", percent })),
   ];
-  if (evenLeft !== undefined) {
-    const marker = Math.max(0, Math.min(width - 1, Math.round((evenLeft / 100) * width)));
-    cells[marker] = { text: "│", role: "label" };
-  }
+  if (evenLeft !== undefined) cells[evenUseCell(evenLeft, width)] = { text: "│", role: "label" };
   const segments: Segment[] = [];
   for (const cell of cells) {
     const last = segments[segments.length - 1];

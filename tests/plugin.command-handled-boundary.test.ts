@@ -58,7 +58,7 @@ const SNAPSHOT = {
 };
 
 function startTui() {
-  const commands = new Map<string, { run: () => Promise<void>; slash?: unknown }>();
+  const commands = new Map<string, { run: () => Promise<void>; slash?: { name: string } }>();
   const listeners = new Map<string, (event: { data?: Record<string, unknown> }) => void>();
   const show = vi.fn((_render: () => unknown, onClose?: () => void) => onClose?.());
   const set = vi.fn();
@@ -97,7 +97,7 @@ function startTui() {
         (
           build: () => {
             mode?: string;
-            commands: Array<{ id: string; run: () => Promise<void>; slash?: unknown }>;
+            commands: Array<{ id: string; run: () => Promise<void>; slash?: { name: string } }>;
           },
         ) => {
           // The palette layer; the typed-command Enter layer has no mode.
@@ -137,15 +137,21 @@ describe("V2 CLI command boundary", () => {
     });
   });
 
-  it("registers the 11 palette commands without slash entries, not V1 server command hooks", () => {
+  it("registers the 13 palette commands, slash entries only for the TUI-only ones, not V1 server command hooks", () => {
     const tui = startTui();
     expect([...tui.commands.keys()]).toEqual([
-      "quota.window",
+      "quota.quick_look",
+      "quota.usage",
       "quota.status",
+      "quota.settings",
       ...REPORT_COMMANDS.map((item) => `quota.${item.id}`),
     ]);
-    expect(tui.commands.size).toBe(11);
-    expect([...tui.commands.values()].some((item) => item.slash !== undefined)).toBe(false);
+    expect(tui.commands.size).toBe(13);
+    // The server lists /quota, /quota_status and the reports in the "/" list.
+    const slashNames = [...tui.commands.values()].flatMap((item) =>
+      item.slash ? [item.slash.name] : [],
+    );
+    expect(slashNames).toEqual(["quota_usage", "quota_settings"]);
     expect(tui.context.ui.slot).toHaveBeenCalledWith(expect.objectContaining({ append: "app" }));
     tui.dispose?.();
   });
@@ -221,7 +227,8 @@ describe("V2 CLI command boundary", () => {
     tui.slots.get("home.footer.status")?.render();
     tui.listeners.get("session.execution.succeeded")?.({ data: { sessionID: "ses_1" } });
     for (const command of tui.commands.values()) await command.run();
-    // On Home the quota window only says to open a session; the reply toast shows the quota.
+    // On Home the quota window only says to open a session, the quick look opens its dialog,
+    // and the reply toast shows the quota.
     const toastMessages = () => tui.toast.mock.calls.map(([toast]) => toast.message as string);
     await vi.waitFor(() =>
       expect(toastMessages().filter((message) => message.includes("Copilot Plan"))).toHaveLength(1),
@@ -231,8 +238,10 @@ describe("V2 CLI command boundary", () => {
     expect(rpc.snapshot.mock.calls.filter(([input]) => input.sessionID === "ses_1")).toHaveLength(
       1,
     );
+    // The quick look asks for fresh rows when it opens.
     expect(rpc.refresh.mock.calls.map(([input]) => input)).toEqual([
       { reason: "turn", sessionID: "ses_1" },
+      { reason: "manual" },
     ]);
     expect(rpc.notices).toHaveBeenCalledOnce();
     // /tokens_between stops at its date prompt, which this fake cancels.

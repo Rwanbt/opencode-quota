@@ -1,10 +1,11 @@
 /** @jsxImportSource @opentui/solid */
 /**
- * The quota window. `/quota` opens it above the message box of a session, where it covers the
- * chat with the same size on every tab: Limits, Notices and Status. While it is focused (it is
- * after opening; click it to give it the keyboard again) its keys work: ↑↓ select or scroll,
- * space/enter use a line, ←/→ change it, tab switches tabs, esc closes. Closing gives the
- * keyboard back to whatever had it before.
+ * The quota window. `/quota_usage`, `/quota_status` and `/quota_settings` (and u and s in the
+ * `/quota` quick look) open it above the message box of a session, where it covers the chat
+ * with the same size on every tab: Limits, Usage, Notices, Status, and Settings. Usage and
+ * Settings are placeholders. While it is focused (it is after opening; click it to give it the
+ * keyboard again) its keys work: ↑↓ select or scroll, space/enter use a line, ←/→ change it,
+ * tab switches tabs, esc closes. Closing gives the keyboard back to whatever had it before.
  */
 import {
   type BoxRenderable,
@@ -33,25 +34,48 @@ const RPC_TIMEOUT_MS = 60_000;
 /** Columns inside the window until it knows its real width. */
 const DEFAULT_WIDTH = 120;
 
-export type WindowTab = "limits" | "notices" | "status";
+export type WindowTab = "limits" | "usage" | "notices" | "status" | "settings";
 
-const TABS: ReadonlyArray<{ tab: WindowTab; title: string; note: string }> = [
+/** The view tabs, then the Settings group after a │ in the tab bar. */
+const TABS: ReadonlyArray<{
+  tab: WindowTab;
+  title: string;
+  note: string;
+  group: "view" | "settings";
+}> = [
   {
     tab: "limits",
     title: "Limits",
     note: "Every limit, with its reset. The │ in a bar is where you'd be if you used it evenly: left of it = you use it faster than it refills.",
+    group: "view",
+  },
+  {
+    tab: "usage",
+    title: "Usage",
+    note: "Tokens and cost from OpenCode's history.",
+    group: "view",
   },
   {
     tab: "notices",
     title: "Notices",
     note: "Short notes from the OpenCode Quota maintainer (a provider changed its limits, a new version).",
+    group: "view",
   },
   {
     tab: "status",
     title: "Status",
     note: "What quota found and when it last checked. Copy it into a bug report.",
+    group: "view",
+  },
+  {
+    tab: "settings",
+    title: "Settings",
+    note: "How the sidebar, the status line, the toasts and /quota look.",
+    group: "settings",
   },
 ];
+/** The body of a tab that is not built yet. */
+const PLACEHOLDER_TABS: ReadonlySet<WindowTab> = new Set(["usage", "settings"]);
 
 /** The theme tokens the window reads, besides the surfaces' ones (OpenCode's `ResolvedTheme`). */
 export type WindowTheme = Theme & {
@@ -423,7 +447,12 @@ export function createQuotaWindow(api: WindowHost, host: SurfaceHost): QuotaWind
           <text fg={theme().text.base} wrapMode="none" selectable={false}>
             <b>Quota</b>
           </text>
-          {TABS.map((item) => (
+          {TABS.map((item) => [
+            item.group === "settings" ? (
+              <text fg={theme().border.base} wrapMode="none" selectable={false}>
+                │
+              </text>
+            ) : null,
             <text
               fg={item.tab === tab() ? theme().text.action.primary.selected : theme().text.muted}
               attributes={
@@ -436,8 +465,8 @@ export function createQuotaWindow(api: WindowHost, host: SurfaceHost): QuotaWind
               onMouseUp={() => showTab(item.tab)}
             >
               {item.title}
-            </text>
-          ))}
+            </text>,
+          ])}
           <box flexGrow={1} />
           <text fg={theme().text.muted} selectable={false} onMouseUp={close}>
             esc
@@ -474,6 +503,11 @@ export function createQuotaWindow(api: WindowHost, host: SurfaceHost): QuotaWind
           </Show>
           <Show when={tab() === "status"}>
             <StatusView theme={theme()} report={status()} />
+          </Show>
+          <Show when={PLACEHOLDER_TABS.has(tab() ?? "limits")}>
+            <text fg={theme().text.muted} selectable={false}>
+              {"   This tab is not built yet."}
+            </text>
           </Show>
         </scrollbox>
         <box flexDirection="row" gap={2} marginTop={1} flexShrink={0}>

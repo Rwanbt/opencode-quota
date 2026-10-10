@@ -1,5 +1,6 @@
 /**
- * The TUI's display settings: what the sidebar, status line and toasts show and how they look.
+ * The TUI's display settings: what the sidebar, status line, toasts and `/quota` show and how
+ * they look.
  * They live only in OpenCode's plugin storage (`context.storage.store("settings")`), which
  * OpenCode saves atomically, keeps across restarts and syncs to every open TUI. The words
  * (percent style, reset style, …) are the server's and come with the snapshot.
@@ -44,7 +45,12 @@ export type DisplaySettings = RowSettings & {
     seconds: number;
     sessionTokens: boolean;
   };
+  /** How `/quota` shows its quick look: a popup, a toast, or a message in the session. */
+  quickLook: QuickLookForm;
 };
+
+export type QuickLookForm = "dialog" | "toast" | "chat";
+const QUICK_LOOK_FORMS: readonly QuickLookForm[] = ["dialog", "toast", "chat"];
 
 export type StoredDisplay = { version: number; settings: DisplaySettings };
 
@@ -121,6 +127,7 @@ export function defaultDisplaySettings(): DisplaySettings {
       seconds: 9,
       sessionTokens: true,
     },
+    quickLook: "dialog",
   };
 }
 
@@ -242,6 +249,7 @@ export function readDisplaySettings(stored: unknown): DisplaySettings {
       seconds: wholeNumber(toast.seconds, 1, 120, defaults.toast.seconds),
       sessionTokens: flag(toast.sessionTokens, defaults.toast.sessionTokens),
     },
+    quickLook: oneOf(settings.quickLook, QUICK_LOOK_FORMS, defaults.quickLook),
   };
 }
 

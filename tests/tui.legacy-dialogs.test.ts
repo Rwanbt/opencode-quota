@@ -23,6 +23,7 @@ const rpc = vi.hoisted(() => ({
   refresh: vi.fn(),
   notices: vi.fn(),
   status: vi.fn(),
+  usage: vi.fn(),
   events: { on: vi.fn(() => () => {}) },
 }));
 
@@ -78,7 +79,7 @@ function dialogHeader(tree: unknown): {
 
 type RegisteredCommand = {
   id: string;
-  slash?: unknown;
+  slash?: { name: string };
   palette: boolean;
   run: () => Promise<void>;
 };
@@ -168,16 +169,21 @@ describe("V2 quota TUI commands", () => {
     });
     rpc.refresh.mockReset().mockResolvedValue({ snapshot: undefined });
     rpc.status.mockReset().mockResolvedValue({ text: "status" });
+    // The quick look's data never arrives here; these tests check only what opens.
+    rpc.snapshot.mockReset().mockReturnValue(new Promise(() => {}));
+    rpc.usage.mockReset().mockReturnValue(new Promise(() => {}));
   });
 
-  it("registers every quota command in the palette and leaves slash commands to the server", () => {
+  it("registers every quota command in the palette, and slash entries only for the TUI-only ones", () => {
     const { context, commands } = startTui();
 
     // The RPC client is made per call, never during setup.
     expect(context.client.rpc).not.toHaveBeenCalled();
     expect(commands.map((command) => command.id)).toEqual([
-      "quota.window",
+      "quota.quick_look",
+      "quota.usage",
       "quota.status",
+      "quota.settings",
       "quota.pricing_refresh",
       "quota.tokens_today",
       "quota.tokens_daily",
@@ -189,7 +195,11 @@ describe("V2 quota TUI commands", () => {
       "quota.tokens_between",
     ]);
     expect(commands.every((command) => command.palette)).toBe(true);
-    expect(commands.some((command) => "slash" in command)).toBe(false);
+    // The server lists /quota, /quota_status and the reports in the "/" list.
+    expect(commands.flatMap((command) => (command.slash ? [command.slash.name] : []))).toEqual([
+      "quota_usage",
+      "quota_settings",
+    ]);
     expect(context.ui.slot.mock.calls.map(([claim]) => claim.append)).toEqual([
       "app",
       "sidebar.content",
@@ -285,12 +295,26 @@ describe("V2 quota TUI commands", () => {
       );
     });
 
-    it("opens the quota window for /quota, and on Home says to open a session first", () => {
+    it("opens the quick look for /quota, even on Home", () => {
       const home = startTyped();
       home.editor.plainText = "/quota";
       expect(home.enter.run()).toBeUndefined();
       expect(home.editor.clear).toHaveBeenCalledOnce();
-      expect(home.context.ui.toast.show).toHaveBeenCalledExactlyOnceWith(
+      expect(home.context.ui.dialog.show).toHaveBeenCalledOnce();
+      expect(home.context.ui.dialog.set).toHaveBeenCalledWith({ size: "xlarge" });
+      expect(home.context.ui.toast.show).not.toHaveBeenCalled();
+      expect(rpc.usage).toHaveBeenCalledExactlyOnceWith({ range: "7d" }, expect.anything());
+    });
+
+    it("opens the quota window for the other quota commands, and on Home says to open a session first", () => {
+      const home = startTyped();
+      for (const name of ["quota_usage", "quota_status", "quota_settings"]) {
+        home.editor.plainText = `/${name}`;
+        expect(home.enter.run()).toBeUndefined();
+      }
+      expect(home.editor.clear).toHaveBeenCalledTimes(3);
+      expect(home.context.ui.toast.show).toHaveBeenCalledTimes(3);
+      expect(home.context.ui.toast.show).toHaveBeenCalledWith(
         expect.objectContaining({
           message: "Open a session first: the quota window opens above its message box.",
         }),

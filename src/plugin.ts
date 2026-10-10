@@ -16,7 +16,7 @@ import {
 import { createSnapshotPublisher } from "./core/snapshot-publisher.js";
 import { createQuotaStore } from "./core/store.js";
 import type { QuotaSnapshot, SessionModel } from "./core/types.js";
-import { usageReport } from "./core/usage.js";
+import { type UsageQuery, type UsageReport, usageReport } from "./core/usage.js";
 import { resolveOpenCodeLocationRoots } from "./lib/config-file-utils.js";
 import { sanitizeDisplayText } from "./lib/display-sanitize.js";
 import { homeNoticeLine, listNotices, markNotices } from "./lib/maintainer-home-notice.js";
@@ -51,6 +51,7 @@ import { messageDocument } from "./lib/report-document.js";
 import { fetchSessionTokensForDisplay } from "./lib/session-tokens.js";
 import { QuotaRpc, type QuotaRpcCommandOutput, REPORT_COMMANDS } from "./rpc.js";
 import { loadSettings, saveSettings } from "./settings/index.js";
+import { DEFAULT_QUICK_LOOK_RANGE } from "./view/quick-look.js";
 
 type ModelMessage = {
   readonly role: string;
@@ -202,6 +203,20 @@ export const QuotaToastPlugin = Plugin.define({
     const noticeTargets = async () =>
       (await loadProviderSource(sourceHost)).providers.map(({ id }) => id);
 
+    // Tokens and cost from OpenCode's history, with the configured price list. As the token
+    // reports do, a due price download gets up to 0.75 s to finish first.
+    const loadUsage = async (query: UsageQuery): Promise<UsageReport> => {
+      const { pricing } = await loadServerSettings(sourceHost);
+      setPricingSnapshotAutoRefresh(pricing.autoRefresh);
+      setPricingSnapshotSelection(pricing.source);
+      await kickPricingRefresh({
+        reason: "tokens",
+        maxWaitMs: 750,
+        snapshotSelection: pricing.source,
+      });
+      return usageReport(query);
+    };
+
     // Awaited so the plugin is active only once the RPC is registered: OpenCode waits for
     // activation before it routes an RPC call, so the first TUI call cannot miss it.
     const registration = await ctx.rpc.register(QuotaRpc, {
@@ -280,18 +295,8 @@ export const QuotaToastPlugin = Plugin.define({
         }),
       usage: (input) =>
         logRpcFailure("usage", async () => {
-          // Use the configured price list. As the token reports do, give a due price
-          // download up to 0.75 s to finish first.
-          const { pricing } = await loadServerSettings(sourceHost);
-          setPricingSnapshotAutoRefresh(pricing.autoRefresh);
-          setPricingSnapshotSelection(pricing.source);
-          await kickPricingRefresh({
-            reason: "tokens",
-            maxWaitMs: 750,
-            snapshotSelection: pricing.source,
-          });
           const { range, sessionID, from, to } = input;
-          return { report: await usageReport({ range, sessionID, from, to }) };
+          return { report: await loadUsage({ range, sessionID, from, to }) };
         }),
     });
     // The export file and the gauges follow the snapshot; neither asks a provider again.
@@ -335,8 +340,8 @@ export const QuotaToastPlugin = Plugin.define({
     });
 
     // Web and Desktop list these in their "/" menu and get the report as a chat message. The
-    // TUI runs /quota and /quota_status in its quota window and the other reports in a dialog,
-    // so a command typed there never reaches this.
+    // TUI shows /quota, /quota_status and the other reports itself; only its "chat" form of the
+    // /quota quick look runs /quota here.
     const postReport = async (sessionID: string, command: string, report: string) => {
       // A message admitted while the AI works is delivered into that turn at its next
       // step, and can make the AI take one more step. Wait until the session is idle.
@@ -357,18 +362,20 @@ export const QuotaToastPlugin = Plugin.define({
     await ctx.command.transform((editor) => {
       editor.add({
         name: "quota",
-        description: "Show your quota limits and the maintainer notices.",
+        description: "Quick look: your quota limits and the last 7 days of usage.",
         async execute(invocation) {
           const model = await sessionModel(invocation.sessionID);
-          const { snapshot } = await withSessionTokens(
-            await store.refresh({ reason: "manual", model }),
-            invocation.sessionID,
-          );
+          const snapshot = await store.refresh({ reason: "manual", model });
+          // Without OpenCode's history the limits still show.
+          const usage = await loadUsage({ range: DEFAULT_QUICK_LOOK_RANGE }).catch((error) => {
+            console.warn(`[opencode-quota] /quota usage failed: ${logReason(error)}`);
+            return undefined;
+          });
           const { announcements } = (await loadSettings()).settings;
           const notices = announcements.enabled
             ? await listNotices({ providerIds: await noticeTargets() })
             : [];
-          const report = quotaMessageText({ snapshot, notices, nowMs: Date.now() });
+          const report = quotaMessageText({ snapshot, usage, notices, nowMs: Date.now() });
           await postReport(invocation.sessionID, "quota", report);
         },
       });

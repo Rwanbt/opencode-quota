@@ -201,7 +201,7 @@ The sidebar, the status line and toasts draw the server's last quota snapshot wi
 | --------------------------------------- | --------- | ------- |
 | `maintainerAnnouncements.enabled`       | `true`    | Show bundled maintainer notices. |
 | `maintainerAnnouncements.home`          | `true`    | Show the count of active notices at the bottom of Home. |
-| `maintainerAnnouncements.homeFrequency` | `"daily"` | `"daily"`: show that Home line on the first Home screen of each day, for 10 minutes. `"always"`: show it on every Home screen. The Notices tab of `/quota` lists every notice. |
+| `maintainerAnnouncements.homeFrequency` | `"daily"` | `"daily"`: show that Home line on the first Home screen of each day, for 10 minutes. `"always"`: show it on every Home screen. The Notices tab of the quota window (`/quota_status`, then Notices) lists every notice. |
 
 ### Provider settings
 

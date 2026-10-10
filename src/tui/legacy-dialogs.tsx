@@ -36,6 +36,8 @@ type KeymapCommand = {
   group?: string;
   bind?: string;
   palette?: true;
+  /** A TUI-only "/" entry; without `arguments` it runs when picked from the "/" list. */
+  slash?: { name: string };
   /** Returning false lets the key continue to the next layer. */
   run: () => void | false | Promise<void>;
 };
@@ -323,14 +325,15 @@ export function reportCommands(context: TuiContext): KeymapCommand[] {
 /**
  * Runs quota slash commands typed in the prompt in the TUI. On Enter, before OpenCode submits
  * the prompt, a prompt that holds exactly a quota command is cleared and the command runs:
- * `windowCommands` (/quota, /quota_status) open the quota window, the report commands their
- * dialog. So no report shows in the chat, and on Home no session is created for one. The
- * server registers the "/" entries, so each is listed once.
+ * `quotaCommands` (/quota, /quota_usage, /quota_status, /quota_settings) their TUI action, the
+ * report commands their dialog. So no report shows in the chat, and on Home no session is
+ * created for one. The "/" list names each once: the server lists /quota, /quota_status and
+ * the reports, the TUI the others.
  * The layer has no mode, so it is off while the "/" list or a dialog is open.
  */
 export function registerTypedQuotaCommands(
   context: TuiContext,
-  windowCommands: Record<string, () => void>,
+  quotaCommands: Record<string, () => void>,
 ): void {
   context.keymap.layer(() => ({
     // Above OpenCode's textarea layer, which submits the prompt on Enter.
@@ -346,11 +349,11 @@ export function registerTypedQuotaCommands(
           // As in OpenCode, the command name ends at the first whitespace.
           const name = trimmed.slice(1).split(/\s/, 1)[0] ?? "";
           const argumentsText = trimmed.slice(1 + name.length).trim() || undefined;
-          const openWindow = Object.hasOwn(windowCommands, name) ? windowCommands[name] : undefined;
+          const quotaCommand = Object.hasOwn(quotaCommands, name) ? quotaCommands[name] : undefined;
           const report = REPORT_COMMANDS.find((spec) => spec.id === name);
-          if (!openWindow && !report) return false;
+          if (!quotaCommand && !report) return false;
           editor.clear();
-          if (openWindow) openWindow();
+          if (quotaCommand) quotaCommand();
           else if (report) {
             void runReportCommand(context, report.id, getRouteSessionID(context), {
               argumentsText,
