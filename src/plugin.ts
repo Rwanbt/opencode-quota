@@ -22,10 +22,6 @@ import { resolveOpenCodeLocationRoots } from "./lib/config-file-utils.js";
 import { sanitizeDisplayText } from "./lib/display-sanitize.js";
 import { homeNoticeLine } from "./lib/maintainer-home-notice.js";
 import {
-  setPricingSnapshotAutoRefresh,
-  setPricingSnapshotSelection,
-} from "./lib/modelsdev-pricing.js";
-import {
   bindCredentialSource,
   createIntegrationCredentialSource,
   notifyCredentialsChanged,
@@ -36,7 +32,11 @@ import {
   QUOTA_DIALOG_COMMANDS,
   type QuotaDialogCommandId,
 } from "./lib/quota-dialog-command-specs.js";
-import { buildQuotaDialogCommandOutput, kickPricingRefresh } from "./lib/quota-dialog-commands.js";
+import {
+  applyPricingSettings,
+  buildQuotaDialogCommandOutput,
+  kickPricingRefresh,
+} from "./lib/quota-dialog-commands.js";
 import {
   containsQuotaReport,
   formatQuotaReportMessage,
@@ -107,6 +107,16 @@ async function logRpcFailure<T>(method: string, handler: () => Promise<T>): Prom
   }
 }
 
+/**
+ * The settings (or one part of them) with the keys of that part the file sets, so a value set
+ * to its default in the file still differs from no value.
+ */
+function settingsWithSources(loaded: LoadedSettings, part?: "checking" | "pricing"): string {
+  if (part === undefined) return JSON.stringify([loaded.settings, loaded.fromFile]);
+  const fromFile = loaded.fromFile.filter((key) => key.startsWith(`${part}.`));
+  return JSON.stringify([loaded.settings[part], fromFile]);
+}
+
 /** Writes the v5 settings into settings.jsonc once; a failure leaves them converted in memory. */
 async function convertV5Settings(): Promise<V5Conversion | undefined> {
   try {
@@ -137,11 +147,15 @@ export const QuotaToastPlugin = Plugin.define({
     // holds the settings it read last; every reader takes them from here.
     const conversion = await convertV5Settings();
     let loaded: LoadedSettings = await loadSettings({ projectDir });
+    // Local estimates use prices, so the price list is chosen before any check.
+    applyPricingSettings(loaded.settings.pricing);
     // The v5 looks the conversion found, sent with every snapshot until a TUI applied them and
     // acknowledged their id. Empty looks still tell the TUI that the settings were converted.
     let displayImport: PendingDisplayImport | undefined =
       (await pendingDisplayImport()) ??
       (conversion?.written ? { id: randomUUID(), display: {} } : undefined);
+    /** The looks a TUI acknowledged; a file read before that never offers them again. */
+    const acknowledgedImportIds = new Set<string>();
 
     // In auto mode, /quota_status reports the providers it detected. The slash commands and
     // the tool add them to the global OpenCode config; the TUI palette (via RPC) never writes it.
@@ -281,8 +295,7 @@ export const QuotaToastPlugin = Plugin.define({
           // Use the configured price list. As the token reports do, give a due price
           // download up to 0.75 s to finish first.
           const { pricing } = loaded.settings;
-          setPricingSnapshotAutoRefresh(pricing.autoRefreshDays);
-          setPricingSnapshotSelection(pricing.source);
+          applyPricingSettings(pricing);
           await kickPricingRefresh({
             reason: "tokens",
             maxWaitMs: 750,
@@ -295,12 +308,15 @@ export const QuotaToastPlugin = Plugin.define({
       saveSettings: (input) =>
         logRpcFailure("saveSettings", async () => {
           const result = await saveSettings(input.patch, { allowFileOnly: false });
-          if (result.ok) applySettings(await loadSettings({ projectDir }));
+          if (result.ok) await applySettings(await loadSettings({ projectDir }));
           return { ok: result.ok, issues: result.issues };
         }),
       acknowledgeDisplayImport: (input) =>
         logRpcFailure("acknowledgeDisplayImport", async () => {
-          if (displayImport?.id === input.id) displayImport = undefined;
+          if (displayImport?.id === input.id) {
+            acknowledgedImportIds.add(input.id);
+            displayImport = undefined;
+          }
           await acknowledgeDisplayImport(input.id);
           return {};
         }),
@@ -322,23 +338,42 @@ export const QuotaToastPlugin = Plugin.define({
     };
     const unsubscribeStore = store.subscribe(announce);
 
-    // New settings can change the providers, who each one is signed in as, and the words.
-    // Every client gets them at once; the store's background refresh then checks each provider
-    // whose settings changed, and its new rows arrive as one more `changed` event.
-    function applySettings(next: LoadedSettings): void {
-      const changed = JSON.stringify(next.settings) !== JSON.stringify(loaded.settings);
-      loaded = next;
-      if (!changed) return;
-      store.snapshot().then(announce, (error) => {
+    /** Every client gets a snapshot now: the words and the v5 looks travel with it. */
+    const announceNow = () => {
+      store.snapshot({ refresh: false }).then(announce, (error) => {
         console.warn(
           `[opencode-quota] snapshot after a settings change failed: ${logReason(error)}`,
         );
       });
+    };
+    /** Offers the v5 looks a save kept since the start (it finished the conversion). */
+    async function adoptPendingDisplayImport(): Promise<boolean> {
+      const pending = await pendingDisplayImport();
+      if (!pending || pending.id === displayImport?.id) return false;
+      if (acknowledgedImportIds.has(pending.id)) return false;
+      displayImport = pending;
+      return true;
+    }
+    // New settings can change the providers, who each one is signed in as, the words and the
+    // prices. They supersede the store's running work: every client gets a snapshot built from
+    // them at once, then the new rows as more `changed` events. A check made with another time
+    // limit, interval or price list is out of date, so every provider is checked again.
+    async function applySettings(next: LoadedSettings): Promise<void> {
+      const previous = loaded;
+      loaded = next;
+      applyPricingSettings(next.settings.pricing);
+      if (settingsWithSources(next) !== settingsWithSources(previous)) {
+        const recheck =
+          settingsWithSources(next, "checking") !== settingsWithSources(previous, "checking") ||
+          settingsWithSources(next, "pricing") !== settingsWithSources(previous, "pricing");
+        store.settingsChanged({ recheck });
+      }
+      if (await adoptPendingDisplayImport()) announceNow();
     }
     // settings.jsonc edited by hand, by an agent or by another OpenCode process. A change made
     // while this setup ran is read once more right after the watch starts.
-    const settingsWatch = await watchSettings(applySettings, { projectDir });
-    applySettings(await loadSettings({ projectDir }));
+    const settingsWatch = await watchSettings((next) => void applySettings(next), { projectDir });
+    await applySettings(await loadSettings({ projectDir }));
 
     await ctx.tool.transform((editor) => {
       // Agent tools: read and change the settings file, add, test and remove custom providers.

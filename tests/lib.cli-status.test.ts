@@ -3,7 +3,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { mockProviders, runtimeDirs, statusData } = vi.hoisted(() => ({
+const TEST_ACCOUNTING = {
+  resultType: "quota",
+  acquisitionMethod: "remote_api",
+  ownership: "maintained",
+  authority: "provider_reported",
+} as const;
+
+const { mockProviders, runtimeDirs } = vi.hoisted(() => ({
   mockProviders: [] as any[],
   runtimeDirs: {
     value: {
@@ -11,13 +18,6 @@ const { mockProviders, runtimeDirs, statusData } = vi.hoisted(() => ({
       configDir: "/tmp/opencode-quota-cli-status-config",
       cacheDir: "/tmp/opencode-quota-cli-status-cache",
       stateDir: "/tmp/opencode-quota-cli-status-state",
-    },
-  },
-  statusData: {
-    value: null as null | {
-      output: string;
-      payload: Record<string, unknown>;
-      hasComparableProviderData?: boolean;
     },
   },
 }));
@@ -30,20 +30,24 @@ vi.mock("../src/lib/opencode-runtime-paths.js", () => ({
   getOpencodeRuntimeDirs: () => runtimeDirs.value,
 }));
 
-vi.mock("../src/lib/quota-dialog-commands.js", () => ({
-  buildStatusReportData: vi.fn(async () => {
-    if (!statusData.value) {
-      return { output: null, payload: null };
-    }
-    return {
-      output: statusData.value.output,
-      payload: statusData.value.payload,
-      hasComparableProviderData: statusData.value.hasComparableProviderData ?? true,
-    };
-  }),
+// The real price list choice; no price download.
+vi.mock("../src/lib/modelsdev-pricing.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/lib/modelsdev-pricing.js")>()),
+  maybeRefreshPricingSnapshot: vi.fn(async () => ({ attempted: false, updated: false })),
 }));
 
+// The real report, watched so a test can see its arguments or make it fail.
+vi.mock("../src/lib/quota-dialog-commands.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/lib/quota-dialog-commands.js")>();
+  return { ...actual, buildStatusReportData: vi.fn(actual.buildStatusReportData) };
+});
+
 import { runCliStatusCommand } from "../src/lib/cli-status.js";
+import {
+  __resetPricingSnapshotForTests,
+  getPricingRefreshPolicy,
+  getPricingSnapshotSelection,
+} from "../src/lib/modelsdev-pricing.js";
 import { getCredentialSourceDiagnostics } from "../src/lib/opencode-auth.js";
 import { buildStatusReportData } from "../src/lib/quota-dialog-commands.js";
 
@@ -62,43 +66,28 @@ function createCaptureStream() {
   };
 }
 
-function basePayload(overrides: Record<string, unknown> = {}) {
+/** The Synthetic provider; its check answers with `entries` and `errors`. */
+function synthetic(
+  entries: object[] = [
+    {
+      accounting: TEST_ACCOUNTING,
+      name: "Synthetic Weekly",
+      label: "Weekly:",
+      percentRemaining: 75,
+    },
+  ],
+  errors: object[] = [],
+  available = true,
+) {
   return {
-    version: "3.11.2",
-    generatedAt: "2026-07-16T00:00:00.000Z",
-    config: {
-      configSource: "workspace",
-      configPaths: ["/tmp/opencode.json"],
-      enabledProviders: ["synthetic"],
-      onlyCurrentModel: false,
-      pricingSnapshotSource: "auto",
-    },
-    providers: [
-      { id: "synthetic", enabled: true, available: true, matchesCurrentModel: undefined },
-    ],
-    pricing: {
-      selection: "auto",
-      activeSource: "bundled",
-      snapshot: {
-        source: "bundled",
-        generatedAt: "2026-01-01T00:00:00.000Z",
-        units: "USD per 1M tokens",
-      },
-      snapshotPath: "/tmp/pricing.json",
-      refreshStatePath: "/tmp/pricing-state.json",
-    },
-    liveProbes: [{ id: "synthetic", ok: true }],
-    ...overrides,
+    id: "synthetic",
+    cachePolicy: { kind: "account-neutral" as const },
+    isAvailable: vi.fn().mockResolvedValue(available),
+    fetch: vi.fn(async () => ({ attempted: true, entries, errors })),
   };
 }
 
-function useStatusData(
-  payload = basePayload(),
-  hasComparableProviderData?: boolean,
-  output = "report text",
-): void {
-  statusData.value = { output, payload, hasComparableProviderData };
-}
+const FAILED_CHECK = [{ label: "Synthetic", message: "quota endpoint unavailable" }];
 
 describe("runCliStatusCommand", () => {
   let tempDir: string;
@@ -118,6 +107,15 @@ describe("runCliStatusCommand", () => {
     return { code, stdout: stdout.output, stderr: stderr.output };
   }
 
+  function writeSettings(settings: Record<string, unknown>): void {
+    mkdirSync(join(globalConfigDir, "opencode-quota"), { recursive: true });
+    writeFileSync(
+      join(globalConfigDir, "opencode-quota", "settings.jsonc"),
+      JSON.stringify(settings),
+      "utf8",
+    );
+  }
+
   beforeEach(() => {
     savedConfigDir = process.env.OPENCODE_CONFIG_DIR;
     delete process.env.OPENCODE_CONFIG_DIR;
@@ -134,60 +132,70 @@ describe("runCliStatusCommand", () => {
     };
     vi.stubEnv("OPENCODE_DB", join(tempDir, "opencode.db"));
     mockProviders.length = 0;
-    statusData.value = null;
     vi.mocked(buildStatusReportData).mockClear();
-    mkdirSync(join(globalConfigDir, "opencode-quota"), { recursive: true });
-    writeFileSync(
-      join(globalConfigDir, "opencode-quota", "settings.jsonc"),
-      JSON.stringify({ providers: { enabled: ["synthetic"] } }),
-      "utf8",
-    );
+    __resetPricingSnapshotForTests();
+    writeSettings({ providers: { enabled: ["synthetic"] } });
   });
 
   afterEach(() => {
     if (savedConfigDir !== undefined) process.env.OPENCODE_CONFIG_DIR = savedConfigDir;
     else delete process.env.OPENCODE_CONFIG_DIR;
     mockProviders.length = 0;
-    statusData.value = null;
     rmSync(tempDir, { recursive: true, force: true });
   });
 
   it("prints a plain-text Quota Status report and returns zero", async () => {
-    useStatusData(
-      basePayload(),
-      undefined,
-      "Quota Status (opencode-quota v3.11.2)\ntoast:\n- enabledProviders: synthetic",
-    );
+    mockProviders.push(synthetic());
     const result = await runStatus([]);
 
     expect(result.code).toBe(0);
     expect(result.stdout).toContain("Quota Status");
-    expect(result.stdout).toContain("enabledProviders: synthetic");
+    expect(result.stdout).toContain("- enabledProviders: synthetic");
+    expect(result.stdout).toContain("\nsynthetic:\n- state: ok");
     expect(result.stderr).toBe("");
     expect(buildStatusReportData).toHaveBeenCalledWith(
       expect.objectContaining({ providerFilterId: undefined }),
     );
   });
 
+  it("checks the providers with the price list and refresh age the settings choose", async () => {
+    writeSettings({
+      providers: { enabled: ["synthetic"] },
+      pricing: { source: "bundled", autoRefreshDays: 3 },
+    });
+    const seen: Array<{ source: string; maxAgeMs: number }> = [];
+    const provider = synthetic();
+    provider.fetch.mockImplementation(async () => {
+      seen.push({
+        source: getPricingSnapshotSelection(),
+        maxAgeMs: getPricingRefreshPolicy().maxAgeMs,
+      });
+      return { attempted: true, entries: [], errors: [] };
+    });
+    mockProviders.push(provider);
+
+    await runStatus([]);
+
+    expect(seen).toEqual([{ source: "bundled", maxAgeMs: 3 * 24 * 60 * 60 * 1000 }]);
+  });
+
   it("--json emits a structured payload and returns zero when live probes exist", async () => {
-    useStatusData();
+    mockProviders.push(synthetic());
     const result = await runStatus(["--json"]);
 
     expect(result.code).toBe(0);
     expect(result.stderr).toBe("");
     const parsed = JSON.parse(result.stdout);
-    expect(parsed).toHaveProperty("version", "3.11.2");
+    expect(parsed).toHaveProperty("version", expect.any(String));
     expect(parsed).toHaveProperty("generatedAt");
-    expect(parsed).toHaveProperty("config");
-    expect(parsed).toHaveProperty("providers");
+    expect(parsed.config).toMatchObject({ enabledProviders: ["synthetic"] });
+    expect(parsed.providers).toEqual([{ id: "synthetic", enabled: true, available: true }]);
     expect(parsed).toHaveProperty("pricing");
-    expect(parsed).toHaveProperty("liveProbes");
-    expect(parsed.liveProbes).toHaveLength(1);
-    expect(parsed.liveProbes[0]).toEqual({ id: "synthetic", ok: true });
+    expect(parsed.liveProbes).toEqual([{ id: "synthetic", ok: true }]);
   });
 
   it("--json exits 2 when there is no comparable provider data", async () => {
-    useStatusData(basePayload({ liveProbes: [] }), false);
+    mockProviders.push(synthetic(undefined, undefined, false));
     const result = await runStatus(["--json"]);
 
     expect(result.code).toBe(2);
@@ -198,7 +206,7 @@ describe("runCliStatusCommand", () => {
   });
 
   it("--json exits 2 when probes fail without producing quota entries", async () => {
-    useStatusData(basePayload({ liveProbes: [{ id: "synthetic", ok: false }] }), false);
+    mockProviders.push(synthetic([], FAILED_CHECK));
     const result = await runStatus(["--json"]);
 
     expect(result.code).toBe(2);
@@ -206,13 +214,15 @@ describe("runCliStatusCommand", () => {
   });
 
   it("--json succeeds when a partial probe produced quota entries", async () => {
-    useStatusData(basePayload({ liveProbes: [{ id: "synthetic", ok: false }] }), true);
+    mockProviders.push(synthetic(undefined, FAILED_CHECK));
+    const result = await runStatus(["--json"]);
 
-    expect((await runStatus(["--json"])).code).toBe(0);
+    expect(result.code).toBe(0);
+    expect(JSON.parse(result.stdout).liveProbes).toEqual([{ id: "synthetic", ok: false }]);
   });
 
   it("--provider filters the report to one provider", async () => {
-    useStatusData();
+    mockProviders.push(synthetic());
     const result = await runStatus(["--provider", "synthetic"]);
 
     expect(result.code).toBe(0);
@@ -223,7 +233,6 @@ describe("runCliStatusCommand", () => {
   });
 
   it("resolves a case-insensitive provider synonym before filtering", async () => {
-    useStatusData();
     const result = await runStatus(["--provider", "  CLAUDE  "]);
 
     expect(result.code).toBe(0);
@@ -234,7 +243,7 @@ describe("runCliStatusCommand", () => {
   });
 
   it("--provider --json forwards the provider filter and still emits JSON", async () => {
-    useStatusData();
+    mockProviders.push(synthetic());
     const result = await runStatus(["--json", "--provider", "synthetic"]);
 
     expect(result.code).toBe(0);
@@ -245,7 +254,6 @@ describe("runCliStatusCommand", () => {
     expect(parsed.providers).toHaveLength(1);
     expect(parsed).not.toHaveProperty("providerFilterId");
   });
-
   it("rejects --threshold with a redirect to show --json --threshold", async () => {
     const result = await runStatus(["--threshold", "50"]);
 
@@ -310,14 +318,12 @@ describe("runCliStatusCommand", () => {
 
   it("builds the report with the database login source bound and unbinds it afterwards", async () => {
     let sourceDuringRun: unknown;
-    vi.mocked(buildStatusReportData).mockImplementationOnce(async () => {
+    const provider = synthetic();
+    provider.fetch.mockImplementation(async () => {
       sourceDuringRun = getCredentialSourceDiagnostics();
-      return {
-        output: "Quota Status (opencode-quota v3.11.2)",
-        payload: basePayload(),
-        hasComparableProviderData: true,
-      } as never;
+      return { attempted: true, entries: [], errors: [] };
     });
+    mockProviders.push(provider);
 
     const result = await runStatus([]);
 

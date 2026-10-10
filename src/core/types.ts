@@ -160,6 +160,12 @@ export type QuotaSnapshot = {
   providers: ProviderSnapshot[];
   /** With a session: the providers serving its current model (the "current model only" filter). */
   currentModelProviderIds?: string[];
+  /**
+   * With a session: for a provider whose rows serve different models (the custom providers,
+   * one definition each), the row id prefixes that serve its current model, by provider id.
+   * Every row is still checked; under "current model only" just these show.
+   */
+  currentModelRowPrefixes?: Record<string, string[]>;
   /** With a session: the tokens it used so far. */
   sessionTokens?: SessionTokens;
   /** The server's words; clients use their defaults until the server sends them. */

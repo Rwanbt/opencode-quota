@@ -407,6 +407,155 @@ describe("server quota RPC", () => {
     expect(later.snapshot).not.toHaveProperty("displayImport");
   });
 
+  it("drops a check that ran across a settings change that turned its provider off", async () => {
+    useSettings({
+      providers: { enabled: ["copilot", "openai"] },
+      checking: { minIntervalMs: 60_000 },
+    });
+    let answerCopilot: (result: unknown) => void = () => {};
+    const slowCopilot = vi.fn(
+      () =>
+        new Promise((resolve) => {
+          answerCopilot = resolve;
+        }),
+    );
+    mocks.getProviders.mockReturnValue([
+      {
+        id: "copilot",
+        cachePolicy: { kind: "account-neutral" },
+        isAvailable: vi.fn().mockResolvedValue(true),
+        fetch: slowCopilot,
+      },
+      {
+        id: "openai",
+        cachePolicy: { kind: "account-neutral" },
+        isAvailable: vi.fn().mockResolvedValue(true),
+        fetch: vi.fn().mockResolvedValue({
+          attempted: true,
+          entries: [{ accounting: TEST_ACCOUNTING, name: "OpenAI", percentRemaining: 60 }],
+          errors: [],
+        }),
+      },
+    ]);
+    const { call, emit } = await setupServer();
+    const providerIds = (snapshot: QuotaSnapshot) =>
+      snapshot.providers.map((provider) => provider.providerId);
+    const emitted = () =>
+      emit.mock.calls.map(([, data]) =>
+        providerIds((data as { snapshot: QuotaSnapshot }).snapshot),
+      );
+    const running = call("refresh", { reason: "manual" }) as Promise<{ snapshot: QuotaSnapshot }>;
+    await vi.waitFor(() => expect(slowCopilot).toHaveBeenCalledOnce());
+    emit.mockClear();
+
+    useSettings({ providers: { enabled: ["openai"] }, checking: { minIntervalMs: 60_000 } });
+    await vi.waitFor(() => expect(emitted().at(-1)).toEqual(["openai"]), { timeout: 5_000 });
+    answerCopilot({
+      attempted: true,
+      entries: [{ accounting: TEST_ACCOUNTING, name: "Copilot", percentRemaining: 70 }],
+      errors: [],
+    });
+
+    // The refresh asked for before the change answers with the settings of now.
+    expect(providerIds((await running).snapshot)).toEqual(["openai"]);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(emitted().filter((ids) => ids.includes("copilot"))).toEqual([]);
+    const now = (await call("snapshot", {})) as { snapshot: QuotaSnapshot };
+    expect(providerIds(now.snapshot)).toEqual(["openai"]);
+  });
+
+  it("checks with the price list the settings choose, and again at once when it changes", async () => {
+    useSettings({ pricing: { source: "bundled", autoRefreshDays: 5 } });
+    const pricing = await import("../src/lib/modelsdev-pricing.js");
+    const seen: string[] = [];
+    const fetch = vi.fn(async () => {
+      const days = pricing.getPricingRefreshPolicy().maxAgeMs / (24 * 60 * 60 * 1000);
+      seen.push(`${pricing.getPricingSnapshotSelection()} ${days}`);
+      return { attempted: true, entries: [], errors: [] };
+    });
+    mocks.getProviders.mockReturnValue([
+      { id: "copilot", isAvailable: vi.fn().mockResolvedValue(true), fetch },
+    ]);
+    const { call } = await setupServer();
+
+    await call("refresh", { reason: "poll" });
+    expect(seen).toEqual(["bundled 5"]);
+
+    // Local estimates use prices: another price list checks every provider again.
+    useSettings({
+      checking: { minIntervalMs: 60_000 },
+      pricing: { source: "runtime", autoRefreshDays: 2 },
+    });
+    await vi.waitFor(() => expect(seen).toEqual(["bundled 5", "runtime 2"]), { timeout: 5_000 });
+  });
+
+  it("checks again at once when the time limit changes, also when set to its default", async () => {
+    useSettings({ checking: { minIntervalMs: 60_000 } });
+    const seen: unknown[] = [];
+    const fetch = vi.fn(async (ctx: { config: Record<string, unknown> }) => {
+      seen.push([ctx.config.requestTimeoutMs, ctx.config.requestTimeoutMsConfigured]);
+      if (seen.length === 1) throw new Error("Request timeout after 5s");
+      return {
+        attempted: true,
+        entries: [{ accounting: TEST_ACCOUNTING, name: "Copilot", percentRemaining: 40 }],
+        errors: [],
+      };
+    });
+    mocks.getProviders.mockReturnValue([
+      {
+        id: "copilot",
+        cachePolicy: { kind: "account-neutral" },
+        isAvailable: vi.fn().mockResolvedValue(true),
+        fetch,
+      },
+    ]);
+    const { call } = await setupServer();
+    const failed = (await call("refresh", { reason: "manual" })) as { snapshot: QuotaSnapshot };
+    expect(failed.snapshot.providers[0]?.error?.code).toBe("timeout");
+
+    // The default time limit, now set in the file: providers use a configured limit.
+    useSettings({ checking: { minIntervalMs: 60_000, requestTimeoutMs: 5_000 } });
+    await vi.waitFor(() => expect(seen).toHaveLength(2), { timeout: 5_000 });
+    expect(seen[1]).toEqual([5_000, true]);
+
+    // A longer limit after the timeout: no interval or backoff waits for it.
+    useSettings({ checking: { minIntervalMs: 60_000, requestTimeoutMs: 30_000 } });
+    await vi.waitFor(() => expect(seen).toHaveLength(3), { timeout: 5_000 });
+    expect(seen[2]).toEqual([30_000, true]);
+    const now = (await call("snapshot", {})) as { snapshot: QuotaSnapshot };
+    expect(now.snapshot.providers[0]).not.toHaveProperty("error");
+  });
+
+  it("offers the v5 looks a save kept when it finished the conversion", async () => {
+    // A v5 sidecar that does not parse, and v5 settings in opencode.json: the start converts
+    // them in memory only, and the first save writes settings.jsonc and keeps the looks.
+    await rm(SETTINGS_FILE);
+    await writeFile(`${TEST_RUNTIME_ROOT}/config/opencode-quota/quota-toast.jsonc`, "{ broken");
+    await writeFile(
+      `${TEST_RUNTIME_ROOT}/config/opencode.json`,
+      JSON.stringify({
+        experimental: { quotaToast: { enabledProviders: ["copilot"], showOnIdle: false } },
+      }),
+    );
+    const { call, emit } = await setupServer();
+    const before = (await call("snapshot", {})) as { snapshot: QuotaSnapshot };
+    expect(before.snapshot).not.toHaveProperty("displayImport");
+    emit.mockClear();
+
+    await expect(
+      call("saveSettings", { patch: { words: { percent: "used" } } }),
+    ).resolves.toMatchObject({ ok: true });
+
+    const offered = { id: expect.any(String), display: { toast: { afterReply: "off" } } };
+    await vi.waitFor(() =>
+      expect(emit).toHaveBeenCalledWith("changed", {
+        snapshot: expect.objectContaining({ displayImport: offered }),
+      }),
+    );
+    const after = (await call("snapshot", {})) as { snapshot: QuotaSnapshot };
+    expect(after.snapshot.displayImport).toEqual(offered);
+  });
+
   it("names the providers of the session's model in the snapshot", async () => {
     useSettings({ providers: { enabled: ["copilot", "openai"] } });
     mocks.getProviders.mockReturnValue(

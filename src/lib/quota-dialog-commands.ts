@@ -13,7 +13,7 @@ import { createQuotaStore } from "../core/store.js";
 import type { DebugDetail, ProviderSnapshot, QuotaSnapshot, SessionModel } from "../core/types.js";
 import { type UsageReport, usageReport } from "../core/usage.js";
 import { getProviders } from "../providers/registry.js";
-import type { V5Conversion } from "../settings/index.js";
+import type { Settings, V5Conversion } from "../settings/index.js";
 import { DEFAULT_WORDS } from "../view/format.js";
 import { type RowSettings, type SurfaceRows, visibleGroups } from "../view/select.js";
 import { plainLines } from "../view/text.js";
@@ -128,6 +128,15 @@ function quotaCommandReport(snapshot: QuotaSnapshot, nowMs: number): CommandRepo
     heading: { line: "Quota" },
     sections: [{ id: "quota", blocks: [{ kind: "lines", lines }] }],
   });
+}
+
+/**
+ * Uses the pricing settings from now on: the price list (`source`) and how many days old it
+ * may get before a refresh. Applied before any provider check, as local estimates use prices.
+ */
+export function applyPricingSettings(pricing: Settings["pricing"]): void {
+  setPricingSnapshotAutoRefresh(pricing.autoRefreshDays);
+  setPricingSnapshotSelection(pricing.source);
 }
 
 /** Starts a models.dev price refresh when due and waits for it at most `maxWaitMs`. */
@@ -775,8 +784,7 @@ export async function buildQuotaDialogCommandOutput(params: {
 }): Promise<QuotaDialogCommandOutputResult> {
   const generatedAtMs = params.generatedAtMs ?? Date.now();
   const { pricing } = params.host.settings().settings;
-  setPricingSnapshotAutoRefresh(pricing.autoRefreshDays);
-  setPricingSnapshotSelection(pricing.source);
+  applyPricingSettings(pricing);
 
   if (params.command === "quota") {
     const snapshot = await params.quotaSnapshot(params.sessionID);

@@ -86,12 +86,14 @@ const cleanups: Array<() => unknown> = [];
 
 /**
  * Starts the server plugin. `run` runs a palette command over the quota RPC, as the TUI does,
- * and returns its text; every session uses the model `sessionModel` gives.
+ * and returns its text; every session uses the model `sessionModel` gives. OpenCode lists the
+ * quota providers' ids as its own, and `openCodeProviders` too.
  */
 async function startServer(
   options: {
     directory?: string;
     sessionModel?: () => { id?: string; providerID?: string } | undefined;
+    openCodeProviders?: string[];
   } = {},
 ) {
   const { default: server } = await import("../src/plugin.js");
@@ -101,7 +103,10 @@ async function startServer(
     location: { directory: options.directory ?? process.cwd() },
     provider: {
       list: vi.fn(async () => ({
-        data: mocks.getProviders().map((item: { id: string }) => ({ id: item.id })),
+        data: [
+          ...mocks.getProviders().map((item: { id: string }) => item.id),
+          ...(options.openCodeProviders ?? []),
+        ].map((id) => ({ id })),
       })),
     },
     session: {
@@ -359,6 +364,50 @@ describe("/quota command behavior", () => {
     const output = await run("quota");
 
     expect(output).toContain("No quota provider serves the session's current model.");
+  });
+
+  it("shows only the custom sources serving the session's model when onlyCurrentModel is on", async () => {
+    const definition = (id: string, model: string) => ({
+      id,
+      providerId: `${id}-gateway`,
+      modelIds: [model],
+      url: `https://${id}.example/quota`,
+      mode: "remote-api",
+      format: "quota-v1",
+      apiKeyEnv: "TEST_GATEWAY_KEY",
+    });
+    useSettings({
+      providers: {
+        enabled: ["custom"],
+        custom: [definition("alpha", "model-a"), definition("beta", "model-b")],
+      },
+      words: { onlyCurrentModel: true },
+    });
+    const entry = (id: string, percentRemaining: number) => ({
+      accounting: { ...TEST_ACCOUNTING, ownership: "user_configured", sourceId: id },
+      name: `${id} Monthly`,
+      group: id,
+      rowKey: "monthly",
+      percentRemaining,
+    });
+    // One check reads every source; only the rows shown depend on the session's model.
+    const fetch = vi.fn().mockResolvedValue(quotaResult([entry("alpha", 61), entry("beta", 32)]));
+    mocks.getProviders.mockReturnValue([provider("quota-providers", fetch)]);
+    let model = { id: "model-a", providerID: "alpha-gateway" };
+    const { run } = await startServer({
+      sessionModel: () => model,
+      openCodeProviders: ["alpha-gateway", "beta-gateway"],
+    });
+
+    const alpha = await run("quota");
+    model = { id: "model-b", providerID: "beta-gateway" };
+    const beta = await run("quota");
+
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(alpha).toContain("61% left");
+    expect(alpha).not.toContain("32% left");
+    expect(beta).toContain("32% left");
+    expect(beta).not.toContain("61% left");
   });
 
   it("answers /quota of every session from one check while the rows are fresh", async () => {

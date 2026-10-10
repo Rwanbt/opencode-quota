@@ -96,6 +96,33 @@ function providerIdsForModel(ctx: QuotaProviderContext, model: SessionModel): st
     .map((provider) => provider.id);
 }
 
+/** OpenCode's provider ids; none when its list can't be read. */
+async function openCodeProviderIds(ctx: QuotaProviderContext): Promise<ReadonlySet<string>> {
+  try {
+    return await ctx.resolveRuntimeProviderIds();
+  } catch {
+    return new Set();
+  }
+}
+
+/**
+ * The custom definitions (rows `quota-providers.custom.<id>.*`) that serve `model`; without
+ * OpenCode's provider list none can be matched to a model.
+ */
+function customDefinitionIdsForModel(
+  ctx: QuotaProviderContext,
+  availableProviderIds: ReadonlySet<string>,
+  model: SessionModel,
+): string[] {
+  return selectEligibleQuotaProviderDefinitions({
+    definitions: ctx.config.quotaProviders ?? [],
+    availableProviderIds,
+    onlyCurrentModel: true,
+    currentModel: model.id,
+    currentProviderID: model.providerID,
+  }).map((definition) => definition.id);
+}
+
 /** The quota-providers aggregate needs the custom definitions OpenCode can serve right now. */
 async function cacheContextFor(
   provider: QuotaProvider,
@@ -215,12 +242,23 @@ export async function loadProviderSource(host: ProviderSourceHost): Promise<Stor
     config.opencodeMonthlyLimit ?? null,
     config.quotaProviders ?? [],
   ]);
+  const availableProviderIds = config.quotaProviders?.length
+    ? await openCodeProviderIds(ctx)
+    : new Set<string>();
   return {
     providers: enabled
       .filter((_, index) => available[index])
       .map((provider) => storeProvider(provider, ctx, settingsKey)),
     minIntervalMs: loaded.settings.checking.minIntervalMs,
     providerIdsForModel: (model) => providerIdsForModel(ctx, model),
+    // A custom definition's rows serve only the models the definition serves.
+    rowPrefixesForModel: (model) => ({
+      [QUOTA_PROVIDERS_AGGREGATE_ID]: customDefinitionIdsForModel(
+        ctx,
+        availableProviderIds,
+        model,
+      ).map((id) => `${QUOTA_PROVIDERS_AGGREGATE_ID}.custom.${id}.`),
+    }),
   };
 }
 
@@ -228,23 +266,12 @@ export async function loadServerSettings(host: ProviderSourceHost): Promise<Serv
   const loaded = host.settings();
   const { settings } = loaded;
   const ctx = providerContext(host, loaded);
-  let availableProviderIds: ReadonlySet<string> = new Set();
-  try {
-    availableProviderIds = await ctx.resolveRuntimeProviderIds();
-  } catch {
-    // Without OpenCode's provider list no custom definition can be matched to a model.
-  }
+  const availableProviderIds = await openCodeProviderIds(ctx);
   return {
     waitForQuotaReset: settings.checking.waitForQuotaReset,
     providerIdsForModel: (model) => providerIdsForModel(ctx, model),
     customDefinitionIdsForModel: (model) =>
-      selectEligibleQuotaProviderDefinitions({
-        definitions: ctx.config.quotaProviders ?? [],
-        availableProviderIds,
-        onlyCurrentModel: true,
-        currentModel: model.id,
-        currentProviderID: model.providerID,
-      }).map((definition) => definition.id),
+      customDefinitionIdsForModel(ctx, availableProviderIds, model),
     export: settings.export,
     telemetry: settings.telemetry.enabled,
   };

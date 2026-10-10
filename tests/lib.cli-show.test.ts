@@ -51,6 +51,8 @@ const { createQuotaStore } = await import("../src/core/store.js");
 const { createCliQuotaClient, runCliShowCommand } = await import("../src/lib/cli-show.js");
 const { clearReadAuthFileCacheForTests, getCredentialSourceDiagnostics, readCredentialRows } =
   await import("../src/lib/opencode-auth.js");
+const { __resetPricingSnapshotForTests, getPricingRefreshPolicy, getPricingSnapshotSelection } =
+  await import("../src/lib/modelsdev-pricing.js");
 const { loadSettings } = await import("../src/settings/index.js");
 const { writeCredentialDatabase } = await import("./helpers/credential-database.js");
 
@@ -172,6 +174,34 @@ describe("runCliShowCommand", () => {
     expect(stdout.output).toContain("75%");
     expect(stderr.output).toBe("");
     expect(provider.fetch).toHaveBeenCalledOnce();
+  });
+
+  it("checks the providers with the price list and refresh age the settings choose", async () => {
+    __resetPricingSnapshotForTests();
+    const seen: Array<{ source: string; maxAgeMs: number }> = [];
+    mockProviders.push({
+      id: "synthetic",
+      cachePolicy: { kind: "account-neutral" as const },
+      isAvailable: vi.fn().mockResolvedValue(true),
+      fetch: vi.fn(async () => {
+        const maxAgeMs = getPricingRefreshPolicy().maxAgeMs;
+        seen.push({ source: getPricingSnapshotSelection(), maxAgeMs });
+        return { attempted: true, entries: [], errors: [] };
+      }),
+    });
+    writeSettings({
+      providers: { enabled: ["synthetic"] },
+      pricing: { source: "bundled", autoRefreshDays: 3 },
+    });
+
+    await runCliShowCommand({
+      argv: [],
+      cwd: workspaceDir,
+      stdout: createCaptureStream().stream as any,
+      stderr: createCaptureStream().stream as any,
+    });
+
+    expect(seen).toEqual([{ source: "bundled", maxAgeMs: 3 * 24 * 60 * 60 * 1000 }]);
   });
 
   it("reads logins from OpenCode's database, read-only, only while the command runs", async () => {

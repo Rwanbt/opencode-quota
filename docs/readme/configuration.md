@@ -158,14 +158,14 @@ Provider credentials (API keys, cookies, tokens) are never set here. See [API ke
 | `words.resetDecimals`    | `1`         | `0`–`4` decimals for `decimal`. |
 | `words.detail`           | `"summary"` | `detailed` also shows supplementary accounting rows. |
 | `words.runsOut`          | `false`     | No effect: no surface shows a runs-out estimate. |
-| `words.onlyCurrentModel` | `false`     | Show only the providers that serve the session's current model, when they can be found. |
+| `words.onlyCurrentModel` | `false`     | Show only the providers that serve the session's current model, when they can be found. Of the custom providers, only those whose `providerId` and `modelIds` serve it. |
 | `words.sessionTokens`    | `"current"` | `tree` adds every subagent session to the session tokens, counted once. It does not change `/tokens_session` or `/tokens_session_all`. |
 
 ### Pricing, notices, export and telemetry
 
 | Setting                         | Default   | Meaning |
 | ------------------------------- | --------- | ------- |
-| `pricing.source`                | `"auto"`  | Token pricing for `/tokens_*`: `auto`, `bundled`, or `runtime`. |
+| `pricing.source`                | `"auto"`  | Token pricing for `/tokens_*` and the local estimates (Cursor, custom local providers): `auto`, `bundled`, or `runtime`. |
 | `pricing.autoRefreshDays`       | `7`       | Refresh local pricing after this many days. |
 | `announcements.enabled`         | `true`    | Show bundled maintainer notices. |
 | `announcements.home`            | `true`    | Show the count of active notices at the bottom of Home. |

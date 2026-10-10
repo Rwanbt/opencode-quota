@@ -25,8 +25,8 @@ export type DisplaySettings = RowSettings & {
   layout: Layout;
   /**
    * width 0 = all the room OpenCode's footer leaves free, else at most that many columns.
-   * detail "one" = v5's prompt bar: only the first provider, with a big bar. home = also at
-   * the bottom of Home.
+   * detail "one" = v5's prompt bar: only the first provider, with a big bar. home = at the
+   * bottom of Home, whether or not it shows in sessions (`surfaces.statusLine.enabled`).
    */
   statusLine: {
     width: number;
