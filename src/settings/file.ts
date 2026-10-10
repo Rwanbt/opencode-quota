@@ -3,14 +3,15 @@
  * (defaults for what is missing or wrong), save a patch into it (comments kept), watch it for
  * edits, and convert the v5 settings into it once.
  */
-import { type FSWatcher, unwatchFile, watch, watchFile } from "node:fs";
-import { chmod, lstat, mkdir, open, readFile, rm, stat } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { randomUUID } from "node:crypto";
+import { type FSWatcher, type Stats, unwatchFile, watch, watchFile } from "node:fs";
+import { chmod, lstat, mkdir, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
+import { basename, dirname, join } from "node:path";
 import { applyEdits, modify, type ParseError, parseTree, printParseErrorCode } from "jsonc-parser";
 import { writeTextAtomic } from "../lib/atomic-json.js";
 import {
-  assertSameConfigWriteTarget,
   type ConfigWriteTargetSnapshot,
+  configWriteTargetsEqual,
   NEW_CONFIG_DIRECTORY_MODE,
   NEW_CONFIG_FILE_MODE,
   resolveConfigWriteTarget,
@@ -25,6 +26,7 @@ import {
 } from "./convert.js";
 import {
   checkSetting,
+  DOTTED_KEY,
   DUPLICATE_KEY,
   defaultSettings,
   diffSettings,
@@ -191,29 +193,97 @@ function planEdits(
 
 const LOCK_WAIT_MS = 2_000;
 const LOCK_STALE_MS = 10_000;
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-/** Runs `work` holding `settings.jsonc.lock`, so saves and the conversion never interleave. */
-async function withSettingsLock<T>(work: () => Promise<T>): Promise<T> {
-  const lock = `${settingsPath()}.lock`;
-  await mkdir(dirname(lock), { recursive: true, mode: NEW_CONFIG_DIRECTORY_MODE });
-  const start = Date.now();
-  for (;;) {
-    try {
-      await (await open(lock, "wx", NEW_CONFIG_FILE_MODE)).close();
-      break;
-    } catch (error) {
-      if (errorCode(error) !== "EEXIST") throw error;
-      const lockedAt = (await stat(lock).catch(() => undefined))?.mtimeMs ?? Date.now();
-      // A process that died while saving left its lock behind.
-      if (Date.now() - lockedAt > LOCK_STALE_MS) await rm(lock, { force: true });
-      else if (Date.now() - start > LOCK_WAIT_MS) throw new Error("another save is still running");
-      else await new Promise((resolve) => setTimeout(resolve, 20));
-    }
+/** Creates `path` holding `text`; false when it already exists. */
+async function createExclusive(path: string, text: string): Promise<boolean> {
+  try {
+    await writeFile(path, text, { flag: "wx", mode: NEW_CONFIG_FILE_MODE });
+    return true;
+  } catch (error) {
+    if (errorCode(error) === "EEXIST") return false;
+    throw error;
+  }
+}
+
+type LockFile = { text: string; mtimeMs: number };
+
+async function readLock(path: string): Promise<LockFile | undefined> {
+  const stats = await lstat(path).catch(() => undefined);
+  return stats && { text: await readFile(path, "utf8").catch(() => ""), mtimeMs: stats.mtimeMs };
+}
+
+/** Its owner is gone: the process it names died, or it names none and is older than 10 s. */
+function isAbandoned(lock: LockFile): boolean {
+  let pid: unknown;
+  try {
+    pid = (JSON.parse(lock.text) as { pid?: unknown }).pid;
+  } catch {
+    // Empty or unreadable: only its age tells.
+  }
+  if (!(typeof pid === "number" && Number.isInteger(pid) && pid > 0)) {
+    return Date.now() - lock.mtimeMs > LOCK_STALE_MS;
   }
   try {
-    return await work();
-  } finally {
-    await rm(lock, { force: true });
+    process.kill(pid, 0);
+    return false;
+  } catch (error) {
+    return errorCode(error) === "ESRCH";
+  }
+}
+
+/**
+ * Takes over an abandoned lock in one atomic step, a rename: only one waiter's rename finds it.
+ * A lock renamed that is not the one seen abandoned (another waiter just took it) goes back.
+ */
+async function claimAbandoned(lock: string, token: string): Promise<void> {
+  const seen = await readLock(lock);
+  if (!seen || !isAbandoned(seen)) return;
+  const claimed = `${lock}.stale-${token}`;
+  const lost = await rename(lock, claimed).catch(() => true);
+  if (lost) return; // Another waiter renamed it first.
+  const got = await readLock(claimed);
+  if (got && (got.text !== seen.text || got.mtimeMs !== seen.mtimeMs)) {
+    await createExclusive(lock, got.text);
+  }
+  await rm(claimed, { force: true });
+}
+
+/** Removes the lock only while it is still ours. */
+async function releaseLock(lock: string, mine: string): Promise<void> {
+  if ((await readFile(lock, "utf8").catch(() => "")) === mine) await rm(lock, { force: true });
+}
+
+/**
+ * Runs `work` on the file a save writes (a symlink's real target, else settings.jsonc), holding
+ * the lock next to it (a file with our pid and a token), so saves, the conversion and the display
+ * import never interleave. A live owner is never robbed: after LOCK_WAIT_MS this fails as busy.
+ */
+async function withSettingsLock<T>(
+  work: (target: ConfigWriteTargetSnapshot) => Promise<T>,
+): Promise<T> {
+  const token = randomUUID();
+  const mine = JSON.stringify({ pid: process.pid, token });
+  const start = Date.now();
+  for (;;) {
+    const target = await resolveConfigWriteTarget(settingsPath());
+    const lock = `${target.writePath}.lock`;
+    await mkdir(dirname(lock), { recursive: true, mode: NEW_CONFIG_DIRECTORY_MODE });
+    if (await createExclusive(lock, mine)) {
+      try {
+        // Another save created the file, or a link moved, while we waited: lock it again.
+        const now = await resolveConfigWriteTarget(target.configuredPath);
+        if (configWriteTargetsEqual(target, now)) return await work(target);
+      } finally {
+        await releaseLock(lock, mine);
+      }
+    } else {
+      await claimAbandoned(lock, token);
+    }
+    if (Date.now() - start > LOCK_WAIT_MS) {
+      throw new Error(`the settings file is busy: another save holds ${lock}; try again`);
+    }
+    await sleep(20);
   }
 }
 
@@ -221,28 +291,34 @@ function displayImportPath(): string {
   return join(getOpencodeRuntimeDirs().stateDir, "opencode-quota", "display-import.json");
 }
 
-/** Keeps the v5 looks until the TUI applies them, also when the converting run has no TUI. */
+/** The v5 looks a conversion found, with the id `acknowledgeDisplayImport` takes. */
+export type PendingDisplayImport = { id: string; display: DisplayImport };
+
+/** Keeps the v5 looks under a new id until the TUI acknowledges it (the caller holds the lock). */
 async function keepDisplayImport(display: DisplayImport): Promise<void> {
   if (Object.keys(display).length === 0) return;
-  await writeTextAtomic(displayImportPath(), `${JSON.stringify(display, null, 2)}\n`, {
+  const pending: PendingDisplayImport = { id: randomUUID(), display };
+  await writeTextAtomic(displayImportPath(), `${JSON.stringify(pending, null, 2)}\n`, {
     policy: "configuration",
     directoryMode: NEW_CONFIG_DIRECTORY_MODE,
     fileMode: NEW_CONFIG_FILE_MODE,
   });
 }
 
-/** The v5 looks the conversion found that the TUI has not applied yet. */
-export async function pendingDisplayImport(): Promise<DisplayImport | undefined> {
+/** The v5 looks the TUI has not acknowledged yet. */
+export async function pendingDisplayImport(): Promise<PendingDisplayImport | undefined> {
   try {
-    return JSON.parse(await readFile(displayImportPath(), "utf8")) as DisplayImport;
+    return JSON.parse(await readFile(displayImportPath(), "utf8")) as PendingDisplayImport;
   } catch {
     return undefined;
   }
 }
 
-/** The TUI applied the pending looks: forget them. */
-export async function acknowledgeDisplayImport(): Promise<void> {
-  await rm(displayImportPath(), { force: true });
+/** The TUI applied the looks with this id: forget them, but never a newer import. */
+export async function acknowledgeDisplayImport(id: string): Promise<void> {
+  await withSettingsLock(async () => {
+    if ((await pendingDisplayImport())?.id === id) await rm(displayImportPath(), { force: true });
+  });
 }
 
 type SettingsEdit = (current: Settings) => SettingsPatch | undefined;
@@ -269,7 +345,9 @@ export async function editSettings(
 ): Promise<SaveResult> {
   const path = settingsPath();
   try {
-    return await withSettingsLock(() => editLocked(path, edit, options.allowFileOnly === true));
+    return await withSettingsLock((target) =>
+      editLocked(target, edit, options.allowFileOnly === true),
+    );
   } catch (error) {
     return failedSave(`could not save ${path}: ${errorMessage(error)}`);
   }
@@ -283,12 +361,16 @@ function readTarget(target: ConfigWriteTargetSnapshot): Promise<string | undefin
   return target.terminalExisted ? readFile(target.writePath, "utf8") : Promise.resolve(undefined);
 }
 
-async function editLocked(path: string, edit: SettingsEdit, allowFileOnly: boolean) {
-  const target = await resolveConfigWriteTarget(path);
+async function editLocked(
+  target: ConfigWriteTargetSnapshot,
+  edit: SettingsEdit,
+  allowFileOnly: boolean,
+) {
+  const path = target.configuredPath;
   const original = await readTarget(target);
-  // A syntax error, or a key set twice (an edit would change one, reading uses the other).
+  // A syntax error, or a key set twice or with a dot (an edit would change another one).
   const blocking = readSettingsText(original ?? "{}").issues.find(
-    (issue) => issue.key === "$file" || issue.message === DUPLICATE_KEY,
+    (issue) => issue.key === "$file" || [DUPLICATE_KEY, DOTTED_KEY].includes(issue.message),
   );
   if (blocking) {
     const where = blocking.key === "$file" ? "" : `${blocking.key}: `;
@@ -298,7 +380,8 @@ async function editLocked(path: string, edit: SettingsEdit, allowFileOnly: boole
   // Without settings.jsonc the v5 settings are converted first; what could not be is reported.
   const { configDir } = getOpencodeRuntimeDirs();
   const conversion = original === undefined ? await planV5Conversion(configDir) : undefined;
-  const base = original ?? (conversion ? convertedFileText(conversion) : newFileText());
+  const base =
+    original ?? (conversion?.sources.length ? convertedFileText(conversion) : newFileText());
   const before = readSettingsText(base).settings;
   const patch = edit(structuredClone(before));
   if (patch === undefined) return { ok: true, issues: [], diff: [] };
@@ -309,14 +392,14 @@ async function editLocked(path: string, edit: SettingsEdit, allowFileOnly: boole
   const issues = (conversion?.notes ?? []).map((message) => ({ key: "$conversion", message }));
   if (updated === original) return { ok: true, issues, diff };
 
-  const latest = await resolveConfigWriteTarget(path);
-  assertSameConfigWriteTarget(target, latest);
-  if ((await readTarget(latest)) !== original) {
+  // Hand edits and link changes take no lock: write only over the file and text read.
+  const now = await resolveConfigWriteTarget(path);
+  if (!configWriteTargetsEqual(target, now) || (await readTarget(target)) !== original) {
     return failedSave(`${path} changed while saving; nothing was saved, try again`);
   }
   if (conversion) await keepDisplayImport(conversion.displayImport);
-  await writeResolvedConfigText(latest, updated);
-  await chmod(latest.writePath, NEW_CONFIG_FILE_MODE);
+  await writeResolvedConfigText(target, updated);
+  await chmod(target.writePath, NEW_CONFIG_FILE_MODE);
   return { ok: true, issues, diff };
 }
 
@@ -333,8 +416,7 @@ export async function convertV5(): Promise<V5Conversion | undefined> {
   const malformed = "an old settings file does not parse; converted in memory until it is fixed";
   if (conversion.malformed) return { ...conversion, notWrittenReason: malformed };
   try {
-    return await withSettingsLock(async () => {
-      const target = await resolveConfigWriteTarget(path);
+    return await withSettingsLock(async (target) => {
       // Another OpenCode process converted first.
       if (target.terminalExisted) return undefined;
       await keepDisplayImport(conversion.displayImport);
@@ -365,6 +447,8 @@ export async function watchSettings(
   let lastSeen = "";
   let queue: Promise<void> = Promise.resolve();
 
+  // Only settings.jsonc (or its target, when a link points into this folder), never a v5 file.
+  const names = new Set([basename(path), basename(await realpath(path).catch(() => path))]);
   const reload = (notify: boolean) => {
     queue = queue
       .then(async () => {
@@ -384,17 +468,23 @@ export async function watchSettings(
     clearTimeout(timer);
     timer = setTimeout(() => void reload(true), debounceMs);
   };
+  // A poll also reports a missing file once, and an access time change; neither is an edit.
+  const onStat = (now: Stats, before: Stats) => {
+    if (now.mtimeMs !== before.mtimeMs || now.ino !== before.ino) schedule();
+  };
 
   // In a read-only config folder, watch what exists.
   await mkdir(dirname(path), { recursive: true, mode: NEW_CONFIG_DIRECTORY_MODE }).catch(() => {});
   let folderWatch: FSWatcher | undefined;
   try {
-    folderWatch = watch(dirname(path), { persistent: false }, schedule);
+    folderWatch = watch(dirname(path), { persistent: false }, (_, name) => {
+      if (!name || names.has(name)) schedule();
+    });
     folderWatch.on("error", () => {});
   } catch {
     // A missing or unreadable folder: the stat poll still sees the file appear.
   }
-  watchFile(path, { interval: POLL_INTERVAL_MS, persistent: false }, schedule);
+  watchFile(path, { interval: POLL_INTERVAL_MS, persistent: false }, onStat);
   await reload(false);
 
   return {
@@ -402,7 +492,7 @@ export async function watchSettings(
       closed = true;
       clearTimeout(timer);
       folderWatch?.close();
-      unwatchFile(path, schedule);
+      unwatchFile(path, onStat);
     },
   };
 }

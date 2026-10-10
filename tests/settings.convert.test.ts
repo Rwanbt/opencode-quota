@@ -1,4 +1,12 @@
-import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -191,7 +199,7 @@ describe("convertV5, key by key", () => {
     expect(conversion?.written).toBe(true);
     expect(conversion?.invalid).toEqual([]);
     expect(conversion?.displayImport).toEqual(row.display ?? {});
-    expect(await pendingDisplayImport()).toEqual(row.display);
+    expect((await pendingDisplayImport())?.display).toEqual(row.display);
     expect(conversion?.dropped.map((item) => item.key).sort()).toEqual(
       [...(row.dropped ?? [])].sort(),
     );
@@ -238,8 +246,17 @@ describe("convertV5, which v5 files", () => {
       expect(statSync(looks).mode & 0o777).toBe(0o600);
     }
     expect(await convertV5()).toBeUndefined();
-    expect(await pendingDisplayImport()).toEqual({ surfaces: { toast: { enabled: false } } });
-    await acknowledgeDisplayImport();
+    const first = await pendingDisplayImport();
+    expect(first?.display).toEqual({ surfaces: { toast: { enabled: false } } });
+
+    // A later conversion publishes a new import; acknowledging the first one leaves it.
+    rmSync(settingsPath());
+    await convertV5();
+    const second = await pendingDisplayImport();
+    await acknowledgeDisplayImport(first?.id ?? "");
+    expect(await pendingDisplayImport()).toEqual(second);
+    expect(second?.id).not.toBe(first?.id);
+    await acknowledgeDisplayImport(second?.id ?? "");
     expect(await pendingDisplayImport()).toBeUndefined();
   });
 
@@ -259,9 +276,20 @@ describe("convertV5, which v5 files", () => {
   it("without a sidecar reads opencode.json then opencode.jsonc; a bad later value never wins", async () => {
     const fake = [quotaProvider({ apiKey: "sk-fake" })];
     const json = { percentDisplayMode: "used", quotaProviders: VALID_QUOTA_PROVIDER_INPUTS };
-    writeHost({ ...json, minIntervalMs: 60_000 }, "opencode.json");
+    // v5 took no null, so these never erase the amounts from opencode.json.
+    const amounts = {
+      cursorIncludedApiUsd: 25,
+      cursorBillingCycleStartDay: 3,
+      opencodeMonthlyLimit: 20,
+    };
+    const nulls = {
+      cursorIncludedApiUsd: null,
+      cursorBillingCycleStartDay: null,
+      opencodeMonthlyLimit: null,
+    };
+    writeHost({ ...json, ...amounts, minIntervalMs: 60_000 }, "opencode.json");
     writeHost(
-      { percentDisplayMode: "?", minIntervalMs: 120_000, quotaProviders: fake },
+      { percentDisplayMode: "?", minIntervalMs: 120_000, quotaProviders: fake, ...nulls },
       "opencode.jsonc",
     );
 
@@ -272,9 +300,15 @@ describe("convertV5, which v5 files", () => {
     expect(conversion?.settings.words.percent).toBe("used");
     expect(conversion?.settings.checking.minIntervalMs).toBe(120_000);
     expect(conversion?.settings.providers.custom).toEqual(VALID_QUOTA_PROVIDERS);
+    expect(conversion?.settings.providers.cursor).toMatchObject({
+      includedApiUsd: 25,
+      billingCycleStartDay: 3,
+    });
+    expect(conversion?.settings.providers.opencode.monthlyLimitUsd).toBe(20);
     expect(conversion?.invalid.map((item) => item.key)).toEqual([
       "percentDisplayMode",
       "quotaProviders[0].apiKey",
+      ...Object.keys(nulls),
     ]);
     expect(readFileSync(settingsPath(), "utf8")).not.toContain("sk-fake");
   });
@@ -326,7 +360,24 @@ describe("convertV5, which v5 files", () => {
       percent: "used",
       reset: "short",
     });
-    expect(await pendingDisplayImport()).toEqual({ surfaces: { toast: { enabled: false } } });
+    expect((await pendingDisplayImport())?.display).toEqual({
+      surfaces: { toast: { enabled: false } },
+    });
+  });
+
+  it("on the first save reports an old file that does not parse, even with nothing to convert", async () => {
+    const host = writeFile(join(configDir, "opencode.json"), "{ broken");
+
+    const result = await saveSettings({ words: { reset: "short" } });
+
+    expect(result).toMatchObject({ ok: true, diff: [{ key: "words.reset", after: "short" }] });
+    expect(result.issues).toEqual([
+      {
+        key: "$conversion",
+        message: `${host} does not parse, so its experimental.quotaToast was not converted`,
+      },
+    ]);
+    expect(readFileSync(settingsPath(), "utf8")).toMatch(/^\/\/ OpenCode Quota server settings\./);
   });
 
   it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
