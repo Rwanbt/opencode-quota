@@ -3,6 +3,9 @@
  * (`src/tui/index.tsx`) on fake OpenCode hosts, joined by a JSON RPC bridge. Three providers:
  * Copilot with only its plan, MiniMax over its quota, and a custom json-v1 source next to a
  * failing one. API keys and a private error body are canaries no surface may show.
+ *
+ * Agent tool to plugin: a custom provider an agent replaces is switched off, and the running
+ * server stops its requests through the settings reload alone.
  */
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -20,6 +23,7 @@ import {
   writePluginTestSettings,
 } from "./helpers/plugin-test-harness.js";
 import { createQuotaRpcBridge, createQuotaRpcEvents } from "./helpers/quota-rpc-bridge.js";
+import { writeSessionDatabase } from "./helpers/session-database.js";
 
 const CANARIES = {
   teamKey: "v6-team-key-secret-canary",
@@ -29,6 +33,7 @@ const CANARIES = {
 
 const mocks = vi.hoisted(() => ({
   root: "",
+  terminal: { width: 120, height: 40 },
   getProviders: vi.fn(),
   getPricingSnapshotMeta: vi.fn(),
   getPricingSnapshotSource: vi.fn(),
@@ -42,7 +47,7 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("@opentui/solid", () => ({
-  useTerminalDimensions: () => () => ({ width: 120, height: 40 }),
+  useTerminalDimensions: () => () => mocks.terminal,
 }));
 vi.mock("../src/providers/registry.js", () =>
   createProvidersRegistryModuleMock(mocks.getProviders),
@@ -127,6 +132,10 @@ function httpFetch(url: string, init?: RequestInit): Response {
 
 type Node = { type: unknown; props: Record<string, any> };
 type Listener = (event: { data: Record<string, unknown> }) => void;
+type ServerCommand = {
+  name: string;
+  execute(invocation: { sessionID: string; prompt: { text: string } }): Promise<void>;
+};
 
 /** Every `text` node of a JSX tree as one line, its spans joined. */
 function textLines(node: unknown): string[] {
@@ -157,6 +166,95 @@ function findAll(node: unknown, match: (node: Node) => boolean): Node[] {
   return [...(match(element) ? [element] : []), ...findAll(element.props?.children, match)];
 }
 
+/** The labels of the active choices: the tab, Cost or Tokens, the range, Model or Day. */
+function activeLabels(node: unknown): string[] {
+  return findAll(node, (item) => item.type === "text" && item.props.fg === "selected").map(
+    (item) => textLines(item)[0] ?? "",
+  );
+}
+
+/** The `text` node that reads exactly `label`. */
+function textNode(node: unknown, label: string): Node | undefined {
+  return findAll(node, (item) => item.type === "text" && textLines(item)[0] === label)[0];
+}
+
+/** The local date `days` calendar days from today, like "2026-10-01". */
+function localDate(days: number): string {
+  const date = new Date();
+  date.setDate(date.getDate() + days);
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  return `${date.getFullYear()}-${month}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+/** OpenTUI inputs as the Usage tab uses them: a value, and focus with its events. */
+function fakeInputs(values: string[]) {
+  type FakeInput = {
+    value: string;
+    focused: boolean;
+    on(name: string, listener: () => void): void;
+    focus(): void;
+    moveCursorLeft(): void;
+    moveCursorRight(): void;
+  };
+  const listeners = new Map<FakeInput, Map<string, () => void>>();
+  const inputs: FakeInput[] = values.map((value) => {
+    const input: FakeInput = {
+      value,
+      focused: false,
+      on: (name, listener) => listeners.get(input)?.set(name, listener),
+      focus: () => {
+        for (const other of inputs) {
+          if (other === input || !other.focused) continue;
+          other.focused = false;
+          listeners.get(other)?.get("blurred")?.();
+        }
+        input.focused = true;
+        listeners.get(input)?.get("focused")?.();
+      },
+      moveCursorLeft: () => {},
+      moveCursorRight: () => {},
+    };
+    listeners.set(input, new Map());
+    return input;
+  });
+  return inputs;
+}
+
+/**
+ * OpenCode's history for the Usage tab: this session a minute ago with `modelID`, and an older
+ * session 10 days ago with an unpriced model.
+ */
+function writeUsageHistory(modelID = "claude-sonnet-4-5"): void {
+  const now = Date.now();
+  const old = now - 10 * 24 * 60 * 60_000;
+  writeSessionDatabase(join(mocks.root, "data", "opencode.db"), {
+    sessions: [
+      { id: "ses_1", created: now - 3_600_000 },
+      { id: "ses_old", created: old },
+    ],
+    messages: [
+      {
+        id: "msg_1",
+        sessionID: "ses_1",
+        created: now - 60_000,
+        completed: now - 59_000,
+        providerID: "anthropic",
+        modelID,
+        tokens: { input: 1_000_000, output: 100_000 },
+      },
+      {
+        id: "msg_old",
+        sessionID: "ses_old",
+        created: old,
+        completed: old + 1_000,
+        providerID: "acme",
+        modelID: "mystery-old",
+        tokens: { output: 500_000 },
+      },
+    ],
+  });
+}
+
 function expectNoCanary(...outputs: unknown[]): void {
   const text = JSON.stringify(outputs);
   for (const canary of Object.values(CANARIES)) expect(text).not.toContain(canary);
@@ -166,6 +264,7 @@ const THEME = {
   text: {
     base: "text",
     muted: "muted",
+    action: { primary: { focused: "action", selected: "selected" } },
     feedback: {
       success: { base: "green" },
       warning: { base: "yellow" },
@@ -174,6 +273,8 @@ const THEME = {
     },
   },
   hue: { accent: { 500: "accent" } },
+  background: { action: { primary: { focused: "action-bg" } }, raised: { high: "raised" } },
+  border: { base: "border" },
   surface: () => ({
     text: { base: "text", muted: "muted", action: { primary: { focused: "action" } } },
     background: { action: { primary: { focused: "action-bg" } } },
@@ -184,6 +285,8 @@ async function startHosts() {
   const { default: serverPlugin } = await import("../src/plugin.js");
   const events = createQuotaRpcEvents();
   const register = vi.fn(async () => ({ dispose: async () => {}, events: { emit: events.emit } }));
+  const serverCommands: ServerCommand[] = [];
+  const posted = vi.fn(async (_message: { text: string }) => ({}));
   const disposeServer = await serverPlugin.setup({
     location: { directory: process.cwd() },
     provider: {
@@ -192,8 +295,13 @@ async function startHosts() {
     session: {
       get: async () => ({ model: { id: "model-one", providerID: "github-copilot" } }),
       hook: vi.fn(),
+      wait: async () => {},
+      prompt: posted,
     },
-    command: { transform: vi.fn() },
+    command: {
+      transform: async (build: (editor: { add(command: ServerCommand): void }) => void) =>
+        build({ add: (command) => serverCommands.push(command) }),
+    },
     rpc: { register },
     integration: createFakeIntegration([]),
     event: { subscribe: () => ({ async *[Symbol.asyncIterator]() {} }) },
@@ -223,8 +331,17 @@ async function startHosts() {
   const listeners = new Map<string, Listener>();
   const renderers = new Map<string, (props?: { sessionID?: string }) => unknown>();
   let commands: Array<{ id: string; run: () => Promise<void> }> = [];
-  const dialogs: string[][] = [];
+  // Every keymap layer, newest last: the Usage tab adds its own each time it renders.
+  const layers: Array<{
+    mode?: string;
+    priority?: number;
+    commands: Array<{ bind?: string; run: () => unknown }>;
+  }> = [];
+  const renderer: { currentFocusedEditor: { plainText: string; clear(): void } | null } = {
+    currentFocusedEditor: null,
+  };
   const toast = vi.fn();
+  const dialog = { show: vi.fn(), clear: vi.fn(), prompt: vi.fn(), set: vi.fn() };
   vi.stubGlobal("React", {
     createElement: (
       type: unknown,
@@ -238,7 +355,7 @@ async function startHosts() {
   const { default: tuiPlugin } = await import("../src/tui/index.tsx");
   const disposeTui = tuiPlugin.setup({
     location: { directory: process.cwd() },
-    renderer: { currentFocusedEditor: null },
+    renderer,
     client: { rpc: createQuotaRpcBridge(handlers, events) },
     theme: THEME,
     storage,
@@ -251,9 +368,10 @@ async function startHosts() {
       location: { default: () => ({ directory: process.cwd() }) },
     },
     keymap: {
-      layer: (build: () => { mode?: string; commands: typeof commands }) => {
+      layer: (build: () => (typeof layers)[number]) => {
         const layer = build();
-        if (layer.mode === "global") commands = layer.commands;
+        layers.push(layer);
+        if (layer.mode === "global") commands = layer.commands as typeof commands;
       },
     },
     ui: {
@@ -264,22 +382,38 @@ async function startHosts() {
       },
       toast: { show: toast },
       router: { current: () => ({ type: "session", sessionID: "ses_1" }) },
-      dialog: {
-        show: (render: () => unknown, onClose?: () => void) => {
-          dialogs.push(textLines(render()));
-          onClose?.();
-        },
-        clear: vi.fn(),
-        prompt: vi.fn(),
-        set: vi.fn(),
-      },
+      dialog,
     },
   } as never);
   return {
     render: (slot: string, props?: { sessionID?: string }) => renderers.get(slot)?.(props),
     emit: (name: string, data: Record<string, unknown>) => listeners.get(name)?.({ data }),
     command: (id: string) => commands.find((command) => command.id === `quota.${id}`)!,
-    dialogs,
+    /** Types `text` in the message box and presses enter. */
+    typed: (text: string) => {
+      renderer.currentFocusedEditor = {
+        plainText: text,
+        clear: () => {
+          renderer.currentFocusedEditor = null;
+        },
+      };
+      return layers.find((layer) => layer.priority === 1)?.commands[0]?.run();
+    },
+    /** Presses `bind` in the newest layer of `priority`: the Usage tab's keys are 11. */
+    press: (priority: number, bind: string) =>
+      layers
+        .findLast((layer) => layer.priority === priority)
+        ?.commands.find((command) => command.bind === bind)
+        ?.run(),
+    /** The server's RPC handlers, looked up on each call: a test can wrap one. */
+    handlers: handlers as Record<string, (input: unknown, context: unknown) => Promise<unknown>>,
+    /** Runs a Web and Desktop slash command; `posted` gets its chat message. */
+    serverCommand: (name: string, sessionID: string, text = "") =>
+      serverCommands
+        .find((command) => command.name === name)!
+        .execute({ sessionID, prompt: { text } }),
+    posted,
+    dialog,
     toast,
     stored,
     dispose: async () => {
@@ -326,6 +460,7 @@ describe("v6 surfaces on the quota snapshot", () => {
 
   beforeEach(async () => {
     mocks.root = await mkdtemp(join(tmpdir(), "opencode-quota-v6-cross-surface-"));
+    mocks.terminal = { width: 120, height: 40 };
     process.env.V6_TEAM_KEY = CANARIES.teamKey;
     process.env.V6_FAILING_KEY = CANARIES.failingKey;
     seedDefaultPluginBootstrapMocks(mocks, { resetPluginState: true });
@@ -423,9 +558,26 @@ describe("v6 surfaces on the quota snapshot", () => {
     expect(toast).toMatchObject({ variant: "info", title: "OpenCode Quota" });
     expect(toast.message).toContain("Quota providers (T… Provider error 503\nSession  1.20K in");
 
-    // /quota builds its report on the server from the same snapshot and opens it in a dialog.
-    await tui.command("quota").run();
-    expect(tui.dialogs[0]).toContain(tui.toast.mock.calls[0]?.[0].message);
+    // /quota opens the quota window above the message box, on its Limits tab: every row with
+    // its bar, percent, reset and pace.
+    await tui.command("window").run();
+    const quotaWindow = () => textLines(tui.render("session.composer.top", { sessionID: "ses_1" }));
+    await vi.waitFor(() =>
+      expect(quotaWindow()).toContain(" Quota providers · Team   Provider error 503"),
+    );
+    expect(quotaWindow()).toEqual(
+      expect.arrayContaining([
+        "Limits",
+        "Notices",
+        "Status",
+        " Copilot · pro   checked just now",
+        expect.stringMatching(/^ {3}Plan +█+░+ {2}81% left/u),
+        expect.stringMatching(
+          /^ {3}5h +░+│░+ {2}0% left +resets in 2h 14m +using it faster than it refills$/u,
+        ),
+        "Close",
+      ]),
+    );
 
     // The export file (version 3) and the gauges follow the snapshot without asking a provider
     // again.
@@ -482,11 +634,389 @@ describe("v6 surfaces on the quota snapshot", () => {
       expanded,
       sidebar(),
       tui.toast.mock.calls,
-      tui.dialogs,
+      quotaWindow(),
       exported,
       gauges,
       savedSnapshot,
     );
     await tui.dispose();
+  });
+
+  it("shows OpenCode's usage in the Usage tab, its model popup and Web /quota_usage", async () => {
+    const now = Date.now();
+    const M = 1_000_000;
+    writeSessionDatabase(join(mocks.root, "data", "opencode.db"), {
+      sessions: [{ id: "ses_1", created: now - 3_600_000 }],
+      messages: [
+        {
+          id: "msg_1",
+          sessionID: "ses_1",
+          created: now - 60_000,
+          completed: now - 59_000,
+          providerID: "anthropic",
+          modelID: "claude-sonnet-4-5",
+          tokens: { input: M, cacheRead: 3 * M, output: M / 10 },
+        },
+        {
+          id: "msg_2",
+          sessionID: "ses_1",
+          created: now - 30_000,
+          completed: now - 29_000,
+          providerID: "acme",
+          modelID: "mystery-1",
+          tokens: { output: M / 2 },
+        },
+      ],
+    });
+    const tui = await startHosts();
+
+    // The palette's usage command opens the window on its Usage tab, on the last 7 days.
+    await tui.command("usage").run();
+    const usageTab = () => tui.render("session.composer.top", { sessionID: "ses_1" });
+    await vi.waitFor(() => expect(words(usageTab())).toContain("Breakdown"));
+    const tab = words(usageTab());
+    expect(tab).toEqual(
+      expect.arrayContaining([
+        "Usage",
+        "Last 7 days",
+        "▸ Download new prices",
+        // From 110 columns on, the daily chart sits beside the total.
+        expect.stringMatching(/^\$\d+\.\d\d 1 session · API estimate Daily cost$/u),
+        expect.stringMatching(/^Unpriced tokens excluded: 10\.9% \(mystery-1\) /u),
+        "Totals",
+        "Cost by type",
+        "# Model Cost Share Tokens",
+        expect.stringMatching(/^1 ● claude-sonnet-4-5 \$\d+\.\d\d 100\.0% 4\.10M$/u),
+        "2 ● mystery-1 no price 0% 500K",
+      ]),
+    );
+
+    // A click on a model row opens its details in OpenCode's dialog.
+    const modelRow = findAll(
+      usageTab(),
+      (node) => node.type === "text" && textLines(node)[0]?.includes("claude-sonnet-4-5") === true,
+    ).find((node) => typeof node.props.onMouseUp === "function");
+    modelRow?.props.onMouseUp();
+    expect(tui.dialog.show).toHaveBeenCalledOnce();
+    const popup = words(tui.dialog.show.mock.calls[0]?.[0]());
+    expect(popup).toEqual(
+      expect.arrayContaining([
+        "● claude-sonnet-4-5",
+        "Anthropic · 100.0% of cost",
+        "Cost Tokens Per 1M tokens Cache hit",
+        expect.stringMatching(/^\$\d+\.\d\d 4\.10M \$\d+\.\d\d 75\.0%$/u),
+        "esc",
+      ]),
+    );
+
+    // Web and Desktop: /quota_usage posts the same report as text, here for this session.
+    await tui.serverCommand("quota_usage", "ses_1", "session");
+    const message = tui.posted.mock.calls[0]?.[0].text ?? "";
+    expect(message).toContain("Usage · This session\n$");
+    expect(message).toContain("1 session · API estimate");
+    expect(message).toMatch(/1 {2}● claude-sonnet-4-5 .+4\.10M/u);
+    await tui.dispose();
+  });
+
+  it("starts the Usage tab on the range typed after /quota_usage, and says why one is wrong", async () => {
+    writeUsageHistory();
+    const tui = await startHosts();
+    const usageTab = () => tui.render("session.composer.top", { sessionID: "ses_1" });
+
+    tui.typed("/quota_usage 30d");
+    await vi.waitFor(() => expect(words(usageTab())).toContain("Breakdown"));
+    expect(activeLabels(usageTab())).toContain("Last 30 days");
+    expect(words(usageTab())).toContainEqual(expect.stringMatching(/ 2 sessions · API estimate/u));
+
+    tui.typed(`/quota_usage between ${localDate(-12)} ${localDate(-8)}`);
+    await vi.waitFor(() => expect(activeLabels(usageTab())).toContain("Between"));
+    expect(
+      findAll(usageTab(), (node) => node.type === "input").map((node) => node.props.value),
+    ).toEqual([localDate(-12), localDate(-8)]);
+    await vi.waitFor(() =>
+      expect(words(usageTab())).toContainEqual(expect.stringMatching(/^1 ● mystery-old /u)),
+    );
+
+    // A wrong range leaves the tab as it was and says how to type one.
+    tui.typed("/quota_usage 90d");
+    expect(tui.toast).toHaveBeenCalledWith(
+      expect.objectContaining({
+        variant: "warning",
+        message: expect.stringMatching(/^Unknown range "90d"\.\nUsage: \/quota_usage \[today/u),
+      }),
+    );
+    expect(activeLabels(usageTab())).toContain("Between");
+    await tui.dispose();
+  });
+
+  it("keeps the newest range when an older answer arrives last", async () => {
+    writeUsageHistory();
+    const tui = await startHosts();
+    const usageTab = () => tui.render("session.composer.top", { sessionID: "ses_1" });
+    const usage = tui.handlers.usage;
+    let releaseFirst = () => {};
+    const firstHeld = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let calls = 0;
+    tui.handlers.usage = async (input, context) => {
+      calls += 1;
+      const answer = await usage(input, context);
+      if (calls === 1) await firstHeld;
+      return answer;
+    };
+
+    await tui.command("usage").run();
+    textNode(usageTab(), "Last 30 days")?.props.onMouseUp();
+    await vi.waitFor(() =>
+      expect(words(usageTab())).toContainEqual(expect.stringMatching(/ 2 sessions · /u)),
+    );
+    // The last 7 days answer, asked first, arrives now; the tab keeps the last 30 days.
+    releaseFirst();
+    await vi.waitFor(() => expect(calls).toBe(2));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(words(usageTab())).toContainEqual(expect.stringMatching(/ 2 sessions · /u));
+    expect(activeLabels(usageTab())).toContain("Last 30 days");
+    await tui.dispose();
+  });
+
+  it("applies two Between dates typed in the tab, and warns about dates out of order", async () => {
+    writeUsageHistory();
+    const tui = await startHosts();
+    const usageTab = () => tui.render("session.composer.top", { sessionID: "ses_1" });
+    await tui.command("usage").run();
+    await vi.waitFor(() => expect(words(usageTab())).toContain("Breakdown"));
+
+    textNode(usageTab(), "Between")?.props.onMouseUp();
+    const [from, to] = fakeInputs([localDate(-12), localDate(-14)]);
+    for (const [index, node] of findAll(usageTab(), (item) => item.type === "input").entries()) {
+      node.props.ref([from, to][index]);
+    }
+    await vi.waitFor(() => expect(from?.focused).toBe(true));
+    // While a date has the keyboard, the window's hint says what the keys do there.
+    expect(words(usageTab())).toContain(
+      "Typing a date: enter next date, then apply · tab other date · esc back to the window",
+    );
+
+    tui.press(11, "return");
+    expect(to?.focused).toBe(true);
+    tui.press(11, "return");
+    expect(tui.toast).toHaveBeenCalledWith(
+      expect.objectContaining({
+        variant: "warning",
+        message: "Type two dates like 2026-09-01, the first one not after the second.",
+      }),
+    );
+
+    if (to) to.value = localDate(-8);
+    tui.press(11, "return");
+    await vi.waitFor(() =>
+      expect(words(usageTab())).toContainEqual(expect.stringMatching(/^1 ● mystery-old /u)),
+    );
+    expect(words(usageTab())).not.toContainEqual(expect.stringContaining("claude-sonnet-4-5"));
+    expect(words(usageTab())).toContain("click a date to change it");
+    await tui.dispose();
+  });
+
+  it("keeps the model popup's esc whole on a 32 × 16 terminal", async () => {
+    mocks.terminal = { width: 32, height: 16 };
+    writeUsageHistory("claude-sonnet-4-5-with-a-very-long-model-name");
+    const tui = await startHosts();
+    const usageTab = () => tui.render("session.composer.top", { sessionID: "ses_1" });
+    await tui.command("usage").run();
+    await vi.waitFor(() => expect(words(usageTab())).toContain("Breakdown"));
+
+    findAll(
+      usageTab(),
+      (node) => node.type === "text" && textLines(node)[0]?.includes("claude-sonnet-4-5") === true,
+    )
+      .find((node) => typeof node.props.onMouseUp === "function")
+      ?.props.onMouseUp();
+    const popup = tui.dialog.show.mock.calls[0]?.[0]();
+    const header = findAll(
+      popup,
+      (node) => node.type === "box" && node.props.flexDirection === "row",
+    )[0];
+    const [title = "", close] = textLines(header);
+    // The dialog is 30 columns on this terminal; its paddings leave 26 for the title and " esc".
+    expect(close).toBe("esc");
+    expect(title).toMatch(/^● claude-sonnet-4-5-.*…$/u);
+    expect([...title].length + " esc".length).toBeLessThanOrEqual(26);
+    await tui.dispose();
+  });
+
+  it("says why a price download failed", async () => {
+    writeUsageHistory();
+    const tui = await startHosts();
+    const usageTab = () => tui.render("session.composer.top", { sessionID: "ses_1" });
+    await tui.command("usage").run();
+    await vi.waitFor(() => expect(words(usageTab())).toContain("Breakdown"));
+    mocks.maybeRefreshPricingSnapshot.mockResolvedValue({
+      attempted: true,
+      updated: false,
+      reason: "fetch_failed",
+      error: "network down",
+      state: { version: 1, updatedAt: 1 },
+    });
+
+    textNode(usageTab(), "▸ Download new prices")?.props.onMouseUp();
+
+    await vi.waitFor(() =>
+      expect(tui.toast).toHaveBeenCalledWith({
+        variant: "error",
+        title: "Prices",
+        message: "Couldn't download new prices: network down.",
+        duration: 6_000,
+      }),
+    );
+    await tui.dispose();
+  });
+});
+
+const OLD_TEAM_KEY = "v6-replaced-team-key-canary";
+const NEW_TEAM_KEY = "v6-replacement-team-key-canary";
+
+/** A custom provider that is on (no `enabled`), as the user wrote it. */
+const ACTIVE_SOURCE = {
+  id: "team-quota",
+  providerId: "team-gateway",
+  label: "Team",
+  mode: "remote-api",
+  url: "https://old-gateway.example/quota",
+  format: "quota-v1",
+  apiKeyEnv: "V6_OLD_TEAM_KEY",
+};
+
+/** What an agent sends to replace it: another address and another key. */
+const REPLACEMENT = {
+  ...ACTIVE_SOURCE,
+  url: "https://new-gateway.example/quota",
+  apiKeyEnv: "V6_NEW_TEAM_KEY",
+};
+
+type AgentTool = { name: string; execute(input: unknown): Promise<{ content: string }> };
+type ChangedEvent = { snapshot: { providers: Array<{ providerId: string }> } };
+
+/** The real server plugin alone: its agent tools, a manual refresh, and its `changed` events. */
+async function startServer() {
+  const { default: serverPlugin } = await import("../src/plugin.js");
+  const changed: ChangedEvent[] = [];
+  const register = vi.fn(async () => ({
+    dispose: async () => {},
+    events: {
+      emit: async (name: string, data: ChangedEvent) => {
+        if (name === "changed") changed.push(structuredClone(data));
+      },
+    },
+  }));
+  const tools: AgentTool[] = [];
+  const dispose = await serverPlugin.setup({
+    location: { directory: process.cwd() },
+    provider: { list: async () => ({ data: [{ id: "team-gateway" }] }) },
+    session: { get: async () => ({}), hook: vi.fn() },
+    command: { transform: vi.fn() },
+    rpc: { register },
+    integration: createFakeIntegration([]),
+    event: { subscribe: () => ({ async *[Symbol.asyncIterator]() {} }) },
+    tool: {
+      transform: async (build: (editor: { add(tool: AgentTool): void }) => void) =>
+        build({ add: (tool) => tools.push(tool) }),
+    },
+  } as never);
+  const [, handlers] = register.mock.calls[0] as unknown as [
+    unknown,
+    { refresh(input: { reason: string }): Promise<unknown> },
+  ];
+  return {
+    changed,
+    // "manual" waits for no interval: every provider that is on is asked now.
+    refresh: () => handlers.refresh({ reason: "manual" }),
+    tool: (name: string) => {
+      const tool = tools.find((item) => item.name === name);
+      if (!tool) throw new Error(`tool not registered: ${name}`);
+      return tool;
+    },
+    dispose: dispose as unknown as () => Promise<void>,
+  };
+}
+
+describe("an agent tool replacing an active custom provider", () => {
+  const savedEnv = {
+    V6_OLD_TEAM_KEY: process.env.V6_OLD_TEAM_KEY,
+    V6_NEW_TEAM_KEY: process.env.V6_NEW_TEAM_KEY,
+  };
+  let requests: Array<{ url: string; authorization: string | null }>;
+  let server: Awaited<ReturnType<typeof startServer>> | undefined;
+
+  beforeEach(async () => {
+    mocks.root = await mkdtemp(join(tmpdir(), "opencode-quota-v6-tool-reload-"));
+    process.env.V6_OLD_TEAM_KEY = OLD_TEAM_KEY;
+    process.env.V6_NEW_TEAM_KEY = NEW_TEAM_KEY;
+    seedDefaultPluginBootstrapMocks(mocks, { resetPluginState: true });
+    writePluginTestSettings(mocks.root, {
+      providers: { enabled: ["custom"], custom: [ACTIVE_SOURCE] },
+      // Only a manual refresh asks the provider; nothing in the background does.
+      checking: { minIntervalMs: 3_600_000 },
+      announcements: { enabled: false, home: false },
+    });
+    const { quotaProvidersProvider } = await import("../src/providers/quota-providers.js");
+    mocks.getProviders.mockReturnValue([quotaProvidersProvider]);
+    requests = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: RequestInit) => {
+        requests.push({ url, authorization: new Headers(init?.headers).get("authorization") });
+        return new Response(JSON.stringify({ version: "quota-v1", entries: [] }), {
+          headers: { "content-type": "application/json" },
+        });
+      }),
+    );
+  });
+
+  afterEach(async () => {
+    await server?.dispose();
+    server = undefined;
+    for (const [name, value] of Object.entries(savedEnv)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+    vi.unstubAllGlobals();
+    await rm(mocks.root, { recursive: true, force: true, maxRetries: 3 });
+  });
+
+  it("sends no further request with the old definition or key once the settings reload", async () => {
+    server = await startServer();
+    await server.refresh();
+    expect(requests).toEqual([{ url: ACTIVE_SOURCE.url, authorization: `Bearer ${OLD_TEAM_KEY}` }]);
+
+    const { content } = await server.tool("quota_provider_add").execute({
+      definition: REPLACEMENT,
+    });
+    expect(JSON.parse(content)).toMatchObject({
+      ok: true,
+      replaced: ACTIVE_SOURCE.id,
+      enabled: false,
+    });
+    expect(content).not.toContain(OLD_TEAM_KEY);
+    expect(content).not.toContain(NEW_TEAM_KEY);
+    const sentBefore = requests.length;
+    const changedBefore = server.changed.length;
+
+    // The same server, no restart: the settings watch reads the saved file, and the next
+    // snapshot has no custom provider left to check.
+    await vi.waitFor(
+      () =>
+        expect(
+          server?.changed
+            .slice(changedBefore)
+            .some(({ snapshot }) => snapshot.providers.length === 0),
+        ).toBe(true),
+      { timeout: 10_000 },
+    );
+    await server.refresh();
+    await server.refresh();
+
+    // The replacement is switched off: neither the old address and key nor the new ones.
+    expect(requests.slice(sentBefore)).toEqual([]);
   });
 });

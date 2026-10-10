@@ -3,6 +3,7 @@ import { rowsFromProviderResult } from "../src/core/rows.js";
 import type { QuotaRow } from "../src/core/types.js";
 import { hasOpenAIOAuthCached, queryOpenAIQuota } from "../src/lib/openai.js";
 import { type CredentialRow, readCredentialRows } from "../src/lib/opencode-auth.js";
+import { quotaReportLines } from "../src/lib/quota-dialog-commands.js";
 import type { ProviderFetchResult } from "../src/providers/contract.js";
 import { openaiProvider } from "../src/providers/openai.js";
 import { createProviderAvailabilityContext } from "./helpers/provider-test-harness.js";
@@ -65,6 +66,18 @@ const STATUS_ROW = {
   authority: "locally_derived",
   prominence: "primary",
 };
+
+/** The quota lines `opencode-quota show` prints for these rows. */
+function quotaCommandText(rows: QuotaRow[]): string {
+  const provider = { providerId: "openai", label: "OpenAI", rows, refreshing: false, debug: [] };
+  const snapshot = {
+    version: 6 as const,
+    providers: [provider],
+    resetNotices: [],
+    generatedAtMs: 0,
+  };
+  return quotaReportLines(snapshot as never, 0).join("\n");
+}
 
 beforeEach(() => {
   readRows.mockReset().mockResolvedValue([]);
@@ -259,6 +272,15 @@ describe("openai provider", () => {
     );
   });
 
+  it("shows a stored API key's status on /quota", async () => {
+    const fetched = await fetchRows([keyRow("key-id", { label: "Key", active: true })]);
+
+    // Narrow dialogs wrap the sentence; collapsing whitespace keeps the phrase checkable.
+    const collapsed = quotaCommandText(fetched.rows).replace(/\s+/gu, " ");
+    expect(collapsed).toContain("OpenAI (Key)");
+    expect(collapsed).toContain("ChatGPT quota unavailable for API key");
+  });
+
   it.each([
     // Unknown session: the OAuth login with quota numbers goes first.
     { rows: "key, oauth", config: {}, logins: ["oauth-id", "key-id"], source: "codex" },
@@ -327,6 +349,11 @@ describe("openai provider", () => {
 
     expect(fetched.rows.map((row) => row.account ?? null)).toEqual(accounts);
     expect(fetched.rowLogins).toEqual(labels.map((_, index) => `key-${index}`));
+    // One line per account, each named differently ("OpenAI", "OpenAI (2)", …).
+    const lines = quotaCommandText(fetched.rows).split("\n");
+    expect(lines).toHaveLength(labels.length);
+    expect(new Set(lines.map((line) => line.split(" Status")[0]!.trim())).size).toBe(labels.length);
+    for (const line of lines) expect(line).toContain("ChatGPT quota unavailable for API key");
   });
 
   it("reports unknown active auth when no stored login is marked active", async () => {

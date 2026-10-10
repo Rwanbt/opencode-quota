@@ -1,15 +1,16 @@
 /** @jsxImportSource @opentui/solid */
 /**
  * OpenCode Quota's TUI plugin. It draws the server's quota snapshot: the Quota panel in the
- * session sidebar, the status line under the message box (and on Home when turned on), and
- * the toasts. It uses only the quota RPC (`snapshot`, `refresh`, `notices`,
- * `acknowledgeDisplayImport`, the `changed` event) and the display settings in OpenCode's
- * plugin storage. The report dialogs of the slash commands live in `legacy-dialogs.tsx`.
+ * session sidebar, the status line under the message box (and on Home when turned on), the
+ * toasts, and the quota window that `/quota` opens above the message box (`window/`). It reads
+ * only the quota RPC and the display settings in OpenCode's plugin storage. The quota slash
+ * commands typed in the prompt run through `legacy-dialogs.tsx`.
  */
 import { Plugin } from "@opencode/plugin/tui";
 import type { JSX } from "@opentui/solid";
 import { onCleanup, Show } from "solid-js";
 import type { QuotaSnapshot } from "../core/types.js";
+import { parseUsageArguments } from "../core/usage-ranges.js";
 import { type ClientHost, createQuotaClient, reportFailure } from "./client.js";
 import {
   applyDisplayImport,
@@ -17,36 +18,37 @@ import {
   type DisplayStorage,
   loadDisplaySettings,
 } from "./display.js";
-import {
-  type LegacyDialogHost,
-  registerQuotaCommands,
-  registerTypedQuotaCommands,
-  showPostedQuotaReport,
-  type TuiEvent,
-} from "./legacy-dialogs.js";
+import { registerTypedQuotaCommands, type TypedCommandHost } from "./legacy-dialogs.js";
 import { SidebarPanel, type SurfaceHost } from "./sidebar.js";
 import { HomeFooter, StatusLine } from "./status-line.js";
 import type { Theme } from "./theme.js";
 import { createToasts, TOAST_TITLE, type TurnEnd } from "./toasts.js";
+import { createQuotaWindow, type WindowHost } from "./window/shell.js";
 
 type SidebarState = { open: boolean };
+type TuiEvent = { data?: Record<string, unknown> };
 
-/** What the plugin needs from OpenCode's TUI context, besides the dialogs' needs. */
-type TuiContext = LegacyDialogHost &
+/** What the plugin needs from OpenCode's TUI context, besides the window's and typed commands' needs. */
+type TuiContext = TypedCommandHost &
+  WindowHost &
   ClientHost & {
-    theme: Theme & LegacyDialogHost["theme"];
+    theme: Theme & WindowHost["theme"];
     storage: DisplayStorage;
-    data: LegacyDialogHost["data"] & {
+    data: WindowHost["data"] & {
       on: (event: string, handler: (event: TuiEvent) => void) => () => void;
       session: { get: (sessionID: string) => { parentID?: string } | undefined };
     };
-    ui: LegacyDialogHost["ui"] & {
+    ui: WindowHost["ui"] & {
       slot: (
         claim:
           | { append: "app"; render: () => null }
           | { append: "sidebar.content"; render: (props: { sessionID: string }) => JSX.Element }
           | { append: "prompt.footer"; render: (props: { sessionID?: string }) => JSX.Element }
-          | { append: "home.footer.status"; render: () => JSX.Element },
+          | { append: "home.footer.status"; render: () => JSX.Element }
+          | {
+              append: "session.composer.top";
+              render: (props: { sessionID: string }) => JSX.Element;
+            },
       ) => () => void;
     };
   };
@@ -117,6 +119,17 @@ const plugin = Plugin.define({
       isChildSession,
     });
     const host: SurfaceHost = { theme: () => api.theme, display, quota };
+    const quotaWindow = createQuotaWindow(api, host);
+    /** `/quota_usage [range]`: the Usage tab, on the typed range; a wrong range says why. */
+    const openUsage = (argumentsText: string) => {
+      if (!argumentsText) {
+        quotaWindow.open("usage");
+        return;
+      }
+      const parsed = parseUsageArguments(argumentsText);
+      if (parsed.ok) quotaWindow.openUsage(parsed);
+      else api.ui.toast.show({ variant: "warning", title: TOAST_TITLE, message: parsed.error });
+    };
 
     let disposeMount: (() => void) | undefined;
     const questionToolCalls = new Set<string>();
@@ -138,8 +151,37 @@ const plugin = Plugin.define({
             reportFailure(error);
           }
         });
-        registerQuotaCommands(api);
-        registerTypedQuotaCommands(api);
+        api.keymap.layer(() => ({
+          mode: "global",
+          commands: [
+            {
+              id: "quota.window",
+              title: "Quota: limits, notices, status",
+              group: "OpenCode Quota",
+              palette: true,
+              run: () => quotaWindow.open("limits"),
+            },
+            {
+              id: "quota.usage",
+              title: "Quota usage: tokens and API cost",
+              group: "OpenCode Quota",
+              palette: true,
+              run: () => quotaWindow.open("usage"),
+            },
+            {
+              id: "quota.status",
+              title: "Quota status report",
+              group: "OpenCode Quota",
+              palette: true,
+              run: () => quotaWindow.open("status"),
+            },
+          ],
+        }));
+        registerTypedQuotaCommands(api, {
+          quota: () => quotaWindow.open("limits"),
+          quota_usage: openUsage,
+          quota_status: () => quotaWindow.open("status"),
+        });
         const afterTurn = (event: TuiEvent, trigger: TurnEnd) => {
           const sessionID = eventSessionID(event);
           if (sessionID) void toasts.afterTurn(trigger, sessionID).catch(reportFailure);
@@ -163,9 +205,6 @@ const plugin = Plugin.define({
           api.data.on("session.tool.failed", (event) => {
             const id = eventToolCallID(event);
             if (id) questionToolCalls.delete(id);
-          }),
-          api.data.on("session.inbox.enqueued", (event) => {
-            void showPostedQuotaReport(api, event).catch(reportFailure);
           }),
         ];
         let disposed = false;
@@ -214,12 +253,17 @@ const plugin = Plugin.define({
       append: "home.footer.status",
       render: () => <HomeFooter host={host} />,
     });
+    const disposeWindow = api.ui.slot({
+      append: "session.composer.top",
+      render: (props) => <quotaWindow.Slot sessionID={props.sessionID} />,
+    });
     return () => {
       disposeMount?.();
       disposeApp();
       disposeSidebar();
       disposePrompt();
       disposeHome();
+      disposeWindow();
     };
   },
 });

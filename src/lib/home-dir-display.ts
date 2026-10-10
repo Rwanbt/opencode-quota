@@ -83,20 +83,6 @@ function replaceHomeDirInBlock(block: ReportBlock, homeDir: string): ReportBlock
         ...(block.fullHeaders !== undefined && { fullHeaders: block.fullHeaders.map(tilde) }),
         rows: block.rows.map((row) => row.map(tilde)),
       };
-    case "quota":
-      return {
-        ...block,
-        provider: tilde(block.provider),
-        lines: block.lines.map(tilde),
-        rows: block.rows.map((row) => ({
-          ...row,
-          label: tilde(row.label),
-          value: tilde(row.value),
-          ...(row.usage !== undefined && { usage: tilde(row.usage) }),
-          ...(row.reset !== undefined && { reset: tilde(row.reset) }),
-          notes: row.notes.map(tilde),
-        })),
-      };
   }
 }
 

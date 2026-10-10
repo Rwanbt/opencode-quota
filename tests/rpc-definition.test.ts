@@ -1,7 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
-import { QUOTA_DIALOG_COMMANDS } from "../src/lib/quota-dialog-command-specs.js";
 import { QUOTA_RPC_ID, QuotaRpc } from "../src/rpc.js";
 
 type ValidateResult = { value?: unknown; issues?: ReadonlyArray<{ message: string }> };
@@ -38,11 +37,13 @@ describe("quota RPC definition", () => {
     expect(QuotaRpc.id).toBe(QUOTA_RPC_ID);
     expect(Object.keys(QuotaRpc.events)).toEqual(["changed"]);
     expect(Object.keys(methods)).toEqual([
-      "command",
       "snapshot",
       "refresh",
       "notices",
+      "noticeList",
+      "status",
       "usage",
+      "downloadPrices",
       "saveSettings",
       "acknowledgeDisplayImport",
     ]);
@@ -59,34 +60,6 @@ describe("quota RPC definition", () => {
       );
       expect(schema["~standard"]).not.toHaveProperty("types");
     }
-  });
-
-  it("validates command input", async () => {
-    for (const spec of QUOTA_DIALOG_COMMANDS) {
-      await expectAccepted(methods.command.input, { command: spec.id });
-    }
-    await expectAccepted(methods.command.input, {
-      command: "tokens_between",
-      arguments: "2026-01-01 2026-01-15",
-      sessionID: "session-1",
-    });
-    await expectRejected(methods.command.input, 1, "input must be an object");
-    await expectRejected(methods.command.input, {}, "command must be a quota command id");
-    await expectRejected(
-      methods.command.input,
-      { command: "quota_nope" },
-      "command must be a quota command id",
-    );
-    await expectRejected(
-      methods.command.input,
-      { command: "quota", arguments: 5 },
-      "arguments must be a string",
-    );
-    await expectRejected(
-      methods.command.input,
-      { command: "quota", sessionID: 5 },
-      "sessionID must be a string",
-    );
   });
 
   it("validates snapshot and refresh input", async () => {
@@ -125,13 +98,6 @@ describe("quota RPC definition", () => {
     );
   });
 
-  it("requires command output to be an object", async () => {
-    await expectAccepted(methods.command.output, { any: "object" });
-    for (const value of [undefined, null, "text", 1, []]) {
-      await expectRejected(methods.command.output, value, "output must be an object");
-    }
-  });
-
   it("validates notices input and requires a homeLine string in its output", async () => {
     await expectAccepted(methods.notices.input, {});
     for (const value of [undefined, null, []]) {
@@ -143,8 +109,37 @@ describe("quota RPC definition", () => {
     }
   });
 
+  it("validates noticeList and status input and requires their output", async () => {
+    await expectAccepted(methods.noticeList.input, {});
+    await expectAccepted(methods.noticeList.input, {
+      read: ["a"],
+      unread: [],
+      enabled: false,
+      home: true,
+    });
+    const cases: Array<[unknown, string]> = [
+      [null, "input must be an object"],
+      [{ read: "a" }, "read must be a list of strings"],
+      [{ unread: [1] }, "unread must be a list of strings"],
+      [{ enabled: "no" }, "enabled must be true or false"],
+      [{ home: 1 }, "home must be true or false"],
+    ];
+    for (const [input, issue] of cases) {
+      await expectRejected(methods.noticeList.input, input, issue);
+    }
+    await expectAccepted(methods.noticeList.output, { enabled: true, home: true, notices: [] });
+    await expectRejected(methods.noticeList.output, { enabled: true }, "output must carry notices");
+
+    await expectAccepted(methods.status.input, {});
+    await expectAccepted(methods.status.input, { sessionID: "ses_1" });
+    await expectRejected(methods.status.input, [], "input must be an object");
+    await expectRejected(methods.status.input, { sessionID: 1 }, "sessionID must be a string");
+    await expectAccepted(methods.status.output, { text: "" });
+    await expectRejected(methods.status.output, { text: 1 }, "output must carry a text");
+  });
+
   it("validates usage input", async () => {
-    for (const range of ["today", "7d", "30d", "90d", "all"]) {
+    for (const range of ["today", "24h", "7d", "30d", "all"]) {
       await expectAccepted(methods.usage.input, { range });
     }
     await expectAccepted(methods.usage.input, { range: "session", sessionID: "ses_1" });
@@ -159,11 +154,11 @@ describe("quota RPC definition", () => {
     }
 
     const rangeIssue =
-      "range must be one of today, 7d, 30d, 90d, all, session, session_tree, between";
+      "range must be one of today, 24h, 7d, 30d, all, session, session_tree, between";
     const cases: Array<[unknown, string]> = [
       [null, "input must be an object"],
       [{}, rangeIssue],
-      [{ range: "1y" }, rangeIssue],
+      [{ range: "90d" }, rangeIssue],
       [{ range: "toString" }, rangeIssue],
       [{ range: "all", sessionID: 1 }, "sessionID must be a string"],
       [{ range: "session" }, "sessionID is required for range session"],
@@ -209,10 +204,20 @@ describe("quota RPC definition", () => {
     }
   });
 
-  it("requires a report in usage output", async () => {
+  it("requires a report in usage output, and ok and a message in downloadPrices output", async () => {
     await expectAccepted(methods.usage.output, { report: { range: "all" } });
     for (const value of [undefined, {}, { report: null }, { report: [] }]) {
       await expectRejected(methods.usage.output, value, "output must carry a report");
+    }
+    await expectAccepted(methods.downloadPrices.input, {});
+    await expectRejected(methods.downloadPrices.input, null, "input must be an object");
+    await expectAccepted(methods.downloadPrices.output, { ok: true, message: "Downloaded." });
+    for (const value of [{}, { ok: "yes", message: "" }, { ok: false }]) {
+      await expectRejected(
+        methods.downloadPrices.output,
+        value,
+        "output must carry ok and a message",
+      );
     }
   });
 
@@ -248,6 +253,6 @@ describe("quota RPC definition", () => {
   it("ships dist/rpc.js without loading any @opencode package", () => {
     const source = readFileSync(new URL("../dist/rpc.js", import.meta.url), "utf8");
     expect(source).not.toMatch(/(?:from|import)\s*\(?\s*["']@opencode\//);
-    expect(source).toContain('from "./lib/quota-dialog-command-specs.js"');
+    expect(source).toContain('from "./lib/calendar-date.js"');
   });
 });

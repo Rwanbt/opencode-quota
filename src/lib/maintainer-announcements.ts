@@ -213,11 +213,3 @@ export function getMaintainerAnnouncementsSummary(params?: {
     evaluations,
   };
 }
-
-export function formatMaintainerAnnouncementHomeCountLine(activeCount: number): string {
-  if (activeCount <= 0) return "";
-  if (activeCount === 1) {
-    return "Notice: Maintainer announcement available. Run /quota_announcements.";
-  }
-  return `Notice: ${activeCount} maintainer announcements available. Run /quota_announcements.`;
-}

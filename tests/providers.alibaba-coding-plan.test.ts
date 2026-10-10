@@ -103,6 +103,12 @@ describe("alibaba-coding-plan provider", () => {
       TUNING,
       windows("Pro", [2000, 10000, 20000]),
     ],
+    [
+      "switched-off request limits, on the tier's own limits",
+      { login: { key: "dashscope-key", tier: "pro" } },
+      { quotaProviders: [{ ...TUNING.quotaProviders[0], enabled: false }] },
+      windows("Pro", [6000, 45000, 90000]),
+    ],
   ])("estimates the windows for %s", async (_name, setup, config, rows) => {
     if ("env" in setup) process.env.ALIBABA_API_KEY = setup.env;
     if ("login" in setup) {

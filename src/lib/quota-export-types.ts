@@ -56,6 +56,8 @@ export type QuotaExportSource = {
   providerId: string;
   status: "ok" | "error" | "unavailable";
   entryCount: number;
+  /** Present only when the definition is switched off; its status is then "unavailable". */
+  enabled?: false;
 };
 
 /**

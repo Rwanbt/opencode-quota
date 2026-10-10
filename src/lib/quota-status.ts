@@ -131,6 +131,11 @@ function currentModelText(params: QuotaStatusReportParams): string {
  * names its counter file; a tuned maintained provider shows its own in that provider's section.
  */
 function customProviderText(definition: QuotaProviderDefinition): string {
+  if (definition.enabled === false) {
+    return sanitizeSingleLineDisplayText(
+      `provider_id=${definition.providerId} off (switch on in /quota_settings → Providers)`,
+    );
+  }
   const tuned = isMaintainedQuotaProviderTuning(definition);
   const parts = [
     `provider_id=${definition.providerId}`,

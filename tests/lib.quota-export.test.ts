@@ -605,6 +605,60 @@ describe("the export of each provider's last check", () => {
     });
   });
 
+  it("marks a switched-off definition, so it is told apart from an unavailable one", () => {
+    const definition: QuotaProviderDefinition = {
+      id: "first",
+      providerId: "gateway-one",
+      label: "First",
+      mode: "remote-api",
+      url: "https://one.example/accounting",
+      format: "quota-v1",
+    };
+    const diagnostic = {
+      providerId: "gateway-one",
+      mode: "remote-api",
+      format: "quota-v1",
+      modelIds: null,
+      apiKeyEnv: null,
+      selected: true,
+      attempted: true,
+      credentialSource: "opencode_db",
+      outcome: "success",
+      entryCount: 1,
+      checkedPaths: [],
+      credentialDatabasePaths: [],
+    } as const;
+    // A result from before the user switched "second" off.
+    const check = customCheck(
+      {
+        attempted: true,
+        entries: [],
+        errors: [],
+        diagnostics: [
+          { ...diagnostic, sourceId: "first", outcome: "network_error", entryCount: 0 },
+          { ...diagnostic, sourceId: "second" },
+        ],
+      },
+      Date.now(),
+    );
+
+    const actual = exportAfter({ "quota-providers": check }, [
+      definition,
+      { ...definition, id: "second", enabled: false },
+    ]);
+
+    expect(actual.providers["quota-providers"].sources).toEqual([
+      { id: "first", providerId: "gateway-one", status: "error", entryCount: 0 },
+      {
+        id: "second",
+        providerId: "gateway-one",
+        status: "unavailable",
+        entryCount: 0,
+        enabled: false,
+      },
+    ]);
+  });
+
   it("computes cacheAgeSeconds from the oldest fetchedAt across ok and error providers", () => {
     const exportData = exportAfter({
       a: {

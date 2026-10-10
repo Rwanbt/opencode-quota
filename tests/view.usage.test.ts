@@ -7,7 +7,14 @@ import type {
   UsageReport,
 } from "../src/core/usage.js";
 import { formatShare, formatTokens, formatUsd } from "../src/view/format.js";
-import { type UsageLine, type UsageViewOptions, usageText, usageView } from "../src/view/usage.js";
+import {
+  breakdownModels,
+  modelDetailView,
+  type UsageLine,
+  type UsageViewOptions,
+  usageText,
+  usageView,
+} from "../src/view/usage.js";
 
 const M = 1_000_000;
 /** The report's "now": 3 pm on Saturday 2026-10-10, local time. */
@@ -25,11 +32,16 @@ type ReportSpec = {
   days: Amounts[];
   lastDay?: Date;
   tokens: { cachedInput: number; uncachedInput: number; output: number };
+  /** Default: cached input as cache reads, uncached input as input. */
+  tokensByType?: UsageReport["totals"]["tokensByType"];
   costByType: UsageReport["totals"]["costByType"];
   cacheSavingsUsd: number;
 };
 
-/** A hand-built report: totals and shares come from the provider rows. */
+/**
+ * A hand-built report: totals and shares come from the provider rows. A model's cost and
+ * tokens are all input, and its days are left out.
+ */
 function buildReport(spec: ReportSpec): UsageReport {
   const costUsd = spec.providers.reduce((sum, [, , cost]) => sum + cost, 0);
   const tokens = spec.providers.reduce((sum, [, , , count]) => sum + count, 0);
@@ -63,6 +75,9 @@ function buildReport(spec: ReportSpec): UsageReport {
     modelID,
     priced: (amounts[2] ?? 0) === 0,
     ...row(amounts),
+    costByType: { input: amounts[0], cacheRead: 0, cacheWrite: 0, output: 0 },
+    tokensByType: { input: amounts[1], cacheRead: 0, cacheWrite: 0, output: 0 },
+    days: [],
   }));
   return {
     range: spec.range ?? "30d",
@@ -71,6 +86,12 @@ function buildReport(spec: ReportSpec): UsageReport {
       costUsd,
       sessions: spec.sessions,
       tokens: { processed: tokens, ...spec.tokens },
+      tokensByType: spec.tokensByType ?? {
+        input: spec.tokens.uncachedInput,
+        cacheRead: spec.tokens.cachedInput,
+        cacheWrite: 0,
+        output: spec.tokens.output,
+      },
       costByType: spec.costByType,
       cacheSavingsUsd: spec.cacheSavingsUsd,
       unpricedTokens,
@@ -113,6 +134,7 @@ function t3Report(): UsageReport {
       cost === 0 ? 0 : Math.round(cost * 2.47 * M),
     ]),
     tokens: { cachedInput: 13_200 * M, uncachedInput: 146 * M, output: 49.97 * M },
+    tokensByType: { input: 4 * M, cacheRead: 13_200 * M, cacheWrite: 142 * M, output: 49.97 * M },
     costByType: { input: 369.53, cacheRead: 2749.39, cacheWrite: 1716.2, output: 580.29 },
     cacheSavingsUsd: 49_636.93,
   });
@@ -456,8 +478,13 @@ describe("usageView", () => {
     {
       mode: "tokens" as const,
       title: "Tokens by type",
-      parts: { "part:cacheRead": 13_200, "part:input": 146, "part:output": 49.97 },
-      legend: ["░ Cached input 13.2B   ▒ Uncached input 146M   █ Output 50.0M"],
+      parts: {
+        "part:input": 4,
+        "part:cacheRead": 13_200,
+        "part:cacheWrite": 142,
+        "part:output": 49.97,
+      },
+      legend: ["▒ Input 4.00M   ░ Cache read 13.2B   ▓ Cache write 142M", "█ Output 50.0M"],
     },
   ])("$title: one bar of at most 64 columns in proportion, then a legend", ({
     mode,
@@ -472,8 +499,10 @@ describe("usageView", () => {
     expect(bar.map((part) => part.role)).toEqual(Object.keys(parts));
     for (const part of bar) {
       const exact = (parts[part.role as keyof typeof parts] / total) * 64;
-      // A part above 0 always shows, even when it would round to nothing.
-      expect(part.text.length).toBeGreaterThanOrEqual(Math.max(1, Math.floor(exact) - 1));
+      // A part above 0 always shows, even when it would round to nothing: the widest part
+      // gives up a cell for each such part.
+      const givenUp = bar.length - 1;
+      expect(part.text.length).toBeGreaterThanOrEqual(Math.max(1, Math.floor(exact) - givenUp));
       expect(part.text.length).toBeLessThanOrEqual(Math.ceil(exact) + 1);
     }
     expect(lines.slice(2, 2 + legend.length).map(textOf)).toEqual(legend);
@@ -588,7 +617,7 @@ describe("usageText", () => {
     const text = usageText(t3Report(), { mode: "cost", breakdown: "day", width: 200 });
     const lines = text.split("\n");
     expect(lines.slice(0, 2)).toEqual([
-      "Usage · last 30 days",
+      "Usage · Last 30 days",
       "$5,415.41  636 sessions · API estimate",
     ]);
     for (const line of lines) expect(line.length).toBeLessThanOrEqual(64);
@@ -599,7 +628,7 @@ describe("usageText", () => {
   });
 
   it.each([
-    { report: { ...EMPTY_REPORT, range: "session" as const }, title: "Usage · this session" },
+    { report: { ...EMPTY_REPORT, range: "session" as const }, title: "Usage · This session" },
     {
       report: {
         ...EMPTY_REPORT,
@@ -613,5 +642,116 @@ describe("usageText", () => {
     expect(usageText(report, { mode: "tokens", breakdown: "model" })).toBe(
       `${title}\nNo usage in this range.`,
     );
+  });
+});
+
+describe("modelDetailView", () => {
+  /** The T3 report with claude-opus-5-5 split by type and spread over its days, like T3's. */
+  function opusReport(): UsageReport {
+    const report = t3Report();
+    const [opus] = report.models;
+    report.models[0] = {
+      ...opus,
+      costByType: { input: 0.52, cacheRead: 2436, cacheWrite: 1450, output: 523.89 },
+      tokensByType: {
+        input: 0.146 * M,
+        cacheRead: 12_180 * M,
+        cacheWrite: 290 * M,
+        output: 29.854 * M,
+      },
+      days: report.days
+        .filter((day) => day.costUsd > 0)
+        .map((day) => ({ date: day.date, costUsd: day.costUsd * 0.8, tokens: day.tokens * 0.9 })),
+    };
+    return report;
+  }
+
+  const cells = (line: UsageLine) => textOf(line).split(/ {2,}/).filter(Boolean);
+
+  it("shows the name, provider and share, four numbers, the model's chart and both by-type bars", () => {
+    const report = opusReport();
+    const lines = modelDetailView(report, report.models[0], { mode: "cost", width: 83 });
+
+    expect(lines[0]).toEqual([
+      { text: "● ", role: "provider:0" },
+      { text: "claude-opus-5-5", role: "title" },
+    ]);
+    expect(lines[1]).toEqual([{ text: "Anthropic · 81.4% of cost", role: "muted" }]);
+    expect(cells(lines[3])).toEqual(["Cost", "Tokens", "Per 1M tokens", "Cache hit"]);
+    // Cache hit: cache reads ÷ all input tokens (input, cache reads and cache writes).
+    expect(cells(lines[4])).toEqual(["$4,410.41", "12.5B", "$0.35", "97.7%"]);
+    const chart = from(lines, "Daily cost");
+    expect(chart.slice(1, 6).map((row) => row[1].role)).toEqual(Array(5).fill("bar"));
+    expect(textOf(chart[7]).trim()).toMatch(/^Sep 11 +Sep 26 +Oct 10$/);
+    const byType = from(lines, "Cost by type");
+    expect(textOf(byType[0])).toMatch(/^Cost by type +Tokens by type$/);
+    expect(textOf(byType[2])).toMatch(/^▒ Input \$0\.52 {3}░ Cache read \$2,436\.00 +▒ Input 146K/);
+  });
+
+  it.each([
+    {
+      name: "without a price: no cost numbers, no cost by type",
+      model: "exo-free",
+      mode: "cost" as const,
+      share: "OpenCode Zen · 0% of cost",
+      numbers: ["no price", "970K", "no price", "0%"],
+      headings: ["Tokens by type"],
+    },
+    {
+      name: "in tokens mode: the share of tokens and a token chart",
+      model: "claude-opus-5-5",
+      mode: "tokens" as const,
+      share: "Anthropic · 93.3% of tokens",
+      numbers: ["$4,410.41", "12.5B", "$0.35", "97.7%"],
+      headings: ["Daily tokens", "Cost by type   Tokens by type"],
+    },
+  ])("model $name", ({ model, mode, share, numbers, headings }) => {
+    const report = opusReport();
+    const row = report.models.find((item) => item.modelID === model)!;
+    const lines = modelDetailView(report, row, { mode, width: 83 });
+
+    expect(textOf(lines[1])).toBe(share);
+    expect(cells(lines[4])).toEqual(numbers);
+    const headingTexts = lines
+      .filter((line) => line[0]?.role === "heading")
+      .map((line) => textOf(line).replace(/ {3,}/g, "   "));
+    expect(headingTexts).toEqual(headings);
+  });
+
+  it("stacks cost by type over tokens by type when both don't fit side by side", () => {
+    const report = opusReport();
+    const lines = modelDetailView(report, report.models[0], { mode: "cost", width: 50 });
+    const headings = lines.filter((line) => line[0]?.role === "heading").map(textOf);
+    expect(headings).toEqual(["Daily cost", "Cost by type", "Tokens by type"]);
+  });
+
+  it.each([10, 32, 50, 83, 120])("fits every line in %i columns", (width) => {
+    const report = opusReport();
+    for (const model of report.models) {
+      for (const mode of ["cost", "tokens"] as const) {
+        for (const line of modelDetailView(report, model, { mode, width })) {
+          expect(columnsIn(textOf(line))).toBeLessThanOrEqual(width);
+        }
+      }
+    }
+  });
+});
+
+describe("breakdownModels", () => {
+  it.each([
+    "cost",
+    "tokens",
+  ] as const)("names the last lines of the %s model breakdown, in order", (mode) => {
+    const report = t3Report();
+    const models = breakdownModels(report, mode);
+    const lines = usageView(report, { mode, breakdown: "model", width: 80 });
+
+    expect(textOf(lines[lines.length - models.length - 1])).toMatch(/^# {2}Model/);
+    for (const [index, row] of lines.slice(-models.length).entries()) {
+      const model = models[index];
+      const provider = report.providers.findIndex((item) => item.providerID === model.providerID);
+      expect(textOf(row)).toContain(model.modelID);
+      expect(row).toContainEqual({ text: "● ", role: `provider:${provider}` });
+    }
   });
 });

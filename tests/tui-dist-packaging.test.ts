@@ -52,7 +52,8 @@ describe("tui dist packaging", () => {
     expect(source).toContain("sidebar.content");
     expect(source).toContain("prompt.footer");
     expect(source).toContain("home.footer.status");
-    expect(source).toContain("registerQuotaCommands");
+    expect(source).toContain("session.composer.top");
+    expect(source).toContain("registerTypedQuotaCommands");
     expect(source).not.toContain("jsx-dev-runtime");
     // Every surface reads the server's snapshot over the quota RPC.
     const client = await read("client.js");
