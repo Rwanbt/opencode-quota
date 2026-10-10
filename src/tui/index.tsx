@@ -20,7 +20,7 @@ import { SidebarPanel, type SurfaceHost } from "./sidebar.js";
 import { HomeFooter, StatusLine } from "./status-line.js";
 import type { Theme } from "./theme.js";
 import { createToasts, type TurnEnd } from "./toasts.js";
-import { createSettingsEditor, type SettingsHost } from "./window/settings.js";
+import { createSettingsEditor } from "./window/settings.js";
 import { createQuotaWindow, type WindowHost } from "./window/shell.js";
 
 type SidebarState = { open: boolean };
@@ -29,7 +29,6 @@ type TuiEvent = { data?: Record<string, unknown> };
 /** What the plugin needs from OpenCode's TUI context, besides the dialogs' and the window's needs. */
 type TuiContext = LegacyDialogHost &
   WindowHost &
-  SettingsHost &
   ClientHost & {
     theme: Theme & LegacyDialogHost["theme"] & WindowHost["theme"];
     storage: DisplayStorage;

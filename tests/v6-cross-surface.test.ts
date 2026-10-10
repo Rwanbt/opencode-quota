@@ -202,6 +202,27 @@ const THEME = {
   }),
 };
 
+type KeyLayer = {
+  mode?: string;
+  priority?: number;
+  enabled?: () => boolean;
+  target?: () => unknown;
+};
+
+/** A line on a node that a click uses: its text is `text`. */
+function clickable(tree: unknown, text: string): Node {
+  return findAll(
+    tree,
+    (node) =>
+      typeof node.props?.onMouseUp === "function" && textLines(node).join("").trim() === text,
+  )[0]!;
+}
+
+/** The lines of the window's Settings line with this setting path (or id). */
+function settingLine(tree: unknown, id: string): Node[] {
+  return findAll(tree, (node) => node.props?.id === `quota-settings.${id}`);
+}
+
 async function startHosts() {
   const { default: serverPlugin } = await import("../src/plugin.js");
   const events = createQuotaRpcEvents();
@@ -245,7 +266,10 @@ async function startHosts() {
   const listeners = new Map<string, Listener>();
   const renderers = new Map<string, (props?: { sessionID?: string }) => unknown>();
   let commands: Array<{ id: string; run: () => Promise<void> }> = [];
+  const layers: KeyLayer[] = [];
+  let focused: unknown;
   const toast = vi.fn();
+  const dispatch = vi.fn();
   vi.stubGlobal("React", {
     createElement: (
       type: unknown,
@@ -253,7 +277,22 @@ async function startHosts() {
       ...children: unknown[]
     ) => {
       const all = { ...props, children: children.length > 1 ? children : children[0] };
-      return typeof type === "function" ? type(all) : { type, props: all };
+      if (typeof type === "function") return type(all);
+      // A renderable, enough for refs: it takes the keyboard (at once when `focused`).
+      const node = {
+        type,
+        props: all,
+        focus: () => {
+          focused = node;
+        },
+        on: () => {},
+        scrollTo: () => {},
+        scrollBy: () => {},
+        scrollChildIntoView: () => {},
+      };
+      if (typeof all.ref === "function") all.ref(node);
+      if (all.focused === true) node.focus();
+      return node;
     },
   });
   const { default: tuiPlugin } = await import("../src/tui/index.tsx");
@@ -272,10 +311,12 @@ async function startHosts() {
       location: { default: () => ({ directory: process.cwd() }) },
     },
     keymap: {
-      layer: (build: () => { mode?: string; commands: typeof commands }) => {
+      layer: (build: () => KeyLayer & { commands: typeof commands }) => {
         const layer = build();
+        layers.push(layer);
         if (layer.mode === "global") commands = layer.commands;
       },
+      dispatch,
     },
     ui: {
       slot: (claim: { append: string; render: (props?: { sessionID?: string }) => unknown }) => {
@@ -292,7 +333,11 @@ async function startHosts() {
     render: (slot: string, props?: { sessionID?: string }) => renderers.get(slot)?.(props),
     emit: (name: string, data: Record<string, unknown>) => listeners.get(name)?.({ data }),
     command: (id: string) => commands.find((command) => command.id === `quota.${id}`)!,
+    /** The last layer registered with this priority. */
+    layer: (priority: number) => layers.filter((layer) => layer.priority === priority).at(-1)!,
+    focused: () => focused,
     toast,
+    dispatch,
     stored,
     dispose: async () => {
       (disposeTui as () => void)();
@@ -525,18 +570,9 @@ describe("v6 surfaces on the quota snapshot", () => {
     // Settings: the window's Sidebar tab edits a draft that the real sidebar shows at once (the
     // tab expands the panel collapsed above); Save stores it in plugin storage and closes.
     const windowTree = () => tui.render("session.composer.top", { sessionID: "ses_1" });
-    const clickable = (tree: unknown, text: string) =>
-      findAll(
-        tree,
-        (node) =>
-          typeof node.props?.onMouseUp === "function" && textLines(node).join("").trim() === text,
-      )[0]!;
     clickable(windowTree(), "Sidebar").props.onMouseUp();
     expect(words(sidebar())).toContain("Session 1.20K in · 45 out");
-    const sessionTokens = findAll(
-      windowTree(),
-      (node) => node.props?.id === "quota-settings.sidebar.sessionTokens",
-    );
+    const sessionTokens = settingLine(windowTree(), "sidebar.sessionTokens");
     expect(words(sessionTokens)).toEqual(["Session tokens line", "‹", "shown", "›", ""]);
     clickable(sessionTokens, "›").props.onMouseUp();
     expect(words(sidebar())).not.toContain("Session 1.20K in · 45 out");
@@ -551,5 +587,51 @@ describe("v6 surfaces on the quota snapshot", () => {
       expect.objectContaining({ variant: "success", title: "Quota settings saved" }),
     );
     await tui.dispose();
+  });
+
+  describe("the quota window's Settings tabs", () => {
+    async function openSettings(tab: string) {
+      const tui = await startHosts();
+      await tui.command("window").run();
+      const windowTree = () => tui.render("session.composer.top", { sessionID: "ses_1" });
+      clickable(windowTree(), tab).props.onMouseUp();
+      return { tui, windowTree };
+    }
+
+    it("closes with unsaved changes only after Save or Discard", async () => {
+      const { tui, windowTree } = await openSettings("Layout");
+      clickable(settingLine(windowTree(), "layout.barWidth"), "›").props.onMouseUp();
+      clickable(windowTree(), "esc").props.onMouseUp();
+      clickable(windowTree(), "esc").props.onMouseUp();
+      expect(words(windowTree())).toContain("Keep your changes?");
+      expect(tui.stored.get("settings").settings.layout).toBeUndefined();
+      clickable(windowTree(), "Discard").props.onMouseUp();
+      expect(windowTree()).toBe("");
+      await tui.dispose();
+    });
+
+    it("gives the typed text's keys to its input, and the window its keys back on a tab change", async () => {
+      const { tui, windowTree } = await openSettings("Colors");
+      const press = () =>
+        settingLine(windowTree(), "colors.good")[0]?.props.onMouseDown({ button: 0 });
+      press();
+      press();
+      const input = findAll(windowTree(), (node) => node.type === "input")[0];
+      expect([tui.layer(20).enabled?.(), tui.layer(20).target?.()]).toEqual([true, input]);
+      expect(tui.layer(10).enabled?.()).toBe(false);
+
+      // Each render makes new nodes, so the window box is "the focusable box".
+      clickable(windowTree(), "Limits").props.onMouseUp();
+      expect(tui.layer(10).enabled?.()).toBe(true);
+      expect(tui.focused()).toMatchObject({ type: "box", props: { focusable: true } });
+      await tui.dispose();
+    });
+
+    it("opens OpenCode's theme list from the theme line's ▸", async () => {
+      const { tui, windowTree } = await openSettings("Colors");
+      clickable(settingLine(windowTree(), "theme"), "▸").props.onMouseUp();
+      expect(tui.dispatch).toHaveBeenCalledWith("theme.switch");
+      await tui.dispose();
+    });
   });
 });

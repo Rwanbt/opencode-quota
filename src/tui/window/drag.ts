@@ -21,11 +21,6 @@ export function surfaceTree(snapshot: QuotaSnapshot, rows: SurfaceRows): TreePro
   );
 }
 
-/** The line ids top to bottom: each provider, then its rows when the tab lists rows. */
-export function treeLineIds(tree: readonly TreeProvider[], withRows: boolean): string[] {
-  return tree.flatMap(({ provider, rowIds }) => [provider.providerId, ...(withRows ? rowIds : [])]);
-}
-
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }

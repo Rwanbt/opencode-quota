@@ -7,10 +7,11 @@
  * space/enter use a line, ←/→ change it, tab switches tabs, esc closes. Closing gives the
  * keyboard back to whatever had it before.
  */
+import type { Plugin } from "@opencode/plugin/tui";
 import {
   type BoxRenderable,
   type Renderable,
-  RGBA,
+  type RGBA,
   type ScrollBoxRenderable,
   TextAttributes,
 } from "@opentui/core";
@@ -29,7 +30,13 @@ import type { SettingsTab } from "../display.js";
 import type { SurfaceHost } from "../sidebar.js";
 import type { Theme } from "../theme.js";
 import { type NoticeBoard, noticeOptions } from "./notices.js";
-import { isSettingsTab, SETTINGS_TABS, type SettingsEditor } from "./settings.js";
+import {
+  isSettingsTab,
+  type OptionLine,
+  OptionRow,
+  SETTINGS_TABS,
+  type SettingsEditor,
+} from "./settings.js";
 import { LimitsView, NoticesView, type StatusReport, StatusView } from "./views.js";
 
 const RPC_TIMEOUT_MS = 60_000;
@@ -65,13 +72,6 @@ export type WindowTheme = Theme & {
   border: { base: RGBA };
 };
 
-type Toast = {
-  variant?: "info" | "success" | "warning" | "error";
-  title?: string;
-  message: string;
-  duration?: number;
-};
-type WindowKey = { bind: string; title: string; group: string; run: () => void };
 type CallOptions = { location: { directory: string }; signal: AbortSignal };
 type WindowRpc = {
   noticeList(
@@ -81,48 +81,14 @@ type WindowRpc = {
   status(input: QuotaRpcStatusInput, options: CallOptions): Promise<QuotaRpcStatusOutput>;
 };
 
-/** What the window needs from OpenCode's TUI context. */
-export type WindowHost = {
+/** What the window needs from OpenCode's TUI context (its theme and client types aren't installed). */
+export type WindowHost = Pick<Plugin.Context, "keymap" | "renderer" | "themeMode" | "ui"> & {
   location?: { directory: string };
   theme: WindowTheme;
   client: { rpc: (definition: typeof QuotaRpc) => WindowRpc };
   data: { location?: { default: () => { directory: string } } };
-  renderer: {
-    root: {
-      on(event: "layout-changed", listener: () => void): void;
-      off(event: "layout-changed", listener: () => void): void;
-    };
-    currentFocusedRenderable: Renderable | null;
-    copyToClipboardOSC52(text: string): boolean;
-  };
-  keymap: {
-    /** A layer with a target works only while that renderable has the keyboard. */
-    layer(
-      build: () => {
-        target: () => Renderable | undefined;
-        priority: number;
-        enabled?: () => boolean;
-        commands: WindowKey[];
-      },
-    ): void;
-  };
-  ui: {
-    router: { current(): { type: string; sessionID?: string } };
-    toast: { show(toast: Toast): void };
-  };
 };
 
-/** A line above a tab's body that ↑↓ can select: a switch (‹ on ›) or a button (▸). */
-type WindowOption = {
-  id: string;
-  title: string;
-  value: string;
-  note?: string;
-  kind: "switch" | "button";
-  run: () => void;
-};
-
-const TRANSPARENT = RGBA.fromInts(0, 0, 0, 0);
 const KEYS = "Quota window";
 
 export type QuotaWindow = {
@@ -187,6 +153,8 @@ export function createQuotaWindow(
   function showTab(next: WindowTab): void {
     settings.setTab(next);
     setTab(next);
+    // A Settings line may have had the keyboard; it is gone with its tab.
+    windowBox?.focus();
     const sessionID = routeSessionID();
     if (next === "limits") void host.quota.refresh("manual", sessionID);
     if (next === "notices") void changeNotices({});
@@ -209,17 +177,12 @@ export function createQuotaWindow(
     });
   }
 
-  function tabOptions(): WindowOption[] {
+  /** The lines above a tab's body that ↑↓ can select: switches (‹ on ›) and buttons (▸). */
+  function tabOptions(): OptionLine[] {
     if (tab() === "status") {
+      const note = () => "then paste it into a GitHub issue";
       return [
-        {
-          id: "copy",
-          title: "Copy this report",
-          value: "copy",
-          note: "then paste it into a GitHub issue",
-          kind: "button",
-          run: copyReport,
-        },
+        { id: "copy", title: "Copy this report", value: () => "copy", run: copyReport, note },
       ];
     }
     const current = board();
@@ -230,7 +193,12 @@ export function createQuotaWindow(
       home: () => void changeNotices({ home: !current.home }),
       readAll: () => void changeNotices({ read: unreadIds }),
     };
-    return noticeOptions(current).map((option) => ({ ...option, run: runs[option.id] }));
+    return noticeOptions(current).map(({ id, title, value, kind }) => ({
+      id,
+      title,
+      value: () => value,
+      ...(kind === "switch" ? { cycle: runs[id] } : { run: runs[id] }),
+    }));
   }
 
   function open(next: WindowTab): void {
@@ -270,44 +238,16 @@ export function createQuotaWindow(
     else setSelected(ids[next]);
   }
 
-  function useSelected(kind: "switch" | "any"): void {
-    const option = tabOptions().find((item) => item.id === selected());
-    if (option && (kind === "any" || option.kind === "switch")) option.run();
+  /** Space or enter use any line; ←/→ only flip a switch. */
+  function useLine(option: OptionLine | undefined, anyKind: boolean): void {
+    if (option?.cycle) option.cycle(1);
+    else if (anyKind) option?.run?.();
   }
-
-  function OptionLine(props: { option: WindowOption }): JSX.Element {
-    const theme = () => api.theme;
-    const active = () => selected() === props.option.id;
-    const fg = () => (active() ? theme().text.action.primary.focused : theme().text.base);
-    const arrow = () => (active() ? fg() : theme().text.action.primary.selected);
-    const isSwitch = props.option.kind === "switch";
-    return (
-      <box
-        flexDirection="row"
-        backgroundColor={active() ? theme().background.action.primary.focused : TRANSPARENT}
-        onMouseDown={() => setSelected(props.option.id)}
-        onMouseUp={settings.click(props.option.run)}
-      >
-        <text fg={fg()} wrapMode="none" selectable={false}>
-          {`   ${props.option.title.padEnd(28)} `}
-        </text>
-        <text fg={arrow()} wrapMode="none" selectable={false}>
-          {isSwitch ? "‹ " : "  "}
-        </text>
-        <text fg={fg()} wrapMode="none" selectable={false}>
-          {props.option.value.padEnd(isSwitch ? 3 : 9)}
-        </text>
-        <text fg={arrow()} wrapMode="none" selectable={false}>
-          {isSwitch ? " ›" : " ▸"}
-        </text>
-        <Show when={props.option.note}>
-          <text fg={active() ? fg() : theme().text.muted} wrapMode="none" selectable={false}>
-            {`   ${props.option.note}`}
-          </text>
-        </Show>
-      </box>
+  const useSelected = (anyKind: boolean) =>
+    useLine(
+      tabOptions().find((item) => item.id === selected()),
+      anyKind,
     );
-  }
 
   function Window(props: { sessionID: string }): JSX.Element {
     const theme = () => api.theme;
@@ -377,10 +317,10 @@ export function createQuotaWindow(
           group: KEYS,
           run: () => scroll?.scrollBy(scroll.height || 1),
         },
-        { bind: "space", title: "Use the line", group: KEYS, run: () => useSelected("any") },
-        { bind: "return", title: "Use the line", group: KEYS, run: () => useSelected("any") },
-        { bind: "left", title: "Change the line", group: KEYS, run: () => useSelected("switch") },
-        { bind: "right", title: "Change the line", group: KEYS, run: () => useSelected("switch") },
+        { bind: "space", title: "Use the line", group: KEYS, run: () => useSelected(true) },
+        { bind: "return", title: "Use the line", group: KEYS, run: () => useSelected(true) },
+        { bind: "left", title: "Change the line", group: KEYS, run: () => useSelected(false) },
+        { bind: "right", title: "Change the line", group: KEYS, run: () => useSelected(false) },
         { bind: "tab", title: "Next tab", group: KEYS, run: () => switchTab(1) },
         { bind: "shift+tab", title: "Previous tab", group: KEYS, run: () => switchTab(-1) },
         { bind: "escape", title: "Close", group: KEYS, run: close },
@@ -475,7 +415,15 @@ export function createQuotaWindow(
           marginTop={1}
         >
           {tabOptions().map((option) => (
-            <OptionLine option={option} />
+            <OptionRow
+              line={option}
+              theme={theme()}
+              active={selected() === option.id}
+              click={settings.click}
+              press={() => setSelected(option.id)}
+              use={() => useLine(option, true)}
+              valueWidth={option.cycle ? 3 : 9}
+            />
           ))}
           <Show when={tab() === "limits"}>
             <LimitsView host={host} sessionID={props.sessionID} nowMs={nowMs()} width={width()} />

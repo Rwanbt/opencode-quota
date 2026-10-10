@@ -3,9 +3,9 @@
  * The quota window's Settings tabs: Sidebar, Collapsed, Status line, Toast, Colors and Layout.
  * Their setting lines come from the field table in `display.ts`; the surface tabs also list
  * the snapshot's providers (and rows) as a tree you drag, hide and rename. While you edit, the
- * real sidebar, status line and toast show the draft and mark the selected line. Save
- * (ctrl+s) keeps the draft in plugin storage, Discard drops it, and Esc with unsaved changes
- * asks first.
+ * real sidebar, status line and toast show your changes and mark the selected line. Save
+ * (ctrl+s) stores them in plugin storage, Discard drops them, and closing the window with
+ * unsaved changes asks first.
  */
 import {
   type BoxRenderable,
@@ -21,13 +21,12 @@ import { describeError } from "../../core/errors.js";
 import type { ProviderSnapshot, QuotaRow } from "../../core/types.js";
 import { WINDOWS } from "../../core/windows.js";
 import { DEFAULT_WORDS, fit, percentText, resetText, rowValueText } from "../../view/format.js";
-import { pickRow, type Surface, type WindowChoice } from "../../view/select.js";
+import { pickRow, type Surface, type SurfaceRows, type WindowChoice } from "../../view/select.js";
 import type { ColorRole } from "../../view/text.js";
 import {
   COLOR_NAMES,
   cycleField,
   cyclePreset,
-  type DisplaySettings,
   type DisplayStore,
   FIELDS,
   type Field,
@@ -42,11 +41,11 @@ import {
   typedColor,
   valueAt,
 } from "../display.js";
-import type { SurfaceEditing, SurfaceHost } from "../sidebar.js";
+import type { SurfaceHost } from "../sidebar.js";
 import { namedColor, roleColor } from "../theme.js";
 import { TOAST_TITLE, toastText } from "../toasts.js";
 import { draggedTo, movedBy, surfaceTree, type TreeProvider } from "./drag.js";
-import type { WindowTheme } from "./shell.js";
+import type { WindowHost, WindowTheme } from "./shell.js";
 
 export const SETTINGS_TABS: ReadonlyArray<{
   tab: SettingsTab;
@@ -108,76 +107,8 @@ export function isSettingsTab(tab: string | undefined): tab is SettingsTab {
   return SETTINGS_TABS.some((item) => item.tab === tab);
 }
 
-type SettingsKey = {
-  bind: string;
-  title: string;
-  group: string;
-  run: () => void;
-};
-
-/** What the Settings tabs need from OpenCode's TUI context. */
-export type SettingsHost = {
-  theme: WindowTheme;
-  themeMode?: "dark" | "light";
-  renderer: { useMouse?: boolean };
-  keymap: {
-    layer(
-      build: () => {
-        target?: () => Renderable | undefined;
-        priority: number;
-        enabled?: () => boolean;
-        commands: SettingsKey[];
-      },
-    ): void;
-    /** Runs one of OpenCode's own commands, like the theme list. */
-    dispatch(id: string): void;
-  };
-  ui: {
-    toast: {
-      show(toast: {
-        variant: "info" | "success" | "error";
-        title: string;
-        message: string;
-        duration: number;
-      }): void;
-    };
-  };
-};
-
-export type SettingsEditor = SurfaceEditing & {
-  /** A line takes typed text now, so the window's own keys rest. */
-  typing(): boolean;
-  /** The window shows `tab` now; undefined when it closed, which drops the draft. */
-  setTab(tab: string | undefined): void;
-  /** Esc or Close: true when they must wait, because the bottom bar asks about unsaved changes. */
-  askBeforeClose(): boolean;
-  /** A press anywhere in the window: clicks count again after a drag. */
-  pressed(): void;
-  /** `run` as a click handler that skips the click OpenCode sends right after a drag. */
-  click(run: () => void): () => void;
-  /** The keyboard hint, or undefined for the window's own. */
-  hint(tab: string, hasKeyboard: boolean): string | undefined;
-  /** The surface switch and the note above a Settings tab's body. */
-  Header(props: { tab: SettingsTab; refocus: () => void }): JSX.Element;
-  Body(props: {
-    tab: SettingsTab;
-    host: SurfaceHost;
-    sessionID: string;
-    box: () => BoxRenderable | undefined;
-    scroll: () => ScrollBoxRenderable | undefined;
-  }): JSX.Element;
-  /** The bottom bar: Close, or Save and Discard, or the "Keep your changes?" question. */
-  Buttons(props: {
-    tab: string;
-    host: SurfaceHost;
-    sessionID: string;
-    box: () => BoxRenderable | undefined;
-    close: () => void;
-  }): JSX.Element;
-};
-
-/** A setting line: ‹ value › to step through values, a button (▸), and maybe a typed value. */
-type OptionLine = {
+/** A line ↑↓ select: ‹ value › steps through values, value ▸ runs a button; some take typing. */
+export type OptionLine = {
   id: string;
   /** A heading above the line, which starts a group. */
   group?: string;
@@ -186,7 +117,7 @@ type OptionLine = {
   cycle?: (delta: number) => void;
   run?: () => void;
   typed?: Typed;
-  note: () => string;
+  note?: () => string;
   swatches?: () => RGBA[];
 };
 
@@ -195,6 +126,8 @@ type Typed = { placeholder: string; hint: string; apply: (text: string) => void 
 
 /** A line of a surface tab's tree. One object per line, so <For> keeps its view while it moves. */
 type TreeLine = { id: string; providerId: string; row: boolean };
+
+type Click = (run: () => void) => () => void;
 
 const KEYS = "Quota window";
 const TRANSPARENT = RGBA.fromInts(0, 0, 0, 0);
@@ -224,7 +157,96 @@ function windowTitle(choice: WindowChoice): string {
   return choice === "lowest" ? "lowest left" : WINDOWS[choice].short;
 }
 
-export function createSettingsEditor(api: SettingsHost, display: DisplayStore): SettingsEditor {
+/** One-line text that keeps its width, unless `shrink` lets it give way (notes, details). */
+export function Cell(props: {
+  fg?: RGBA;
+  bold?: boolean;
+  shrink?: boolean;
+  onUp?: () => void;
+  children: JSX.Element;
+}): JSX.Element {
+  return (
+    <text
+      fg={props.fg}
+      attributes={props.bold ? TextAttributes.BOLD : TextAttributes.NONE}
+      wrapMode="none"
+      flexShrink={props.shrink ? 1 : 0}
+      selectable={false}
+      onMouseUp={props.onUp}
+    >
+      {props.children}
+    </text>
+  );
+}
+
+/** A window tab's option line: title, ‹ value › or value ▸, color swatches, then a note. */
+export function OptionRow(props: {
+  line: OptionLine;
+  theme: WindowTheme;
+  active: boolean;
+  click: Click;
+  /** A press anywhere on the line. */
+  press: (event: MouseEvent) => void;
+  /** A click on the value or on › / ▸. */
+  use: () => void;
+  /** The first line of a list has no gap above its group heading. */
+  first?: boolean;
+  valueWidth?: number;
+  /** The input that replaces the value while the line takes typing. */
+  input?: () => JSX.Element;
+}): JSX.Element {
+  const line = props.line;
+  const fg = () => (props.active ? props.theme.text.action.primary.focused : props.theme.text.base);
+  const arrow = () => (props.active ? fg() : props.theme.text.action.primary.selected);
+  const note = () => line.note?.() ?? "";
+  return (
+    <>
+      <Show when={line.group}>
+        <box paddingTop={props.first ? 0 : 1}>
+          <Cell fg={props.theme.text.action.primary.selected} bold>{` ${line.group}`}</Cell>
+        </box>
+      </Show>
+      <box
+        id={boxId(line.id)}
+        flexDirection="row"
+        backgroundColor={props.active ? props.theme.background.action.primary.focused : TRANSPARENT}
+        onMouseDown={props.press}
+      >
+        <Cell fg={fg()}>{`   ${fit(line.title, 26)} `}</Cell>
+        <Cell fg={arrow()} onUp={props.click(() => line.cycle?.(-1))}>
+          {line.cycle ? "‹ " : "  "}
+        </Cell>
+        <Show
+          when={props.input}
+          fallback={
+            <Cell fg={fg()} onUp={props.click(props.use)}>
+              {fit(line.value(), props.valueWidth ?? 24)}
+            </Cell>
+          }
+        >
+          {props.input?.()}
+        </Show>
+        <Cell fg={arrow()} onUp={props.click(props.use)}>
+          {line.run ? " ▸" : line.cycle ? " ›" : "  "}
+        </Cell>
+        <Show when={line.swatches}>
+          <Cell>
+            {(line.swatches?.() ?? []).map((color) => (
+              <span style={{ fg: color }}>{" ██"}</span>
+            ))}
+          </Cell>
+        </Show>
+        <Cell fg={props.active ? fg() : props.theme.text.muted} shrink>
+          {note() ? `   ${note()}` : ""}
+        </Cell>
+      </box>
+    </>
+  );
+}
+
+export type SettingsEditor = ReturnType<typeof createSettingsEditor>;
+
+export function createSettingsEditor(api: WindowHost, display: DisplayStore) {
   const [tab, setTabNow] = createSignal<SettingsTab>();
   const [selected, setSelected] = createSignal("");
   const [typing, setTyping] = createSignal<Typed & { id: string; value: string }>();
@@ -233,11 +255,14 @@ export function createSettingsEditor(api: SettingsHost, display: DisplayStore): 
   const [dragging, setDragging] = createSignal<string>();
   let draggedSincePress = false;
   let lastPress = { id: "", atMs: 0 };
+  /** The inline input while a line takes typing; its keys work only while it has the keyboard. */
+  let typingInput: Renderable | undefined;
   const treeLines = new Map<string, TreeLine>();
   const theme = () => api.theme;
   const shown = () => display.shown();
 
-  const click = (run: () => void) => () => {
+  /** `run` as a click handler that skips the click OpenCode sends right after a drag. */
+  const click: Click = (run) => () => {
     if (!draggedSincePress) run();
   };
 
@@ -249,46 +274,35 @@ export function createSettingsEditor(api: SettingsHost, display: DisplayStore): 
     return double;
   }
 
-  function editSurface(
-    surface: Surface,
-    change: (rows: DisplaySettings["surfaces"][Surface]) => DisplaySettings["surfaces"][Surface],
-  ): void {
-    display.edit((settings) => {
-      const rows = settings.surfaces[surface];
-      const next = change(rows);
-      return next === rows ? settings : setIn(settings, ["surfaces", surface], next);
-    });
+  function editSurface(surface: Surface, change: (rows: SurfaceRows) => SurfaceRows): void {
+    display.edit((settings) =>
+      setIn(settings, ["surfaces", surface], change(settings.surfaces[surface])),
+    );
   }
 
   function toggleSurface(surface: Surface): void {
-    display.edit((settings) =>
-      setIn(settings, ["surfaces", surface, "enabled"], !settings.surfaces[surface].enabled),
-    );
+    editSurface(surface, (rows) => ({ ...rows, enabled: !rows.enabled }));
   }
 
   function fieldLine(field: Field): OptionLine {
     const role = field.color ? (field.path.slice("colors.".length) as ColorRole) : undefined;
+    const typed = {
+      placeholder: "#rrggbb",
+      hint: "Type a color like #89b4fa, then enter · enter with nothing typed = the theme's color · esc stop",
+      apply: (text: string) => display.edit((settings) => typedColor(settings, field, text)),
+    };
     return {
       id: field.path,
-      ...(field.group ? { group: field.group } : {}),
+      group: field.group,
       title: field.title,
       value: () => field.show(valueAt(shown(), field.path)),
       cycle: (delta) => display.edit((settings) => cycleField(settings, field, delta)),
-      ...(field.color
-        ? {
-            typed: {
-              placeholder: "#rrggbb",
-              hint: "Type a color like #89b4fa, then enter · enter with nothing typed = the theme's color · esc stop",
-              apply: (text: string) =>
-                display.edit((settings) => typedColor(settings, field, text)),
-            },
-          }
-        : {}),
+      typed: role ? typed : undefined,
       note: () =>
         field.preset && presetChoice(shown(), field.preset) !== undefined
           ? "from the preset"
           : (field.note ?? ""),
-      ...(role ? { swatches: () => [roleColor(theme(), shown(), role, 60)] } : {}),
+      swatches: role ? () => [roleColor(theme(), shown(), role, 60)] : undefined,
     };
   }
 
@@ -339,21 +353,15 @@ export function createSettingsEditor(api: SettingsHost, display: DisplayStore): 
   }
 
   function Button(props: { label: string; primary?: boolean; run: () => void }): JSX.Element {
+    const { text, background } = theme();
     return (
       <box
         paddingLeft={2}
         paddingRight={2}
-        backgroundColor={
-          props.primary ? theme().background.action.primary.focused : theme().background.raised.high
-        }
+        backgroundColor={props.primary ? background.action.primary.focused : background.raised.high}
         onMouseUp={click(props.run)}
       >
-        <text
-          fg={props.primary ? theme().text.action.primary.focused : theme().text.base}
-          selectable={false}
-        >
-          {props.label}
-        </text>
+        <Cell fg={props.primary ? text.action.primary.focused : text.base}>{props.label}</Cell>
       </box>
     );
   }
@@ -361,48 +369,37 @@ export function createSettingsEditor(api: SettingsHost, display: DisplayStore): 
   function previewToast(host: SurfaceHost, sessionID: string): void {
     const settings = shown();
     const snapshot = host.quota.snapshot(sessionID);
-    if (!snapshot || !settings.surfaces.toast.enabled) return;
-    const message = toastText(snapshot, settings, Date.now());
+    const message =
+      snapshot && settings.surfaces.toast.enabled && toastText(snapshot, settings, Date.now());
     if (!message) return;
-    api.ui.toast.show({
-      variant: "info",
-      title: TOAST_TITLE,
-      message,
-      duration: settings.toast.seconds * 1000,
-    });
+    const duration = settings.toast.seconds * 1000;
+    api.ui.toast.show({ variant: "info", title: TOAST_TITLE, message, duration });
   }
 
+  /** The surface switch and the note above a Settings tab's body. */
   function Header(props: { tab: SettingsTab; refocus: () => void }): JSX.Element {
     const info = () => SETTINGS_TABS.find((item) => item.tab === props.tab) ?? SETTINGS_TABS[0];
     const surface = () => (isSurfaceTab(props.tab) ? props.tab : undefined);
-    const surfaceOn = (): boolean => {
+    const surfaceOn = () => {
       const current = surface();
       return current === undefined || shown().surfaces[current].enabled;
     };
     const sidebarHidden = () => info().watchesSidebar && sidebars() === 0;
-    const switchActive = () => selected() === SWITCH_ID;
+    const active = () => selected() === SWITCH_ID;
     return (
       <>
         <Show when={surface()}>
           {(current: () => Surface) => (
             <box
-              flexDirection="row"
               marginTop={1}
               flexShrink={0}
-              backgroundColor={
-                switchActive() ? theme().background.action.primary.focused : TRANSPARENT
-              }
+              backgroundColor={active() ? theme().background.action.primary.focused : TRANSPARENT}
               onMouseDown={() => setSelected(SWITCH_ID)}
               onMouseUp={click(() => toggleSurface(current()))}
             >
-              <text
-                fg={switchActive() ? theme().text.action.primary.focused : theme().text.base}
-                attributes={TextAttributes.BOLD}
-                wrapMode="none"
-                selectable={false}
-              >
+              <Cell fg={active() ? theme().text.action.primary.focused : theme().text.base} bold>
                 {`   ${surfaceOn() ? "[x]" : "[ ]"} ${info().switchTitle}`}
-              </text>
+              </Cell>
             </box>
           )}
         </Show>
@@ -440,6 +437,7 @@ export function createSettingsEditor(api: SettingsHost, display: DisplayStore): 
     );
   }
 
+  /** A Settings tab's lines: its options, then the surface's providers (and rows) as a tree. */
   function Body(props: {
     tab: SettingsTab;
     host: SurfaceHost;
@@ -466,27 +464,23 @@ export function createSettingsEditor(api: SettingsHost, display: DisplayStore): 
         ...(withRows() ? rowIds.map((id) => treeLine(id, provider.providerId, true)) : []),
       ]),
     );
-    const selectable = () => [
-      ...(surface() ? [SWITCH_ID] : []),
-      ...options().map((line) => line.id),
-      ...lines().map((line) => lineKey(line.id)),
-    ];
     const selectedOption = () => options().find((line) => line.id === selected());
     const selectedLine = () => lines().find((line) => lineKey(line.id) === selected());
 
     function treeLine(id: string, providerId: string, row: boolean): TreeLine {
       const key = `${row ? "row" : "provider"}:${id}`;
-      let line = treeLines.get(key);
-      if (!line) {
-        line = { id, providerId, row };
-        treeLines.set(key, line);
-      }
+      const line = treeLines.get(key) ?? { id, providerId, row };
+      treeLines.set(key, line);
       return line;
     }
 
     /** ↑↓ select the next line; past the first or last one they scroll. */
     function select(delta: number): void {
-      const ids = selectable();
+      const ids = [
+        ...(surface() ? [SWITCH_ID] : []),
+        ...options().map((line) => line.id),
+        ...lines().map((line) => lineKey(line.id)),
+      ];
       const next = ids.indexOf(selected()) + delta;
       if (next < 0 || next >= ids.length) props.scroll()?.scrollBy(delta);
       else setSelected(ids[next] as string);
@@ -495,12 +489,13 @@ export function createSettingsEditor(api: SettingsHost, display: DisplayStore): 
     function toggleHidden(id: string): void {
       const current = surface();
       if (!current) return;
-      editSurface(current, (rows) => ({
-        ...rows,
-        hidden: rows.hidden.includes(id)
-          ? rows.hidden.filter((item) => item !== id)
-          : [...rows.hidden, id],
-      }));
+      editSurface(current, (rows) => {
+        const hidden = rows.hidden.includes(id);
+        return {
+          ...rows,
+          hidden: hidden ? rows.hidden.filter((item) => item !== id) : [...rows.hidden, id],
+        };
+      });
     }
 
     function cycleWindow(providerId: string, delta: number): void {
@@ -559,27 +554,25 @@ export function createSettingsEditor(api: SettingsHost, display: DisplayStore): 
     /** Space or enter: flip a switch, run a button, next value, or show/hide a tree line. */
     function activate(): void {
       const current = surface();
-      if (selected() === SWITCH_ID && current) {
-        toggleSurface(current);
-        return;
-      }
       const option = selectedOption();
-      if (option?.run) option.run();
-      else if (option?.cycle) option.cycle(1);
-      else if (option) startTyping();
-      else {
-        const line = selectedLine();
-        if (line) toggleHidden(line.id);
-      }
+      const line = selectedLine();
+      if (selected() === SWITCH_ID && current) toggleSurface(current);
+      else if (option) useOption(option);
+      else if (line) toggleHidden(line.id);
+    }
+
+    /** A click on an option's value: run its button, its next value, or start typing. */
+    function useOption(option: OptionLine): void {
+      if (option.run) option.run();
+      else if (option.cycle) option.cycle(1);
+      else startTyping();
     }
 
     function sideways(delta: number): void {
       const option = selectedOption();
+      const line = selectedLine();
       if (option) option.cycle?.(delta);
-      else {
-        const line = selectedLine();
-        if (line && !line.row) cycleWindow(line.providerId, delta);
-      }
+      else if (line && !line.row) cycleWindow(line.providerId, delta);
     }
 
     /** A provider moves with all its rows; a row moves only among its own provider's rows. */
@@ -598,24 +591,13 @@ export function createSettingsEditor(api: SettingsHost, display: DisplayStore): 
       editSurface(current, (rows) => draggedTo(tree(), rows, id, pointer, withRows()));
     }
 
-    function endDrag(): void {
-      dragId = undefined;
-      setDragging(undefined);
-    }
-
     // On the Toast tab the real toast shows again after every change of what it shows.
     createEffect(
       on(
         () => {
-          const settings = shown();
+          const { surfaces, labels, toast, runsOut } = shown();
           return (
-            props.tab === "toast" &&
-            JSON.stringify([
-              settings.surfaces.toast,
-              settings.labels,
-              settings.toast,
-              settings.runsOut.toast,
-            ])
+            props.tab === "toast" && JSON.stringify([surfaces.toast, labels, toast, runsOut.toast])
           );
         },
         (key) => {
@@ -657,6 +639,7 @@ export function createSettingsEditor(api: SettingsHost, display: DisplayStore): 
     }));
     // While typing, the input has the keyboard: Esc only stops typing, Enter keeps the text.
     api.keymap.layer(() => ({
+      target: () => typingInput,
       priority: 20,
       enabled: () => typing() !== undefined,
       commands: [
@@ -668,6 +651,9 @@ export function createSettingsEditor(api: SettingsHost, display: DisplayStore): 
     function TypingInput(inputProps: { width: number; placeholder: string }): JSX.Element {
       return (
         <input
+          ref={(element: Renderable) => {
+            typingInput = element;
+          }}
           width={inputProps.width}
           flexShrink={0}
           value=""
@@ -682,89 +668,6 @@ export function createSettingsEditor(api: SettingsHost, display: DisplayStore): 
       );
     }
 
-    function OptionRow(rowProps: { line: OptionLine; first: boolean }): JSX.Element {
-      const line = rowProps.line;
-      const active = () => selected() === line.id;
-      const fg = () => (active() ? theme().text.action.primary.focused : theme().text.base);
-      const arrow = () => (active() ? fg() : theme().text.action.primary.selected);
-      const useValue = () => (line.run ? line.run() : line.cycle ? line.cycle(1) : startTyping());
-      return (
-        <>
-          <Show when={line.group}>
-            <box paddingTop={rowProps.first ? 0 : 1}>
-              <text
-                fg={theme().text.action.primary.selected}
-                attributes={TextAttributes.BOLD}
-                wrapMode="none"
-                flexShrink={0}
-                selectable={false}
-              >
-                {` ${line.group}`}
-              </text>
-            </box>
-          </Show>
-          <box
-            id={boxId(line.id)}
-            flexDirection="row"
-            backgroundColor={active() ? theme().background.action.primary.focused : TRANSPARENT}
-            onMouseDown={(event: MouseEvent) => {
-              if (event.button !== 0 || typing()) return;
-              setSelected(line.id);
-              if (line.typed && isDoubleClick(line.id)) startTyping();
-            }}
-          >
-            <text fg={fg()} wrapMode="none" flexShrink={0} selectable={false}>
-              {`   ${fit(line.title, 26)} `}
-            </text>
-            <text
-              fg={arrow()}
-              wrapMode="none"
-              flexShrink={0}
-              selectable={false}
-              onMouseUp={click(() => line.cycle?.(-1))}
-            >
-              {line.cycle ? "‹ " : "  "}
-            </text>
-            <Show
-              when={typing()?.id === line.id}
-              fallback={
-                <text
-                  fg={fg()}
-                  wrapMode="none"
-                  flexShrink={0}
-                  selectable={false}
-                  onMouseUp={click(useValue)}
-                >
-                  {fit(line.value(), 24)}
-                </text>
-              }
-            >
-              <TypingInput width={24} placeholder={line.typed?.placeholder ?? ""} />
-            </Show>
-            <text
-              fg={arrow()}
-              wrapMode="none"
-              flexShrink={0}
-              selectable={false}
-              onMouseUp={click(() => line.cycle?.(1))}
-            >
-              {line.run ? " ▸" : line.cycle ? " ›" : "  "}
-            </text>
-            <Show when={line.swatches}>
-              <text wrapMode="none" flexShrink={0} selectable={false}>
-                {(line.swatches?.() ?? []).map((color) => (
-                  <span style={{ fg: color }}>{" ██"}</span>
-                ))}
-              </text>
-            </Show>
-            <text fg={active() ? fg() : theme().text.muted} wrapMode="none" selectable={false}>
-              {line.note() ? `   ${line.note()}` : ""}
-            </text>
-          </box>
-        </>
-      );
-    }
-
     function TreeRow(rowProps: { line: TreeLine }): JSX.Element {
       const line = rowProps.line;
       const key = lineKey(line.id);
@@ -772,20 +675,20 @@ export function createSettingsEditor(api: SettingsHost, display: DisplayStore): 
       const rows = () => shown().surfaces[surface() as Surface];
       const active = () => selected() === key;
       // Dragging a provider carries its rows, so they light up with it.
-      const isDragged = () =>
-        dragging() === line.id || (line.row && dragging() === line.providerId);
+      const lit = () =>
+        active() || dragging() === line.id || (line.row && dragging() === line.providerId);
       const hidden = () => rows().hidden.includes(line.id);
+      const { text } = theme();
       const fg = () =>
-        active() || isDragged()
-          ? theme().text.action.primary.focused
+        lit()
+          ? text.action.primary.focused
           : !rows().enabled || hidden() || (line.row && rows().hidden.includes(line.providerId))
-            ? theme().text.muted
-            : theme().text.base;
+            ? text.muted
+            : text.base;
       /** Tree lines show which provider a row belongs to: ├ for a middle row, └ for the last. */
       const branch = () => {
-        if (!line.row) return "";
         const rowIds = entry()?.rowIds ?? [];
-        return rowIds[rowIds.length - 1] === line.id ? "  └ " : "  ├ ";
+        return !line.row ? "" : rowIds[rowIds.length - 1] === line.id ? "  └ " : "  ├ ";
       };
       const own = () => (line.row ? ownRow(line) : undefined);
       const label = () =>
@@ -800,13 +703,11 @@ export function createSettingsEditor(api: SettingsHost, display: DisplayStore): 
       const detail = () => {
         const provider = entry()?.provider;
         const row = own();
-        if (row) {
-          if (shown().labels[line.id] !== undefined) return `was "${row.label}"`;
-          if (row.prominence === "supplementary" && words().detail !== "detailed") {
-            return "only with all rows";
-          }
-          return summary(row);
+        if (row && shown().labels[line.id] !== undefined) return `was "${row.label}"`;
+        if (row?.prominence === "supplementary" && words().detail !== "detailed") {
+          return "only with all rows";
         }
+        if (row) return summary(row);
         if (!provider) return "";
         if (provider.error && provider.rows.length === 0) {
           return describeError(provider.error, provider.label, Date.now());
@@ -828,9 +729,7 @@ export function createSettingsEditor(api: SettingsHost, display: DisplayStore): 
         <box
           id={boxId(key)}
           flexDirection="row"
-          backgroundColor={
-            active() || isDragged() ? theme().background.action.primary.focused : TRANSPARENT
-          }
+          backgroundColor={lit() ? theme().background.action.primary.focused : TRANSPARENT}
           onMouseDown={(event: MouseEvent) => {
             if (event.button !== 0 || typing()) return;
             setSelected(key);
@@ -838,71 +737,38 @@ export function createSettingsEditor(api: SettingsHost, display: DisplayStore): 
             if (line.row && isDoubleClick(key)) startTyping();
           }}
         >
-          <text fg={theme().text.muted} wrapMode="none" flexShrink={0} selectable={false}>
-            {` ${branch()}`}
-          </text>
-          <text
-            fg={isDragged() ? fg() : theme().text.action.primary.selected}
-            wrapMode="none"
-            flexShrink={0}
-            selectable={false}
-          >
+          <Cell fg={text.muted}>{` ${branch()}`}</Cell>
+          <Cell fg={lit() ? fg() : text.action.primary.selected}>
             {api.renderer.useMouse === false ? "" : "⠿ "}
-          </text>
-          <text
-            fg={fg()}
-            wrapMode="none"
-            flexShrink={0}
-            selectable={false}
-            onMouseUp={click(() => toggleHidden(line.id))}
-          >
+          </Cell>
+          <Cell fg={fg()} onUp={click(() => toggleHidden(line.id))}>
             {hidden() ? "[ ] " : "[x] "}
-          </text>
+          </Cell>
           <Show
             when={typing()?.id === key}
             fallback={
-              <text
-                fg={fg()}
-                attributes={line.row ? TextAttributes.NONE : TextAttributes.BOLD}
-                wrapMode="none"
-                flexShrink={0}
-                selectable={false}
-              >
+              <Cell fg={fg()} bold={!line.row}>
                 {fit(label(), labelWidth)}
-              </text>
+              </Cell>
             }
           >
             <TypingInput width={labelWidth} placeholder={label()} />
           </Show>
-          <text flexShrink={0} selectable={false}>
-            {" "}
-          </text>
-          {/* One-line-per-provider tabs keep this column, so the details line up. */}
+          {/* One-line-per-provider tabs keep the window column, so the details line up. */}
           <Show
             when={choices().length > 0}
-            fallback={
-              <text flexShrink={0} selectable={false}>
-                {withRows() ? "" : " ".repeat(16)}
-              </text>
-            }
+            fallback={<Cell>{withRows() ? " " : " ".repeat(17)}</Cell>}
           >
-            <text
-              fg={active() ? fg() : theme().text.action.primary.selected}
-              wrapMode="none"
-              flexShrink={0}
-              selectable={false}
-              onMouseUp={click(() => cycleWindow(line.providerId, 1))}
+            <Cell
+              fg={active() ? fg() : text.action.primary.selected}
+              onUp={click(() => cycleWindow(line.providerId, 1))}
             >
-              {`‹ ${fit(windowTitle(shown().window[line.providerId] ?? "lowest"), 11)} › `}
-            </text>
+              {` ‹ ${fit(windowTitle(shown().window[line.providerId] ?? "lowest"), 11)} › `}
+            </Cell>
           </Show>
-          <text
-            fg={active() || isDragged() ? fg() : theme().text.muted}
-            wrapMode="none"
-            selectable={false}
-          >
+          <Cell fg={lit() ? fg() : text.muted} shrink>
             {fit(detail(), 24)}
-          </text>
+          </Cell>
         </box>
       );
     }
@@ -911,13 +777,28 @@ export function createSettingsEditor(api: SettingsHost, display: DisplayStore): 
       <box flexDirection="column">
         <For each={options()}>
           {(line: OptionLine, index: () => number) => (
-            <OptionRow line={line} first={index() === 0} />
+            <OptionRow
+              line={line}
+              theme={theme()}
+              active={selected() === line.id}
+              first={index() === 0}
+              click={click}
+              press={(event) => {
+                if (event.button !== 0 || typing()) return;
+                setSelected(line.id);
+                if (line.typed && isDoubleClick(line.id)) startTyping();
+              }}
+              use={() => useOption(line)}
+              input={
+                typing()?.id === line.id
+                  ? () => <TypingInput width={24} placeholder={line.typed?.placeholder ?? ""} />
+                  : undefined
+              }
+            />
           )}
         </For>
         <Show when={surface() && !snapshot()}>
-          <text fg={theme().text.muted} selectable={false}>
-            {"   Loading quota…"}
-          </text>
+          <Cell fg={theme().text.muted}>{"   Loading quota…"}</Cell>
         </Show>
         <Show when={options().length > 0 && lines().length > 0}>
           <box height={1} />
@@ -928,7 +809,7 @@ export function createSettingsEditor(api: SettingsHost, display: DisplayStore): 
           }}
           flexDirection="column"
           onMouseDrag={onDrag}
-          onMouseDragEnd={endDrag}
+          onMouseDragEnd={() => setDragging(undefined)}
           onMouseUp={() => {
             dragId = undefined;
           }}
@@ -939,6 +820,7 @@ export function createSettingsEditor(api: SettingsHost, display: DisplayStore): 
     );
   }
 
+  /** The bottom bar: Close, or Save and Discard, or the "Keep your changes?" question. */
   function Buttons(props: {
     tab: string;
     host: SurfaceHost;
@@ -947,16 +829,13 @@ export function createSettingsEditor(api: SettingsHost, display: DisplayStore): 
     close: () => void;
   }): JSX.Element {
     const settingsTab = () => (isSettingsTab(props.tab) ? props.tab : undefined);
+    const warning = () => theme().text.feedback.warning.base;
     async function save(): Promise<void> {
       try {
         await display.save();
       } catch (error) {
-        api.ui.toast.show({
-          variant: "error",
-          title: "Quota settings not saved",
-          message: error instanceof Error ? error.message : String(error),
-          duration: 6_000,
-        });
+        const message = error instanceof Error ? error.message : String(error);
+        api.ui.toast.show({ variant: "error", title: "Quota settings not saved", message });
         return;
       }
       setConfirming(false);
@@ -968,12 +847,12 @@ export function createSettingsEditor(api: SettingsHost, display: DisplayStore): 
         duration: 4_000,
       });
     }
+    /** Drops the changes; from the "Keep your changes?" question it also closes the window. */
     const discard = () => {
       display.discard();
-      if (confirming()) {
-        setConfirming(false);
-        props.close();
-      }
+      if (!confirming()) return;
+      setConfirming(false);
+      props.close();
     };
 
     api.keymap.layer(() => ({
@@ -998,13 +877,9 @@ export function createSettingsEditor(api: SettingsHost, display: DisplayStore): 
         when={!confirming()}
         fallback={
           <>
-            <text
-              fg={theme().text.feedback.warning.base}
-              attributes={TextAttributes.BOLD}
-              selectable={false}
-            >
+            <Cell fg={warning()} bold>
               Keep your changes?
-            </text>
+            </Cell>
             <Button label="Save" primary run={() => void save()} />
             <Button label="Discard" run={discard} />
             <Button label="Keep editing" run={() => setConfirming(false)} />
@@ -1026,47 +901,58 @@ export function createSettingsEditor(api: SettingsHost, display: DisplayStore): 
         <Show when={settingsTab() === "toast" && shown().surfaces.toast.enabled}>
           <Button label="Show toast" run={() => previewToast(props.host, props.sessionID)} />
         </Show>
-        <text fg={theme().text.feedback.warning.base} selectable={false}>
-          {display.dirty() ? " unsaved changes" : ""}
-        </text>
+        <Cell fg={warning()}>{display.dirty() ? " unsaved changes" : ""}</Cell>
       </Show>
     );
   }
 
   return {
-    marked(surface) {
+    /** The tree line selected on `surface`'s tab, which that surface marks. */
+    marked(surface: Surface): string | undefined {
       const id = selected();
       return tab() === surface && id.startsWith("line:") ? id.slice("line:".length) : undefined;
     },
-    panelOpen() {
+    /** Sidebar shows the panel expanded and Collapsed collapsed; undefined = as the user left it. */
+    panelOpen(): boolean | undefined {
       if (tab() === "sidebar") return true;
       return tab() === "collapsed" ? false : undefined;
     },
-    sidebarShown() {
+    /** A sidebar panel mounts; the returned function unmounts it. */
+    sidebarShown(): () => void {
       setSidebars((count) => count + 1);
       return () => setSidebars((count) => count - 1);
     },
-    setTab(next) {
+    /** A line takes typing, so the window's own keys rest. */
+    typing: () => typing() !== undefined,
+    /**
+     * The window shows `next`; undefined when it closed, which drops the changes. Any tab
+     * change stops typing, so the window gets its keys back.
+     */
+    setTab(next: string | undefined): void {
+      setTyping(undefined);
+      typingInput = undefined;
       if (next === undefined) {
         display.discard();
         setConfirming(false);
-        setTyping(undefined);
       }
       const settingsTab = isSettingsTab(next) ? next : undefined;
       if (settingsTab !== tab()) setSelected(firstLine(settingsTab));
       setTabNow(settingsTab);
     },
-    askBeforeClose() {
-      if (!display.dirty() || confirming()) return false;
+    /** Esc or Close: true while there are unsaved changes; the bottom bar then asks about them. */
+    askBeforeClose(): boolean {
+      if (!display.dirty()) return false;
       setConfirming(true);
       return true;
     },
-    pressed() {
+    /** A press anywhere in the window: clicks count again after a drag, and typing goes on. */
+    pressed(): void {
       draggedSincePress = false;
+      if (typing()) typingInput?.focus();
     },
     click,
-    typing: () => typing() !== undefined,
-    hint(windowTab, hasKeyboard) {
+    /** The keyboard hint, or undefined for the window's own. */
+    hint(windowTab: string, hasKeyboard: boolean): string | undefined {
       const current = typing();
       if (current) return current.hint;
       if (!hasKeyboard) return undefined;

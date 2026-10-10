@@ -7,6 +7,7 @@ import {
   defaultDisplaySettings,
   FIELDS,
   type Field,
+  NEWER_SETTINGS,
   presetChoice,
   readDisplaySettings,
   renameRow,
@@ -84,14 +85,18 @@ describe("display settings in plugin storage", () => {
     expect(pick(readDisplaySettings(stored(settings)))).toEqual(expected);
   });
 
-  /** A plugin store like OpenCode's: one live value, changed only through `update`. */
+  /**
+   * A plugin store like OpenCode's: one live value that every TUI shares, changed only through
+   * `update`, which waits for `gate` when set.
+   */
   function fakeStorage(initial?: unknown) {
-    const live: { value?: StoredDisplay } = {};
+    const live: { value?: StoredDisplay; gate?: Promise<void> } = {};
     const storage = {
       store: <Value extends object>(key: string, options: { readonly initial: Value }) => {
         expect(key).toBe("settings");
-        live.value = structuredClone((initial ?? options.initial) as StoredDisplay);
+        live.value ??= structuredClone((initial ?? options.initial) as StoredDisplay);
         const update = async (mutation: (draft: Value) => void) => {
+          await live.gate;
           mutation(live.value as unknown as Value);
         };
         return [live.value as unknown as Value, update] as const;
@@ -126,9 +131,53 @@ describe("display settings in plugin storage", () => {
     expect(display.dirty()).toBe(false);
   });
 
-  it("keeps what still fits from settings of another version, and saves the current one", async () => {
+  it("saves only this window's changes, so another TUI's saved settings stay", async () => {
+    const { storage, live } = fakeStorage();
+    const first = createDisplayStore(storage);
+    const second = createDisplayStore(storage);
+    first.edit((settings) => setIn(settings, ["layout", "barWidth"], 12));
+    second.edit((settings) => setIn(settings, ["statusLine", "home"], true));
+    await second.save();
+    expect([first.shown().statusLine.home, first.shown().layout.barWidth]).toEqual([true, 12]);
+    await first.save();
+    const saved = live.value?.settings;
+    expect([saved?.statusLine.home, saved?.layout.barWidth, first.dirty()]).toEqual([
+      true,
+      12,
+      false,
+    ]);
+  });
+
+  it("keeps a change made while Save writes, unsaved", async () => {
+    const { storage, live } = fakeStorage();
+    const display = createDisplayStore(storage);
+    let write = () => {};
+    live.gate = new Promise((resolve) => {
+      write = resolve;
+    });
+    display.edit((settings) => setIn(settings, ["layout", "barWidth"], 12));
+    const saving = display.save();
+    display.edit((settings) => setIn(settings, ["layout", "bar"], "dots"));
+    write();
+    await saving;
+    expect([live.value?.settings.layout.barWidth, live.value?.settings.layout.bar]).toEqual([
+      12,
+      "blocks",
+    ]);
+    expect([display.shown().layout.bar, display.dirty()]).toEqual(["dots", true]);
+  });
+
+  it("stays live after an edit that changes nothing", () => {
+    const { storage, live } = fakeStorage();
+    const display = createDisplayStore(storage);
+    display.edit((settings) => setIn(settings, ["layout", "barWidth"], 8));
+    live.value!.settings.statusLine.home = true;
+    expect([display.shown().statusLine.home, display.dirty()]).toEqual([true, false]);
+  });
+
+  it("keeps what still fits from settings of an older version, and saves the current one", async () => {
     const { storage, live } = fakeStorage({
-      version: SETTINGS_VERSION + 1,
+      version: SETTINGS_VERSION - 1,
       settings: { layout: { barWidth: 10, bar: "zigzag" }, runsOut: { toast: true }, extra: 1 },
     });
     const display = createDisplayStore(storage);
@@ -145,6 +194,19 @@ describe("display settings in plugin storage", () => {
         },
       }),
     });
+  });
+
+  it("refuses to save over settings of a newer version and leaves them as they are", async () => {
+    const newer = {
+      version: SETTINGS_VERSION + 1,
+      settings: { layout: { barWidth: 10, bar: "zigzag" }, runsOut: { toast: true }, extra: 1 },
+    };
+    const { storage, live } = fakeStorage(newer);
+    const display = createDisplayStore(storage);
+    expect([display.saved().layout.barWidth, display.saved().runsOut.toast]).toEqual([10, true]);
+    display.edit((settings) => setIn(settings, ["statusLine", "home"], true));
+    await expect(display.save()).rejects.toThrow(NEWER_SETTINGS);
+    expect([live.value, display.dirty()]).toEqual([newer, true]);
   });
 });
 
@@ -166,13 +228,18 @@ describe("the Settings tabs' field table", () => {
     { path: "colors.reset", delta: 1, expected: "text" },
     { path: "colors.reset", delta: -1, expected: "bar" },
     { path: "colors.good", delta: -1, expected: "blue" },
-  ])("‹ › on $path by $delta gives $expected", ({ path, delta, expected }) => {
-    const next = cycleField(defaultDisplaySettings(), field(path), delta);
+    // Warning stays at or above low, so each goes round through the levels that keep it so.
+    { path: "thresholds.warningBelow", delta: -1, expected: 60, from: 20 },
+    { path: "thresholds.lowBelow", delta: 1, expected: 10, from: 20 },
+  ])("‹ › on $path by $delta gives $expected", ({ path, delta, expected, from }) => {
+    const start =
+      from === undefined
+        ? defaultDisplaySettings()
+        : setIn(defaultDisplaySettings(), ["thresholds"], { warningBelow: from, lowBelow: from });
+    const next = cycleField(start, field(path), delta);
     expect(valueAt(next, path)).toBe(expected);
     // The rest stays as it was.
-    expect(setIn(next, path.split("."), valueAt(defaultDisplaySettings(), path))).toEqual(
-      defaultDisplaySettings(),
-    );
+    expect(setIn(next, path.split("."), valueAt(start, path))).toEqual(start);
   });
 
   it.each([

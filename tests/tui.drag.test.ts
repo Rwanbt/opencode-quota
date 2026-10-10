@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ProviderSnapshot, QuotaRow, QuotaSnapshot } from "../src/core/types.js";
 import { defaultDisplaySettings } from "../src/tui/display.js";
-import { draggedTo, dropIndex, movedBy, surfaceTree, treeLineIds } from "../src/tui/window/drag.js";
+import { draggedTo, dropIndex, movedBy, surfaceTree } from "../src/tui/window/drag.js";
 import type { SurfaceRows } from "../src/view/select.js";
 
 function provider(providerId: string, rowKeys: string[]): ProviderSnapshot {
@@ -29,7 +29,10 @@ const ROWS: SurfaceRows = defaultDisplaySettings().surfaces.sidebar;
 
 /** The tree's lines after `change`, top to bottom. */
 function linesAfter(change: (rows: SurfaceRows) => SurfaceRows, withRows = true): string[] {
-  return treeLineIds(surfaceTree(SNAPSHOT, change(ROWS)), withRows);
+  return surfaceTree(SNAPSHOT, change(ROWS)).flatMap(({ provider, rowIds }) => [
+    provider.providerId,
+    ...(withRows ? rowIds : []),
+  ]);
 }
 
 describe("the Settings tree's drag math", () => {

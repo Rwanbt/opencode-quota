@@ -4,8 +4,9 @@
  * OpenCode saves atomically, keeps across restarts and syncs to every open TUI. The words
  * (percent style, reset style, …) are the server's and come with the snapshot.
  *
- * The quota window's Settings tabs edit a draft: every setting line comes from `FIELDS`, and
- * the surfaces draw the draft until Save stores it or Discard drops it.
+ * `FIELDS` is the one table of the plain settings: each line of the quota window's Settings
+ * tabs, with its default and the values a stored setting may hold. While you edit, the surfaces
+ * draw the saved settings with your changes on top, until Save stores them or Discard drops them.
  */
 import { createSignal } from "solid-js";
 import { isQuotaWindow } from "../core/windows.js";
@@ -15,13 +16,15 @@ import type { ColorRole, Layout, StatusLevel } from "../view/text.js";
 
 /**
  * Bump when the stored shape changes, and teach `readDisplaySettings` the old one. Settings of
- * another version are never reset: every value that still fits is kept.
+ * an older version keep every value that still fits; Save refuses settings of a newer one.
  */
 export const SETTINGS_VERSION = 1;
 
 /** Named colors follow the user's OpenCode theme; "#rrggbb" stays fixed; "bar" = the row's level color. */
-export type ColorName = "text" | "muted" | "accent" | "green" | "yellow" | "red" | "blue";
+export const COLOR_NAMES = ["text", "muted", "accent", "green", "yellow", "red", "blue"] as const;
+export type ColorName = (typeof COLOR_NAMES)[number];
 export type ColorChoice = ColorName | "bar" | `#${string}`;
+type StatusDetail = StatusLevel | "auto" | "one";
 
 export type DisplaySettings = RowSettings & {
   /** Only the colors you changed; every other color follows the OpenCode theme. */
@@ -34,12 +37,7 @@ export type DisplaySettings = RowSettings & {
    * detail "one" = v5's prompt bar: only the first provider, with a big bar. home = also at
    * the bottom of Home.
    */
-  statusLine: {
-    width: number;
-    detail: StatusLevel | "auto" | "one";
-    autoScrollSeconds: number;
-    home: boolean;
-  };
+  statusLine: { width: number; detail: StatusDetail; autoScrollSeconds: number; home: boolean };
   sidebar: { sessionTokens: boolean };
   /**
    * Per surface: "runs out in 2h" where a limit, used at its pace so far, runs out before its
@@ -60,84 +58,35 @@ export type DisplaySettings = RowSettings & {
 
 export type StoredDisplay = { version: number; settings: DisplaySettings };
 
+/** Every colored thing: its Colors line (and group) and the theme color it gets by default. */
+const COLOR_LINES: ReadonlyArray<{
+  role: ColorRole;
+  title: string;
+  theme: ColorName | "bar";
+  group?: string;
+}> = [
+  { role: "good", title: "Plenty left", theme: "green", group: "Bars" },
+  { role: "warning", title: "Getting low", theme: "yellow" },
+  { role: "low", title: "Almost out", theme: "red" },
+  { role: "empty", title: "Used part of a bar", theme: "muted" },
+  { role: "title", title: "Panel title", theme: "text", group: "Names" },
+  { role: "provider", title: "Provider names", theme: "text" },
+  { role: "account", title: "Accounts (Pro, …)", theme: "muted" },
+  { role: "label", title: "Row labels", theme: "text" },
+  { role: "percent", title: "Percent numbers", theme: "bar", group: "Numbers and times" },
+  { role: "reset", title: "Reset times", theme: "muted" },
+  { role: "value", title: "Balances, other text", theme: "muted" },
+  { role: "error", title: "Errors", theme: "red" },
+  { role: "statusName", title: "Provider names", theme: "muted", group: "Status line" },
+  { role: "separator", title: "Separators", theme: "muted" },
+  { role: "arrows", title: "‹ +N › arrows", theme: "accent" },
+];
+
 /** The theme color each role gets unless you change it. */
-export const THEME_COLORS: Record<ColorRole, ColorName | "bar"> = {
-  good: "green",
-  warning: "yellow",
-  low: "red",
-  empty: "muted",
-  title: "text",
-  provider: "text",
-  account: "muted",
-  label: "text",
-  percent: "bar",
-  reset: "muted",
-  value: "muted",
-  error: "red",
-  statusName: "muted",
-  separator: "muted",
-  arrows: "accent",
-};
-
-export const COLOR_NAMES: readonly ColorName[] = [
-  "text",
-  "muted",
-  "accent",
-  "green",
-  "yellow",
-  "red",
-  "blue",
-];
-const BAR_SHAPES: readonly BarShape[] = ["blocks", "shades", "line", "squares", "dots", "none"];
-const STATUS_DETAILS: readonly DisplaySettings["statusLine"]["detail"][] = [
-  "auto",
-  "one",
-  "full",
-  "bar",
-  "reset",
-  "numbers",
-];
-
+export const THEME_COLORS = Object.fromEntries(
+  COLOR_LINES.map(({ role, theme }) => [role, theme]),
+) as Record<ColorRole, ColorName | "bar">;
 const SURFACES: readonly Surface[] = ["sidebar", "collapsed", "statusLine", "toast"];
-
-function defaultSurface(): SurfaceRows {
-  return { enabled: true, hidden: [], providerOrder: [], rowOrder: {} };
-}
-
-export function defaultDisplaySettings(): DisplaySettings {
-  return {
-    labels: {},
-    surfaces: {
-      sidebar: defaultSurface(),
-      collapsed: defaultSurface(),
-      statusLine: defaultSurface(),
-      toast: defaultSurface(),
-    },
-    window: {},
-    colors: {},
-    thresholds: { warningBelow: 50, lowBelow: 20 },
-    layout: {
-      bar: "blocks",
-      barWidth: 8,
-      indent: 1,
-      labelWidth: 8,
-      providerGap: 0,
-      separator: " · ",
-    },
-    statusLine: { width: 0, detail: "auto", autoScrollSeconds: 0, home: false },
-    sidebar: { sessionTokens: true },
-    runsOut: { sidebar: false, collapsed: false, statusLine: false, toast: false },
-    toast: {
-      afterReply: "off",
-      afterQuestion: false,
-      afterCompaction: true,
-      whenAllFail: true,
-      resetNotice: "off",
-      seconds: 9,
-      sessionTokens: true,
-    },
-  };
-}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -147,19 +96,8 @@ function isStringList(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item) => typeof item === "string");
 }
 
-/** `value` when it is a whole number in [min, max], else `fallback`. */
-function wholeNumber(value: unknown, min: number, max: number, fallback: number): number {
-  return typeof value === "number" && Number.isInteger(value) && value >= min && value <= max
-    ? value
-    : fallback;
-}
-
-function oneOf<T extends string>(value: unknown, allowed: readonly T[], fallback: T): T {
-  return allowed.includes(value as T) ? (value as T) : fallback;
-}
-
-function flag(value: unknown, fallback: boolean): boolean {
-  return typeof value === "boolean" ? value : fallback;
+function isWhole(value: unknown, min: number, max: number): boolean {
+  return typeof value === "number" && Number.isInteger(value) && value >= min && value <= max;
 }
 
 /** The string entries of a record whose values pass `check`. */
@@ -181,7 +119,7 @@ function isColorChoice(value: unknown): value is ColorChoice {
 function readSurface(value: unknown): SurfaceRows {
   const stored = isRecord(value) ? value : {};
   return {
-    enabled: flag(stored.enabled, true),
+    enabled: typeof stored.enabled === "boolean" ? stored.enabled : true,
     hidden: isStringList(stored.hidden) ? [...stored.hidden] : [],
     providerOrder: isStringList(stored.providerOrder) ? [...stored.providerOrder] : [],
     rowOrder: Object.fromEntries(
@@ -190,76 +128,72 @@ function readSurface(value: unknown): SurfaceRows {
   };
 }
 
+/** The value at a field's path, for example "layout.barWidth". */
+export function valueAt(settings: unknown, path: string): FieldValue {
+  let value = settings;
+  for (const key of path.split(".")) value = isRecord(value) ? value[key] : undefined;
+  return value as FieldValue;
+}
+
+/** Puts `value` at `keys` in `target` itself; undefined removes the key. */
+function putAt(target: object, keys: readonly string[], value: unknown): void {
+  let parent = target as Record<string, unknown>;
+  for (const key of keys.slice(0, -1)) {
+    if (!isRecord(parent[key])) parent[key] = {};
+    parent = parent[key] as Record<string, unknown>;
+  }
+  const last = keys[keys.length - 1] as string;
+  if (value === undefined) delete parent[last];
+  else parent[last] = value;
+}
+
+/**
+ * A copy of the settings with `value` at `keys` (a key may hold a dot, like a row id);
+ * undefined removes the key, which puts a color back to the theme's or a row name back.
+ */
+export function setIn(
+  settings: DisplaySettings,
+  keys: readonly string[],
+  value: unknown,
+): DisplaySettings {
+  const next = JSON.parse(JSON.stringify(settings)) as DisplaySettings;
+  putAt(next, keys, value);
+  return next;
+}
+
+export function defaultDisplaySettings(): DisplaySettings {
+  const settings = {
+    labels: {},
+    surfaces: Object.fromEntries(SURFACES.map((surface) => [surface, readSurface(undefined)])),
+    window: {},
+    colors: {},
+  };
+  for (const field of FIELDS) putAt(settings, field.path.split("."), field.initial);
+  return settings as DisplaySettings;
+}
+
 /**
  * The settings in plugin storage, made whole: a missing or invalid value takes its default,
  * so a hand edit or an older or newer plugin never breaks a surface.
  */
 export function readDisplaySettings(stored: unknown): DisplaySettings {
-  const defaults = defaultDisplaySettings();
-  const settings = isRecord(stored) && isRecord(stored.settings) ? stored.settings : {};
-  const part = (key: string) =>
-    (isRecord(settings[key]) ? settings[key] : {}) as Record<string, unknown>;
-  const surfaces = part("surfaces");
-  const thresholds = part("thresholds");
-  const layout = part("layout");
-  const statusLine = part("statusLine");
-  const toast = part("toast");
-  const lowBelow = wholeNumber(thresholds.lowBelow, 0, 100, defaults.thresholds.lowBelow);
-  return {
-    labels: recordOf(settings.labels, (item): item is string => typeof item === "string"),
-    surfaces: Object.fromEntries(
-      SURFACES.map((surface) => [surface, readSurface(surfaces[surface])]),
-    ) as Record<Surface, SurfaceRows>,
-    window: recordOf(
-      settings.window,
-      (item): item is WindowChoice => item === "lowest" || isQuotaWindow(item),
-    ),
-    colors: recordOf(settings.colors, isColorChoice),
-    thresholds: {
-      warningBelow: Math.max(
-        lowBelow,
-        wholeNumber(thresholds.warningBelow, 0, 100, defaults.thresholds.warningBelow),
-      ),
-      lowBelow,
-    },
-    layout: {
-      bar: oneOf(layout.bar, BAR_SHAPES, defaults.layout.bar),
-      barWidth: wholeNumber(layout.barWidth, 1, 30, defaults.layout.barWidth),
-      indent: wholeNumber(layout.indent, 0, 4, defaults.layout.indent),
-      labelWidth: wholeNumber(layout.labelWidth, 3, 20, defaults.layout.labelWidth),
-      providerGap: wholeNumber(layout.providerGap, 0, 2, defaults.layout.providerGap),
-      separator:
-        typeof layout.separator === "string" && layout.separator.length <= 5
-          ? layout.separator
-          : defaults.layout.separator,
-    },
-    statusLine: {
-      width: wholeNumber(statusLine.width, 0, 1000, defaults.statusLine.width),
-      detail: oneOf(statusLine.detail, STATUS_DETAILS, defaults.statusLine.detail),
-      autoScrollSeconds: wholeNumber(
-        statusLine.autoScrollSeconds,
-        0,
-        600,
-        defaults.statusLine.autoScrollSeconds,
-      ),
-      home: flag(statusLine.home, defaults.statusLine.home),
-    },
-    sidebar: {
-      sessionTokens: flag(part("sidebar").sessionTokens, defaults.sidebar.sessionTokens),
-    },
-    runsOut: Object.fromEntries(
-      SURFACES.map((surface) => [surface, flag(part("runsOut")[surface], false)]),
-    ) as Record<Surface, boolean>,
-    toast: {
-      afterReply: oneOf(toast.afterReply, ["off", "always", "low"], defaults.toast.afterReply),
-      afterQuestion: flag(toast.afterQuestion, defaults.toast.afterQuestion),
-      afterCompaction: flag(toast.afterCompaction, defaults.toast.afterCompaction),
-      whenAllFail: flag(toast.whenAllFail, defaults.toast.whenAllFail),
-      resetNotice: oneOf(toast.resetNotice, ["off", "weekly", "all"], defaults.toast.resetNotice),
-      seconds: wholeNumber(toast.seconds, 1, 120, defaults.toast.seconds),
-      sessionTokens: flag(toast.sessionTokens, defaults.toast.sessionTokens),
-    },
-  };
+  const settings = defaultDisplaySettings();
+  const from = isRecord(stored) && isRecord(stored.settings) ? stored.settings : {};
+  for (const field of FIELDS) {
+    const value = valueAt(from, field.path);
+    if (!field.color && fieldHolds(field, value)) putAt(settings, field.path.split("."), value);
+  }
+  const surfaces = isRecord(from.surfaces) ? from.surfaces : {};
+  for (const surface of SURFACES) settings.surfaces[surface] = readSurface(surfaces[surface]);
+  settings.labels = recordOf(from.labels, (item): item is string => typeof item === "string");
+  settings.window = recordOf(
+    from.window,
+    (item): item is WindowChoice => item === "lowest" || isQuotaWindow(item),
+  );
+  settings.colors = recordOf(from.colors, isColorChoice);
+  const { thresholds } = settings;
+  thresholds.warningBelow = Math.max(thresholds.warningBelow, thresholds.lowBelow);
+  return settings;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -284,17 +218,217 @@ export type PresetName = "layout" | "toast";
 export type Field = {
   path: string;
   tab: SettingsTab;
-  /** A heading above the line, which starts a group. */
-  group?: string;
   title: string;
+  initial: FieldValue;
   values: readonly FieldValue[];
   show: (value: FieldValue) => string;
+  /** What a stored value may hold besides `values` (typed by hand, or imported from v5). */
+  valid?: (value: unknown) => boolean;
+  /** The values ‹ › step through when some of `values` don't fit the other settings. */
+  choices?: (settings: DisplaySettings) => readonly FieldValue[];
+  /** A heading above the line, which starts a group. */
+  group?: string;
   /** Short muted text after the value. */
   note?: string;
   /** The preset on top of the tab sets this line. */
   preset?: PresetName;
   color?: true;
 };
+
+type Show = (value: FieldValue) => string;
+type FieldOptions = Pick<Field, "valid" | "choices" | "group" | "note" | "preset">;
+
+function fieldHolds(field: Field, value: unknown): boolean {
+  return field.valid ? field.valid(value) : field.values.includes(value as FieldValue);
+}
+
+/** A setting's tab: its first key ("toast.seconds"), except thresholds (Colors) and runsOut.<tab>. */
+function tabOf(path: string): SettingsTab {
+  const [first, second] = path.split(".");
+  if (first === "thresholds") return "colors";
+  return (first === "runsOut" ? second : first) as SettingsTab;
+}
+
+function listField(
+  path: string,
+  title: string,
+  initial: FieldValue,
+  values: readonly FieldValue[],
+  show: Show,
+  options: FieldOptions = {},
+): Field {
+  return { path, tab: tabOf(path), title, initial, values, show, ...options };
+}
+
+const onOff = (off: string, on: string) => (value: FieldValue) => (value ? on : off);
+
+function switchField(path: string, title: string, initial: boolean, options: FieldOptions = {}) {
+  return listField(path, title, initial, [false, true], onOff("off", "on"), options);
+}
+
+/** ‹ › step through `values`; a stored whole number from `min` to `max` counts too. */
+function numberField(
+  path: string,
+  title: string,
+  initial: number,
+  [min, max]: readonly [number, number],
+  values: readonly number[],
+  show: Show,
+  options: FieldOptions = {},
+): Field {
+  const valid = (value: unknown) => isWhole(value, min, max);
+  return listField(path, title, initial, values, show, { valid, ...options });
+}
+
+/** One switch per place: the Limits tab always shows the pace. */
+function runsOutField(surface: Surface, where: string): Field {
+  const note = "when a limit, used at your pace so far, runs out before its reset";
+  return {
+    ...switchField(`runsOut.${surface}`, "Runs out in …", false, { note }),
+    show: onOff("off", where),
+  };
+}
+
+function tokensField(path: string): Field {
+  return { ...switchField(path, "Session tokens line", true), show: onOff("hidden", "shown") };
+}
+
+function colorTitle(choice: FieldValue): string {
+  return choice === "bar" ? "bar color" : String(choice);
+}
+
+/** A color line; undefined follows the theme. The bar colors themselves can't follow the bar. */
+function colorField({ role, title, theme, group }: (typeof COLOR_LINES)[number]): Field {
+  const isLevel = role === "good" || role === "warning" || role === "low";
+  const values = [undefined, ...COLOR_NAMES, ...(isLevel ? [] : ["bar"])];
+  const show = (value: FieldValue) =>
+    value === undefined ? `${colorTitle(theme)} (theme)` : colorTitle(value);
+  return { ...listField(`colors.${role}`, title, undefined, values, show, { group }), color: true };
+}
+
+const COLOR_FIELDS = COLOR_LINES.map(colorField);
+const THRESHOLDS = [10, 15, 20, 25, 30, 40, 50, 60];
+const STATUS_DETAILS: Record<StatusDetail, string> = {
+  auto: "as much as fits",
+  one: "one provider, big bar",
+  full: "bar, % and reset",
+  bar: "bar and %",
+  reset: "% and reset",
+  numbers: "% only",
+};
+const BAR_SHAPES: readonly BarShape[] = ["blocks", "shades", "line", "squares", "dots", "none"];
+const TOAST = { preset: "toast" } as const;
+const LAYOUT = { preset: "layout" } as const;
+const unit = (word: string) => (value: FieldValue) => `${value} ${word}`;
+const percentLeft = unit("% left");
+const RESET_NOTICES: Record<string, string> = { weekly: "weekly limits", all: "every limit" };
+const REPLY_TOASTS = ["off", "always", "low"];
+const NOTICE_TOASTS = ["off", "weekly", "all"];
+const SHOW = {
+  detail: (value) => STATUS_DETAILS[value as StatusDetail],
+  width: (value) => (value ? `up to ${value} columns` : "all the free room"),
+  scroll: (value) => (value ? `every ${value} s` : "off"),
+  afterReply: (value) => (value === "low" ? "only when getting low" : String(value)),
+  resetNotice: (value) => RESET_NOTICES[String(value)] ?? "off",
+  bar: (value) =>
+    value === "none" ? "no bars" : `${barParts(value as BarShape, 60, 5).join("")} ${value}`,
+  indent: (value) => (value === 1 ? "1 space" : `${value} spaces`),
+  gap: (value) => (value ? "1 empty line" : "nothing"),
+  separator: (value) => (String(value).trim() ? `"${String(value).trim()}"` : "spaces"),
+} satisfies Record<string, Show>;
+// "Getting low" stays at or above "almost out", so ‹ › skip the values that would break that.
+const warningChoices = (settings: DisplaySettings) =>
+  THRESHOLDS.filter((value) => value >= settings.thresholds.lowBelow);
+const lowChoices = (settings: DisplaySettings) =>
+  THRESHOLDS.filter((value) => value <= settings.thresholds.warningBelow);
+const isSeparator = (value: unknown) => typeof value === "string" && value.length <= 5;
+
+/** Every plain setting, in the order its tab shows it. */
+export const FIELDS: readonly Field[] = [
+  tokensField("sidebar.sessionTokens"),
+  runsOutField("sidebar", "under the row"),
+  runsOutField("collapsed", "under the provider"),
+  listField("statusLine.detail", "Show", "auto", Object.keys(STATUS_DETAILS), SHOW.detail, {
+    group: "What it shows",
+  }),
+  runsOutField("statusLine", "after the provider"),
+  numberField("statusLine.width", "Width", 0, [0, 1000], [0, 40, 60, 80], SHOW.width, {
+    group: "Fine-tune",
+  }),
+  numberField(
+    "statusLine.autoScrollSeconds",
+    "Scroll by itself",
+    0,
+    [0, 600],
+    [0, 5, 10],
+    SHOW.scroll,
+  ),
+  switchField("statusLine.home", "Also at the bottom of Home", false),
+  listField("toast.afterReply", "After each reply", "off", REPLY_TOASTS, SHOW.afterReply, {
+    group: "Fine-tune",
+    ...TOAST,
+  }),
+  switchField("toast.afterQuestion", "After a question to you", false, TOAST),
+  switchField("toast.afterCompaction", "After compaction", true, TOAST),
+  switchField("toast.whenAllFail", "When every provider fails", true, TOAST),
+  listField(
+    "toast.resetNotice",
+    "When a limit resets",
+    "off",
+    NOTICE_TOASTS,
+    SHOW.resetNotice,
+    TOAST,
+  ),
+  numberField("toast.seconds", "Stays on screen", 9, [1, 120], [5, 9, 15, 30], unit("s"), {
+    group: "Look",
+  }),
+  tokensField("toast.sessionTokens"),
+  runsOutField("toast", "after the row"),
+  ...COLOR_FIELDS.slice(0, 4),
+  numberField(
+    "thresholds.warningBelow",
+    "'Getting low' below",
+    50,
+    [0, 100],
+    THRESHOLDS,
+    percentLeft,
+    {
+      choices: warningChoices,
+    },
+  ),
+  numberField("thresholds.lowBelow", "'Almost out' below", 20, [0, 100], THRESHOLDS, percentLeft, {
+    choices: lowChoices,
+  }),
+  ...COLOR_FIELDS.slice(4),
+  listField("layout.bar", "Bar shape", "blocks", BAR_SHAPES, SHOW.bar, { group: "Bars" }),
+  numberField(
+    "layout.barWidth",
+    "Bar width",
+    8,
+    [1, 30],
+    [4, 6, 8, 10, 12],
+    unit("columns"),
+    LAYOUT,
+  ),
+  numberField("layout.indent", "Row indent", 1, [0, 4], [0, 1, 2, 3], SHOW.indent, {
+    group: "Spacing",
+    ...LAYOUT,
+  }),
+  numberField(
+    "layout.labelWidth",
+    "Label width",
+    8,
+    [3, 20],
+    [6, 8, 10, 12],
+    unit("letters"),
+    LAYOUT,
+  ),
+  numberField("layout.providerGap", "Between providers", 0, [0, 2], [0, 1], SHOW.gap, LAYOUT),
+  listField("layout.separator", "Separator", " · ", [" · ", " | ", " / ", "  "], SHOW.separator, {
+    group: "Status line",
+    valid: isSeparator,
+  }),
+];
 
 /** A line on top of a tab that sets the lines marked with its name in one step. */
 export type Preset = {
@@ -306,30 +440,39 @@ export type Preset = {
   choices: Record<string, Record<string, FieldValue>>;
 };
 
+function layoutChoice(barWidth: number, indent: number, labelWidth: number, providerGap: number) {
+  return {
+    "layout.barWidth": barWidth,
+    "layout.indent": indent,
+    "layout.labelWidth": labelWidth,
+    "layout.providerGap": providerGap,
+  };
+}
+
+function toastChoice(
+  afterReply: string,
+  afterQuestion: boolean,
+  afterCompaction: boolean,
+  resetNotice: string,
+) {
+  return {
+    "toast.afterReply": afterReply,
+    "toast.afterQuestion": afterQuestion,
+    "toast.afterCompaction": afterCompaction,
+    "toast.whenAllFail": true,
+    "toast.resetNotice": resetNotice,
+  };
+}
+
 export const PRESETS: Record<PresetName, Preset> = {
   layout: {
     tab: "layout",
     title: "Layout preset",
     drives: "bar width and the 3 spacing lines",
     choices: {
-      compact: {
-        "layout.barWidth": 6,
-        "layout.indent": 1,
-        "layout.labelWidth": 6,
-        "layout.providerGap": 0,
-      },
-      comfortable: {
-        "layout.barWidth": 8,
-        "layout.indent": 1,
-        "layout.labelWidth": 8,
-        "layout.providerGap": 0,
-      },
-      roomy: {
-        "layout.barWidth": 10,
-        "layout.indent": 2,
-        "layout.labelWidth": 8,
-        "layout.providerGap": 1,
-      },
+      compact: layoutChoice(6, 1, 6, 0),
+      comfortable: layoutChoice(8, 1, 8, 0),
+      roomy: layoutChoice(10, 2, 8, 1),
     },
   },
   toast: {
@@ -337,296 +480,13 @@ export const PRESETS: Record<PresetName, Preset> = {
     title: "When toasts show",
     drives: "the 5 lines under it",
     choices: {
-      "only failures": {
-        "toast.afterReply": "off",
-        "toast.afterQuestion": false,
-        "toast.afterCompaction": false,
-        "toast.whenAllFail": true,
-        "toast.resetNotice": "off",
-      },
-      normal: {
-        "toast.afterReply": "off",
-        "toast.afterQuestion": false,
-        "toast.afterCompaction": true,
-        "toast.whenAllFail": true,
-        "toast.resetNotice": "off",
-      },
-      "when getting low": {
-        "toast.afterReply": "low",
-        "toast.afterQuestion": false,
-        "toast.afterCompaction": true,
-        "toast.whenAllFail": true,
-        "toast.resetNotice": "weekly",
-      },
-      "every reply": {
-        "toast.afterReply": "always",
-        "toast.afterQuestion": true,
-        "toast.afterCompaction": true,
-        "toast.whenAllFail": true,
-        "toast.resetNotice": "all",
-      },
+      "only failures": toastChoice("off", false, false, "off"),
+      normal: toastChoice("off", false, true, "off"),
+      "when getting low": toastChoice("low", false, true, "weekly"),
+      "every reply": toastChoice("always", true, true, "all"),
     },
   },
 };
-
-const onOff = (off: string, on: string) => (value: FieldValue) => (value ? on : off);
-const SWITCH = [false, true] as const;
-const THRESHOLDS = [10, 15, 20, 25, 30, 40, 50, 60];
-const STATUS_DETAIL_TITLES: Record<DisplaySettings["statusLine"]["detail"], string> = {
-  auto: "as much as fits",
-  full: "bar, % and reset",
-  bar: "bar and %",
-  reset: "% and reset",
-  numbers: "% only",
-  one: "one provider, big bar",
-};
-
-/** One switch per place: the Limits tab always shows the pace. */
-function runsOutField(surface: Surface, where: string): Field {
-  return {
-    path: `runsOut.${surface}`,
-    tab: surface,
-    title: "Runs out in …",
-    values: SWITCH,
-    show: onOff("off", where),
-    note: "when a limit, used at your pace so far, runs out before its reset",
-  };
-}
-
-/** Every colored thing, in its Colors group. */
-const COLOR_LINES: ReadonlyArray<{ role: ColorRole; title: string; group?: string }> = [
-  { role: "good", title: "Plenty left", group: "Bars" },
-  { role: "warning", title: "Getting low" },
-  { role: "low", title: "Almost out" },
-  { role: "empty", title: "Used part of a bar" },
-  { role: "title", title: "Panel title", group: "Names" },
-  { role: "provider", title: "Provider names" },
-  { role: "account", title: "Accounts (Pro, …)" },
-  { role: "label", title: "Row labels" },
-  { role: "percent", title: "Percent numbers", group: "Numbers and times" },
-  { role: "reset", title: "Reset times" },
-  { role: "value", title: "Balances, other text" },
-  { role: "error", title: "Errors" },
-  { role: "statusName", title: "Provider names", group: "Status line" },
-  { role: "separator", title: "Separators" },
-  { role: "arrows", title: "‹ +N › arrows" },
-];
-
-function colorTitle(choice: FieldValue): string {
-  return choice === "bar" ? "bar color" : String(choice);
-}
-
-function colorField(line: (typeof COLOR_LINES)[number]): Field {
-  // The bar colors themselves can't follow the bar color.
-  const isLevel = line.role === "good" || line.role === "warning" || line.role === "low";
-  return {
-    path: `colors.${line.role}`,
-    tab: "colors",
-    ...(line.group ? { group: line.group } : {}),
-    title: line.title,
-    values: [undefined, ...COLOR_NAMES, ...(isLevel ? [] : ["bar"])],
-    show: (value) =>
-      value === undefined ? `${colorTitle(THEME_COLORS[line.role])} (theme)` : colorTitle(value),
-    color: true,
-  };
-}
-
-const COLOR_FIELDS = COLOR_LINES.map(colorField);
-
-/** Every setting line of the Settings tabs, in the order they show. */
-export const FIELDS: readonly Field[] = [
-  {
-    path: "sidebar.sessionTokens",
-    tab: "sidebar",
-    title: "Session tokens line",
-    values: SWITCH,
-    show: onOff("hidden", "shown"),
-  },
-  runsOutField("sidebar", "under the row"),
-  runsOutField("collapsed", "under the provider"),
-  {
-    path: "statusLine.detail",
-    tab: "statusLine",
-    group: "What it shows",
-    title: "Show",
-    values: STATUS_DETAILS,
-    show: (value) => STATUS_DETAIL_TITLES[value as DisplaySettings["statusLine"]["detail"]],
-  },
-  runsOutField("statusLine", "after the provider"),
-  {
-    path: "statusLine.width",
-    tab: "statusLine",
-    group: "Fine-tune",
-    title: "Width",
-    values: [0, 40, 60, 80],
-    show: (value) => (value ? `up to ${value} columns` : "all the free room"),
-  },
-  {
-    path: "statusLine.autoScrollSeconds",
-    tab: "statusLine",
-    title: "Scroll by itself",
-    values: [0, 5, 10],
-    show: (value) => (value ? `every ${value} s` : "off"),
-  },
-  {
-    path: "statusLine.home",
-    tab: "statusLine",
-    title: "Also at the bottom of Home",
-    values: SWITCH,
-    show: onOff("off", "on"),
-  },
-  {
-    path: "toast.afterReply",
-    tab: "toast",
-    group: "Fine-tune",
-    title: "After each reply",
-    values: ["off", "always", "low"],
-    show: (value) => (value === "low" ? "only when getting low" : String(value)),
-    preset: "toast",
-  },
-  {
-    path: "toast.afterQuestion",
-    tab: "toast",
-    title: "After a question to you",
-    values: SWITCH,
-    show: onOff("off", "on"),
-    preset: "toast",
-  },
-  {
-    path: "toast.afterCompaction",
-    tab: "toast",
-    title: "After compaction",
-    values: SWITCH,
-    show: onOff("off", "on"),
-    preset: "toast",
-  },
-  {
-    path: "toast.whenAllFail",
-    tab: "toast",
-    title: "When every provider fails",
-    values: SWITCH,
-    show: onOff("off", "on"),
-    preset: "toast",
-  },
-  {
-    path: "toast.resetNotice",
-    tab: "toast",
-    title: "When a limit resets",
-    values: ["off", "weekly", "all"],
-    show: (value) => ({ weekly: "weekly limits", all: "every limit" })[String(value)] ?? "off",
-    preset: "toast",
-  },
-  {
-    path: "toast.seconds",
-    tab: "toast",
-    group: "Look",
-    title: "Stays on screen",
-    values: [5, 9, 15, 30],
-    show: (value) => `${value} s`,
-  },
-  {
-    path: "toast.sessionTokens",
-    tab: "toast",
-    title: "Session tokens line",
-    values: SWITCH,
-    show: onOff("hidden", "shown"),
-  },
-  runsOutField("toast", "after the row"),
-  ...COLOR_FIELDS.slice(0, 4),
-  {
-    path: "thresholds.warningBelow",
-    tab: "colors",
-    title: "'Getting low' below",
-    values: THRESHOLDS,
-    show: (value) => `${value}% left`,
-  },
-  {
-    path: "thresholds.lowBelow",
-    tab: "colors",
-    title: "'Almost out' below",
-    values: THRESHOLDS,
-    show: (value) => `${value}% left`,
-  },
-  ...COLOR_FIELDS.slice(4),
-  {
-    path: "layout.bar",
-    tab: "layout",
-    group: "Bars",
-    title: "Bar shape",
-    values: BAR_SHAPES,
-    show: (value) =>
-      value === "none" ? "no bars" : `${barParts(value as BarShape, 60, 5).join("")} ${value}`,
-  },
-  {
-    path: "layout.barWidth",
-    tab: "layout",
-    title: "Bar width",
-    values: [4, 6, 8, 10, 12],
-    show: (value) => `${value} columns`,
-    preset: "layout",
-  },
-  {
-    path: "layout.indent",
-    tab: "layout",
-    group: "Spacing",
-    title: "Row indent",
-    values: [0, 1, 2, 3],
-    show: (value) => (value === 1 ? "1 space" : `${value} spaces`),
-    preset: "layout",
-  },
-  {
-    path: "layout.labelWidth",
-    tab: "layout",
-    title: "Label width",
-    values: [6, 8, 10, 12],
-    show: (value) => `${value} letters`,
-    preset: "layout",
-  },
-  {
-    path: "layout.providerGap",
-    tab: "layout",
-    title: "Between providers",
-    values: [0, 1],
-    show: (value) => (value ? "1 empty line" : "nothing"),
-    preset: "layout",
-  },
-  {
-    path: "layout.separator",
-    tab: "layout",
-    group: "Status line",
-    title: "Separator",
-    values: [" · ", " | ", " / ", "  "],
-    show: (value) => (String(value).trim() ? `"${String(value).trim()}"` : "spaces"),
-  },
-];
-
-/** The value at a field's path, for example "layout.barWidth". */
-export function valueAt(settings: DisplaySettings, path: string): FieldValue {
-  let value: unknown = settings;
-  for (const key of path.split(".")) value = isRecord(value) ? value[key] : undefined;
-  return value as FieldValue;
-}
-
-/**
- * A copy of the settings with `value` at `keys` (a key may hold a dot, like a row id);
- * undefined removes the key, which puts a color back to the theme's or a row name back.
- */
-export function setIn(
-  settings: DisplaySettings,
-  keys: readonly string[],
-  value: unknown,
-): DisplaySettings {
-  const next = JSON.parse(JSON.stringify(settings)) as DisplaySettings;
-  let parent = next as unknown as Record<string, unknown>;
-  for (const key of keys.slice(0, -1)) {
-    if (!isRecord(parent[key])) parent[key] = {};
-    parent = parent[key] as Record<string, unknown>;
-  }
-  const last = keys[keys.length - 1] as string;
-  if (value === undefined) delete parent[last];
-  else parent[last] = value;
-  return next;
-}
 
 /** The value `delta` steps from `current` in `values`, wrapping; an unknown one counts as the first. */
 function stepIn<T>(values: readonly T[], current: T, delta: number): T {
@@ -634,13 +494,14 @@ function stepIn<T>(values: readonly T[], current: T, delta: number): T {
   return values[(index + delta + values.length) % values.length] as T;
 }
 
-/** ‹ or ›: the field's previous or next value. */
+/** ‹ or ›: the field's previous or next value that fits the other settings. */
 export function cycleField(
   settings: DisplaySettings,
   field: Field,
   delta: number,
 ): DisplaySettings {
-  const next = stepIn(field.values, valueAt(settings, field.path), delta);
+  const values = field.choices?.(settings) ?? field.values;
+  const next = stepIn(values, valueAt(settings, field.path), delta);
   return setIn(settings, field.path.split("."), next);
 }
 
@@ -690,18 +551,17 @@ export function renameRow(
  * rows and switches back (and Collapsed and Status line the preferred windows); row names stay.
  */
 export function resetTab(settings: DisplaySettings, tab: SettingsTab): DisplaySettings {
-  const defaults = defaultDisplaySettings();
   let next = FIELDS.filter((field) => field.tab === tab).reduce(
-    (result, field) => setIn(result, field.path.split("."), valueAt(defaults, field.path)),
+    (result, field) => setIn(result, field.path.split("."), field.initial),
     settings,
   );
-  if (isSurfaceTab(tab)) next = setIn(next, ["surfaces", tab], defaultSurface());
+  if (isSurfaceTab(tab)) next = setIn(next, ["surfaces", tab], readSurface(undefined));
   if (tab === "collapsed" || tab === "statusLine") next = setIn(next, ["window"], {});
   return next;
 }
 
 // ---------------------------------------------------------------------------------------------
-// Plugin storage: the saved settings and the draft
+// Plugin storage: the saved settings and this window's changes
 
 /** What `context.storage.store` needs from the TUI context. */
 export type DisplayStorage = {
@@ -711,29 +571,37 @@ export type DisplayStorage = {
   ): readonly [Value, (mutation: (draft: Value) => void) => Promise<void>];
 };
 
-/** The display settings on screen: the saved ones, or the draft the Settings tabs edit. */
-export type DisplayStore = {
-  saved(): DisplaySettings;
-  /** The draft while there is one, else the saved settings. The surfaces draw these. */
-  shown(): DisplaySettings;
-  /**
-   * Changes the draft, made whole like stored settings. The first change starts it from the
-   * saved settings.
-   */
-  edit(change: (settings: DisplaySettings) => DisplaySettings): void;
-  /** True when the draft differs from the saved settings. */
-  dirty(): boolean;
-  /** Stores the draft (every open TUI updates), then drops it. */
-  save(): Promise<void>;
-  discard(): void;
-};
+/** One changed setting: its keys and its new value (undefined = removed). */
+type Change = { keys: string[]; value: unknown };
+
+/** Where `next` differs from `base`: records key by key, anything else as a whole. */
+function changesBetween(base: unknown, next: unknown, keys: string[] = []): Change[] {
+  if (isRecord(base) && isRecord(next)) {
+    return [...new Set([...Object.keys(base), ...Object.keys(next)])].flatMap((key) =>
+      changesBetween(base[key], next[key], [...keys, key]),
+    );
+  }
+  return JSON.stringify(base) === JSON.stringify(next) ? [] : [{ keys, value: next }];
+}
+
+function withChanges(settings: DisplaySettings, changes: readonly Change[]): DisplaySettings {
+  const next = JSON.parse(JSON.stringify(settings)) as DisplaySettings;
+  for (const change of changes) putAt(next, change.keys, change.value);
+  return readDisplaySettings({ settings: next });
+}
+
+export const NEWER_SETTINGS =
+  "These settings were saved by a newer version of the plugin; update it to change these settings.";
+
+export type DisplayStore = ReturnType<typeof createDisplayStore>;
 
 /**
  * The saved settings come from the live plugin store, so a surface that reads them inside its
- * JSX updates when they change (an edit in another TUI or by hand). The store opens when
+ * JSX updates when they change (an edit in another TUI or by hand). This window's changes are
+ * kept as the settings they change, so everything else stays live. The store opens when
  * something first reads it, never during plugin setup.
  */
-export function createDisplayStore(storage: DisplayStorage): DisplayStore {
+export function createDisplayStore(storage: DisplayStorage) {
   let store:
     | readonly [StoredDisplay, (mutation: (draft: StoredDisplay) => void) => Promise<void>]
     | undefined;
@@ -743,25 +611,36 @@ export function createDisplayStore(storage: DisplayStorage): DisplayStore {
     });
     return store;
   };
-  const [draft, setDraft] = createSignal<DisplaySettings>();
+  const [changes, setChanges] = createSignal<readonly Change[]>([]);
   const saved = () => readDisplaySettings(open()[0]);
+  /** The saved settings with this window's changes on top. The surfaces draw these. */
+  const shown = () => (changes().length > 0 ? withChanges(saved(), changes()) : saved());
   return {
     saved,
-    shown: () => draft() ?? saved(),
-    edit: (change) => setDraft(readDisplaySettings({ settings: change(draft() ?? saved()) })),
-    dirty: () => {
-      const current = draft();
-      return current !== undefined && JSON.stringify(current) !== JSON.stringify(saved());
+    shown,
+    /** Only the settings that end up different from the saved ones count as changes. */
+    edit(change: (settings: DisplaySettings) => DisplaySettings): void {
+      setChanges(changesBetween(saved(), readDisplaySettings({ settings: change(shown()) })));
     },
-    async save() {
-      const next = draft();
-      if (!next) return;
+    dirty: () => changesBetween(saved(), shown()).length > 0,
+    /**
+     * Writes the changes over what storage holds at that moment, so another TUI's saved
+     * settings stay. Changes made while it writes stay unsaved.
+     */
+    async save(): Promise<void> {
+      const pending = changes();
+      if (pending.length === 0) return;
+      const version = open()[0].version;
+      if (typeof version === "number" && version > SETTINGS_VERSION) {
+        throw new Error(NEWER_SETTINGS);
+      }
       await open()[1]((value) => {
+        const next = withChanges(readDisplaySettings(value), pending);
         value.version = SETTINGS_VERSION;
         value.settings = JSON.parse(JSON.stringify(next));
       });
-      setDraft(undefined);
+      setChanges(changesBetween(saved(), shown()));
     },
-    discard: () => setDraft(undefined),
+    discard: () => setChanges([]),
   };
 }
