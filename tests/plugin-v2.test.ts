@@ -370,6 +370,11 @@ describe("V2 server plugin", () => {
     "credential.switched",
   ])("drops cached logins when OpenCode reports %s", async (type) => {
     clearReadAuthFileCacheForTests();
+    // The event makes the store check DeepSeek again; it gets a fake answer, not the real API.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify({ error: "fake" }), { status: 401 })),
+    );
     const { ctx } = createContext();
     const deepseek = {
       integrationId: "deepseek",
