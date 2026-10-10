@@ -9,6 +9,8 @@ export interface WriteJsonAtomicOptions {
   fileMode?: number;
   /** Default ordinary. Configuration never deletes the destination; it only removes the temp file. */
   policy?: AtomicWritePolicy;
+  /** Runs after the temp file is written, right before it replaces `path`; throwing writes nothing. */
+  beforeCommit?: () => Promise<void>;
 }
 
 async function safeRm(target: string): Promise<void> {
@@ -60,6 +62,7 @@ export async function writeTextAtomic(
     if (policy === "configuration" && opts.fileMode !== undefined && process.platform !== "win32") {
       await chmod(tmp, opts.fileMode);
     }
+    await opts.beforeCommit?.();
   } catch (writeError) {
     await safeRm(tmp);
     throw writeError;

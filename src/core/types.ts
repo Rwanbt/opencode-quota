@@ -89,7 +89,7 @@ export type QuotaError = {
   tool?: string;
   /** For `local_tool`: true when the program is missing rather than failing. */
   missing?: boolean;
-  /** The provider's own message, scrubbed; shown only in /quota_status. */
+  /** The provider's own message, scrubbed; no report shows it. */
   detail?: string;
 };
 
@@ -169,6 +169,11 @@ export type QuotaSnapshot = {
   currentModelRowPrefixes?: Record<string, string[]>;
   /** With a session: the tokens it used so far. */
   sessionTokens?: SessionTokens;
+  /**
+   * The OpenCode provider id each custom definition serves, by the prefix of its row ids
+   * (`quota-providers.custom.<definition id>.`); absent without custom definitions.
+   */
+  customRowProviders?: Record<string, string>;
   /** The server's words; clients use their defaults until the server sends them. */
   words?: Words;
   /**

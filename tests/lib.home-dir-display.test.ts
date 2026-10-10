@@ -94,6 +94,15 @@ describe("replaceHomeDirWithTilde", () => {
     );
   });
 
+  it.each([
+    ["\\\\?\\C:\\Users\\Name\\x", "~\\x"],
+    ["path=\\\\.\\C:\\Users\\Name\\x", "path=~\\x"],
+    ["//?/c:/users/name/x", "~/x"],
+    [JSON.stringify("\\\\?\\C:\\Users\\Name\\x"), '"~\\\\x"'],
+  ])("handles a Windows device path to the home dir: %s", (text, shown) => {
+    expect(replaceHomeDirWithTilde(text, "C:\\Users\\Name")).toBe(shown);
+  });
+
   it("does nothing when the home dir is empty or a filesystem root", () => {
     expect(replaceHomeDirWithTilde("/etc/hosts", "/")).toBe("/etc/hosts");
     expect(replaceHomeDirWithTilde("/etc/hosts", "")).toBe("/etc/hosts");

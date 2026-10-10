@@ -81,8 +81,28 @@ describe("quota window: Limits", () => {
     { width: 40, cells: 8 },
     { width: 300, cells: 30 },
   ])("keeps the bar between 8 and 30 cells (window $width wide)", ({ width, cells }) => {
-    const bar = limits([CLAUDE], width)[2]?.match(/[█░]+/u)?.[0];
-    expect(bar).toHaveLength(cells);
+    const fable = limits([CLAUDE], width).find((line) => line.includes("Fable"));
+    expect(fable?.match(/[█░]+/u)?.[0]).toHaveLength(cells);
+  });
+
+  it("puts the reset and the pace under the bar in an 80-column terminal", () => {
+    // 80 columns leave 72 inside the window: the session's padding, the border and the padding.
+    const lines = limits([CLAUDE], 72);
+    for (const line of lines) expect(line.length).toBeLessThanOrEqual(72);
+    expect(lines.slice(1)).toEqual([
+      expect.stringMatching(/^ {3}5h +[█░│]{30} {2}30% left$/u),
+      `${" ".repeat(20)}resets in 2h 30m · runs out in 1h 5m`,
+      expect.stringMatching(/^ {3}Fable +[█░]{30} {2}90% left$/u),
+    ]);
+  });
+
+  it("puts the pace on a line of its own when it doesn't fit after the reset", () => {
+    const lines = limits([CLAUDE], 50);
+    for (const line of lines) expect(line.length).toBeLessThanOrEqual(50);
+    expect(lines.slice(2, 4)).toEqual([
+      `${" ".repeat(20)}resets in 2h 30m`,
+      `${" ".repeat(20)}runs out in 1h 5m`,
+    ]);
   });
 
   it.each([

@@ -51,6 +51,7 @@ How the sidebar, the status line and toasts look (which rows, colors, bars, when
 - **Sidebar:** the `Quota` panel of each session, with a bar per row and the session tokens. Click its title to collapse it to one line per provider; OpenCode remembers the choice.
 - **Status line:** under the message box, in the room OpenCode's footer leaves free. Each provider shows its lowest window with as much detail as fits; when not all fit, scroll with the mouse wheel or click `‹` and `+N ›`.
 - **Toasts:** after compaction and when every provider fails, for 9 seconds. Toasts appear only in the TUI, never in Web or Desktop.
+- **Quick look (`quickLook`):** how `/quota` shows it. `dialog` (the default) opens a popup; `toast` shows the short text in a toast; `chat` posts the short text in the session as your message, as on Web (on Home, which has no session, a toast).
 
 ## Custom providers
 
@@ -73,7 +74,7 @@ Rules:
 - To tune maintained estimates, use the reserved `alibaba-coding-plan` ID and its window shape. Do not add a duplicate normal provider block.
 - Not accepted: project secrets, scripts, methods, custom headers, templates, executable mappings, regular expressions, JSONPath, and automatic endpoint discovery.
 - A custom model provider still needs its normal OpenCode `provider` block in `opencode.json`: that block tells OpenCode how to use the model, and `providers.custom` tells OpenCode Quota how to measure it.
-- `/quota_status` shows the exact state path and safe credential source, never URLs, keys, headers, response bodies, counter contents, or raw errors.
+- `/quota_status` shows each definition as `custom 1`, `custom 2`, … with its mode, model count, check outcome and credential source, never its id, URLs, keys, headers, response bodies, counter contents, or raw errors.
 
 <details>
 <summary><strong>Complete example</strong></summary>
@@ -158,7 +159,7 @@ Provider credentials (API keys, cookies, tokens) are never set here. See [API ke
 | `words.reset`            | `"exact"`   | Reset countdowns: `exact` (`2h 14m`), `compact` (`2h14m`), `short` (`2h`), or `decimal` (`2.2h`). Partial minutes round up. |
 | `words.resetDecimals`    | `1`         | `0`–`4` decimals for `decimal`. |
 | `words.detail`           | `"summary"` | `detailed` also shows supplementary accounting rows. |
-| `words.runsOut`          | `false`     | No effect: no surface shows a runs-out estimate. |
+| `words.runsOut`          | `false`     | `true` adds the pace of a limit used faster than it refills (`runs out in 2h`) to the short `/quota` text: Web, Desktop, and the toast. |
 | `words.onlyCurrentModel` | `false`     | Show only the providers that serve the session's current model, when they can be found. Of the custom providers, only those whose `providerId` and `modelIds` serve it. |
 | `words.sessionTokens`    | `"current"` | `tree` adds every subagent session to the session tokens, counted once. It does not change the `session` and `session_tree` ranges of `/quota_usage`. |
 
@@ -170,7 +171,7 @@ Provider credentials (API keys, cookies, tokens) are never set here. See [API ke
 | `pricing.autoRefreshDays`       | `7`       | Refresh local pricing after this many days. |
 | `announcements.enabled`         | `true`    | Show bundled maintainer notices. |
 | `announcements.home`            | `true`    | Show the count of active notices at the bottom of Home. |
-| `announcements.homeFrequency`   | `"daily"` | `"daily"`: show that Home line on the first Home screen of each day, for 10 minutes. `"always"`: show it on every Home screen. The Notices tab of `/quota` lists every notice. |
+| `announcements.homeFrequency`   | `"daily"` | `"daily"`: show that Home line on the first Home screen of each day, for 10 minutes. `"always"`: show it on every Home screen. The Notices tab of the quota window (`/quota_status`, then Notices) lists every notice. |
 | `export.enabled`                | `false`   | Write a JSON file each time the quota snapshot changes. |
 | `export.path`                   | `""`      | Empty uses `$XDG_CACHE_HOME/opencode/quota-export.json`. Otherwise an absolute or `~/` path. |
 | `telemetry.enabled`             | `false`   | Publish quota and cache-age gauges through OpenCode's global OpenTelemetry `MeterProvider`. No extra provider calls. |

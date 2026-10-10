@@ -18,7 +18,8 @@ import { createQuotaRpcBridge } from "./helpers/quota-rpc-bridge.js";
 
 // A fresh folder per run, so test runs in sibling checkouts never share it.
 const TEST_RUNTIME_ROOT = mkdtempSync(join(tmpdir(), "opencode-quota-plugin-announcements-"));
-const ANNOUNCEMENT_HOME_MESSAGE = "Notice: 1 unread maintainer notice, see /quota → Notices.";
+const ANNOUNCEMENT_HOME_MESSAGE =
+  "Notice: 1 unread maintainer notice, see /quota_status → Notices.";
 
 const TEST_ANNOUNCEMENT = vi.hoisted(() => ({
   id: "copilot-credits",

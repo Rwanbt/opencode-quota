@@ -130,7 +130,7 @@ export type AlibabaTokenPlanRuntime = {
   spawn?: (request: AlibabaTokenPlanSpawnRequest) => Promise<AlibabaTokenPlanSpawnResult>;
 };
 
-const ERROR_MESSAGES: Record<AlibabaTokenPlanErrorKind, string> = {
+export const ERROR_MESSAGES: Record<AlibabaTokenPlanErrorKind, string> = {
   unsupported_platform: "Alibaba Personal Token Plan is not supported on this platform.",
   executable_not_found: "Alibaba Cloud CLI (bl) was not found on the trusted PATH.",
   shell_launcher_rejected: "Alibaba Personal Token Plan refused a shell launcher for bl.",

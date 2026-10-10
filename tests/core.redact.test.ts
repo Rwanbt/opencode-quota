@@ -68,7 +68,59 @@ describe("publicDetail", () => {
     {
       name: "a cookie header with a quoted pair",
       text: 'Cookie: theme=dark; sid="CANARY sid" | next',
-      shown: "Cookie: [redacted]| next",
+      shown: "Cookie: [redacted] | next",
+    },
+    {
+      name: "a cookie header with a bare pipe or brace in a value",
+      text: "Cookie: sid=a|CANARY; b=a}CANARY",
+      shown: "Cookie: [redacted]",
+    },
+    {
+      name: "an escaped quote in a JSON password",
+      text: String.raw`{"password":"a\"CANARY"}`,
+      shown: '{"password":[redacted]}',
+    },
+    {
+      name: "a bracket inside an array of account ids",
+      text: '{"accountIds":["id]CANARY","id2"],"plan":"pro"}',
+      shown: '{"accountIds":[id],"plan":"pro"}',
+    },
+    {
+      name: "names written with JSON unicode escapes",
+      text: String.raw`{"account\u0049d":"CANARY1","\u0070assword":"CANARY2"}`,
+      shown: '{"accountId":[id],"password":[redacted]}',
+    },
+    {
+      name: "a JSON-escaped terminal escape inside the home dir",
+      text: String.raw`path=/Users/al\u001b[0mice/.config/x`,
+      shown: "path=~/.config/x",
+      hidden: ["alice"],
+    },
+    {
+      name: "a raw terminal escape inside the home dir",
+      text: "path=/Users/al\u001b[31mice/.config/x",
+      shown: "path=~/.config/x",
+      hidden: ["alice"],
+    },
+    {
+      name: "a long text cut inside the home dir",
+      text: `${"x".repeat(20)} /Users/alice/.config`,
+      max: 32,
+      shown: `${"x".repeat(20)} ~/.config`,
+      hidden: ["/Users"],
+    },
+    {
+      name: "a Windows device path to the home dir",
+      home: WINDOWS_HOME,
+      text: "bin=\\\\?\\C:\\Users\\Alice Smith\\x and \\\\.\\C:\\Users\\Alice Smith\\y",
+      shown: "bin=~\\x and ~\\y",
+      hidden: ["Alice"],
+    },
+    {
+      name: "a long model id with capitalised words and numbers",
+      text: "unpriced: Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8 and deepseek-ai/DeepSeek-R1-Distill-Qwen-32B-Preview",
+      shown:
+        "unpriced: Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8 and deepseek-ai/DeepSeek-R1-Distill-Qwen-32B-Preview",
     },
     {
       name: "a cookie in JSON, the other fields kept",
@@ -103,7 +155,7 @@ describe("publicDetail", () => {
     {
       name: "a bearer token and a key shape",
       text: "Authorization: Bearer CANARYtoken | sk-proj-CANARYsecret0123",
-      shown: "Authorization: [redacted]| [redacted]",
+      shown: "Authorization: [redacted] | [redacted]",
     },
     {
       name: "a long opaque token and a UUID",
@@ -159,15 +211,17 @@ describe("publicDetail", () => {
     name: string;
     text: string;
     home?: string;
+    max?: number;
     shown: string;
     hidden?: string[];
   }>)("hides what a public issue must not show: $name", ({
     text,
     home = HOME,
+    max = Infinity,
     shown,
     hidden = [],
   }) => {
-    const result = publicDetail(text, Infinity, home);
+    const result = publicDetail(text, max, home);
 
     expect(result).toBe(shown);
     for (const part of ["CANARY", ...hidden]) expect(result).not.toContain(part);

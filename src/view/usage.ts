@@ -129,7 +129,7 @@ function plural(count: number, word: string): string {
 }
 
 /** A row's cost, or "no price" when all its tokens come from models without a price. */
-function costText(row: UsageRow): string {
+export function costText(row: UsageRow): string {
   return row.tokens > 0 && row.unpricedTokens >= row.tokens ? "no price" : formatUsd(row.costUsd);
 }
 
@@ -601,6 +601,28 @@ function buildView(
   return sections
     .flatMap((lines, index) => (index === 0 ? lines : [[], ...lines]))
     .map((line) => clip(line, width));
+}
+
+/** The daily chart alone, `rows` tall, each line at most `width`: the quick look's small chart. */
+export function dailyChartLines(
+  report: UsageReport,
+  options: { mode: UsageMode; width: number; rows: number },
+): UsageLine[] {
+  const thisYear = new Date(report.generatedAtMs).getFullYear();
+  const days = chartDays(report, options.mode);
+  return chartLines(days, options.mode, thisYear, options.width, options.rows).map((line) =>
+    clip(line, options.width),
+  );
+}
+
+/** Cost (or tokens) by type alone: its heading, the bar and the legend, each at most `width`. */
+export function byTypeBarLines(
+  report: UsageReport,
+  options: { mode: UsageMode; width: number },
+): UsageLine[] {
+  const { totals } = report;
+  const amounts = options.mode === "cost" ? totals.costByType : totals.tokensByType;
+  return byTypeLines(options.mode, amounts, options.width).map((line) => clip(line, options.width));
 }
 
 /** The usage view for the TUI Usage tab: lines of role-tagged spans, each at most `width`. */

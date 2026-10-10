@@ -407,7 +407,7 @@ async function setSettings(input: unknown): Promise<ToolResult> {
     ? patchIssues(patch)
     : [{ key: "patch", message: "expected an object of settings" }];
   if (issues.length > 0) return { ok: false, issues, message: "Nothing was saved." };
-  // Agents may also write settings the /quota window does not show, such as the Claude CLI path.
+  // Agents may also write settings /quota_settings does not show, such as the Claude CLI path.
   const saved = await editSettings(() => patch as SettingsPatch, { allowFileOnly: true });
   if (!saved.ok) return { ok: false, issues: saved.issues, message: "Nothing was saved." };
   return {

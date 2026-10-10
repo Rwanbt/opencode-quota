@@ -70,6 +70,12 @@ describe("display settings in plugin storage", () => {
       pick: (d) => [d.toast.afterReply, d.toast.seconds, d.toast.afterQuestion],
       expected: ["off", 9, true],
     },
+    {
+      name: "an unknown /quota form",
+      settings: { quickLook: "popup" },
+      pick: (d) => d.quickLook,
+      expected: "dialog",
+    },
   ])("keeps the rest and takes the default for $name", ({ settings, pick, expected }) => {
     expect(pick(readDisplaySettings(stored(settings)))).toEqual(expected);
   });

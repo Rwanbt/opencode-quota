@@ -117,6 +117,14 @@ export function barParts(
   return [full.repeat(filled), empty.repeat(width - filled)];
 }
 
+/**
+ * The cell of a bar `width` cells wide where even use would be (the │ mark): `evenLeft` is the
+ * percent even use leaves now (`core/pace.ts`).
+ */
+export function evenUseCell(evenLeft: number, width: number): number {
+  return Math.max(0, Math.min(width - 1, Math.round((evenLeft / 100) * width)));
+}
+
 export type Level = "good" | "warning" | "low";
 export type Thresholds = { warningBelow: number; lowBelow: number };
 

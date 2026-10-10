@@ -363,16 +363,20 @@ describe("saveSettings", () => {
     expect(readdirSync(dirname(lock)).filter((name) => name.includes(".stale-"))).toEqual([]);
   });
 
-  it("releases the lock only while it still holds its own token", async () => {
-    const lock = `${writeSettings("{}")}.lock`;
+  it("writes and releases only while the lock still holds its own token", async () => {
+    const path = writeSettings("{}");
+    const lock = `${path}.lock`;
     const theirs = JSON.stringify({ pid: process.pid, token: "theirs" });
 
+    // Another live save takes the lock over while this one plans its edit.
     const result = await editSettings(() => {
       writeFileSync(lock, theirs);
       return { words: { percent: "used" } };
     });
 
-    expect(result.ok).toBe(true);
+    expect(result.ok).toBe(false);
+    expect(result.issues[0]?.message).toMatch(/the settings file is busy/);
+    expect(readFileSync(path, "utf8")).toBe("{}");
     expect(readFileSync(lock, "utf8")).toBe(theirs);
   });
 

@@ -1,7 +1,9 @@
 /**
  * The lines of the quota window's Limits tab: every provider and row of the snapshot, in the
  * sidebar's order and under your row names. A row with a percent shows a wide bar with the
- * even-use marker (│), its percent, its reset and its pace (`core/pace.ts`). Pure.
+ * even-use marker (│), its percent, its reset and its pace (`core/pace.ts`). A window too
+ * narrow for all of that on one line (an 80-column terminal) shows the reset and the pace on a
+ * line under the bar, and the pace on one more line when the two don't fit together. Pure.
  */
 import { describeError } from "../../core/errors.js";
 import { paceOf, paceText } from "../../core/pace.js";
@@ -10,6 +12,7 @@ import {
   type BarShape,
   barParts,
   DEFAULT_WORDS,
+  evenUseCell,
   fit,
   formatDuration,
   percentText,
@@ -27,6 +30,15 @@ const RESET_WIDTH = 22;
 const PACE_WIDTH = 31;
 const MIN_BAR_WIDTH = 8;
 const MAX_BAR_WIDTH = 30;
+/** Where the bar starts; the narrow layout's reset and pace line starts there too. */
+const BAR_COLUMN = INDENT.length + LABEL_WIDTH + 1;
+/** What one line holds besides the bar: label, percent, reset and pace. */
+const WIDE_FIXED = BAR_COLUMN + 2 + PERCENT_WIDTH + RESET_WIDTH + PACE_WIDTH;
+/** What the narrow layout's bar line holds besides the bar: label and percent. */
+const NARROW_FIXED = BAR_COLUMN + 2 + PERCENT_WIDTH;
+
+/** The bar's width, and whether the reset and the pace go under the bar. */
+type RowLayout = { barWidth: number; narrow: boolean; width: number };
 
 export type LimitsInput = {
   snapshot: QuotaSnapshot;
@@ -49,10 +61,7 @@ function markedBar(
     ...[...filled].map((text): Segment => ({ text, role: "bar", percent })),
     ...[...empty].map((text): Segment => ({ text, role: "empty", percent })),
   ];
-  if (evenLeft !== undefined) {
-    const marker = Math.max(0, Math.min(width - 1, Math.round((evenLeft / 100) * width)));
-    cells[marker] = { text: "│", role: "label" };
-  }
+  if (evenLeft !== undefined) cells[evenUseCell(evenLeft, width)] = { text: "│", role: "label" };
   const segments: Segment[] = [];
   for (const cell of cells) {
     const last = segments[segments.length - 1];
@@ -74,13 +83,13 @@ function providerState(group: Group, snapshot: QuotaSnapshot, nowMs: number): Se
   return { text: `checked ${formatDuration(minutes * 60_000, "short", 0)} ago`, role: "value" };
 }
 
-function rowLine(
+function rowLines(
   item: VisibleRow,
   words: Words,
   shape: Exclude<BarShape, "none">,
-  barWidth: number,
+  layout: RowLayout,
   nowMs: number,
-): Line {
+): Line[] {
   const { row } = item;
   const percent = row.percentRemaining;
   const label: Segment = {
@@ -89,31 +98,44 @@ function rowLine(
     percent,
   };
   if (percent === undefined) {
-    return { id: row.id, segments: [label, { text: rowValueText(row), role: "value" }] };
+    return [{ id: row.id, segments: [label, { text: rowValueText(row), role: "value" }] }];
   }
   const pace = paceOf(row, nowMs);
   const reset = resetText(row, nowMs, words);
-  return {
-    id: row.id,
-    segments: [
-      label,
-      ...markedBar(shape, percent, barWidth, pace?.evenLeft),
-      {
-        text: `  ${fit(percentText(words, percent, true), PERCENT_WIDTH)}`,
-        role: "percent",
-        percent,
-      },
-      { text: fit(reset ? `resets in ${reset}` : "", RESET_WIDTH), role: "reset", percent },
-      ...(pace
-        ? [
-            {
-              text: paceText(pace, words),
-              role: pace.kind === "fast" ? "warning" : "value",
-            } as const,
-          ]
-        : []),
-    ],
+  const bar = [label, ...markedBar(shape, percent, layout.barWidth, pace?.evenLeft)];
+  const percentWords = percentText(words, percent, true);
+  const resetWords = reset ? `resets in ${reset}` : "";
+  const paceSegment: Segment | undefined = pace && {
+    text: paceText(pace, words),
+    role: pace.kind === "fast" ? "warning" : "value",
   };
+  if (!layout.narrow) {
+    return [
+      {
+        id: row.id,
+        segments: [
+          ...bar,
+          { text: `  ${fit(percentWords, PERCENT_WIDTH)}`, role: "percent", percent },
+          { text: fit(resetWords, RESET_WIDTH), role: "reset", percent },
+          ...(paceSegment ? [paceSegment] : []),
+        ],
+      },
+    ];
+  }
+  const under = { text: " ".repeat(BAR_COLUMN), role: "label" } as const;
+  const resetSegment: Segment = { text: resetWords, role: "reset", percent };
+  const lines: Line[] = [
+    { id: row.id, segments: [...bar, { text: `  ${percentWords}`, role: "percent", percent }] },
+  ];
+  const together = BAR_COLUMN + resetWords.length + 3 + (paceSegment?.text.length ?? 0);
+  if (resetWords && paceSegment && together <= layout.width) {
+    const dot: Segment = { text: " · ", role: "reset", percent };
+    lines.push({ id: row.id, segments: [under, resetSegment, dot, paceSegment] });
+    return lines;
+  }
+  if (resetWords) lines.push({ id: row.id, segments: [under, resetSegment] });
+  if (paceSegment) lines.push({ id: row.id, segments: [under, paceSegment] });
+  return lines;
 }
 
 export function limitsLines(input: LimitsInput): Line[] {
@@ -135,8 +157,13 @@ export function limitsLines(input: LimitsInput): Line[] {
     ];
   }
   const shape = display.layout.bar === "none" ? "line" : display.layout.bar;
-  const fixed = INDENT.length + LABEL_WIDTH + 1 + 2 + PERCENT_WIDTH + RESET_WIDTH + PACE_WIDTH;
-  const barWidth = Math.max(MIN_BAR_WIDTH, Math.min(MAX_BAR_WIDTH, input.width - fixed));
+  const narrow = input.width < WIDE_FIXED + MIN_BAR_WIDTH;
+  const room = input.width - (narrow ? NARROW_FIXED : WIDE_FIXED);
+  const layout: RowLayout = {
+    barWidth: Math.max(MIN_BAR_WIDTH, Math.min(MAX_BAR_WIDTH, room)),
+    narrow,
+    width: input.width,
+  };
   return groups.flatMap((group, index) => {
     const state = providerState(group, snapshot, nowMs);
     const title: Line = {
@@ -147,7 +174,7 @@ export function limitsLines(input: LimitsInput): Line[] {
         { ...state, text: `   ${state.text}` },
       ],
     };
-    const rows = group.rows.map((item) => rowLine(item, words, shape, barWidth, nowMs));
+    const rows = group.rows.flatMap((item) => rowLines(item, words, shape, layout, nowMs));
     return index > 0 ? [{ id: "", segments: [] }, title, ...rows] : [title, ...rows];
   });
 }

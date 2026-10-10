@@ -30,7 +30,7 @@ describe("quota report messages", () => {
     expect(removeQuotaReports("no report")).toBe("no report");
   });
 
-  it("writes every limit of the snapshot, then the notices", () => {
+  it("writes the quick look of every limit, then the notices not read yet", () => {
     const nowMs = Date.parse("2026-10-10T12:00:00.000Z");
     const row = (id: string, fields: Partial<QuotaRow>): QuotaRow => ({
       id,
@@ -78,28 +78,33 @@ describe("quota report messages", () => {
         id: "a",
         message: "Copilot moves to AI Credits.",
         url: "https://example.com/a",
-        read: true,
+        read: false,
       },
+      { id: "b", message: "An old notice you read.", read: true },
     ];
 
-    expect(quotaMessageText({ snapshot, notices, nowMs }).split("\n")).toEqual([
+    expect(quotaMessageText({ snapshot, usage: undefined, notices, nowMs }).split("\n")).toEqual([
       "Quota",
-      "Claude 5h           58% left      2h 14m",
-      "Claude fable        90% left",
+      "● Claude  5h 58% left · fable 90% left",
       "",
       "Notices",
       "- Copilot moves to AI Credits.",
       "  https://example.com/a",
     ]);
-    expect(quotaMessageText({ snapshot: { ...snapshot, providers: [] }, notices: [], nowMs })).toBe(
-      "Quota\nNo quota providers found. Run /quota_status to see why.",
-    );
+    expect(
+      quotaMessageText({
+        snapshot: { ...snapshot, providers: [] },
+        usage: undefined,
+        notices: [notices[1]],
+        nowMs,
+      }),
+    ).toBe("Quota\nNo quota providers found. Run /quota_status to see why.");
     const otherModel = {
       ...snapshot,
       words: { ...snapshot.words, onlyCurrentModel: true },
       currentModelProviderIds: [],
     };
-    expect(quotaMessageText({ snapshot: otherModel, notices: [], nowMs })).toBe(
+    expect(quotaMessageText({ snapshot: otherModel, usage: undefined, notices: [], nowMs })).toBe(
       "Quota\nNo quota provider serves the session's current model. Run /quota_status to see why.",
     );
   });

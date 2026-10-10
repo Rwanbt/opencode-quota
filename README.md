@@ -68,7 +68,7 @@ Restart OpenCode. Coming from 5.x? Your old settings are converted automatically
 > - OpenCode 1 is no longer supported. OpenCode 1 users stay on 4.x (`@slkiser/opencode-quota@4`).
 > - Logins come from OpenCode 2, never from `auth.json`. If a provider is missing, log in again.
 > - Web and Desktop get the slash commands, but no toasts or panels.
-> - TUI reports open in a popup.
+> - TUI reports open in a popup or in the quota window. Only `/quota` with the `chat` [quick look](docs/readme/configuration.md#tui-surfaces) leaves a chat message.
 > - OpenCode Zen uses your OpenCode Console sign-in: `opencode auth login opencode`.
 
 Full list: [Moving to OpenCode 2](docs/readme/updating.md#moving-to-opencode-2).
@@ -79,11 +79,12 @@ Full list: [Moving to OpenCode 2](docs/readme/updating.md#moving-to-opencode-2).
 
 Type these in OpenCode. Add a range after `/quota_usage`, like `/quota_usage 30d` or `/quota_usage between 2026-09-01 2026-09-25`.
 
-| Command                | What it shows                                                                                                   |
-| ---------------------- | --------------------------------------------------------------------------------------------------------------- |
-| `/quota`               | Quota window: limits, usage, maintainer notices, status                                                         |
+| Command                | What it shows                                                                                                     |
+| ---------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `/quota`               | Quick look: limits next to the last 7 days of usage                                                               |
 | `/quota_usage [range]` | Tokens and API cost: `today`, `24h`, `7d` (default), `30d`, `all`, `session`, `session_tree`, `between` two dates |
-| `/quota_status`        | Setup check: logins, providers, pricing, and notices                                                            |
+| `/quota_status`        | Setup check: logins, providers, pricing, and notices                                                              |
+| `/quota_settings`      | TUI: quota window, Settings tab                                                                                   |
 
 In the terminal, `/quota_usage` opens the window's Usage tab on that range: change it there, and click a model for its details. **Download new prices** there refreshes pricing from `models.dev`.
 
