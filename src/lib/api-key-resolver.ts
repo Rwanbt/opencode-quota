@@ -188,8 +188,11 @@ export function getProviderConfigSettings(
   providerKey: string,
 ): Record<string, unknown> | null {
   const root = asRecord(config);
-  const nativeProvider = asRecord(asRecord(root?.providers)?.[providerKey]);
-  if (nativeProvider) return asRecord(nativeProvider.settings);
+  const nativeProvider = asRecord(root?.providers)?.[providerKey];
+  // Any object here, even a malformed array, replaces the legacy entry.
+  if (typeof nativeProvider === "object" && nativeProvider !== null) {
+    return asRecord((nativeProvider as Record<string, unknown>).settings);
+  }
   return asRecord(asRecord(asRecord(root?.provider)?.[providerKey])?.options);
 }
 

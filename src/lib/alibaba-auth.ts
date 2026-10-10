@@ -47,6 +47,10 @@ export function resolveAlibabaCodingPlanAuth(
   auth: AuthData | null | undefined,
   fallbackTier: AlibabaCodingPlanTier = DEFAULT_ALIBABA_CODING_PLAN_TIER,
 ): ResolvedAlibabaCodingPlanAuth {
+  // Unlike the other vendors, an explicit null Alibaba entry is a broken login, not "none".
+  if (getFirstAuthEntryValue(auth, ALIBABA.authKeys) === null) {
+    return { state: "invalid", error: "Alibaba Coding Plan auth entry has invalid shape" };
+  }
   const login = parseApiKeyLogin(ALIBABA, auth);
   if (login.state !== "configured") return login;
 

@@ -50,6 +50,7 @@ import {
   hasApiKey,
   parseApiKeyLogin,
   resolveApiKey,
+  resolveApiKeyFromEnvAndConfig,
   resolveApiKeyLogin,
 } from "../src/lib/api-key-resolver.js";
 import {
@@ -73,9 +74,93 @@ const TRUSTED = {
 const WORKSPACE = [join(process.cwd(), "opencode.json"), join(process.cwd(), "opencode.jsonc")];
 const DB_PATHS = ["/tmp/opencode.db"];
 
-const SIMPLE_VENDORS = Object.entries(API_KEY_VENDORS) as Array<[string, ApiKeySpec]>;
-const LOGIN_VENDORS = Object.entries(API_KEY_LOGIN_VENDORS) as Array<[string, ApiKeyLoginSpec]>;
-const ALL_ENV_VARS = [...SIMPLE_VENDORS, ...LOGIN_VENDORS].flatMap(([, spec]) => spec.envVars);
+// The vendor contract, written out by hand instead of read from the production
+// tables, so a wrong env var, config alias, or login id in a table fails here.
+// Order is precedence: the first env var, config alias, and login id wins.
+const EXPECTED_API_KEY_VENDORS: Record<string, ApiKeySpec> = {
+  chutes: { envVars: ["CHUTES_API_KEY"], providerKeys: ["chutes"] },
+  deepseek: { envVars: ["DEEPSEEK_API_KEY"], providerKeys: ["deepseek"] },
+  kilo: { envVars: ["KILO_API_KEY"], providerKeys: ["kilo"] },
+  nanogpt: {
+    envVars: ["NANOGPT_API_KEY", "NANO_GPT_API_KEY"],
+    providerKeys: ["nanogpt", "nano-gpt"],
+  },
+  "ollama-cloud": { envVars: ["OLLAMA_API_KEY"], providerKeys: ["ollama-cloud"] },
+  synthetic: { envVars: ["SYNTHETIC_API_KEY"], providerKeys: ["synthetic"] },
+};
+const EXPECTED_API_KEY_LOGIN_VENDORS: Record<string, ApiKeyLoginSpec> = {
+  zai: {
+    displayName: "Z.ai",
+    envVars: ["ZAI_API_KEY", "ZAI_CODING_PLAN_API_KEY"],
+    providerKeys: ["zai", "zai-coding-plan", "glm"],
+    authKeys: ["zai-coding-plan"],
+  },
+  zhipu: {
+    displayName: "Zhipu",
+    envVars: ["ZHIPU_API_KEY", "ZHIPU_CODING_PLAN_API_KEY"],
+    providerKeys: ["zhipu", "zhipu-coding-plan", "zhipuai-coding-plan", "glm-coding-plan"],
+    authKeys: ["zhipu-coding-plan", "zhipuai-coding-plan"],
+  },
+  "opencode-go": {
+    displayName: "OpenCode Go",
+    envVars: ["OPENCODE_API_KEY"],
+    providerKeys: ["opencode-go", "opencode"],
+    authKeys: ["opencode-go", "opencode"],
+    keyLoginsOnly: true,
+    unsupportedTypeError: "OpenCode Go auth entry has unsupported type",
+  },
+  "kimi-code-plan-global": {
+    displayName: "Kimi",
+    envVars: ["KIMI_GLOBAL_API_KEY"],
+    providerKeys: ["kimi-code-plan-global"],
+    authKeys: ["kimi-code-plan-global"],
+  },
+  "kimi-code-plan-cn": {
+    displayName: "Kimi",
+    envVars: ["KIMI_CN_API_KEY", "KIMI_API_KEY", "KIMI_CODE_API_KEY"],
+    providerKeys: ["kimi-code-plan-cn", "kimi-for-coding", "kimi-code", "kimi"],
+    authKeys: ["kimi-code-plan-cn", "kimi-for-coding", "kimi-code", "kimi"],
+  },
+  "minimax-coding-plan": {
+    displayName: "MiniMax",
+    envVars: ["MINIMAX_CODING_PLAN_API_KEY", "MINIMAX_API_KEY"],
+    providerKeys: ["minimax-coding-plan", "minimax"],
+    authKeys: ["minimax-coding-plan"],
+  },
+  "minimax-china-coding-plan": {
+    displayName: "MiniMax",
+    envVars: ["MINIMAX_CHINA_CODING_PLAN_API_KEY"],
+    providerKeys: [
+      "minimax-china-coding-plan",
+      "minimax-cn-coding-plan",
+      "minimax-cn",
+      "minimax-china",
+    ],
+    authKeys: ["minimax-china-coding-plan", "minimax-cn-coding-plan"],
+  },
+  "alibaba-coding-plan": {
+    displayName: "Alibaba Coding Plan",
+    envVars: ["ALIBABA_CODING_PLAN_API_KEY", "ALIBABA_API_KEY"],
+    providerKeys: ["alibaba-coding-plan", "alibaba"],
+    authKeys: ["alibaba-coding-plan", "alibaba"],
+  },
+};
+
+// Each case: [vendor id, expected contract (test inputs), production spec (called)].
+const SIMPLE_VENDORS = Object.entries(EXPECTED_API_KEY_VENDORS).map(
+  ([id, expected]) => [id, expected, (API_KEY_VENDORS as Record<string, ApiKeySpec>)[id]] as const,
+);
+const LOGIN_VENDORS = Object.entries(EXPECTED_API_KEY_LOGIN_VENDORS).map(
+  ([id, expected]) =>
+    [id, expected, (API_KEY_LOGIN_VENDORS as Record<string, ApiKeyLoginSpec>)[id]] as const,
+);
+const ALL_VENDORS = [...SIMPLE_VENDORS, ...LOGIN_VENDORS];
+const ALL_ENV_VARS = ALL_VENDORS.flatMap(([, expected]) => expected.envVars);
+
+/** One entry per id, each with a value that names its id. */
+function entriesFor<T>(ids: readonly string[], value: (id: string) => T): Record<string, T> {
+  return Object.fromEntries(ids.map((id) => [id, value(id)]));
+}
 
 /** Only these files exist; any other read fails like a missing file. */
 function mockConfigFiles(files: Record<string, string>): void {
@@ -122,11 +207,43 @@ afterEach(() => {
   process.env = originalEnv;
 });
 
+describe("vendor contract", () => {
+  it("the production tables match the hand-written contract", () => {
+    expect(API_KEY_VENDORS).toEqual(EXPECTED_API_KEY_VENDORS);
+    expect(API_KEY_LOGIN_VENDORS).toEqual(EXPECTED_API_KEY_LOGIN_VENDORS);
+  });
+
+  it.each(
+    ALL_VENDORS,
+  )("%s: env vars, then config aliases, each in contract order", async (_id, expected, spec) => {
+    for (const [index, name] of expected.envVars.entries()) {
+      for (const later of expected.envVars.slice(index)) process.env[later] = `${later}-value`;
+      await expect(resolveApiKeyFromEnvAndConfig(spec)).resolves.toEqual({
+        key: `${name}-value`,
+        source: `env:${name}`,
+      });
+      delete process.env[name];
+    }
+    for (const [index, alias] of expected.providerKeys.entries()) {
+      const aliases = expected.providerKeys.slice(index);
+      mockConfigFiles({ [TRUSTED.json]: legacyConfig(entriesFor(aliases, (id) => `${id}-key`)) });
+      await expect(resolveApiKeyFromEnvAndConfig(spec)).resolves.toEqual({
+        key: `${alias}-key`,
+        source: "opencode.json",
+      });
+    }
+  });
+});
+
 describe("API key vendors (env, then trusted config, then usable stored key)", () => {
-  it.each(SIMPLE_VENDORS)("%s: an env key wins and skips the stored logins", async (_id, spec) => {
-    const envVar = spec.envVars[0];
+  it.each(
+    SIMPLE_VENDORS,
+  )("%s: an env key wins and skips the stored logins", async (_id, expected, spec) => {
+    const envVar = expected.envVars[0];
     process.env[envVar] = " env-key ";
-    mockConfigFiles({ [TRUSTED.json]: legacyConfig({ [spec.providerKeys[0]]: "config-key" }) });
+    mockConfigFiles({
+      [TRUSTED.json]: legacyConfig({ [expected.providerKeys[0]]: "config-key" }),
+    });
 
     await expect(resolveApiKey(spec)).resolves.toEqual({ key: "env-key", source: `env:${envVar}` });
     await expect(getApiKeyDiagnostics(spec)).resolves.toEqual({
@@ -140,29 +257,24 @@ describe("API key vendors (env, then trusted config, then usable stored key)", (
 
   it.each(
     SIMPLE_VENDORS,
-  )("%s: reads every provider alias from trusted config", async (_id, spec) => {
-    mockConfigFiles({ [TRUSTED.json]: legacyConfig({ [spec.providerKeys[0]]: "json-key" }) });
-    await expect(resolveApiKey(spec)).resolves.toEqual({
-      key: "json-key",
-      source: "opencode.json",
-    });
+  )("%s: falls back to a usable stored API key only, in alias order", async (_id, expected, spec) => {
+    for (const [index, authKey] of expected.providerKeys.entries()) {
+      mocks.readAuthFile.mockResolvedValue(
+        entriesFor(expected.providerKeys.slice(index), (id) => ({
+          type: "api",
+          key: ` ${id}-key `,
+        })),
+      );
+      await expect(resolveApiKey(spec)).resolves.toEqual({
+        key: `${authKey}-key`,
+        source: "opencode.db",
+      });
+      expect(mocks.readAuthFile).toHaveBeenLastCalledWith({
+        integrationIds: expected.providerKeys,
+      });
+    }
 
-    mockConfigFiles({
-      [TRUSTED.jsonc]: legacyConfig({ [spec.providerKeys.at(-1)!]: "jsonc-key" }),
-    });
-    await expect(resolveApiKey(spec)).resolves.toEqual({
-      key: "jsonc-key",
-      source: "opencode.jsonc",
-    });
-    expect(mocks.readAuthFile).not.toHaveBeenCalled();
-  });
-
-  it.each(SIMPLE_VENDORS)("%s: falls back to a usable stored API key only", async (_id, spec) => {
-    const authKey = spec.providerKeys.at(-1)!;
-    mocks.readAuthFile.mockResolvedValue({ [authKey]: { type: "api", key: " auth-key " } });
-    await expect(resolveApiKey(spec)).resolves.toEqual({ key: "auth-key", source: "opencode.db" });
-    expect(mocks.readAuthFile).toHaveBeenLastCalledWith({ integrationIds: spec.providerKeys });
-
+    const authKey = expected.providerKeys[0];
     mocks.readAuthFile.mockResolvedValue({ [authKey]: { type: "oauth", key: "oauth-key" } });
     await expect(hasApiKey(spec)).resolves.toBe(false);
 
@@ -177,35 +289,20 @@ describe("API key vendors (env, then trusted config, then usable stored key)", (
 
   it.each(
     SIMPLE_VENDORS,
-  )("%s: ignores unapproved env templates and workspace config", async (_id, spec) => {
+  )("%s: ignores unapproved env templates and workspace config", async (_id, expected, spec) => {
     process.env.NOT_ALLOWED = "secret";
     mockConfigFiles({
-      [TRUSTED.json]: legacyConfig({ [spec.providerKeys[0]]: "{env:NOT_ALLOWED}" }),
+      [TRUSTED.json]: legacyConfig({ [expected.providerKeys[0]]: "{env:NOT_ALLOWED}" }),
     });
     await expect(resolveApiKey(spec)).resolves.toBeNull();
 
-    const workspaceConfig = legacyConfig({ [spec.providerKeys[0]]: "workspace-key" });
+    const workspaceConfig = legacyConfig({ [expected.providerKeys[0]]: "workspace-key" });
     mockConfigFiles(Object.fromEntries(WORKSPACE.map((path) => [path, workspaceConfig])));
     await expect(getApiKeyDiagnostics(spec)).resolves.toEqual({
       configured: false,
       source: null,
       checkedPaths: [],
       credentialDatabasePaths: DB_PATHS,
-    });
-  });
-
-  it("keeps NanoGPT env var order", async () => {
-    process.env.NANOGPT_API_KEY = "first-key";
-    process.env.NANO_GPT_API_KEY = "second-key";
-    await expect(resolveApiKey(API_KEY_VENDORS.nanogpt)).resolves.toEqual({
-      key: "first-key",
-      source: "env:NANOGPT_API_KEY",
-    });
-
-    delete process.env.NANOGPT_API_KEY;
-    await expect(resolveApiKey(API_KEY_VENDORS.nanogpt)).resolves.toEqual({
-      key: "second-key",
-      source: "env:NANO_GPT_API_KEY",
     });
   });
 });
@@ -256,6 +353,14 @@ describe("trusted config parsing", () => {
       null,
     ],
     [
+      "a malformed (array) native entry also hides legacy options",
+      {
+        provider: { deepseek: { options: { apiKey: "legacy-key" } } },
+        providers: { deepseek: [] },
+      },
+      null,
+    ],
+    [
       "legacy options",
       { provider: { deepseek: { options: { apiKey: "legacy-key" } } } },
       "legacy-key",
@@ -281,26 +386,27 @@ describe("trusted config parsing", () => {
 });
 
 describe("API key login vendors (a broken stored login is reported, not skipped)", () => {
-  it.each(LOGIN_VENDORS)("%s: parses stored logins exactly", (_id, spec) => {
-    const withEntry = (entry: unknown) => ({ [spec.authKeys[0]]: entry });
+  it.each(LOGIN_VENDORS)("%s: parses stored logins exactly", (_id, expected, spec) => {
+    const withEntry = (entry: unknown) => ({ [expected.authKeys[0]]: entry });
 
     expect(parseApiKeyLogin(spec, null)).toEqual({ state: "none" });
     expect(parseApiKeyLogin(spec, {})).toEqual({ state: "none" });
+    expect(parseApiKeyLogin(spec, withEntry(null))).toEqual({ state: "none" });
     expect(parseApiKeyLogin(spec, withEntry("bad-shape"))).toEqual({
       state: "invalid",
-      error: `${spec.displayName} auth entry has invalid shape`,
+      error: `${expected.displayName} auth entry has invalid shape`,
     });
     expect(parseApiKeyLogin(spec, withEntry({ type: { bad: true }, key: "k" }))).toEqual({
       state: "invalid",
-      error: `${spec.displayName} auth entry present but type is missing or invalid`,
+      error: `${expected.displayName} auth entry present but type is missing or invalid`,
     });
     expect(parseApiKeyLogin(spec, withEntry({ type: "oauth", key: "k" }))).toEqual({
       state: "invalid",
-      error: unsupportedTypeError(spec, "oauth"),
+      error: unsupportedTypeError(expected, "oauth"),
     });
     expect(parseApiKeyLogin(spec, withEntry({ type: "api", key: " " }))).toEqual({
       state: "invalid",
-      error: `${spec.displayName} auth entry present but key is empty`,
+      error: `${expected.displayName} auth entry present but key is empty`,
     });
     expect(
       parseApiKeyLogin(spec, withEntry({ type: "api", resolveError: "resolve_empty: no value" })),
@@ -308,21 +414,22 @@ describe("API key login vendors (a broken stored login is reported, not skipped)
       state: "invalid",
       error: "OpenCode could not read this login: resolve_empty: no value",
     });
-    for (const authKey of spec.authKeys) {
+    for (const [index, authKey] of expected.authKeys.entries()) {
+      const later = expected.authKeys.slice(index);
       expect(
-        parseApiKeyLogin(spec, { [authKey]: { type: "api", key: ` ${authKey}-key ` } }),
-      ).toEqual({
-        state: "configured",
-        apiKey: `${authKey}-key`,
-      });
+        parseApiKeyLogin(
+          spec,
+          entriesFor(later, (id) => ({ type: "api", key: ` ${id}-key ` })),
+        ),
+      ).toEqual({ state: "configured", apiKey: `${authKey}-key` });
     }
-    if (spec.authKeys.length > 1) {
+    if (expected.authKeys.length > 1) {
       expect(
         parseApiKeyLogin(spec, {
-          [spec.authKeys[0]]: { type: "oauth", key: "ignored" },
-          [spec.authKeys[1]]: { type: "api", key: "later-key" },
+          [expected.authKeys[0]]: { type: "oauth", key: "ignored" },
+          [expected.authKeys[1]]: { type: "api", key: "later-key" },
         }),
-      ).toEqual({ state: "invalid", error: unsupportedTypeError(spec, "oauth") });
+      ).toEqual({ state: "invalid", error: unsupportedTypeError(expected, "oauth") });
     }
   });
 
@@ -356,17 +463,17 @@ describe("API key login vendors (a broken stored login is reported, not skipped)
 
   it.each(
     LOGIN_VENDORS,
-  )("%s: env keys win in order and skip the stored logins", async (_id, spec) => {
-    for (const name of spec.envVars) process.env[name] = `${name}-value`;
-    mocks.readAuthFileCached.mockResolvedValue({ [spec.authKeys[0]]: { type: "oauth" } });
+  )("%s: env keys win in order and skip the stored logins", async (_id, expected, spec) => {
+    for (const name of expected.envVars) process.env[name] = `${name}-value`;
+    mocks.readAuthFileCached.mockResolvedValue({ [expected.authKeys[0]]: { type: "oauth" } });
     await expect(resolveApiKeyLogin(spec)).resolves.toEqual({
       state: "configured",
-      apiKey: `${spec.envVars[0]}-value`,
+      apiKey: `${expected.envVars[0]}-value`,
     });
     expect(mocks.readAuthFileCached).not.toHaveBeenCalled();
 
-    const lastEnvVar = spec.envVars.at(-1)!;
-    for (const name of spec.envVars.slice(0, -1)) delete process.env[name];
+    const lastEnvVar = expected.envVars.at(-1)!;
+    for (const name of expected.envVars.slice(0, -1)) delete process.env[name];
     await expect(getApiKeyLoginDiagnostics(spec)).resolves.toEqual({
       state: "configured",
       source: `env:${lastEnvVar}`,
@@ -377,12 +484,12 @@ describe("API key login vendors (a broken stored login is reported, not skipped)
 
   it.each(
     LOGIN_VENDORS,
-  )("%s: trusted config aliases win over a broken stored login", async (_id, spec) => {
-    mocks.readAuthFileCached.mockResolvedValue({ [spec.authKeys[0]]: { type: "oauth" } });
+  )("%s: trusted config aliases win over a broken stored login", async (_id, expected, spec) => {
+    mocks.readAuthFileCached.mockResolvedValue({ [expected.authKeys[0]]: { type: "oauth" } });
     mockConfigFiles({
       [TRUSTED.jsonc]: legacyConfig({
-        [spec.providerKeys[0]]: "{env:NOT_ALLOWED}",
-        [spec.providerKeys.at(-1)!]: "alias-key",
+        [expected.providerKeys[0]]: "{env:NOT_ALLOWED}",
+        [expected.providerKeys.at(-1)!]: "alias-key",
       }),
     });
     await expect(getApiKeyLoginDiagnostics(spec)).resolves.toEqual({
@@ -395,7 +502,7 @@ describe("API key login vendors (a broken stored login is reported, not skipped)
 
     mockConfigFiles(
       Object.fromEntries(
-        WORKSPACE.map((path) => [path, legacyConfig({ [spec.providerKeys[0]]: "k" })]),
+        WORKSPACE.map((path) => [path, legacyConfig({ [expected.providerKeys[0]]: "k" })]),
       ),
     );
     mocks.readAuthFileCached.mockResolvedValue(null);
@@ -409,25 +516,25 @@ describe("API key login vendors (a broken stored login is reported, not skipped)
 
   it.each(
     LOGIN_VENDORS,
-  )("%s: reads cached stored logins with the vendor's ids", async (_id, spec) => {
+  )("%s: reads cached stored logins with the vendor's ids", async (_id, expected, spec) => {
     mocks.readAuthFileCached.mockResolvedValue({
-      [spec.authKeys[0]]: { type: "api", key: "auth-key" },
+      [expected.authKeys[0]]: { type: "api", key: "auth-key" },
     });
     await expect(resolveApiKeyLogin(spec)).resolves.toEqual({
       state: "configured",
       apiKey: "auth-key",
     });
-    expect(mocks.readAuthFileCached).toHaveBeenLastCalledWith(expectedLoginRead(spec, 5_000));
+    expect(mocks.readAuthFileCached).toHaveBeenLastCalledWith(expectedLoginRead(expected, 5_000));
 
-    mocks.readAuthFileCached.mockResolvedValue({ [spec.authKeys[0]]: { type: "oauth" } });
+    mocks.readAuthFileCached.mockResolvedValue({ [expected.authKeys[0]]: { type: "oauth" } });
     await expect(getApiKeyLoginDiagnostics(spec, { maxAgeMs: -1 })).resolves.toEqual({
       state: "invalid",
       source: "opencode.db",
-      error: unsupportedTypeError(spec, "oauth"),
+      error: unsupportedTypeError(expected, "oauth"),
       checkedPaths: [],
       credentialDatabasePaths: DB_PATHS,
     });
-    expect(mocks.readAuthFileCached).toHaveBeenLastCalledWith(expectedLoginRead(spec, 0));
+    expect(mocks.readAuthFileCached).toHaveBeenLastCalledWith(expectedLoginRead(expected, 0));
   });
 });
 
@@ -505,6 +612,27 @@ describe("per-vendor differences", () => {
     ],
   ])("reports the unusable Alibaba login %j", (entry, expected) => {
     expect(resolveAlibabaCodingPlanAuth({ alibaba: entry } as never)).toEqual(expected);
+  });
+
+  it("reports an explicit null Alibaba login as broken, unlike the other vendors", async () => {
+    const invalidShape = {
+      state: "invalid",
+      error: "Alibaba Coding Plan auth entry has invalid shape",
+    };
+    expect(resolveAlibabaCodingPlanAuth({ "alibaba-coding-plan": null } as never)).toEqual(
+      invalidShape,
+    );
+    expect(resolveAlibabaCodingPlanAuth({ "alibaba-coding-plan": [] } as never)).toMatchObject({
+      state: "invalid",
+    });
+
+    mocks.readAuthFileCached.mockResolvedValue({ "alibaba-coding-plan": null });
+    await expect(getAlibabaCodingPlanAuthDiagnostics()).resolves.toEqual({
+      ...invalidShape,
+      source: "opencode.db",
+      checkedPaths: [],
+      credentialDatabasePaths: DB_PATHS,
+    });
   });
 
   it("uses the fallback Alibaba tier for env keys and reports a bad stored tier", async () => {
