@@ -62,7 +62,7 @@ export type QuotaAgentTool = {
 /** What a tool reports back to the agent, as JSON text. */
 type ToolResult = Record<string, unknown>;
 
-/** Replaces every key in a text; see `credentialRedactor`. */
+/** Replaces every key in one string; see `credentialRedactor`. */
 type Redact = (text: string) => string;
 
 const REDACTED = "[redacted]";
@@ -83,23 +83,39 @@ const SETTING_SECRET_MESSAGE = "looks like a key or other secret, so nothing was
 /** A top-level definition field that would hold a secret; `apiKeyEnv` holds only a name. */
 const SECRET_FIELD_PATTERN = /key|token|secret|passw|bearer|cookie|credential|authorization/i;
 
-/** Known key formats, found anywhere in a text. */
+/** Known key formats, found anywhere in a text: refused in inputs, replaced in answers. */
 const SECRET_PATTERNS: readonly RegExp[] = [
   /\bsk-[A-Za-z0-9_-]{16,}/g, // OpenAI, Anthropic, OpenRouter, DeepSeek, Moonshot
   /\b(?:gh[opsur]|github_pat)_[A-Za-z0-9_]{20,}/g, // GitHub
   /\bxox[abprs]-[A-Za-z0-9-]{10,}/g, // Slack
   /\bAKIA[0-9A-Z]{16}\b/g, // AWS
-  /\bAIza[0-9A-Za-z_-]{30,}/g, // Google
-  /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g, // JWT
+  /\bAIza[0-9A-Za-z_-]{30,}/g, // Google API key
+  /\bya29\.[0-9A-Za-z_-]{20,}/g, // Google OAuth access token
+  /\b1\/\/[0-9A-Za-z_-]{20,}/g, // Google OAuth refresh token
+  /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}(?:\.[A-Za-z0-9_-]*)?/g, // JWT, all three parts
   /\bbearer\s+\S{8,}/gi,
   /-----BEGIN [A-Z ]*PRIVATE KEY-----/g,
 ];
 
+/** Fields holding names (ids, model names, URLs, JSON paths): long runs pass in them. */
+const NAME_FIELDS: ReadonlySet<string> = new Set([
+  "id",
+  "providerId",
+  "modelIds",
+  "url",
+  "path",
+  "rowsPath",
+  "pricingModelMap",
+]);
+
+/** The validator's rule for an environment variable name, the only thing apiKeyEnv holds. */
+const VARIABLE_NAME = /^[A-Z_][A-Z0-9_]*$/;
+
 /** Environment variables whose values the answers never show: the names keys go by. */
 const KEY_VARIABLE_NAME = /API_?KEY|TOKEN|SECRET|PASSW|COOKIE|CREDENTIAL/i;
 
-/** Shorter values are not replaced: they would cut ordinary words out of answers. */
-const MIN_REDACTED_LENGTH = 8;
+/** Keys this long are replaced anywhere; shorter ones only as a whole token, so no word is cut. */
+const LONG_KEY_LENGTH = 8;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -118,15 +134,18 @@ function looksRandom(run: string): boolean {
 }
 
 /**
- * True when a value holds something shaped like a key: a known key format, or a random run of
- * letters and digits. Any other character ends a run, so model names such as
- * "Qwen3-Coder-480B-A35B-Instruct-2507", UUIDs and version strings pass. A heuristic: keys
- * never belong in a definition or a setting, only in an environment variable.
+ * True when a value holds something shaped like a key: a known key format, a random run of
+ * letters and digits, or (outside name fields) any run of 24+ of them. Any other character ends
+ * a run, so model names such as "Qwen3-Coder-480B-A35B-Instruct-2507", UUIDs and version
+ * strings pass. A heuristic: keys never belong in a definition or a setting, only in an
+ * environment variable.
  */
-function looksSecret(text: string): boolean {
+function looksSecret(text: string, isName: boolean): boolean {
   return (
     SECRET_PATTERNS.some((pattern) => text.search(pattern) !== -1) ||
-    (text.match(/[A-Za-z0-9]{20,}/g) ?? []).some(looksRandom)
+    (text.match(/[A-Za-z0-9]{20,}/g) ?? []).some(
+      (run) => looksRandom(run) || (!isName && run.length >= 24),
+    )
   );
 }
 
@@ -143,26 +162,41 @@ function redactStrings(value: unknown, redact: Redact): unknown {
 }
 
 /** Every string in a value that looks like a secret, by its path; never the value itself. */
-function secretIssues(value: unknown, key: string, message: string): SettingsIssue[] {
-  if (typeof value === "string") return looksSecret(value) ? [{ key, message }] : [];
+function secretIssues(
+  value: unknown,
+  key: string,
+  message: string,
+  isName = false,
+): SettingsIssue[] {
+  if (typeof value === "string") return looksSecret(value, isName) ? [{ key, message }] : [];
   if (Array.isArray(value)) {
-    return value.flatMap((item, index) => secretIssues(item, `${key}[${index}]`, message));
+    return value.flatMap((item, index) => secretIssues(item, `${key}[${index}]`, message, isName));
   }
   if (isRecord(value)) {
     return Object.entries(value).flatMap(([name, item]) =>
-      secretIssues(item, key ? `${key}.${name}` : name, message),
+      secretIssues(item, key ? `${key}.${name}` : name, message, isName || NAME_FIELDS.has(name)),
     );
   }
   return [];
 }
 
-/** A field named like a secret is refused whatever it holds; other fields by their values. */
+/**
+ * A field named like a secret is refused whatever it holds; other fields by their values. A
+ * valid variable name in apiKeyEnv is only a name (the key rule checks it).
+ */
 function definitionSecretIssues(definition: Record<string, unknown>): SettingsIssue[] {
-  return Object.entries(definition).flatMap(([field, value]) =>
-    field !== "apiKeyEnv" && SECRET_FIELD_PATTERN.test(field)
-      ? [{ key: `definition.${field}`, message: DEFINITION_SECRET_MESSAGE }]
-      : secretIssues(value, `definition.${field}`, DEFINITION_SECRET_MESSAGE),
-  );
+  return Object.entries(definition).flatMap(([field, value]): SettingsIssue[] => {
+    if (field === "apiKeyEnv" && typeof value === "string" && VARIABLE_NAME.test(value)) return [];
+    if (field !== "apiKeyEnv" && SECRET_FIELD_PATTERN.test(field)) {
+      return [{ key: `definition.${field}`, message: DEFINITION_SECRET_MESSAGE }];
+    }
+    return secretIssues(
+      value,
+      `definition.${field}`,
+      DEFINITION_SECRET_MESSAGE,
+      NAME_FIELDS.has(field),
+    );
+  });
 }
 
 /**
@@ -205,19 +239,28 @@ async function credentialValues(host: QuotaAgentToolsHost): Promise<string[]> {
   values.push(...logins.map((row) => row.value.key));
 
   return values.flatMap((value) =>
-    typeof value === "string" && value.trim().length >= MIN_REDACTED_LENGTH ? [value.trim()] : [],
+    typeof value === "string" && value.trim() ? [value.trim()] : [],
   );
 }
 
-/** Replaces each key the plugin can read (also as escaped in JSON) and each known key format. */
+/**
+ * Replaces, in one string, each key the plugin can read and each known key format. A key under
+ * LONG_KEY_LENGTH counts only as a whole token (letters, digits, `_` and `-`).
+ */
 async function credentialRedactor(host: QuotaAgentToolsHost): Promise<Redact> {
-  const values = await credentialValues(host);
-  const forms = [...new Set(values.flatMap((value) => [value, JSON.stringify(value).slice(1, -1)]))]
-    // Longest first, so a key that contains another is replaced whole.
-    .sort((a, b) => b.length - a.length);
+  // Longest first, so a key that contains another is replaced whole.
+  const values = [...new Set(await credentialValues(host))].sort((a, b) => b.length - a.length);
+  const long = values.filter((value) => value.length >= LONG_KEY_LENGTH);
+  const short = values
+    .filter((value) => value.length < LONG_KEY_LENGTH)
+    .map((value) => {
+      const escaped = value.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
+      return new RegExp(`(?<![\\w-])${escaped}(?![\\w-])`, "g");
+    });
   return (text) => {
     let redacted = text;
-    for (const form of forms) redacted = redacted.split(form).join(REDACTED);
+    for (const value of long) redacted = redacted.split(value).join(REDACTED);
+    for (const pattern of short) redacted = redacted.replace(pattern, REDACTED);
     for (const pattern of SECRET_PATTERNS) redacted = redacted.replace(pattern, REDACTED);
     return redacted;
   };
@@ -389,17 +432,25 @@ function keyVariableRule(id: string): string {
   );
 }
 
-/** The rows the sidebar would show for a definition's entries, or why there are none. */
+/**
+ * The rows the sidebar would show for a definition's entries, or why there are none. Row ids
+ * are made from the names and ids in them, so every string in them is redacted first.
+ */
 function testedRows(
   definition: QuotaProviderDefinition,
   entries: QuotaToastEntry[],
   rowErrors: readonly string[],
+  redact: Redact,
 ): ToolResult {
-  const fetched = rowsFromLegacyResult(QUOTA_PROVIDERS_AGGREGATE_ID, {
+  const result = {
     attempted: true,
     entries,
     errors: rowErrors.map((message) => ({ label: definition.label, message })),
-  });
+  };
+  const fetched = rowsFromLegacyResult(
+    QUOTA_PROVIDERS_AGGREGATE_ID,
+    redactStrings(result, redact) as typeof result,
+  );
   const problems = fetched.debug.map((detail) => detail.value);
   if (fetched.rows.length === 0) {
     return { ok: false, error: "The answer had no rows that could be read.", problems };
@@ -418,6 +469,7 @@ async function testFetch(
       definition,
       (await collectLocalQuotaProviderEstimate(definition)).entries,
       [],
+      redact,
     );
   }
   if (!usesDedicatedVariable(definition)) {
@@ -434,16 +486,15 @@ async function testFetch(
   }
   const result = await fetchRemoteQuotaProvider(definition, key, requestTimeoutMs);
   if (!result.success) return { ok: false, error: result.error };
-  // An endpoint can echo the key into a name, and row ids are made from names: redact first.
-  const entries = redactStrings(result.entries, redact) as QuotaToastEntry[];
   return testedRows(
     definition,
     // Rows are keyed by the definition id, as in the provider's own fetch.
-    entries.map((entry) => ({
+    result.entries.map((entry) => ({
       ...entry,
       accounting: { ...entry.accounting, sourceId: definition.id },
     })),
-    redactStrings(result.rowErrors ?? [], redact) as string[],
+    result.rowErrors ?? [],
+    redact,
   );
 }
 
@@ -628,7 +679,8 @@ function tool(
         result = { ok: false, message: error instanceof Error ? error.message : String(error) };
       }
       // The one place answers are cleaned: whatever a file or an endpoint holds, no key gets out.
-      return { content: redact(JSON.stringify(result, null, 2)) };
+      // Each string is cleaned on its own, so a replacement never reaches the JSON around it.
+      return { content: JSON.stringify(redactStrings(result, redact), null, 2) };
     },
   };
 }

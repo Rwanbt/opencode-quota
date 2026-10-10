@@ -21,6 +21,8 @@ beforeEach(async () => {
   root = await mkdtemp(join(tmpdir(), "quota.agent.tools."));
   vi.stubEnv("OPENCODE_CONFIG_DIR", join(root, "config"));
   vi.stubEnv("XDG_STATE_HOME", join(root, "state"));
+  vi.stubEnv("XDG_DATA_HOME", join(root, "data"));
+  vi.stubEnv("XDG_CACHE_HOME", join(root, "cache"));
   vi.stubEnv(GATEWAY_VARIABLE, "");
   openCodeProviderIds = ["my-gateway", "openrouter"];
   vi.stubGlobal(
@@ -123,8 +125,42 @@ function bindLogins(logins: Record<string, string>, onRead = () => {}): void {
   });
 }
 
-/** A 32-character lowercase hex token, the shape of many API keys. */
-const HEX_TOKEN = "9f86d081884c7d659a2feaa0c55ad015";
+/**
+ * Secrets that must never get through: each is refused in a definition, and each in a known
+ * key format (`inAnswers`) is replaced in every answer.
+ */
+const SECRET_CANARIES = [
+  { name: "an OpenAI-style key", value: "sk-proj-abcdefghijklmnop1234", inAnswers: true },
+  { name: "an OpenRouter key", value: "sk-or-v1-0123456789abcdef0123", inAnswers: true },
+  { name: "a GitHub token", value: "ghp_0123456789abcdefABCDEF0123456789abcd", inAnswers: true },
+  { name: "a Slack token", value: "xoxb-1234567890-abcdefghij", inAnswers: true },
+  {
+    name: "a Google OAuth token",
+    value: "ya29.a0AfH6SMBx3kQ9vR2pT7nW4cY8zD1eF5gH",
+    inAnswers: true,
+  },
+  { name: "a Google refresh token", value: "1//0gLm3QvR8sT2uV5wX7yZ9aB1cD3eF5gH", inAnswers: true },
+  {
+    name: "a JWT",
+    value: "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2lnbmF0dXJlLXBhcnQx",
+    inAnswers: true,
+  },
+  { name: "a bearer header", value: "Bearer abcdefghijklmnop", inAnswers: true },
+  { name: "a lowercase hex token", value: "9f86d081884c7d659a2feaa0c55ad015", inAnswers: false },
+  {
+    name: "a lowercase letter and digit token",
+    value: "k3j9x2m8q7w1z5n4b6v0c8x2a7",
+    inAnswers: false,
+  },
+  { name: "a lowercase letter token", value: "qvkjmznxwtyslrfpdhcbagqvkjmznxwt", inAnswers: false },
+  { name: "a mixed-case token", value: "Zx9QmT4vLr8KpW2sNb7YhC3dFg6JkA1e", inAnswers: false },
+];
+
+/** The custom provider labels a quota_settings_get answer shows. */
+function shownLabels(result: Answer): string[] {
+  const custom = result.settings?.["providers.custom"] as { value: Array<{ label: string }> };
+  return custom.value.map((definition) => definition.label);
+}
 
 const GATEWAY_WITHOUT_KEY_VARIABLE = Object.fromEntries(
   Object.entries(GATEWAY).filter(([field]) => field !== "apiKeyEnv"),
@@ -212,6 +248,29 @@ describe("quota_settings_get", () => {
       value: "/opt/[redacted]/claude",
     });
     for (const key of keys) expect(result.text).not.toContain(key);
+  });
+
+  it("replaces a short saved key only where it stands as a whole token", async () => {
+    vi.stubEnv("MY_SERVICE_TOKEN", "abc1234");
+    writeSettings(
+      JSON.stringify({ providers: { custom: [{ ...OTHER, label: "key abc1234, not abc12345" }] } }),
+    );
+
+    const result = await call("quota_settings_get", {});
+
+    expect(shownLabels(result)).toEqual(["key [redacted], not abc12345"]);
+  });
+
+  it.each(
+    SECRET_CANARIES.filter(({ inAnswers }) => inAnswers),
+  )("replaces $name in every answer, which stays valid JSON", async ({ value }) => {
+    writeSettings(JSON.stringify({ providers: { custom: [{ ...OTHER, label: value }] } }));
+
+    // `call` parses the answer, so an answer that is not valid JSON fails here.
+    const result = await call("quota_settings_get", {});
+
+    expect(result.problemsInFile).toBeUndefined();
+    expect(shownLabels(result)).toEqual(["[redacted]"]);
   });
 });
 
@@ -322,22 +381,12 @@ describe("quota_settings_set", () => {
 
 describe("quota_provider_add", () => {
   it.each([
+    ...SECRET_CANARIES.map(({ name, value }) => ({
+      name,
+      definition: { ...GATEWAY, label: value },
+      key: "definition.label",
+    })),
     { name: "a key field", definition: { ...GATEWAY, apiKey: "abc" }, key: "definition.apiKey" },
-    {
-      name: "a known key format",
-      definition: { ...GATEWAY, label: "sk-or-v1-0123456789abcdef0123" },
-      key: "definition.label",
-    },
-    {
-      name: "a GitHub token",
-      definition: { ...GATEWAY, label: "ghp_0123456789abcdefABCDEF0123456789abcd" },
-      key: "definition.label",
-    },
-    {
-      name: "a Slack token",
-      definition: { ...GATEWAY, label: "xoxb-1234567890-abcdefghij" },
-      key: "definition.label",
-    },
     {
       name: "a random token in the URL",
       definition: {
@@ -345,16 +394,6 @@ describe("quota_provider_add", () => {
         url: "https://gateway.example/v1/Zx9QmT4vLr8KpW2sNb7YhC3dFg6JkA1e/quota",
       },
       key: "definition.url",
-    },
-    {
-      name: "a lowercase hex token",
-      definition: { ...GATEWAY, label: HEX_TOKEN },
-      key: "definition.label",
-    },
-    {
-      name: "a lowercase letter and digit token",
-      definition: { ...GATEWAY, label: "k3j9x2m8q7w1z5n4b6v0c8x2a7" },
-      key: "definition.label",
     },
     {
       name: "a key where the variable name belongs",
@@ -382,8 +421,32 @@ describe("quota_provider_add", () => {
       },
     },
     {
-      name: "a camelCase field name",
-      definition: { ...GATEWAY, label: "AvailableBalanceUSD2024Total" },
+      name: "a long model name without digits",
+      definition: { ...GATEWAY, modelIds: ["llamaguardinstructionfinetunedmodel"] },
+    },
+    {
+      name: "a camelCase field name in a JSON path",
+      definition: {
+        ...GATEWAY,
+        format: "json-v1",
+        adapter: {
+          mappings: [
+            {
+              resultType: "balance",
+              name: "Balance",
+              metric: {
+                type: "value",
+                valueType: "balance",
+                value: { path: ["data", "AvailableBalanceUSD2024Total"] },
+              },
+            },
+          ],
+        },
+      },
+    },
+    {
+      name: "a long variable name",
+      definition: { ...GATEWAY, apiKeyEnv: "OPENCODE_QUOTA_X1X2X3X4X5X6X7X8X9X0_API_KEY" },
     },
     { name: "a UUID", definition: { ...GATEWAY, label: "123e4567-e89b-12d3-a456-426614174000" } },
     { name: "a version string", definition: { ...GATEWAY, label: "v2.14.0-rc.1+build.20261010" } },
@@ -487,6 +550,29 @@ describe("quota_provider_add", () => {
     const result = await call("quota_provider_add", { definition: GATEWAY });
 
     expect(result.test).toMatchObject({ ok: true, rows: [{ percentRemaining: 50 }] });
+    expect(result.text).not.toMatch(/echo.me.please.42/i);
+  });
+
+  it.each([
+    { mode: "remote", definition: { ...GATEWAY, id: "echo-me-please-42" } },
+    {
+      mode: "local-estimate",
+      definition: {
+        id: "echo-me-please-42",
+        providerId: "my-gateway",
+        mode: "local-estimate",
+        windows: [{ id: "daily", type: "utc-day", requestLimit: 100 }],
+      },
+    },
+  ])("never puts a saved key into a $mode provider's row ids", async ({ definition }) => {
+    vi.stubEnv("MY_SERVICE_TOKEN", "echo-me-please-42");
+    vi.stubEnv(GATEWAY_VARIABLE, "gateway-key");
+    answerWith(200, DAILY_QUOTA);
+    writeSettings(JSON.stringify({ providers: { custom: [definition] } }));
+
+    const result = await call("quota_provider_test", { id: "echo-me-please-42" });
+
+    expect(result).toMatchObject({ ok: true, rows: [{ percentRemaining: expect.any(Number) }] });
     expect(result.text).not.toMatch(/echo.me.please.42/i);
   });
 
