@@ -567,7 +567,9 @@ describe("server quota RPC", () => {
     expect(exported).toMatchObject({
       version: 2,
       fromCache: true,
-      providers: { copilot: { status: "ok", entries: [{ name: "Copilot Plan" }] } },
+      providers: {
+        copilot: { status: "ok", entries: [{ name: "Copilot", percentRemaining: 81 }] },
+      },
     });
   });
 

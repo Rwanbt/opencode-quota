@@ -31,6 +31,11 @@ const QUOTA_PROVIDER_CACHE_RETENTION_MS = 24 * 60 * 60 * 1000;
 const QUOTA_PROVIDER_CACHE_PRUNE_INTERVAL_MS = 60 * 60 * 1000;
 
 const inMemoryCache = new Map<string, PersistedQuotaProviderCacheEntry>();
+/**
+ * The last failed check per cache key, in memory only and never reused by a fetch: export
+ * reads show it (status "error") instead of "unavailable" until a check works again.
+ */
+const latestFailureByKey = new Map<string, { result: QuotaProviderResult; timestamp: number }>();
 const inFlightByKey = new Map<string, Promise<QuotaProviderResult>>();
 type ProcessLocalLatestEntry = { result: QuotaProviderResult; timestamp: number };
 let processLocalLatestByRuntime = new WeakMap<
@@ -431,8 +436,18 @@ export async function fetchQuotaProviderResult(params: {
     ) {
       inMemoryCache.delete(key);
       await safeRm(getQuotaProviderStateCacheFilePath(provider.id, key));
+      const failed = snapshot.attempted && snapshot.entries.length === 0;
+      if (failed && (await isProviderCacheScopeCurrent(provider, ctx, scope))) {
+        latestFailureByKey.set(key, {
+          result: cloneQuotaProviderResult(snapshot),
+          timestamp: Date.now(),
+        });
+      } else {
+        latestFailureByKey.delete(key);
+      }
       return snapshot;
     }
+    latestFailureByKey.delete(key);
 
     const entry = encodePersistedQuotaProviderCacheEntry({
       packageVersion,
@@ -495,6 +510,14 @@ export async function readCachedProviderResult(params: {
       timestamp: inMemory.timestamp,
     };
   }
+  const failure = latestFailureByKey.get(key);
+  if (failure) {
+    return {
+      hit: true,
+      result: cloneQuotaProviderResult(failure.result),
+      timestamp: failure.timestamp,
+    };
+  }
 
   const packageVersion = await getQuotaProviderCachePackageVersion();
   const persisted = await readPersistedQuotaProviderCacheEntry({
@@ -523,6 +546,7 @@ export async function readCachedProviderResult(params: {
 
 export function __resetQuotaStateForTests(): void {
   inMemoryCache.clear();
+  latestFailureByKey.clear();
   inFlightByKey.clear();
   processLocalLatestByRuntime = new WeakMap();
   lastPruneAtMs = 0;

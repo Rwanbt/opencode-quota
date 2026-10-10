@@ -1414,7 +1414,7 @@ describe("quota-state shared cache", () => {
     expect(provider.fetch).toHaveBeenCalledTimes(2);
   });
 
-  it("does not cache attempted provider results that contain only errors", async () => {
+  it("never reuses a result with only errors, but keeps it for export reads", async () => {
     const { __resetQuotaStateForTests, fetchQuotaProviderResult, readCachedProviderResult } =
       await import("../src/lib/quota-state.js");
     __resetQuotaStateForTests();
@@ -1435,9 +1435,12 @@ describe("quota-state shared cache", () => {
     await fetchQuotaProviderResult({ provider, ctx, ttlMs: 60_000 });
 
     expect(provider.fetch).toHaveBeenCalledTimes(2);
-    await expect(readCachedProviderResult({ provider, ctx, ttlMs: 60_000 })).resolves.toEqual({
-      hit: false,
-    });
+    await expect(readCachedProviderResult({ provider, ctx, ttlMs: 60_000 })).resolves.toMatchObject(
+      {
+        hit: true,
+        result: { entries: [], errors: [{ label: "Anthropic", message: "rate limited" }] },
+      },
+    );
   });
 
   it("caches entry-bearing partial aggregates including internal diagnostics", async () => {
@@ -1780,8 +1783,11 @@ describe("quota-state shared cache", () => {
     });
     expect(second).toEqual(first);
     expect(provider.fetch).toHaveBeenCalledTimes(2);
+    // Export reads show the failed check.
     await expect(readCachedProviderResult({ provider, ctx, ttlMs: 60_000 })).resolves.toEqual({
-      hit: false,
+      hit: true,
+      result: first,
+      timestamp: expect.any(Number),
     });
   });
 
@@ -1956,8 +1962,11 @@ describe("quota-state shared cache", () => {
     });
     expect(second).toEqual(first);
     expect(provider.fetch).toHaveBeenCalledTimes(2);
+    // Export reads show the failed check.
     await expect(readCachedProviderResult({ provider, ctx, ttlMs: 60_000 })).resolves.toEqual({
-      hit: false,
+      hit: true,
+      result: first,
+      timestamp: expect.any(Number),
     });
   });
 

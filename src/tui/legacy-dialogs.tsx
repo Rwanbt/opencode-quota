@@ -16,16 +16,13 @@ import {
   renderableSections,
   renderKvRow,
 } from "../lib/report-document.js";
+import { QuotaRpc, REPORT_COMMANDS, type ReportCommandId } from "../rpc.js";
 import {
-  QuotaRpc,
-  type QuotaRpcCommandInput,
-  type QuotaRpcCommandOutput,
-  REPORT_COMMANDS,
-  type ReportCommandId,
-} from "../rpc.js";
-import { rpcErrorMessage } from "./client.js";
-
-const RPC_TIMEOUT_MS = 60_000;
+  type QuotaRpcClient,
+  quotaCallOptions,
+  type RpcLocationHost,
+  rpcErrorMessage,
+} from "./client.js";
 
 type Toast = {
   variant?: "info" | "success" | "warning" | "error";
@@ -46,22 +43,13 @@ type DialogTheme = {
   text: { base: RGBA; muted: RGBA; action: { primary: { focused: RGBA; selected: RGBA } } };
   background: { action: { primary: { focused: RGBA } } };
 };
-type QuotaRpcCallOptions = { location: { directory: string }; signal: AbortSignal };
-
 /** What the report dialogs need from the TUI context. */
-export type LegacyDialogHost = {
-  location?: { directory: string };
+export type LegacyDialogHost = RpcLocationHost & {
   renderer: { currentFocusedEditor: { plainText: string; clear: () => void } | null };
   client: {
-    rpc: (definition: typeof QuotaRpc) => {
-      command: (
-        input: QuotaRpcCommandInput,
-        options: QuotaRpcCallOptions,
-      ) => Promise<QuotaRpcCommandOutput>;
-    };
+    rpc: (definition: typeof QuotaRpc) => Pick<QuotaRpcClient, "command">;
   };
   theme: { surface: (name: "dialog") => DialogTheme };
-  data: { location?: { default: () => { directory: string } } };
   keymap: {
     /** Without a mode, a layer is active only in OpenCode's base mode. */
     layer: (
@@ -83,19 +71,6 @@ export type LegacyDialogHost = {
 };
 
 type TuiContext = LegacyDialogHost;
-
-function defaultLocation(context: TuiContext): { directory: string } {
-  if (!context.data.location) throw new Error("OpenCode gave the TUI no location");
-  return context.data.location.default();
-}
-
-/** Each RPC call names the TUI's location, so the server uses that folder's settings. */
-function quotaRpcOptions(context: TuiContext): QuotaRpcCallOptions {
-  return {
-    location: context.location ?? defaultLocation(context),
-    signal: AbortSignal.timeout(RPC_TIMEOUT_MS),
-  };
-}
 
 /** OpenCode's "xlarge" dialog width (dialogWidth in its ui/dialog.tsx). */
 const DIALOG_WIDTH = 116;
@@ -317,7 +292,7 @@ async function runReportCommand(
   try {
     const result = await context.client
       .rpc(QuotaRpc)
-      .command({ command, arguments: argumentsText, sessionID }, quotaRpcOptions(context));
+      .command({ command, arguments: argumentsText, sessionID }, quotaCallOptions(context));
     if (result.state === "noop") return;
     await showQuotaOutputDialog(context, { title: result.title, document: result.document });
   } catch (error) {

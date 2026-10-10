@@ -18,9 +18,11 @@
  *   an account name are numbered here ("Pro", "Pro 2"), by login, so the numbers stay put;
  *   numbers skip names other rows already have.
  * - When a quota window resets between two checks, a reset notice is recorded once.
+ * - Subscribers hear of every change: a fetch, the rows read from the file at the start, and a
+ *   change in which providers are on.
  * - Reads from OpenCode and provider fetches have time limits, so `dispose` always ends.
  */
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { classifyError } from "./errors.js";
 import {
   joinNotices,
@@ -322,6 +324,12 @@ export function createQuotaStore(deps: QuotaStoreDeps): QuotaStore {
   let loaded: Promise<void> | undefined;
   let writing: Promise<void> | undefined;
   let writeAgain = false;
+  /** Names this store in its snapshots, so a TUI can tell a restarted server apart. */
+  const serverId = randomUUID();
+  /** The last snapshot's revision; each next snapshot gets one more. */
+  let revision = 0;
+  /** The provider ids subscribers last heard of; undefined until the first snapshot. */
+  let heardProviders: string | undefined;
 
   function track<T>(promise: Promise<T>): Promise<T> {
     tasks.add(promise);
@@ -418,7 +426,10 @@ export function createQuotaStore(deps: QuotaStoreDeps): QuotaStore {
         keys.set(provider.id, await resolveKey(provider));
       }),
     );
-    return { generation: startedIn, source, keys };
+    const operation = { generation: startedIn, source, keys };
+    // The rows read from the file, or a provider turned on or off, are news to subscribers.
+    if (providerIdsOf(operation) !== heardProviders) emit(operation);
+    return operation;
   }
 
   /** The snapshot an operation sees; a stale one shows no rows (whose they are is unknown). */
@@ -443,7 +454,15 @@ export function createQuotaStore(deps: QuotaStoreDeps): QuotaStore {
         debug: entry?.debug ?? [],
       };
     });
-    const snapshot: QuotaSnapshot = { version: 6, providers, resetNotices, generatedAtMs: nowMs };
+    revision += 1;
+    const snapshot: QuotaSnapshot = {
+      version: 6,
+      providers,
+      resetNotices,
+      generatedAtMs: nowMs,
+      serverId,
+      revision,
+    };
     const providerIdsForModel = operation.source.providerIdsForModel;
     if (model && (model.id || model.providerID) && providerIdsForModel) {
       const shown = new Set(providers.map((provider) => provider.providerId));
@@ -452,8 +471,13 @@ export function createQuotaStore(deps: QuotaStoreDeps): QuotaStore {
     return snapshot;
   }
 
+  function providerIdsOf(operation: Operation): string {
+    return JSON.stringify(operation.source.providers.map((provider) => provider.id));
+  }
+
   function emit(operation: Operation): void {
     if (listeners.size === 0 || !isCurrent(operation)) return;
+    heardProviders = providerIdsOf(operation);
     const snapshot = buildSnapshot(operation);
     for (const listener of listeners) {
       try {

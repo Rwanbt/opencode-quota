@@ -6,7 +6,7 @@ import type {
   UsageProviderRow,
   UsageReport,
 } from "../src/core/usage.js";
-import { formatShare, formatTokens, formatUsd } from "../src/view/numbers.js";
+import { formatShare, formatTokens, formatUsd } from "../src/view/format.js";
 import { type UsageLine, type UsageViewOptions, usageText, usageView } from "../src/view/usage.js";
 
 const M = 1_000_000;

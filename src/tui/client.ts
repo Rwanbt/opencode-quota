@@ -3,11 +3,17 @@
  * redraws when it changes. It asks the server over the quota RPC (`snapshot` when a surface
  * shows, `refresh` after a turn), applies every `changed` event, and asks again every minute
  * in case an event was missed. Nothing reaches OpenCode until a surface shows or a turn ends.
+ *
+ * Answers can arrive out of order. The newest snapshot (highest `revision`) wins; a snapshot
+ * from another server (a new `serverId`: OpenCode restarted it) always wins, as its revisions
+ * start over. What a snapshot says about one session comes from the latest call about it.
  */
 import { createSignal } from "solid-js";
 import type { QuotaSnapshot, SessionTokens } from "../core/types.js";
 import {
   QuotaRpc,
+  type QuotaRpcCommandInput,
+  type QuotaRpcCommandOutput,
   type QuotaRpcNoticesInput,
   type QuotaRpcNoticesOutput,
   type QuotaRpcRefreshInput,
@@ -19,13 +25,26 @@ import {
 const POLL_INTERVAL_MS = 60_000;
 const RPC_TIMEOUT_MS = 60_000;
 
-type CallOptions = { location: { directory: string }; signal: AbortSignal };
+export type QuotaRpcCallOptions = { location: { directory: string }; signal: AbortSignal };
 
 /** The quota RPC as OpenCode's TUI client offers it. */
 export type QuotaRpcClient = {
-  snapshot(input: QuotaRpcSnapshotInput, options: CallOptions): Promise<QuotaRpcSnapshotOutput>;
-  refresh(input: QuotaRpcRefreshInput, options: CallOptions): Promise<QuotaRpcSnapshotOutput>;
-  notices(input: QuotaRpcNoticesInput, options: CallOptions): Promise<QuotaRpcNoticesOutput>;
+  command(
+    input: QuotaRpcCommandInput,
+    options: QuotaRpcCallOptions,
+  ): Promise<QuotaRpcCommandOutput>;
+  snapshot(
+    input: QuotaRpcSnapshotInput,
+    options: QuotaRpcCallOptions,
+  ): Promise<QuotaRpcSnapshotOutput>;
+  refresh(
+    input: QuotaRpcRefreshInput,
+    options: QuotaRpcCallOptions,
+  ): Promise<QuotaRpcSnapshotOutput>;
+  notices(
+    input: QuotaRpcNoticesInput,
+    options: QuotaRpcCallOptions,
+  ): Promise<QuotaRpcNoticesOutput>;
   events: {
     on(
       name: "changed",
@@ -35,16 +54,25 @@ export type QuotaRpcClient = {
   };
 };
 
-/** What the client needs from the TUI context. */
-export type ClientHost = {
+/** Where a quota RPC call goes: the TUI's folder. */
+export type RpcLocationHost = {
   location?: { directory: string };
-  client: { rpc: (definition: typeof QuotaRpc) => QuotaRpcClient };
   data: { location?: { default: () => { directory: string } } };
 };
 
-function defaultLocation(host: ClientHost): { directory: string } {
-  if (!host.data.location) throw new Error("OpenCode gave the TUI no location");
-  return host.data.location.default();
+/** What the client needs from the TUI context. */
+export type ClientHost = RpcLocationHost & {
+  client: { rpc: (definition: typeof QuotaRpc) => QuotaRpcClient };
+};
+
+/**
+ * Each call names the TUI's folder, so the server uses that folder's settings, and gives up
+ * after a minute. The RPC client itself is made per call, never during setup.
+ */
+export function quotaCallOptions(host: RpcLocationHost): QuotaRpcCallOptions {
+  const location = host.location ?? host.data.location?.default();
+  if (!location) throw new Error("OpenCode gave the TUI no location");
+  return { location, signal: AbortSignal.timeout(RPC_TIMEOUT_MS) };
 }
 
 /** What a snapshot says only about one session. */
@@ -63,7 +91,7 @@ export type QuotaClient = {
   refresh(reason: QuotaRpcRefreshReason, sessionID?: string): Promise<QuotaSnapshot | undefined>;
   /**
    * Starts the minute poll and allows the `changed` subscription, made with the first call;
-   * the returned function stops both.
+   * the returned function stops both and drops the answers to calls made before it.
    */
   start(): () => void;
 };
@@ -106,27 +134,31 @@ export function createQuotaClient(
   let globalWatchers = 0;
   let homeWatchers = 0;
   let running = false;
-  /** Snapshot calls on their way, by session ("" for none). */
-  const loading = new Set<string>();
+  /** Numbers every call; a session's part is kept only from a later call than the last one. */
+  let calls = 0;
+  const sessionCalls = new Map<string, number>();
+  /** Bumped when the TUI stops: answers to calls made before then are dropped. */
+  let mount = 0;
+  /** Snapshot calls on their way, by session ("" for none), with their call numbers. */
+  const loading = new Map<string, number>();
   /** The `changed` subscription while running, made with the first snapshot call. */
   let events: AbortController | undefined;
 
-  // The RPC client is made per call, so nothing reaches OpenCode during plugin setup.
   const rpc = () => host.client.rpc(QuotaRpc);
-  const options = (): CallOptions => ({
-    location: host.location ?? defaultLocation(host),
-    signal: AbortSignal.timeout(RPC_TIMEOUT_MS),
-  });
 
-  function apply(snapshot: QuotaSnapshot, sessionID?: string): void {
+  /** `call` numbers the request a session's part came from. */
+  function apply(snapshot: QuotaSnapshot, session?: { id: string; call: number }): void {
     const { currentModelProviderIds, sessionTokens, ...shared } = snapshot;
-    // An answer that left before a newer event arrived must not undo it.
+    // An answer that left before a newer snapshot arrived must not undo it.
     const current = latest();
-    if (!current || current.generatedAtMs <= shared.generatedAtMs) setLatest(shared);
-    if (sessionID) {
+    if (!current || current.serverId !== shared.serverId || current.revision < shared.revision) {
+      setLatest(shared);
+    }
+    if (session && session.call > (sessionCalls.get(session.id) ?? 0)) {
+      sessionCalls.set(session.id, session.call);
       setSessions((all) => ({
         ...all,
-        [sessionID]: {
+        [session.id]: {
           ...(currentModelProviderIds ? { currentModelProviderIds } : {}),
           ...(sessionTokens ? { sessionTokens } : {}),
         },
@@ -138,10 +170,15 @@ export function createQuotaClient(
   function subscribe(): void {
     if (!running || events) return;
     events = new AbortController();
+    const signal = events.signal;
     try {
-      rpc().events.on("changed", (event) => apply(event.data.snapshot), {
-        signal: events.signal,
-      });
+      rpc().events.on(
+        "changed",
+        (event) => {
+          if (!signal.aborted) apply(event.data.snapshot);
+        },
+        { signal },
+      );
     } catch (error) {
       // The poll still updates every minute.
       reportFailure(error);
@@ -152,19 +189,28 @@ export function createQuotaClient(
     // The sidebar and the status line of one session ask together; one call answers both.
     const key = sessionID ?? "";
     if (loading.has(key)) return;
-    loading.add(key);
+    const call = ++calls;
+    const at = mount;
+    loading.set(key, call);
     subscribe();
     rpc()
-      .snapshot(sessionID ? { sessionID } : {}, options())
-      .then((output) => apply(output.snapshot, sessionID))
+      .snapshot(sessionID ? { sessionID } : {}, quotaCallOptions(host))
+      .then((output) => {
+        if (at === mount) apply(output.snapshot, sessionID ? { id: sessionID, call } : undefined);
+      })
       .catch(reportFailure)
-      .finally(() => loading.delete(key));
+      .finally(() => {
+        if (loading.get(key) === call) loading.delete(key);
+      });
   }
 
   function loadHomeLine(): void {
+    const at = mount;
     rpc()
-      .notices({}, options())
-      .then((output) => setHomeLine(output.homeLine))
+      .notices({}, quotaCallOptions(host))
+      .then((output) => {
+        if (at === mount) setHomeLine(output.homeLine);
+      })
       .catch(reportFailure);
   }
 
@@ -213,9 +259,12 @@ export function createQuotaClient(
     async refresh(reason, sessionID) {
       try {
         const input: QuotaRpcRefreshInput = sessionID ? { reason, sessionID } : { reason };
+        const call = ++calls;
+        const at = mount;
         subscribe();
-        const output = await rpc().refresh(input, options());
-        apply(output.snapshot, sessionID);
+        const output = await rpc().refresh(input, quotaCallOptions(host));
+        if (at !== mount) return undefined;
+        apply(output.snapshot, sessionID ? { id: sessionID, call } : undefined);
         return snapshot(sessionID);
       } catch (error) {
         reportFailure(error);
@@ -225,10 +274,16 @@ export function createQuotaClient(
 
     start() {
       running = true;
-      if (watched.size > 0 || globalWatchers > 0) subscribe();
+      // After a reconnect, the surfaces already on screen ask again at once.
+      poll();
       const timer = setInterval(poll, POLL_INTERVAL_MS);
+      let stopped = false;
       return () => {
+        if (stopped) return;
+        stopped = true;
         running = false;
+        mount += 1;
+        loading.clear();
         events?.abort();
         events = undefined;
         clearInterval(timer);

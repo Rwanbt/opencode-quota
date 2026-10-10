@@ -190,7 +190,7 @@ These show only your own member API key's usage, not the whole organization's.
 
 ### Custom providers
 
-Track a provider that is not listed, from its quota API or from a local estimate. Ask your agent to add a custom provider: follow [docs/readme/providers.md#custom-providers](docs/readme/providers.md#custom-providers) (it has a copy-paste prompt).
+Track a provider that is not listed, from its quota API or from a local estimate. Ask your agent to add a custom provider: its `quota_provider_add` tool saves and tests one; [docs/readme/providers.md#custom-providers](docs/readme/providers.md#custom-providers) has a copy-paste prompt.
 
 ## Troubleshooting
 

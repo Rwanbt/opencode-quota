@@ -52,6 +52,13 @@ const JSON_V1_DECIMAL_TEXT_RE = /^-?\d+(?:\.\d+)?$/;
 
 export type QuotaProviderAuthSource = "env" | "opencode.json" | "opencode.jsonc" | "opencode.db";
 
+/**
+ * A custom provider whose `apiKeyEnv` starts with this reads its key only from that variable,
+ * never from OpenCode's config or saved logins. The agent tools add providers only with one, so
+ * an agent cannot get a saved key sent to a URL it chose.
+ */
+export const DEDICATED_KEY_VARIABLE_PREFIX = "OPENCODE_QUOTA_";
+
 export interface QuotaProviderAuthResolution {
   key?: string;
   source: QuotaProviderAuthSource | null;
@@ -103,8 +110,19 @@ function accountingMetadata(
 export async function resolveQuotaProviderApiKey(
   source: RemoteApiQuotaProviderDefinition,
 ): Promise<QuotaProviderAuthResolution> {
+  const name = source.apiKeyEnv;
+  if (name?.startsWith(DEDICATED_KEY_VARIABLE_PREFIX)) {
+    // A dedicated variable is the only place this provider's key is read from.
+    const key = process.env[name]?.trim();
+    return {
+      ...(key ? { key } : {}),
+      source: key ? "env" : null,
+      checkedPaths: process.env[name] === undefined ? [] : [`env:${name}`],
+      credentialDatabasePaths: [],
+    };
+  }
   const spec: ApiKeySpec = {
-    envVars: source.apiKeyEnv ? [source.apiKeyEnv] : [],
+    envVars: name ? [name] : [],
     providerKeys: [source.providerId],
     // Key logins only: `providerId` can name an integration with OAuth sign-ins
     // (for example `opencode`), and resolving one could refresh its token for nothing.

@@ -51,6 +51,7 @@ export function formatTokenCount(count: number): string {
   return String(count);
 }
 
+/** A dollar amount with two decimals ("$12.50"); "$0.00" for a non-finite number. */
 export function fmtUsdAmount(n: number): string {
   if (!Number.isFinite(n)) return "$0.00";
   return `$${n.toFixed(2)}`;

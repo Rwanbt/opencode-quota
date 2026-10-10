@@ -101,6 +101,8 @@ export async function buildCliShowText(params: {
     })),
     resetNotices: [],
     generatedAtMs: nowMs,
+    serverId: "cli",
+    revision: nowMs,
   };
   const words: Words = {
     ...DEFAULT_WORDS,
