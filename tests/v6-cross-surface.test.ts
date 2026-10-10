@@ -391,10 +391,17 @@ describe("v6 surfaces on the quota snapshot", () => {
     const tui = await startHosts();
     const sidebar = () => tui.render("sidebar.content", { sessionID: "ses_1" });
     // The first look asks the server; the providers answer in the background and the
-    // `changed` event brings their rows.
-    await vi.waitFor(() => expect(textLines(sidebar())).toContain("Session  1.2K in · 45 out"), {
-      timeout: 5000,
-    });
+    // `changed` event brings their rows, the last of them the custom source's.
+    await vi.waitFor(
+      () =>
+        expect(textLines(sidebar())).toEqual(
+          expect.arrayContaining([
+            "Session  1.2K in · 45 out",
+            " Monthly  █████░░░  64% left 2h 14m",
+          ]),
+        ),
+      { timeout: 10_000 },
+    );
 
     // Sidebar: every provider and its rows; an over-quota row shows 0% left.
     const expanded = sidebar();
