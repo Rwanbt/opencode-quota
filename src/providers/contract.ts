@@ -10,7 +10,7 @@ import { type CredentialRow, formatCredentialDisplayNames } from "../lib/opencod
 /** One row as a provider reports it; `key` is the part of the row id after the provider id. */
 export type ProviderRow = Omit<QuotaRow, "id" | "providerId" | "account"> & { key: string };
 
-export type FetchError = { message: string; retryable?: boolean };
+export type FetchError = { message: string };
 
 /**
  * One account's rows and errors. `name` is its display name, for example
@@ -98,12 +98,8 @@ export function windowRows(
 }
 
 /** An account with one error and no rows. */
-export function failedAccount(name: string, message: string, retryable?: boolean): AccountResult {
-  return {
-    name,
-    rows: [],
-    errors: [{ message, ...(retryable === true ? { retryable: true } : {}) }],
-  };
+export function failedAccount(name: string, message: string): AccountResult {
+  return { name, rows: [], errors: [{ message }] };
 }
 
 /** What one login gave: its rows and errors, or null when it had nothing to query. */

@@ -145,7 +145,6 @@ describe("alibaba-token-plan provider", () => {
         error: {
           kind: "timeout",
           message: "Timed out while running the Alibaba Cloud CLI.",
-          retryable: true,
         },
       },
       [],

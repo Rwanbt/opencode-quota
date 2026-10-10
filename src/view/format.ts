@@ -131,7 +131,10 @@ function groupDigits(integer: string): string {
   return integer.replace(/\B(?=(\d{3})+(?!\d))/gu, ",");
 }
 
-/** "$12.40", "12.40 EUR", "1,200 requests", "30 nano". */
+/**
+ * "$12.40", "12.40 EUR", "1 request", "1,200 requests", "30 nano". A count unit is one word
+ * ("request"); it is plural for every number but 1, and the plain "unit" is not shown.
+ */
 export function amountText(amount: Amount): string {
   const { unit } = amount;
   if (unit.kind === "currency") {
@@ -145,7 +148,8 @@ export function amountText(amount: Amount): string {
   const sign = amount.decimal.startsWith("-") ? "-" : "";
   const number = `${sign}${groupDigits(integer)}${fraction ? `.${fraction}` : ""}`;
   if (unit.kind === "custom") return `${number} ${unit.symbol}`;
-  return unit.unit === "unit" ? number : `${number} ${unit.unit}`;
+  if (unit.unit === "unit") return number;
+  return `${number} ${integer === "1" && !fraction ? unit.unit : `${unit.unit}s`}`;
 }
 
 /** The value of a row without a percent: its text, amount, used/limit, or yes/no. */

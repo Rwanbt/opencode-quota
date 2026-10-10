@@ -11,10 +11,10 @@ import { join } from "node:path";
 import { describeError } from "../core/errors.js";
 import type { ProviderFetch } from "../core/store.js";
 import type { ProviderSnapshot, QuotaRow, QuotaSnapshot, QuotaWindow } from "../core/types.js";
+import type { AccountResult } from "../providers/contract.js";
 import { rowValueText } from "../view/format.js";
 import { writeJsonAtomic } from "./atomic-json.js";
 import { sanitizeSingleLineDisplaySnippet } from "./display-sanitize.js";
-import type { QuotaProviderDiagnostic } from "./entries.js";
 import { getOpencodeRuntimeDirs } from "./opencode-runtime-paths.js";
 import type {
   QuotaExport,
@@ -80,26 +80,25 @@ function toExportError(error: { label: string; message: string }): QuotaExportEr
   };
 }
 
-/** Each custom definition's status in its configured order, never its URL, key or format. */
+/**
+ * Each custom definition in its configured order, never its URL, key or format. Its account in
+ * this check (the definition id is the account's login) gives its status: "error" when it gave
+ * only errors, "ok" otherwise, and "unavailable" when it was not checked. A switched-off
+ * definition is never checked: it says `enabled: false` instead.
+ */
 function customSourceStatuses(
   definitions: readonly QuotaProviderDefinition[],
-  diagnostics: readonly QuotaProviderDiagnostic[] = [],
+  accounts: readonly AccountResult[],
 ): QuotaExportSource[] {
-  const diagnosticsBySource = new Map(
-    diagnostics.map((diagnostic) => [diagnostic.sourceId, diagnostic] as const),
-  );
   return definitions
     .filter((source) => !(MAINTAINED_LOCAL_ESTIMATE_IDS as readonly string[]).includes(source.id))
-    .map((source) => {
-      // A switched-off definition is never fetched, so any result for it is old.
-      const diagnostic = source.enabled === false ? undefined : diagnosticsBySource.get(source.id);
-      return {
-        id: source.id,
-        providerId: source.providerId,
-        status: !diagnostic ? "unavailable" : diagnostic.outcome === "success" ? "ok" : "error",
-        entryCount: diagnostic?.entryCount ?? 0,
-        ...(source.enabled === false ? { enabled: false as const } : {}),
-      };
+    .map((source): QuotaExportSource => {
+      const identity = { id: source.id, providerId: source.providerId };
+      if (source.enabled === false) return { ...identity, entryCount: 0, enabled: false };
+      const account = accounts.find((candidate) => candidate.login === source.id);
+      if (!account) return { ...identity, status: "unavailable", entryCount: 0 };
+      const failed = account.rows.length === 0 && account.errors.length > 0;
+      return { ...identity, status: failed ? "error" : "ok", entryCount: account.rows.length };
     });
 }
 
@@ -169,7 +168,7 @@ function exportProvider(
 
 /**
  * A provider's part of the export file from one check: this check's rows, or its error. The
- * custom providers also list each definition (`diagnostics`: this check's, when it ran).
+ * custom providers also list each definition, from this check's `accounts`.
  */
 export function exportProviderFromCheck(params: {
   providerId: string;
@@ -177,7 +176,7 @@ export function exportProviderFromCheck(params: {
   fetched: ProviderFetch;
   checkedAtMs: number;
   customDefinitions: readonly QuotaProviderDefinition[];
-  diagnostics?: readonly QuotaProviderDiagnostic[];
+  accounts: readonly AccountResult[];
 }): QuotaExportProvider {
   const { providerId, label, fetched, checkedAtMs } = params;
   const part = exportProvider(
@@ -186,7 +185,7 @@ export function exportProviderFromCheck(params: {
     checkedAtMs,
   );
   if (providerId !== QUOTA_PROVIDERS_AGGREGATE_ID) return part;
-  return { ...part, sources: customSourceStatuses(params.customDefinitions, params.diagnostics) };
+  return { ...part, sources: customSourceStatuses(params.customDefinitions, params.accounts) };
 }
 
 /** A provider's part written from its snapshot; "unavailable" until it first answered. */

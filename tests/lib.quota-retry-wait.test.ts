@@ -5,7 +5,6 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { QuotaRow } from "../src/core/types.js";
-import type { QuotaProviderResult, QuotaToastEntry } from "../src/lib/entries.js";
 import type { QuotaRetryEvent } from "../src/lib/quota-retry-wait.js";
 import type { ProviderRow } from "../src/providers/contract.js";
 import type { LoadedSettings, Settings } from "../src/settings/index.js";
@@ -19,12 +18,6 @@ import {
 const TEST_RUNTIME_ROOT = mkdtempSync(join(tmpdir(), "opencode-quota-retry-wait-"));
 const NOW_MS = Date.parse("2026-01-01T00:00:00.000Z");
 const MINUTE_MS = 60_000;
-const TEST_ACCOUNTING = {
-  resultType: "quota",
-  acquisitionMethod: "remote_api",
-  ownership: "maintained",
-  authority: "provider_reported",
-} as const;
 
 const mocks = vi.hoisted(() => ({
   getProviders: vi.fn(),
@@ -68,11 +61,6 @@ const WINDOW_KEYS = { "5h": "five_hour", Weekly: "weekly" } as const;
 
 function window(label: keyof typeof WINDOW_KEYS, percentRemaining: number, resetsAt: string) {
   return percentRow(WINDOW_KEYS[label], label, percentRemaining, { resetsAt });
-}
-
-/** The custom providers' legacy answer. */
-function customResult(entries: QuotaToastEntry[]): QuotaProviderResult {
-  return { attempted: true, entries, errors: [] };
 }
 
 describe("isQuotaLimitError", () => {
@@ -257,21 +245,24 @@ describe("resolveQuotaResetRetryDelayMs", () => {
   });
 
   it("counts only the custom definitions that serve the retried model", async () => {
-    const customWindow = (sourceId: string, label: string, percent: number, resetMs: number) => ({
-      accounting: { ...TEST_ACCOUNTING, ownership: "user_configured" as const, sourceId },
-      name: `${label} 5h`,
-      group: label,
-      label: "5h:",
-      percentRemaining: percent,
-      resetTimeIso: at(resetMs),
+    // Each custom definition is an account; its id is the login and in its row ids.
+    const customWindow = (id: string, name: string, percent: number, resetMs: number) => ({
+      name,
+      login: id,
+      rows: [
+        percentRow(`custom.${id}.5h`, "5h", percent, {
+          window: "five_hour",
+          resetsAt: at(resetMs),
+        }),
+      ],
     });
     const custom = {
       ...makeProvider("quota-providers", [], () => true),
       fetch: vi.fn(async () =>
-        customResult([
+        answer(
           customWindow("gateway-a", "Gateway A", 40, 90 * MINUTE_MS),
           customWindow("gateway-b", "Gateway B", 0, 10 * MINUTE_MS),
-        ]),
+        ),
       ),
     };
     const definition = (id: string) => ({

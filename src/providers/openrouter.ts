@@ -1,31 +1,14 @@
-import type { QuotaProvider, QuotaProviderContext, QuotaToastEntry } from "../lib/entries.js";
+import type { QuotaProvider, QuotaProviderContext } from "../lib/entries.js";
 import {
   hasOpenRouterApiKeyConfigured,
   queryOpenRouterQuota,
   resolveOpenRouterApiKey,
 } from "../lib/openrouter.js";
 import { modelProviderMatchesRuntimeId } from "../lib/provider-model-matching.js";
-import { failedAccount, type ProviderFetchResult, type ProviderRow } from "./contract.js";
+import { failedAccount, type ProviderFetchResult } from "./contract.js";
 import { simpleApiKeyStatusDetails } from "./result-helpers.js";
 
 const LABEL = "OpenRouter";
-
-/** The key's one row: its budget (percent left) or, without a limit, its spend. */
-function keyRow(entry: QuotaToastEntry): ProviderRow[] {
-  const row = {
-    key: "key",
-    label: (entry.label ?? "").replace(/:+$/u, "").trim() || "Key",
-    type: entry.accounting.resultType === "spend" ? "usage" : "budget",
-    method: "remote_api",
-    authority: "provider_reported",
-    prominence: "primary",
-  } as const;
-  if (entry.kind === "value") return [{ ...row, text: entry.value }];
-  if (entry.kind === undefined || entry.kind === "percent") {
-    return [{ ...row, percentRemaining: entry.percentRemaining }];
-  }
-  return [];
-}
 
 export const openRouterProvider: QuotaProvider = {
   id: "openrouter",
@@ -59,7 +42,8 @@ export const openRouterProvider: QuotaProvider = {
       accounts: [
         {
           name: LABEL,
-          rows: result.entries.flatMap(keyRow),
+          // The key's one row: its budget (percent left) or, without a limit, its spend.
+          rows: result.rows.map((row) => ({ ...row, key: "key" })),
           errors: (result.rowErrors ?? []).map((message) => ({ message })),
         },
       ],

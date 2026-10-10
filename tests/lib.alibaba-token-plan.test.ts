@@ -421,7 +421,6 @@ describe("alibaba token plan process boundary", () => {
       error: {
         kind: "timeout",
         message: "Timed out while running the Alibaba Cloud CLI.",
-        retryable: true,
       },
     },
     {
@@ -460,7 +459,6 @@ describe("alibaba token plan process boundary", () => {
       error: {
         kind: "spawn_failed",
         message: "Could not start Alibaba Cloud CLI.",
-        retryable: true,
       },
     },
   ])("maps $name without leaking CLI output", async ({ run, error }) => {

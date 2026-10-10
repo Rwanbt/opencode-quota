@@ -149,7 +149,7 @@ export const nanoGptProvider: QuotaProvider = {
     if (!result.success) {
       return {
         attempted: true,
-        accounts: [failedAccount(LABEL, result.error, result.retryable)],
+        accounts: [failedAccount(LABEL, result.error)],
         debug: keyDetails,
       };
     }

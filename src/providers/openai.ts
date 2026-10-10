@@ -142,7 +142,7 @@ async function fetchActiveLoginQuota(
   if (auth.state === "none") return { attempted: false, accounts: [] };
   const result = await queryOpenAIQuota({ requestTimeoutMs, auth });
   if (!result.success) {
-    return { attempted: true, accounts: [failedAccount("OpenAI", result.error, result.retryable)] };
+    return { attempted: true, accounts: [failedAccount("OpenAI", result.error)] };
   }
   return {
     attempted: true,

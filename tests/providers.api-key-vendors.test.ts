@@ -540,7 +540,7 @@ describeVendor("nanogpt", [
   },
 ]);
 
-it("nanogpt marks a failure of both endpoints retryable when one of them may recover", async () => {
+it("nanogpt shows a failure of both endpoints as one error", async () => {
   setKey("nanogpt");
   fakeHttp(
     byUrl({
@@ -555,7 +555,6 @@ it("nanogpt marks a failure of both endpoints retryable when one of them may rec
     {
       message:
         "Usage: NanoGPT API error 502: bad gateway; Balance: NanoGPT API error 401: Unauthorized",
-      retryable: true,
     },
   ]);
 });

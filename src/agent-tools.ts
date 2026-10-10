@@ -9,13 +9,12 @@
  * on. Every answer is cleaned in one place: each key the plugin can read, and anything in a
  * known key format, is replaced before the agent sees it.
  */
-import { rowsFromLegacyResult } from "./core/rows.js";
+import { rowsFromProviderResult } from "./core/rows.js";
 import {
   getGlobalOpencodeConfigCandidatePaths,
   getProviderConfigSettings,
   readConfigCandidate,
 } from "./lib/api-key-resolver.js";
-import type { QuotaToastEntry } from "./lib/entries.js";
 import { resolveEnvTemplate } from "./lib/env-template.js";
 import { readCredentialRows } from "./lib/opencode-auth.js";
 import {
@@ -29,6 +28,8 @@ import {
   fetchRemoteQuotaProvider,
   resolveQuotaProviderApiKey,
 } from "./lib/quota-providers-remote.js";
+import type { ProviderFetchResult, ProviderRow } from "./providers/contract.js";
+import { customAccount } from "./providers/quota-providers.js";
 import {
   checkSetting,
   describeRule,
@@ -436,22 +437,22 @@ function notFound(ids: readonly string[]): ToolResult {
 }
 
 /**
- * The rows the sidebar would show for a definition's entries, or why there are none. Row ids
- * are made from the names and ids in them, so every string in them is redacted first, to a
+ * The rows the sidebar would show for one reply of a definition, or why there are none. Row
+ * ids are made from the names and ids in them, so every string in them is redacted first, to a
  * placeholder a row id may hold.
  */
 function testedRows(
   definition: QuotaProviderDefinition,
-  entries: QuotaToastEntry[],
+  rows: readonly ProviderRow[],
   rowErrors: readonly string[],
   redact: Redact,
 ): ToolResult {
-  const result = {
+  const result: ProviderFetchResult = {
     attempted: true,
-    entries,
-    errors: rowErrors.map((message) => ({ label: definition.label, message })),
+    accounts: [customAccount(definition, rows, rowErrors)],
+    debug: [],
   };
-  const fetched = rowsFromLegacyResult(
+  const fetched = rowsFromProviderResult(
     QUOTA_PROVIDERS_AGGREGATE_ID,
     redactStrings(result, (text) => redact(text).replaceAll(REDACTED, "redacted")) as typeof result,
   );
@@ -477,7 +478,7 @@ async function testFetch(
   if (definition.mode === "local-estimate") {
     return testedRows(
       definition,
-      (await collectLocalQuotaProviderEstimate(definition)).entries,
+      (await collectLocalQuotaProviderEstimate(definition)).rows,
       [],
       redact,
     );
@@ -493,16 +494,7 @@ async function testFetch(
   }
   const result = await fetchRemoteQuotaProvider(definition, key, requestTimeoutMs);
   if (!result.success) return { ok: false, error: result.error };
-  return testedRows(
-    definition,
-    // Rows are keyed by the definition id, as in the provider's own fetch.
-    result.entries.map((entry) => ({
-      ...entry,
-      accounting: { ...entry.accounting, sourceId: definition.id },
-    })),
-    result.rowErrors ?? [],
-    redact,
-  );
+  return testedRows(definition, result.rows, result.rowErrors ?? [], redact);
 }
 
 /** Why a saved definition would still not show, so the agent can fix it. */

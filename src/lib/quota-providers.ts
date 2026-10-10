@@ -1,6 +1,8 @@
 import { isIP } from "node:net";
 
-import type { AccountingResultType } from "./entries.js";
+import type { RowType } from "../core/types.js";
+import { classifyWindow } from "../core/windows.js";
+import type { ProviderRow } from "../providers/contract.js";
 import { isRecord } from "./json-guards.js";
 import { lookupCost } from "./modelsdev-pricing.js";
 import { getQuotaProviderShape } from "./provider-metadata.js";
@@ -96,6 +98,52 @@ export function customRowKey(name: string): string {
   return /[A-Za-z0-9]/u.test(kept) ? `${kept}_${hash}` : hash;
 }
 
+/** What a custom row means; custom configs may still say `rate_limit` and `spend` (ADR 0001). */
+export type CustomResultType =
+  | "quota"
+  | "rate_limit"
+  | "usage"
+  | "spend"
+  | "budget"
+  | "balance"
+  | "status";
+
+/** ADR 0001: a custom `rate_limit` is a quota and `spend` is usage. */
+function customRowType(resultType: CustomResultType): RowType {
+  if (resultType === "rate_limit") return "quota";
+  if (resultType === "spend") return "usage";
+  return resultType;
+}
+
+/**
+ * One custom row. `key` is the part of its id after `custom.<definition id>.`; its label is the
+ * configured label without a trailing colon, or else its name; its window is the one its name
+ * or label names ("Daily" → day).
+ */
+export function customRow(params: {
+  key: string;
+  name: string;
+  label?: string;
+  resultType: CustomResultType;
+  method: "remote_api" | "local_estimation";
+  value: { percentRemaining: number } | { text: string };
+  resetsAt?: string;
+}): ProviderRow {
+  const label = (params.label ?? "").replace(/:+$/u, "").trim();
+  const window = classifyWindow(params.name) ?? classifyWindow(label);
+  return {
+    key: params.key,
+    label: label || params.name,
+    type: customRowType(params.resultType),
+    method: params.method,
+    authority: params.method === "remote_api" ? "provider_reported" : "locally_derived",
+    prominence: "primary",
+    ...(window ? { window } : {}),
+    ...params.value,
+    ...(params.resetsAt ? { resetsAt: params.resetsAt } : {}),
+  };
+}
+
 export function selectEligibleQuotaProviderDefinitions(params: {
   definitions: readonly QuotaProviderDefinition[];
   availableProviderIds: ReadonlySet<string>;
@@ -173,7 +221,7 @@ export type JsonV1Metric =
   | { type: "status"; value: JsonV1TextSource };
 
 export interface JsonV1Mapping {
-  resultType: AccountingResultType;
+  resultType: CustomResultType;
   name: string;
   label?: string;
   unit?: string;
@@ -304,7 +352,7 @@ const JSON_V1_TIMESTAMP_ENCODINGS = new Set<JsonV1TimestampEncoding>([
   "unix-seconds",
   "unix-milliseconds",
 ]);
-const JSON_V1_RESULT_TYPES = new Set<AccountingResultType>([
+const JSON_V1_RESULT_TYPES = new Set<CustomResultType>([
   "quota",
   "rate_limit",
   "usage",
@@ -769,7 +817,7 @@ function requireLiteralNumber(
 
 function validateJsonV1Metric(
   value: unknown,
-  resultType: AccountingResultType | undefined,
+  resultType: CustomResultType | undefined,
   key: string,
   issues: QuotaProviderValidationIssue[],
 ): JsonV1Metric | undefined {
@@ -882,7 +930,7 @@ function validateJsonV1Metric(
     case "value": {
       validateKnownAdapterFields(value, ["type", "valueType", "value"], key, issues);
       const source = validateJsonV1NumberSource(value.value, `${key}.value`, issues);
-      const allowed: Record<string, readonly AccountingResultType[]> = {
+      const allowed: Record<string, readonly CustomResultType[]> = {
         used: ["quota", "rate_limit", "usage"],
         limit: ["quota", "rate_limit"],
         remaining: ["quota", "rate_limit"],
@@ -955,8 +1003,8 @@ function validateJsonV1Mapping(
 
   const resultType =
     typeof value.resultType === "string" &&
-    JSON_V1_RESULT_TYPES.has(value.resultType as AccountingResultType)
-      ? (value.resultType as AccountingResultType)
+    JSON_V1_RESULT_TYPES.has(value.resultType as CustomResultType)
+      ? (value.resultType as CustomResultType)
       : undefined;
   if (hasOwnKey(value, "resultType") && !resultType) {
     adapterIssue(issues, `${key}.resultType`, "expected a supported accounting result type");

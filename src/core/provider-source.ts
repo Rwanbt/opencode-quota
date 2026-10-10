@@ -23,7 +23,7 @@ import { deriveResolvedAuthIdentity } from "../lib/resolved-auth-identity.js";
 import { createRuntimeProviderIdResolver } from "../lib/runtime-provider-ids.js";
 import { getProviders } from "../providers/registry.js";
 import type { LoadedSettings, Settings } from "../settings/index.js";
-import { isContractResult, rowsFromProviderResult } from "./rows.js";
+import { rowsFromProviderResult } from "./rows.js";
 import { matchesQuotaProviderCurrentSelection } from "./selection.js";
 import type { ProviderIdentity, StoreProvider, StoreSource } from "./store.js";
 import type { SessionModel } from "./types.js";
@@ -209,8 +209,7 @@ function storeProvider(
         fetched,
         checkedAtMs: Date.now(),
         customDefinitions: ctx.config.quotaProviders ?? [],
-        // The custom providers' result lists each definition's check.
-        diagnostics: !isContractResult(result) && result.attempted ? result.diagnostics : undefined,
+        accounts: result.accounts,
       });
       if (!fetched.rowLogins) return { ...fetched, exportPart };
       return {

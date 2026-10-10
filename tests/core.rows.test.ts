@@ -1,19 +1,16 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import {
-  accountFromGroup,
-  rowsFromLegacyResult,
-  rowsFromProviderResult,
-} from "../src/core/rows.js";
+import { accountFromGroup, rowsFromProviderResult } from "../src/core/rows.js";
 import type { DebugDetail, QuotaRow } from "../src/core/types.js";
-import type { AccountingMetadata, QuotaToastEntry } from "../src/lib/entries.js";
 import type {
   JsonV1Mapping,
   LocalEstimateQuotaProviderDefinition,
+  RemoteApiQuotaProviderDefinition,
 } from "../src/lib/quota-providers.js";
 import { computeLocalQuotaProviderEstimate } from "../src/lib/quota-providers-local.js";
 import { fetchRemoteQuotaProvider } from "../src/lib/quota-providers-remote.js";
-import type { ProviderFetchResult } from "../src/providers/contract.js";
+import type { ProviderFetchResult, ProviderRow } from "../src/providers/contract.js";
+import { customAccount } from "../src/providers/quota-providers.js";
 import { answer, NOT_SET_UP, percentRow, textRow } from "./helpers/fake-answers.js";
 
 const NOW_MS = Date.parse("2026-10-10T12:00:00.000Z");
@@ -37,24 +34,51 @@ function summary(rows: QuotaRow[]) {
   return rows.map((row) => [row.id, row.account ?? null, row.label, row.window ?? null]);
 }
 
-/** A custom definition's accounting, as the custom providers stamp it. */
-function custom(overrides: Partial<AccountingMetadata> = {}): AccountingMetadata {
-  return {
-    resultType: "quota",
-    acquisitionMethod: "remote_api",
-    ownership: "user_configured",
-    authority: "provider_reported",
-    sourceId: "source-one",
-    ...overrides,
-  };
-}
-
 function usd(decimal: string) {
   return { decimal, unit: { kind: "currency" as const, code: "USD" } };
 }
 
-function customRows(entries: QuotaToastEntry[]) {
-  return rowsFromLegacyResult("quota-providers", { attempted: true, entries, errors: [] }, NOW_MS);
+/** A remote custom definition; its replies are stubbed per test. */
+function gateway(
+  overrides: Partial<RemoteApiQuotaProviderDefinition> = {},
+): RemoteApiQuotaProviderDefinition {
+  return {
+    id: "my-gateway",
+    providerId: "gateway",
+    label: "My Gateway",
+    url: "https://gateway.example/quota",
+    mode: "remote-api",
+    format: "quota-v1",
+    ...overrides,
+  };
+}
+
+/** One custom definition's rows and errors, as the custom providers return them. */
+function customRows(
+  definition: RemoteApiQuotaProviderDefinition | LocalEstimateQuotaProviderDefinition,
+  rows: ProviderRow[],
+  errors: string[] = [],
+  debug: DebugDetail[] = [],
+) {
+  return contractRows("quota-providers", {
+    attempted: true,
+    accounts: [customAccount(definition, rows, errors)],
+    debug,
+  });
+}
+
+/** What the remote adapter makes of `body` for `definition`. */
+async function remoteRows(
+  definition: RemoteApiQuotaProviderDefinition,
+  body: unknown,
+): Promise<ProviderRow[]> {
+  const reply = new Response(JSON.stringify(body), {
+    headers: { "content-type": "application/json" },
+  });
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue(reply));
+  const result = await fetchRemoteQuotaProvider(definition, "test-key");
+  if (!result.success) throw new Error(result.error);
+  return result.rows;
 }
 
 describe("rowsFromProviderResult", () => {
@@ -313,40 +337,32 @@ describe("rowsFromProviderResult", () => {
   });
 });
 
-describe("rowsFromLegacyResult: the custom providers", () => {
-  it("keys rows custom.<definition id>.<key>, takes the source label as account, maps ADR 0001 values", () => {
-    const result = customRows([
-      {
-        kind: "percent",
-        accounting: custom(),
-        name: "Source One Monthly",
-        group: "Source One",
-        label: "Remaining:",
-        right: "108/100",
-        percentRemaining: -8,
-        resetTimeIso: RESET,
-      },
-      {
-        kind: "value",
-        accounting: custom({ resultType: "balance" }),
-        name: "Source One Balance",
-        group: "Source One",
-        value: "$12.00",
-      },
-      {
-        accounting: custom({ resultType: "rate_limit" }),
-        name: "Source One Requests",
-        group: "Source One",
-        percentRemaining: 40,
-      },
-      {
-        kind: "value",
-        accounting: custom({ resultType: "spend" }),
-        name: "Source One Spent",
-        group: "Source One",
-        value: "$3.00",
-      },
-    ]);
+describe("rowsFromProviderResult: the custom providers", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+  });
+
+  it("keys rows custom.<definition id>.<key>, takes the source label as account, maps ADR 0001 values", async () => {
+    const definition = gateway({ id: "source-one", label: "Source One" });
+    const rows = await remoteRows(definition, {
+      version: "quota-v1",
+      entries: [
+        {
+          kind: "percent",
+          name: "Monthly",
+          resultType: "quota",
+          label: "Remaining:",
+          right: "108/100",
+          percentRemaining: -8,
+          resetTimeIso: RESET,
+        },
+        { kind: "value", name: "Balance", resultType: "balance", value: "$12.00" },
+        { kind: "percent", name: "Requests", resultType: "rate_limit", percentRemaining: 40 },
+        { kind: "value", name: "Spent", resultType: "spend", value: "$3.00" },
+      ],
+    });
+    const result = customRows(definition, rows);
     expect(summary(result.rows)).toEqual([
       ["quota-providers.custom.source-one.Monthly", "Source One", "Remaining", "month"],
       ["quota-providers.custom.source-one.Balance", "Source One", "Balance", null],
@@ -372,239 +388,144 @@ describe("rowsFromLegacyResult: the custom providers", () => {
     expect(result.debug).toEqual([]);
   });
 
-  it("drops entries it can't key and keeps the rest", () => {
-    const result = customRows([
-      { accounting: custom(), name: "Source One Daily", group: "Source One", percentRemaining: 5 },
-      { accounting: custom({ sourceId: undefined }), name: "No Source", percentRemaining: 5 },
-    ]);
-    expect(result.rows.map((row) => row.id)).toEqual(["quota-providers.custom.source-one.Daily"]);
-    expect(result.debug).toEqual([{ key: "dropped_row", value: "No Source: no row key" }]);
-
-    // Only the custom providers still return entries; a built-in provider's are not read.
-    const builtIn = rowsFromLegacyResult(
-      "chutes",
+  it("gives remote rows no amounts: a pair may be remaining/limit or used/limit", async () => {
+    const mappings: JsonV1Mapping[] = [
       {
-        attempted: true,
-        entries: [{ accounting: custom(), name: "Chutes Daily", percentRemaining: 5 }],
-        errors: [],
-      },
-      NOW_MS,
-    );
-    expect(builtIn.rows).toEqual([]);
-    expect(builtIn.debug).toEqual([
-      { key: "dropped_row", value: "Chutes Daily: unknown provider" },
-    ]);
-  });
-
-  it("keeps a local window's start for the pace marker", () => {
-    const [row] = customRows([
-      {
-        accounting: custom({ acquisitionMethod: "local_estimation" }),
-        name: "Source One Weekly",
-        group: "Source One",
-        rowKey: "weekly",
-        percentRemaining: 50,
-        fixedWindow: {
-          kind: "fixed_window",
-          startedAtIso: "2026-10-04T00:00:00.000Z",
-          observedAtIso: "2026-10-10T00:00:00.000Z",
-          endsAtIso: RESET,
-          fullReset: true,
-        },
-      },
-    ]).rows;
-    expect(row?.windowStartedAt).toBe("2026-10-04T00:00:00.000Z");
-  });
-
-  describe("custom sources through their real adapters", () => {
-    afterEach(() => {
-      vi.unstubAllGlobals();
-    });
-
-    /** What the json-v1 adapter returns for `mappings`, stamped like the aggregate does. */
-    async function remoteEntries(mappings: JsonV1Mapping[]): Promise<QuotaToastEntry[]> {
-      const body = new Response("{}", { headers: { "content-type": "application/json" } });
-      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(body));
-      const result = await fetchRemoteQuotaProvider(
-        {
-          id: "my-gateway",
-          providerId: "gateway",
-          label: "My Gateway",
-          url: "https://gateway.example/quota",
-          mode: "remote-api",
-          format: "json-v1",
-          adapter: { mappings },
-        },
-        "test-key",
-      );
-      if (!result.success) throw new Error(result.error);
-      return result.entries.map((entry) => ({
-        ...entry,
-        accounting: { ...entry.accounting, sourceId: "my-gateway" },
-      }));
-    }
-
-    it("gives remote rows no amounts: a pair may be remaining/limit or used/limit", async () => {
-      const entries = await remoteEntries([
-        {
-          resultType: "quota",
-          name: "Requests left",
-          metric: { type: "remaining-limit", remaining: { literal: 30 }, limit: { literal: 100 } },
-        },
-        {
-          resultType: "quota",
-          name: "Requests used",
-          metric: { type: "used-limit", used: { literal: 70 }, limit: { literal: 100 } },
-        },
-        {
-          resultType: "budget",
-          name: "Budget left",
-          unit: "$",
-          unitPosition: "prefix",
-          metric: { type: "remaining-budget", remaining: { literal: 3 }, budget: { literal: 10 } },
-        },
-      ]);
-      expect(entries.map((entry) => entry.right)).toEqual(["30/100", "70/100", "$3/$10"]);
-
-      const result = customRows(entries);
-      expect(result.rows.map((row) => [row.id, row.percentRemaining])).toEqual([
-        ["quota-providers.custom.my-gateway.Requests_left", 30],
-        ["quota-providers.custom.my-gateway.Requests_used", 30],
-        ["quota-providers.custom.my-gateway.Budget_left", 30],
-      ]);
-      for (const row of result.rows) {
-        expect(row).not.toHaveProperty("used");
-        expect(row).not.toHaveProperty("limit");
-        expect(row).not.toHaveProperty("remaining");
-      }
-    });
-
-    it("keys remote mappings apart by name, also names without ASCII letters", async () => {
-      const mapping = (name: string, percentage: number): JsonV1Mapping => ({
         resultType: "quota",
-        name,
-        metric: { type: "percentage", percentage: { literal: percentage }, meaning: "remaining" },
-      });
-      const entries = await remoteEntries([
-        mapping("Daily limit", 10),
-        mapping("Daily-limit", 20),
-        mapping("日次上限", 30),
-        mapping("月次上限", 40),
-      ]);
-      const result = customRows(entries);
-      const ids = result.rows.map((row) => row.id);
-      expect(result.rows.map((row) => row.percentRemaining)).toEqual([10, 20, 30, 40]);
-      expect(ids.slice(0, 2)).toEqual([
-        "quota-providers.custom.my-gateway.Daily_limit",
-        "quota-providers.custom.my-gateway.Daily-limit",
-      ]);
-      expect(new Set(ids).size).toBe(4);
-      expect(result.debug.filter((item) => item.key === "dropped_row")).toEqual([]);
-      // The same name always gives the same id.
-      const again = customRows(await remoteEntries([mapping("日次上限", 50)]));
-      expect(again.rows[0]?.id).toBe(ids[2]);
-    });
-
-    function localDefinition(
-      windows: LocalEstimateQuotaProviderDefinition["windows"],
-    ): LocalEstimateQuotaProviderDefinition {
-      return {
-        id: "private-gateway",
-        providerId: "private-gateway",
-        label: "Private Gateway",
-        mode: "local-estimate",
-        windows,
-      };
+        name: "Requests left",
+        metric: { type: "remaining-limit", remaining: { literal: 30 }, limit: { literal: 100 } },
+      },
+      {
+        resultType: "quota",
+        name: "Requests used",
+        metric: { type: "used-limit", used: { literal: 70 }, limit: { literal: 100 } },
+      },
+      {
+        resultType: "budget",
+        name: "Budget left",
+        unit: "$",
+        unitPosition: "prefix",
+        metric: { type: "remaining-budget", remaining: { literal: 3 }, budget: { literal: 10 } },
+      },
+    ];
+    const definition = gateway({ format: "json-v1", adapter: { mappings } });
+    const result = customRows(definition, await remoteRows(definition, {}));
+    expect(result.rows.map((row) => [row.id, row.percentRemaining])).toEqual([
+      ["quota-providers.custom.my-gateway.Requests_left", 30],
+      ["quota-providers.custom.my-gateway.Requests_used", 30],
+      ["quota-providers.custom.my-gateway.Budget_left", 30],
+    ]);
+    for (const row of result.rows) {
+      expect(row).not.toHaveProperty("used");
+      expect(row).not.toHaveProperty("limit");
+      expect(row).not.toHaveProperty("remaining");
     }
-
-    function localRows(definition: LocalEstimateQuotaProviderDefinition) {
-      const { entries } = computeLocalQuotaProviderEstimate({
-        definition,
-        state: {
-          version: 1,
-          definitionId: definition.id,
-          providerId: definition.providerId,
-          updatedAt: NOW_MS,
-          messages: [],
-        },
-        nowMs: NOW_MS,
-      });
-      return customRows(entries).rows;
-    }
-
-    it("keys local windows by their ids and reads their used requests and dollars", () => {
-      const rows = localRows(
-        localDefinition([
-          { id: "daily", label: "Daily", type: "utc-day", requestLimit: 10, usdBudget: 5 },
-          { id: "hourly", label: "Daily", type: "rolling", durationMinutes: 60, requestLimit: 4 },
-        ]),
-      );
-      const requests = (decimal: string) => ({
-        decimal,
-        unit: { kind: "count", unit: "request" },
-      });
-      expect(rows.map((row) => [row.id, row.label, row.used, row.limit])).toEqual([
-        ["quota-providers.custom.private-gateway.daily", "Daily", requests("0"), requests("10")],
-        ["quota-providers.custom.private-gateway.daily_budget", "Daily budget", usd("0"), usd("5")],
-        ["quota-providers.custom.private-gateway.hourly", "Daily", requests("0"), requests("4")],
-      ]);
-
-      // Renaming a window keeps its row id, so hide/rename/order settings still apply.
-      const renamed = localRows(
-        localDefinition([
-          { id: "daily", label: "Per day", type: "utc-day", requestLimit: 10, usdBudget: 5 },
-        ]),
-      );
-      expect(renamed.map((row) => row.id)).toEqual([
-        "quota-providers.custom.private-gateway.daily",
-        "quota-providers.custom.private-gateway.daily_budget",
-      ]);
-    });
   });
 
-  it("keeps each custom definition's check under its whole name, without its URL or key", () => {
-    vi.stubEnv("HOME", "/Users/alice");
-    const identity = { providerId: "gateway", modelIds: null, apiKeyEnv: null, selected: true };
-    const result = rowsFromLegacyResult(
-      "quota-providers",
-      {
-        attempted: true,
-        entries: [],
-        errors: [{ label: "Team", message: "HTTP 503" }],
-        diagnostics: [
-          {
-            ...identity,
-            sourceId: "production-gateway-us",
-            mode: "remote-api",
-            format: "json-v1",
-            apiKeyEnv: "TEAM_KEY",
-            attempted: true,
-            credentialSource: "explicit_env",
-            outcome: "http_error",
-            httpStatus: 503,
-            entryCount: 0,
-            checkedPaths: ["/Users/alice/.config/opencode/opencode.json"],
-            credentialDatabasePaths: ["/Users/alice/.local/share/opencode/opencode.db"],
-          },
-          {
-            ...identity,
-            sourceId: "seats",
-            mode: "local-estimate",
-            attempted: true,
-            credentialSource: null,
-            outcome: "success",
-            entryCount: 1,
-            checkedPaths: [],
-            credentialDatabasePaths: [],
-            statePath:
-              "/Users/alice/.local/state/opencode/opencode-quota/quota-providers/seats.json",
-            stateHealth: "healthy",
-            stateVersion: 1,
-            stateLastUpdatedAt: NOW_MS,
-          },
-        ],
+  it("keys remote mappings apart by name, also names without ASCII letters", async () => {
+    const mapping = (name: string, percentage: number): JsonV1Mapping => ({
+      resultType: "quota",
+      name,
+      metric: { type: "percentage", percentage: { literal: percentage }, meaning: "remaining" },
+    });
+    const fetchRows = async (mappings: JsonV1Mapping[]) => {
+      const definition = gateway({ format: "json-v1", adapter: { mappings } });
+      return customRows(definition, await remoteRows(definition, {}));
+    };
+    const result = await fetchRows([
+      mapping("Daily limit", 10),
+      mapping("Daily-limit", 20),
+      mapping("日次上限", 30),
+      mapping("月次上限", 40),
+    ]);
+    const ids = result.rows.map((row) => row.id);
+    expect(result.rows.map((row) => row.percentRemaining)).toEqual([10, 20, 30, 40]);
+    expect(ids.slice(0, 2)).toEqual([
+      "quota-providers.custom.my-gateway.Daily_limit",
+      "quota-providers.custom.my-gateway.Daily-limit",
+    ]);
+    expect(new Set(ids).size).toBe(4);
+    expect(result.debug.filter((item) => item.key === "dropped_row")).toEqual([]);
+    // The same name always gives the same id.
+    const again = await fetchRows([mapping("日次上限", 50)]);
+    expect(again.rows[0]?.id).toBe(ids[2]);
+  });
+
+  function localDefinition(
+    windows: LocalEstimateQuotaProviderDefinition["windows"],
+  ): LocalEstimateQuotaProviderDefinition {
+    return {
+      id: "private-gateway",
+      providerId: "private-gateway",
+      label: "Private Gateway",
+      mode: "local-estimate",
+      windows,
+    };
+  }
+
+  function localRows(definition: LocalEstimateQuotaProviderDefinition) {
+    const { rows } = computeLocalQuotaProviderEstimate({
+      definition,
+      state: {
+        version: 1,
+        definitionId: definition.id,
+        providerId: definition.providerId,
+        updatedAt: NOW_MS,
+        messages: [],
       },
-      NOW_MS,
+      nowMs: NOW_MS,
+    });
+    return customRows(definition, rows).rows;
+  }
+
+  it("keys local windows by their ids and reads their used requests and dollars", () => {
+    const rows = localRows(
+      localDefinition([
+        { id: "daily", label: "Daily", type: "utc-day", requestLimit: 10, usdBudget: 5 },
+        { id: "hourly", label: "Daily", type: "rolling", durationMinutes: 60, requestLimit: 4 },
+      ]),
+    );
+    const requests = (decimal: string) => ({
+      decimal,
+      unit: { kind: "count", unit: "request" },
+    });
+    expect(rows.map((row) => [row.id, row.label, row.used, row.limit])).toEqual([
+      ["quota-providers.custom.private-gateway.daily", "Daily", requests("0"), requests("10")],
+      ["quota-providers.custom.private-gateway.daily_budget", "Daily budget", usd("0"), usd("5")],
+      ["quota-providers.custom.private-gateway.hourly", "Daily", requests("0"), requests("4")],
+    ]);
+    // A UTC day the state was saved in keeps its start for the pace marker.
+    expect(rows.map((row) => row.windowStartedAt)).toEqual([
+      "2026-10-10T00:00:00.000Z",
+      "2026-10-10T00:00:00.000Z",
+      undefined,
+    ]);
+
+    // Renaming a window keeps its row id, so hide/rename/order settings still apply.
+    const renamed = localRows(
+      localDefinition([
+        { id: "daily", label: "Per day", type: "utc-day", requestLimit: 10, usdBudget: 5 },
+      ]),
+    );
+    expect(renamed.map((row) => row.id)).toEqual([
+      "quota-providers.custom.private-gateway.daily",
+      "quota-providers.custom.private-gateway.daily_budget",
+    ]);
+  });
+
+  it("keeps each custom definition's check under its whole name and hides the home folder", () => {
+    vi.stubEnv("HOME", "/Users/alice");
+    const result = customRows(
+      gateway({ id: "production-gateway-us", label: "Team" }),
+      [],
+      ["HTTP 503"],
+      [
+        {
+          key: "custom_production-gateway-us_check",
+          value:
+            "outcome=http_error http_status=503 credential_source=explicit_env checked_paths=/Users/alice/.config/opencode/opencode.json | /Users/alice/.local/share/opencode/opencode.db",
+        },
+      ],
     );
     expect(result.debug).toEqual([
       {
@@ -612,22 +533,20 @@ describe("rowsFromLegacyResult: the custom providers", () => {
         value:
           "outcome=http_error http_status=503 credential_source=explicit_env checked_paths=~/.config/opencode/opencode.json | ~/.local/share/opencode/opencode.db",
       },
-      {
-        key: "custom_seats_check",
-        value: `outcome=success state_health=healthy state_version=1 state_last_update=${new Date(NOW_MS).toISOString()}`,
-      },
       { key: "error", value: "Team: HTTP 503" },
     ]);
   });
 
   it("scrubs control characters from custom text", () => {
-    const [row] = customRows([
+    const [row] = customRows(gateway({ id: "src", label: "Evil\u001b[31m" }), [
       {
-        kind: "value",
-        accounting: custom({ sourceId: "src" }),
-        name: "Evil\u001b[31m Note",
-        group: "Evil\u001b[31m",
-        value: "red\u001b[0m text\nnext",
+        key: "Note",
+        label: "Note",
+        type: "usage",
+        method: "remote_api",
+        authority: "provider_reported",
+        prominence: "primary",
+        text: "red\u001b[0m text\nnext",
       },
     ]).rows;
     expect(row?.account).toBe("Evil");

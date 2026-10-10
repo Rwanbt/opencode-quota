@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { answer, percentRow } from "./helpers/fake-answers.js";
 import { createFakeIntegration } from "./helpers/fake-integration.js";
 import {
   createAlibabaAuthModuleMock,
@@ -17,12 +18,6 @@ import { createQuotaRpcBridge } from "./helpers/quota-rpc-bridge.js";
 
 // A fresh folder per run, so test runs in sibling checkouts never share it.
 const TEST_RUNTIME_ROOT = mkdtempSync(join(tmpdir(), "opencode-quota-plugin-announcements-"));
-const TEST_ACCOUNTING = {
-  resultType: "quota",
-  acquisitionMethod: "remote_api",
-  ownership: "maintained",
-  authority: "provider_reported",
-} as const;
 const ANNOUNCEMENT_HOME_MESSAGE = "Notice: 1 unread maintainer notice, see /quota → Notices.";
 
 const TEST_ANNOUNCEMENT = vi.hoisted(() => ({
@@ -110,11 +105,11 @@ function configureQuestionQuotaToast(
     {
       id: "copilot",
       isAvailable: vi.fn().mockResolvedValue(true),
-      fetch: vi.fn().mockResolvedValue({
-        attempted: true,
-        entries: [{ accounting: TEST_ACCOUNTING, name: "Copilot", percentRemaining: 81 }],
-        errors: [],
-      }),
+      fetch: vi
+        .fn()
+        .mockResolvedValue(
+          answer({ name: "Copilot", rows: [percentRow("premium", "Premium requests", 81)] }),
+        ),
     },
   ]);
 }

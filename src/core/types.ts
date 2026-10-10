@@ -27,6 +27,7 @@ export type QuotaWindow =
   | "mcp"
   | "code_review";
 
+/** A count unit is singular, for example "request"; the text adds the plural. */
 export type AmountUnit =
   | { kind: "currency"; code: string }
   | { kind: "count"; unit: string }

@@ -148,7 +148,7 @@ export const opencodeGoProvider: QuotaProvider = {
         };
       }
       consoleError = consoleResult.error;
-      consoleFailure = { message: consoleError, retryable: consoleResult.retryable };
+      consoleFailure = { message: consoleError };
     } else {
       consoleError = scrubCredentialErrorText(consoleAuth.error);
       consoleFailure = {
@@ -197,7 +197,7 @@ async function fetchWithApiKey(
     return consoleFailure
       ? {
           attempted: true,
-          accounts: [failedAccount(LABEL, consoleFailure.message, consoleFailure.retryable)],
+          accounts: [failedAccount(LABEL, consoleFailure.message)],
           debug,
         }
       : { attempted: false, accounts: [], debug };
@@ -237,7 +237,7 @@ async function fetchWithApiKey(
             notSubscribedCredentialFingerprints.add(fingerprint);
             return null;
           }
-          return { rows: [], errors: [{ message: result.error, retryable: result.retryable }] };
+          return { rows: [], errors: [{ message: result.error }] };
         },
       });
       const nothingShown = accounts.every(
@@ -270,7 +270,7 @@ async function fetchWithApiKey(
   if (!result.success) {
     return {
       attempted: true,
-      accounts: [failedAccount(LABEL, result.error, result.retryable)],
+      accounts: [failedAccount(LABEL, result.error)],
       debug: [...debug, { key: "live_fetch_error", value: result.error }],
     };
   }

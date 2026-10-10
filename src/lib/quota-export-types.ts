@@ -50,15 +50,13 @@ export type QuotaExportError = {
   message: string;
 };
 
-/** A configured custom definition's identity and coarse status, in configured order. */
-export type QuotaExportSource = {
-  id: string;
-  providerId: string;
-  status: "ok" | "error" | "unavailable";
-  entryCount: number;
-  /** Present only when the definition is switched off; its status is then "unavailable". */
-  enabled?: false;
-};
+/**
+ * A configured custom definition's identity and coarse status, in configured order. A
+ * switched-off definition is never checked, so it has `enabled: false` instead of a status.
+ */
+export type QuotaExportSource =
+  | { id: string; providerId: string; status: "ok" | "error" | "unavailable"; entryCount: number }
+  | { id: string; providerId: string; entryCount: 0; enabled: false };
 
 /**
  * Per-provider export status.

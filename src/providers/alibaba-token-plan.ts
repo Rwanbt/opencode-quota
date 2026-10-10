@@ -92,7 +92,7 @@ export const alibabaTokenPlanProvider: QuotaProvider = {
     }
     return {
       attempted: true,
-      accounts: [failedAccount(GROUP, result.error.message, result.error.retryable === true)],
+      accounts: [failedAccount(GROUP, result.error.message)],
       debug,
     };
   },

@@ -18,12 +18,6 @@ import {
 
 // A fresh folder per run, so test runs in sibling checkouts never share it.
 const TEST_RUNTIME_ROOT = mkdtempSync(join(tmpdir(), "opencode-quota-plugin-quota-command-"));
-const TEST_ACCOUNTING = {
-  resultType: "quota",
-  acquisitionMethod: "remote_api",
-  ownership: "maintained",
-  authority: "provider_reported",
-} as const;
 
 const mocks = vi.hoisted(() => ({
   getProviders: vi.fn(),
@@ -77,11 +71,6 @@ function useSettings(overrides: Record<string, unknown> = {}): void {
 
 function provider(id: string, fetch: ReturnType<typeof vi.fn>, extra: object = {}) {
   return { id, isAvailable: vi.fn().mockResolvedValue(true), fetch, ...extra };
-}
-
-/** The custom providers' legacy answer. */
-function customResult(entries: object[]) {
-  return { attempted: true, entries, errors: [] };
 }
 
 /** Each server's cleanup; run after every test, before its folder goes. */
@@ -367,15 +356,14 @@ describe("/quota and /quota_status on the server", () => {
       },
       words: { onlyCurrentModel: true },
     });
-    const entry = (id: string, percentRemaining: number) => ({
-      accounting: { ...TEST_ACCOUNTING, ownership: "user_configured", sourceId: id },
-      name: `${id} Monthly`,
-      group: id,
-      rowKey: "monthly",
-      percentRemaining,
+    // Each custom definition is an account; its id is the login and in its row ids.
+    const source = (id: string, percentRemaining: number) => ({
+      name: id,
+      login: id,
+      rows: [percentRow(`custom.${id}.monthly`, "Monthly", percentRemaining, { window: "month" })],
     });
     // One check reads every source; only the rows shown depend on the session's model.
-    const fetch = vi.fn().mockResolvedValue(customResult([entry("alpha", 61), entry("beta", 32)]));
+    const fetch = vi.fn().mockResolvedValue(answer(source("alpha", 61), source("beta", 32)));
     mocks.getProviders.mockReturnValue([provider("quota-providers", fetch)]);
     let model = { id: "model-a", providerID: "alpha-gateway" };
     const { quota } = await startServer({

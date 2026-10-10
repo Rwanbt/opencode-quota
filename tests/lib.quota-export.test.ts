@@ -35,11 +35,10 @@ vi.mock("../src/lib/atomic-json.js", () => ({
 
 // --------------- imports ---------------
 
-import { rowsFromLegacyResult } from "../src/core/rows.js";
+import { rowsFromProviderResult } from "../src/core/rows.js";
 import type { ProviderFetch } from "../src/core/store.js";
 import type { ProviderSnapshot, QuotaRow } from "../src/core/types.js";
 import { writeJsonAtomic } from "../src/lib/atomic-json.js";
-import type { QuotaProviderDiagnostic, QuotaProviderResult } from "../src/lib/entries.js";
 import {
   buildQuotaExportFromSnapshot,
   exportProviderFromCheck,
@@ -48,6 +47,8 @@ import {
 } from "../src/lib/quota-export.js";
 import type { QuotaExport } from "../src/lib/quota-export-types.js";
 import type { QuotaProviderDefinition } from "../src/lib/quota-providers.js";
+import type { AccountResult, ProviderFetchResult, ProviderRow } from "../src/providers/contract.js";
+import { customAccount } from "../src/providers/quota-providers.js";
 
 // --------------- helpers ---------------
 
@@ -55,7 +56,7 @@ type Check = {
   fetched: ProviderFetch;
   checkedAtMs: number;
   label?: string;
-  diagnostics?: QuotaProviderDiagnostic[];
+  accounts?: AccountResult[];
 };
 
 /** The export document after each provider's last check; `undefined`: never checked. */
@@ -77,7 +78,7 @@ function exportAfter(
             fetched: check.fetched,
             checkedAtMs: check.checkedAtMs,
             customDefinitions,
-            diagnostics: check.diagnostics,
+            accounts: check.accounts ?? [],
           }),
         }
       : {}),
@@ -89,13 +90,26 @@ function exportAfter(
   );
 }
 
-/** The custom providers' check: their rows and each definition's diagnostics. */
-function customCheck(result: QuotaProviderResult, checkedAtMs: number): Check {
+/** The custom providers' check: their rows and each definition's account. */
+function customCheck(result: ProviderFetchResult, checkedAtMs: number): Check {
   return {
-    fetched: rowsFromLegacyResult("quota-providers", result, checkedAtMs),
+    fetched: rowsFromProviderResult("quota-providers", result, checkedAtMs),
     checkedAtMs,
     label: "Quota providers",
-    diagnostics: result.diagnostics,
+    accounts: result.accounts,
+  };
+}
+
+/** A remote custom quota row, keyed by its name like the adapters key it. */
+function customQuota(key: string, percentRemaining: number): ProviderRow {
+  return {
+    key,
+    label: key,
+    type: "quota",
+    method: "remote_api",
+    authority: "provider_reported",
+    prominence: "primary",
+    percentRemaining,
   };
 }
 
@@ -250,6 +264,14 @@ describe("the export of each provider's last check", () => {
               amount: usd("1.25"),
             }),
             row("opencode", "status", "Status", { type: "status", text: "Unavailable for key" }),
+            row("opencode", "tokens", "Tokens", {
+              type: "usage",
+              amount: { decimal: "12345", unit: { kind: "count", unit: "token" } },
+            }),
+            row("opencode", "requests", "Requests", {
+              type: "usage",
+              amount: { decimal: "1", unit: { kind: "count", unit: "request" } },
+            }),
           ],
           debug: [],
         },
@@ -268,6 +290,8 @@ describe("the export of each provider's last check", () => {
         value: "$1.25 used",
       }),
       expect.objectContaining({ name: "OpenCode Zen Status", value: "Unavailable for key" }),
+      expect.objectContaining({ name: "OpenCode Zen Tokens", value: "12,345 tokens used" }),
+      expect.objectContaining({ name: "OpenCode Zen Requests", value: "1 request used" }),
     ]);
   });
 
@@ -485,46 +509,24 @@ describe("the export of each provider's last check", () => {
         format: "quota-v1",
       },
     ];
+    const [one, two] = definitions as [QuotaProviderDefinition, QuotaProviderDefinition];
     const check = customCheck(
       {
         attempted: true,
-        entries: [
-          {
-            accounting: { ...REMOTE, ownership: "user_configured", sourceId: "same-label-one" },
-            name: "Same label Remaining",
-            group: "Same label",
-            percentRemaining: 25,
-          },
+        accounts: [
+          customAccount(one, [customQuota("Remaining", 25)], []),
+          customAccount(two, [], ["secondary source unavailable"]),
         ],
-        errors: [{ label: "Same label", message: "secondary source unavailable" }],
-        diagnostics: [
+        debug: [
           {
-            sourceId: "same-label-one",
-            providerId: "gateway-one",
-            format: "json-v1",
-            modelIds: null,
-            apiKeyEnv: "GATEWAY_ONE_KEY",
-            selected: true,
-            attempted: true,
-            credentialSource: "explicit_env",
-            outcome: "success",
-            entryCount: 1,
-            checkedPaths: ["env:GATEWAY_ONE_KEY"],
-            credentialDatabasePaths: ["/trusted/opencode.db"],
+            key: "custom_same-label-one_check",
+            value:
+              "outcome=success credential_source=explicit_env checked_paths=env:GATEWAY_ONE_KEY | /trusted/opencode.db",
           },
           {
-            sourceId: "same-label-two",
-            providerId: "gateway-two",
-            format: "quota-v1",
-            modelIds: null,
-            apiKeyEnv: null,
-            selected: true,
-            attempted: true,
-            credentialSource: "opencode_db",
-            outcome: "invalid_json",
-            entryCount: 0,
-            checkedPaths: ["/trusted/opencode.json"],
-            credentialDatabasePaths: ["/trusted/opencode.db"],
+            key: "custom_same-label-two_check",
+            value:
+              "outcome=invalid_json credential_source=opencode_db checked_paths=/trusted/opencode.json | /trusted/opencode.db",
           },
         ],
       },
@@ -592,7 +594,7 @@ describe("the export of each provider's last check", () => {
         format: "quota-v1",
       },
     ];
-    const check = customCheck({ attempted: false, entries: [], errors: [] }, Date.now());
+    const check = customCheck({ attempted: false, accounts: [], debug: [] }, Date.now());
 
     const actual = exportAfter({ "quota-providers": check }, definitions);
 
@@ -605,7 +607,7 @@ describe("the export of each provider's last check", () => {
     });
   });
 
-  it("marks a switched-off definition, so it is told apart from an unavailable one", () => {
+  it("says a switched-off definition is off instead of giving it a status", () => {
     const definition: QuotaProviderDefinition = {
       id: "first",
       providerId: "gateway-one",
@@ -614,48 +616,28 @@ describe("the export of each provider's last check", () => {
       url: "https://one.example/accounting",
       format: "quota-v1",
     };
-    const diagnostic = {
-      providerId: "gateway-one",
-      mode: "remote-api",
-      format: "quota-v1",
-      modelIds: null,
-      apiKeyEnv: null,
-      selected: true,
-      attempted: true,
-      credentialSource: "opencode_db",
-      outcome: "success",
-      entryCount: 1,
-      checkedPaths: [],
-      credentialDatabasePaths: [],
-    } as const;
+    const second = { ...definition, id: "second", label: "Second" };
     // A result from before the user switched "second" off.
     const check = customCheck(
       {
         attempted: true,
-        entries: [],
-        errors: [],
-        diagnostics: [
-          { ...diagnostic, sourceId: "first", outcome: "network_error", entryCount: 0 },
-          { ...diagnostic, sourceId: "second" },
+        accounts: [
+          customAccount(definition, [], ["Failed to read accounting data"]),
+          customAccount(second, [customQuota("Monthly", 50)], []),
         ],
+        debug: [],
       },
       Date.now(),
     );
 
     const actual = exportAfter({ "quota-providers": check }, [
       definition,
-      { ...definition, id: "second", enabled: false },
+      { ...second, enabled: false },
     ]);
 
-    expect(actual.providers["quota-providers"].sources).toEqual([
+    expect(actual.providers["quota-providers"].sources).toStrictEqual([
       { id: "first", providerId: "gateway-one", status: "error", entryCount: 0 },
-      {
-        id: "second",
-        providerId: "gateway-one",
-        status: "unavailable",
-        entryCount: 0,
-        enabled: false,
-      },
+      { id: "second", providerId: "gateway-one", entryCount: 0, enabled: false },
     ]);
   });
 

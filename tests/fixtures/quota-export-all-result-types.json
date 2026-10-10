@@ -51,7 +51,7 @@
           "ownership": "maintained",
           "authority": "locally_derived",
           "renderType": "value",
-          "value": "12,345 token used"
+          "value": "12,345 tokens used"
         },
         {
           "id": "fixture.spend",

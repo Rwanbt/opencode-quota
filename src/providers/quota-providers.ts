@@ -1,10 +1,5 @@
-import type {
-  QuotaProvider,
-  QuotaProviderContext,
-  QuotaProviderDiagnostic,
-  QuotaProviderResult,
-  QuotaToastEntry,
-} from "../lib/entries.js";
+import type { DebugDetail } from "../core/types.js";
+import type { QuotaProvider, QuotaProviderContext } from "../lib/entries.js";
 import { mapWithConcurrency } from "../lib/map-with-concurrency.js";
 import type {
   LocalEstimateQuotaProviderDefinition,
@@ -20,56 +15,68 @@ import {
 import {
   collectLocalQuotaProviderEstimate,
   inspectLocalQuotaProviderState,
+  type LocalQuotaProviderStateDiagnostics,
 } from "../lib/quota-providers-local.js";
 import {
   fetchRemoteQuotaProvider,
+  type QuotaProviderAuthResolution,
   type QuotaProviderAuthSource,
   resolveQuotaProviderApiKey,
 } from "../lib/quota-providers-remote.js";
+import {
+  type AccountResult,
+  failedAccount,
+  type ProviderFetchResult,
+  type ProviderRow,
+} from "./contract.js";
 
 const DEFINITION_CONCURRENCY = 4;
 
-const CREDENTIAL_SOURCES: Record<
-  QuotaProviderAuthSource,
-  QuotaProviderDiagnostic["credentialSource"]
-> = {
+const CREDENTIAL_SOURCES: Record<QuotaProviderAuthSource, string> = {
   env: "explicit_env",
   "opencode.json": "global_opencode_json",
   "opencode.jsonc": "global_opencode_jsonc",
   "opencode.db": "opencode_db",
 };
 
-type InstanceResult = {
-  entries: QuotaProviderResult["entries"];
-  errors: QuotaProviderResult["errors"];
-  diagnostic: QuotaProviderDiagnostic;
-};
+/** One definition's account, and its check for /quota_status. */
+type DefinitionResult = { account: AccountResult; check: DebugDetail };
 
-type DiagnosticOutcome = Pick<
-  QuotaProviderDiagnostic,
-  "attempted" | "credentialSource" | "outcome" | "httpStatus" | "entryCount"
->;
-
-function buildDiagnostic(
+/**
+ * A definition's rows and errors as its own account: the definition id is the login, and each
+ * row id is `custom.<definition id>.<key>`.
+ */
+export function customAccount(
   definition: QuotaProviderDefinition,
-  outcome: DiagnosticOutcome,
-  paths: Pick<QuotaProviderDiagnostic, "checkedPaths" | "credentialDatabasePaths"> = {
-    checkedPaths: [],
-    credentialDatabasePaths: [],
-  },
-): QuotaProviderDiagnostic {
+  rows: readonly ProviderRow[],
+  errors: readonly string[],
+): AccountResult {
   return {
-    sourceId: definition.id,
-    providerId: definition.providerId,
-    mode: definition.mode,
-    ...(definition.mode === "remote-api" ? { format: definition.format } : {}),
-    modelIds: definition.modelIds ? [...definition.modelIds] : null,
-    apiKeyEnv: definition.mode === "remote-api" ? (definition.apiKeyEnv ?? null) : null,
-    selected: true,
-    ...outcome,
-    checkedPaths: [...paths.checkedPaths],
-    credentialDatabasePaths: [...paths.credentialDatabasePaths],
+    name: definition.label,
+    login: definition.id,
+    rows: rows.map((row) => ({ ...row, key: `custom.${definition.id}.${row.key}` })),
+    errors: errors.map((message) => ({ message })),
   };
+}
+
+/** One definition's check, never its URL or key: the outcome, the login source, files read. */
+function checkDetail(definition: QuotaProviderDefinition, parts: readonly string[]): DebugDetail {
+  return { key: `custom_${definition.id}_check`, value: parts.join(" ") };
+}
+
+function credentialParts(auth: QuotaProviderAuthResolution | undefined): string[] {
+  const source = auth?.key && auth.source ? CREDENTIAL_SOURCES[auth.source] : "(none)";
+  const paths = new Set([...(auth?.checkedPaths ?? []), ...(auth?.credentialDatabasePaths ?? [])]);
+  return [`credential_source=${source}`, `checked_paths=${[...paths].join(" | ") || "(none)"}`];
+}
+
+function stateParts(state: LocalQuotaProviderStateDiagnostics | undefined): string[] {
+  const lastUpdate = state?.lastUpdatedAt;
+  return [
+    `state_health=${state?.health ?? "missing"}`,
+    `state_version=${state?.version ?? "(none)"}`,
+    `state_last_update=${lastUpdate ? new Date(lastUpdate).toISOString() : "(none)"}`,
+  ];
 }
 
 function selectDefinitions(
@@ -85,106 +92,77 @@ function selectDefinitions(
   });
 }
 
-function classifyRuntimeError(error: string): Pick<DiagnosticOutcome, "outcome" | "httpStatus"> {
-  if (error === "Redirect rejected") return { outcome: "redirect_error" };
-  if (error.startsWith("Request timeout after ")) return { outcome: "timeout" };
-  if (error === "Response exceeded 262144 bytes") return { outcome: "body_too_large" };
-  if (error === "Expected a JSON response") return { outcome: "invalid_content_type" };
-  if (error === "Invalid JSON response") return { outcome: "invalid_json" };
-  if (error.startsWith("Invalid ")) return { outcome: "invalid_response" };
+/** The outcome of a failed request, for example "outcome=http_error http_status=503". */
+function failedRequestParts(error: string): string[] {
+  if (error === "Redirect rejected") return ["outcome=redirect_error"];
+  if (error.startsWith("Request timeout after ")) return ["outcome=timeout"];
+  if (error === "Response exceeded 262144 bytes") return ["outcome=body_too_large"];
+  if (error === "Expected a JSON response") return ["outcome=invalid_content_type"];
+  if (error === "Invalid JSON response") return ["outcome=invalid_json"];
+  if (error.startsWith("Invalid ")) return ["outcome=invalid_response"];
   const status = /^HTTP (\d+)$/.exec(error);
-  if (status) return { outcome: "http_error", httpStatus: Number(status[1]) };
-  return { outcome: "network_error" };
+  if (status) return ["outcome=http_error", `http_status=${status[1]}`];
+  return ["outcome=network_error"];
 }
 
 async function executeRemote(
   definition: RemoteApiQuotaProviderDefinition,
   requestTimeoutMs?: number,
-): Promise<InstanceResult> {
+): Promise<DefinitionResult> {
   const auth = await resolveQuotaProviderApiKey(definition);
   if (!auth.key) {
     return {
-      entries: [],
-      errors: [{ label: definition.label, message: "API key not configured" }],
-      diagnostic: buildDiagnostic(
-        definition,
-        { attempted: false, credentialSource: null, outcome: "missing_credential", entryCount: 0 },
-        auth,
-      ),
+      account: customAccount(definition, [], ["API key not configured"]),
+      check: checkDetail(definition, ["outcome=missing_credential", ...credentialParts(auth)]),
     };
   }
 
-  const credentialSource = auth.source ? CREDENTIAL_SOURCES[auth.source] : null;
   const result = await fetchRemoteQuotaProvider(definition, auth.key, requestTimeoutMs);
   if (!result.success) {
     return {
-      entries: [],
-      errors: [{ label: definition.label, message: result.error }],
-      diagnostic: buildDiagnostic(
-        definition,
-        { attempted: true, credentialSource, ...classifyRuntimeError(result.error), entryCount: 0 },
-        auth,
-      ),
+      account: customAccount(definition, [], [result.error]),
+      check: checkDetail(definition, [
+        ...failedRequestParts(result.error),
+        ...credentialParts(auth),
+      ]),
     };
   }
-
   return {
-    entries: result.entries.map((entry) => ({
-      ...entry,
-      accounting: { ...entry.accounting, sourceId: definition.id },
-    })),
-    errors: (result.rowErrors ?? []).map((message) => ({ label: definition.label, message })),
-    diagnostic: buildDiagnostic(
-      definition,
-      { attempted: true, credentialSource, outcome: "success", entryCount: result.entries.length },
-      auth,
-    ),
+    account: customAccount(definition, result.rows, result.rowErrors ?? []),
+    check: checkDetail(definition, ["outcome=success", ...credentialParts(auth)]),
   };
 }
 
 async function executeLocal(
   definition: LocalEstimateQuotaProviderDefinition,
-): Promise<InstanceResult> {
-  let entries: QuotaToastEntry[] | null;
+): Promise<DefinitionResult> {
+  let rows: ProviderRow[] | null;
   try {
-    entries = (await collectLocalQuotaProviderEstimate(definition)).entries;
+    rows = (await collectLocalQuotaProviderEstimate(definition)).rows;
   } catch {
-    entries = null;
+    rows = null;
   }
   const state = await inspectLocalQuotaProviderState(definition);
-  const stateFields = {
-    statePath: state.path,
-    stateHealth: state.health,
-    stateVersion: state.version,
-    stateLastUpdatedAt: state.lastUpdatedAt,
-  };
-  if (!entries) {
+  if (!rows) {
     return {
-      entries: [],
-      errors: [{ label: definition.label, message: "Failed to update local accounting state" }],
-      diagnostic: {
-        ...buildDiagnostic(definition, {
-          attempted: true,
-          credentialSource: null,
-          outcome: "local_state_error",
-          entryCount: 0,
-        }),
-        ...stateFields,
-      },
+      account: customAccount(definition, [], ["Failed to update local accounting state"]),
+      check: checkDetail(definition, ["outcome=local_state_error", ...stateParts(state)]),
     };
   }
   return {
-    entries,
-    errors: [],
-    diagnostic: {
-      ...buildDiagnostic(definition, {
-        attempted: true,
-        credentialSource: null,
-        outcome: "success",
-        entryCount: entries.length,
-      }),
-      ...stateFields,
-    },
+    account: customAccount(definition, rows, []),
+    check: checkDetail(definition, ["outcome=success", ...stateParts(state)]),
+  };
+}
+
+/** A definition whose check threw: its error, and a check that knows nothing more. */
+function failedDefinition(definition: QuotaProviderDefinition): DefinitionResult {
+  return {
+    account: customAccount(definition, [], ["Provider execution failed"]),
+    check: checkDetail(definition, [
+      "outcome=network_error",
+      ...(definition.mode === "remote-api" ? credentialParts(undefined) : stateParts(undefined)),
+    ]),
   };
 }
 
@@ -209,9 +187,9 @@ export const quotaProvidersProvider: QuotaProvider = {
     );
   },
 
-  async fetch(ctx, cacheContext): Promise<QuotaProviderResult> {
+  async fetch(ctx, cacheContext): Promise<ProviderFetchResult> {
     if (customQuotaProviderDefinitions(ctx.config.quotaProviders ?? []).length === 0) {
-      return { attempted: false, entries: [], errors: [] };
+      return { attempted: false, accounts: [], debug: [] };
     }
 
     let selected = cacheContext?.runtimeEligibleQuotaProviders;
@@ -222,49 +200,36 @@ export const quotaProvidersProvider: QuotaProvider = {
       } catch {
         return {
           attempted: true,
-          entries: [],
-          errors: [
-            {
-              label: "Quota providers",
-              message: "Failed to read exact runtime provider identities",
-            },
+          accounts: [
+            failedAccount("Quota providers", "Failed to read exact runtime provider identities"),
           ],
+          debug: [],
         };
       }
       selected = selectDefinitions(ctx, availableProviderIds);
     }
     if (selected.length === 0) {
-      return { attempted: false, entries: [], errors: [] };
+      return { attempted: false, accounts: [], debug: [] };
     }
 
     const results = await mapWithConcurrency(
       selected,
       DEFINITION_CONCURRENCY,
-      async (definition): Promise<InstanceResult> => {
+      async (definition): Promise<DefinitionResult> => {
         try {
           return definition.mode === "remote-api"
             ? await executeRemote(definition, ctx.config.requestTimeoutMs)
             : await executeLocal(definition);
         } catch {
-          return {
-            entries: [],
-            errors: [{ label: definition.label, message: "Provider execution failed" }],
-            diagnostic: buildDiagnostic(definition, {
-              attempted: true,
-              credentialSource: null,
-              outcome: "network_error",
-              entryCount: 0,
-            }),
-          };
+          return failedDefinition(definition);
         }
       },
     );
 
     return {
       attempted: true,
-      entries: results.flatMap((result) => result.entries),
-      errors: results.flatMap((result) => result.errors),
-      diagnostics: results.map((result) => result.diagnostic),
+      accounts: results.map((result) => result.account),
+      debug: results.map((result) => result.check),
     };
   },
 };

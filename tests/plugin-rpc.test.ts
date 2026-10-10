@@ -511,11 +511,9 @@ describe("server quota RPC", () => {
 
   it("checks no provider again when the file lists the same check settings in another order", async () => {
     useSettings({ checking: { minIntervalMs: 60_000, requestTimeoutMs: 5_000 } });
-    const fetch = vi.fn(async () => ({
-      attempted: true,
-      entries: [{ accounting: TEST_ACCOUNTING, name: "Copilot", percentRemaining: 40 }],
-      errors: [],
-    }));
+    const fetch = vi.fn(async () =>
+      answer({ name: "Copilot", rows: [percentRow("premium", "Premium requests", 40)] }),
+    );
     mocks.getProviders.mockReturnValue([
       {
         id: "copilot",

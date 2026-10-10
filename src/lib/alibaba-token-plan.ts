@@ -81,7 +81,6 @@ export type AlibabaTokenPlanErrorKind =
 export type AlibabaTokenPlanError = {
   kind: AlibabaTokenPlanErrorKind;
   message: string;
-  retryable?: boolean;
 };
 
 type AlibabaTokenPlanFailure = { ok: false; error: AlibabaTokenPlanError };
@@ -148,11 +147,8 @@ const ERROR_MESSAGES: Record<AlibabaTokenPlanErrorKind, string> = {
   no_data: "Alibaba Personal Token Plan usage returned no quota windows.",
 };
 
-function fail(kind: AlibabaTokenPlanErrorKind, retryable?: boolean): AlibabaTokenPlanFailure {
-  return {
-    ok: false,
-    error: { kind, message: ERROR_MESSAGES[kind], ...(retryable ? { retryable: true } : {}) },
-  };
+function fail(kind: AlibabaTokenPlanErrorKind): AlibabaTokenPlanFailure {
+  return { ok: false, error: { kind, message: ERROR_MESSAGES[kind] } };
 }
 
 export function isAlibabaTokenPlanSupportedPlatform(
@@ -421,9 +417,9 @@ export async function runAlibabaTokenPlanProcess(
 
 function mapSpawnResult(result: AlibabaTokenPlanSpawnResult): AlibabaTokenPlanClosedResult {
   if (result.truncated) return fail("output_truncated");
-  if (result.timedOut) return fail("timeout", true);
+  if (result.timedOut) return fail("timeout");
   if (result.spawnErrorCode === "ENOENT") return fail("executable_not_found");
-  if (result.spawnErrorCode) return fail("spawn_failed", true);
+  if (result.spawnErrorCode) return fail("spawn_failed");
   if (result.code === AUTH_EXIT_CODE) return fail("not_authenticated");
   if (result.code !== 0) return fail("nonzero_exit");
   return parseAlibabaTokenPlanUsageJson(result.stdout.toString("utf8"));
@@ -474,6 +470,6 @@ export async function queryAlibabaTokenPlanQuota(options: {
   try {
     return mapSpawnResult(await run(request));
   } catch {
-    return fail("spawn_failed", true);
+    return fail("spawn_failed");
   }
 }
