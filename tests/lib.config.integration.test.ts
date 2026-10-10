@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, writeFileSync } from "fs";
+import { mkdirSync, writeFileSync } from "fs";
 import { join } from "path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { VALID_QUOTA_PROVIDER_INPUTS, VALID_QUOTA_PROVIDERS } from "./fixtures/quota-providers.js";
@@ -25,10 +25,7 @@ vi.mock("os", async (importOriginal) => {
 });
 
 import { createLoadConfigMeta, loadConfig } from "../src/lib/config.js";
-import { applyInitInstallerPlan, planInitInstaller } from "../src/lib/init-installer.js";
 import { getOpencodeRuntimeDirs } from "../src/lib/opencode-runtime-paths.js";
-import { applyProviderAddPlan, planProviderAdd } from "../src/lib/provider-add.js";
-import { applyScopedUpdatePlan, planScopedUpdate } from "../src/lib/scoped-update.js";
 
 describe("loadConfig integration runtime-path resolution", () => {
   const originalEnv = process.env;
@@ -173,63 +170,6 @@ describe("loadConfig integration runtime-path resolution", () => {
     });
   });
 
-  it("loads updater-migrated accounting detail with file provenance", async () => {
-    const migratedPath = writeQuotaSidecarConfig(workspaceDir, {
-      opencodeZenDisplay: "default",
-    });
-    const env = {
-      ...process.env,
-      ...createConfigLoaderEnv(workspace, { home: tempDir }),
-    } as NodeJS.ProcessEnv;
-
-    const plan = await planScopedUpdate({ cwd: workspaceDir, env, homeDir: tempDir });
-    expect(plan.configEdits).toEqual([
-      expect.objectContaining({ path: migratedPath, displayMigrations: 1 }),
-    ]);
-    await applyScopedUpdatePlan(plan);
-
-    const meta = createLoadConfigMeta();
-    const cfg = await loadConfig(undefined, meta, { configRootDir: workspaceDir });
-    expect(cfg.accountingDetail).toBe("summary");
-    expect(meta.settingSources.accountingDetail).toBe(quotaSidecarConfigSource(workspaceDir));
-    expect(meta.configIssues).not.toContainEqual(
-      expect.objectContaining({ key: "opencodeZenDisplay" }),
-    );
-    expect(readFileSync(migratedPath, "utf8")).not.toContain("opencodeZenDisplay");
-  });
-
-  it("keeps unsupported updater display values unchanged and diagnostic-only at runtime", async () => {
-    const hostPath = writeQuotaToastConfig(workspaceDir, {
-      opencodeZenDisplay: "expanded",
-    });
-    const original = readFileSync(hostPath, "utf8");
-    const env = {
-      ...process.env,
-      ...createConfigLoaderEnv(workspace, { home: tempDir }),
-    } as NodeJS.ProcessEnv;
-
-    const plan = await planScopedUpdate({ cwd: workspaceDir, env, homeDir: tempDir });
-    expect(plan.configEdits).toEqual([]);
-    expect(plan.manualFindings).toContainEqual({
-      kind: "display-migration-manual",
-      path: hostPath,
-      container: "experimental.quotaToast",
-      reason: "unsupported-legacy-value",
-    });
-    await applyScopedUpdatePlan(plan);
-    expect(readFileSync(hostPath, "utf8")).toBe(original);
-
-    const meta = createLoadConfigMeta();
-    const cfg = await loadConfig(undefined, meta, { configRootDir: workspaceDir });
-    expect(cfg.accountingDetail).toBe("summary");
-    expect(meta.settingSources.accountingDetail).toBeUndefined();
-    expect(meta.configIssues).toContainEqual({
-      path: quotaConfigSource(workspaceDir),
-      key: "opencodeZenDisplay",
-      message: 'removed; use root "accountingDetail" ("summary" or "detailed")',
-    });
-  });
-
   it("loads the recommended quota-toast.jsonc sidecar with comments", async () => {
     const sidecarDir = join(workspaceDir, "opencode-quota");
     mkdirSync(sidecarDir, { recursive: true });
@@ -246,48 +186,6 @@ describe("loadConfig integration runtime-path resolution", () => {
     expect(cfg.enabled).toBe(false);
     expect(cfg.enabledProviders).toEqual(["openai"]);
     expect(meta.workspaceConfigPaths.some((path) => path.includes("quota-toast.jsonc"))).toBe(true);
-  });
-
-  it("loads a custom provider after init creates a manual-mode JSONC sidecar", async () => {
-    const env = process.env as NodeJS.ProcessEnv;
-    const { configDir } = getOpencodeRuntimeDirs({ env, homeDir: tempDir });
-    const initPlan = await planInitInstaller({
-      env,
-      homeDir: tempDir,
-      selections: {
-        interfaces: "web",
-        scope: "global",
-        configFormat: "jsonc",
-        quotaUi: ["none"],
-        providerMode: "manual",
-        manualProviders: ["openai"],
-        formatStyle: "singleWindow",
-        percentDisplayMode: "remaining",
-        showSessionTokens: false,
-      },
-    });
-    await applyInitInstallerPlan(initPlan);
-
-    const providerPlan = await planProviderAdd({
-      configDir,
-      definition: {
-        id: "private-gateway",
-        mode: "remote-api",
-        url: "https://gateway.example/accounting",
-        format: "quota-v1",
-        apiKeyEnv: "PRIVATE_GATEWAY_KEY",
-      },
-    });
-    expect(providerPlan.path).toBe(join(configDir, "opencode-quota", "quota-toast.jsonc"));
-    await applyProviderAddPlan(providerPlan);
-
-    const meta = createLoadConfigMeta();
-    const cfg = await loadConfig(undefined, meta, { configRootDir: workspaceDir });
-    expect(cfg.enabledProviders).toEqual(["openai", "quota-providers"]);
-    expect(cfg.quotaProviders).toEqual([
-      expect.objectContaining({ id: "private-gateway", mode: "remote-api" }),
-    ]);
-    expect(meta.settingSources.quotaProviders).toContain("quota-toast.jsonc");
   });
 
   it("prefers valid JSONC when both sidecars exist and reports the conflict", async () => {

@@ -208,17 +208,3 @@ export function extractProviderIdsFromParsedConfig(parsed: unknown): string[] {
 
   return dedupeNonEmptyStrings(providerIds);
 }
-
-export function isQuotaPluginSpec(spec: string): boolean {
-  const normalized = spec.replace(/\\/g, "/").toLowerCase();
-
-  if (normalized.includes("@slkiser/opencode-quota")) {
-    return true;
-  }
-
-  if (normalized.includes("/opencode-quota") && !normalized.includes("/opencode-quota/dist/")) {
-    return true;
-  }
-
-  return normalized.includes("opencode-quota/dist/index.js");
-}

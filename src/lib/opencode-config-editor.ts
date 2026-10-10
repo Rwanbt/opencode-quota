@@ -3,7 +3,6 @@ import { readFile, rm } from "node:fs/promises";
 
 import {
   applyEdits,
-  createScanner,
   findNodeAtLocation,
   modify,
   type ParseError,
@@ -24,11 +23,6 @@ import {
 export interface ManagedConfigComment {
   path: (string | number)[];
   text: string;
-}
-
-export interface ManagedConfigCommentReplacement {
-  from: string;
-  to: string;
 }
 
 export interface ConfigDocumentEdit {
@@ -223,27 +217,6 @@ function removeArrayElementPreservingSiblings(
   return raw.slice(0, removeStart) + raw.slice(node.offset + node.length);
 }
 
-function replaceManagedComments(raw: string, replacement: ManagedConfigCommentReplacement): string {
-  const scanner = createScanner(raw, false);
-  const offsets: number[] = [];
-
-  while (scanner.getPosition() < raw.length) {
-    scanner.scan();
-    const offset = scanner.getTokenOffset();
-    const token = raw.slice(offset, offset + scanner.getTokenLength());
-    if (token === replacement.from) {
-      offsets.push(offset);
-    }
-  }
-
-  let updated = raw;
-  for (const offset of offsets.reverse()) {
-    updated =
-      updated.slice(0, offset) + replacement.to + updated.slice(offset + replacement.from.length);
-  }
-  return updated;
-}
-
 function addManagedComment(raw: string, comment: ManagedConfigComment): string {
   if (raw.includes(comment.text)) {
     return raw;
@@ -268,24 +241,6 @@ function addManagedComment(raw: string, comment: ManagedConfigComment): string {
   return raw.slice(0, lineStart) + `${indentation}${comment.text}\n` + raw.slice(lineStart);
 }
 
-export function editConfigDocumentPaths(params: {
-  raw: string;
-  format: ConfigFileFormat;
-  path: string;
-  edits: Array<{ path: (string | number)[]; value: unknown }>;
-}): string {
-  let updated = params.raw;
-  for (const edit of params.edits) {
-    const removed =
-      edit.value === undefined
-        ? removeArrayElementPreservingSiblings(updated, edit.path)
-        : undefined;
-    updated = removed ?? applyEdits(updated, modify(updated, edit.path, edit.value, {}));
-  }
-  parseConfigDocument(updated, params.format, params.path);
-  return updated;
-}
-
 export function editConfigDocument(params: {
   raw: string;
   sourceFormat: ConfigFileFormat;
@@ -293,7 +248,6 @@ export function editConfigDocument(params: {
   path: string;
   desiredData: Record<string, unknown>;
   managedComments?: ManagedConfigComment[];
-  managedCommentReplacements?: ManagedConfigCommentReplacement[];
 }): string {
   const current = parseConfigDocument(params.raw, params.sourceFormat, params.path);
   const edits: Array<{ path: (string | number)[]; value: unknown }> = [];
@@ -321,9 +275,6 @@ export function editConfigDocument(params: {
   }
 
   if (params.outputFormat === "jsonc") {
-    for (const replacement of params.managedCommentReplacements ?? []) {
-      updated = replaceManagedComments(updated, replacement);
-    }
     for (const comment of params.managedComments ?? []) {
       updated = addManagedComment(updated, comment);
     }
@@ -341,7 +292,6 @@ export async function planConfigDocumentEdit(params: {
   target: EditableConfigPath;
   desiredData: Record<string, unknown>;
   managedComments?: ManagedConfigComment[];
-  managedCommentReplacements?: ManagedConfigCommentReplacement[];
 }): Promise<ConfigDocumentEdit> {
   let writeTarget: ConfigWriteTargetSnapshot;
   let sourceWriteTarget: ConfigWriteTargetSnapshot | undefined;
@@ -375,7 +325,6 @@ export async function planConfigDocumentEdit(params: {
     path: params.target.path,
     desiredData: params.desiredData,
     managedComments: params.managedComments,
-    managedCommentReplacements: params.managedCommentReplacements,
   });
   const targetOriginalBytes =
     params.target.path === params.target.sourcePath
@@ -399,7 +348,7 @@ export async function planConfigDocumentEdit(params: {
   };
 }
 
-export async function validateConfigDocumentEdit(
+async function validateConfigDocumentEdit(
   edit: ConfigDocumentEdit,
   options: {
     readBytes?: (path: string) => Promise<Buffer>;

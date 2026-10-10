@@ -2,7 +2,7 @@ import { realpathSync } from "node:fs";
 import { lstat, readlink } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 
-import { type WriteJsonAtomicOptions, writeJsonAtomic, writeTextAtomic } from "./atomic-json.js";
+import { type WriteJsonAtomicOptions, writeTextAtomic } from "./atomic-json.js";
 
 export const MAX_CONFIG_SYMLINK_HOPS = 40;
 export const NEW_CONFIG_FILE_MODE = 0o600;
@@ -229,18 +229,4 @@ export async function writeResolvedConfigText(
   content: string,
 ): Promise<void> {
   await writeTextAtomic(snapshot.writePath, content, await configurationWriteOptions(snapshot));
-}
-
-export async function writeConfiguredJsonAtomic(
-  configuredPath: string,
-  data: unknown,
-  opts: { trailingNewline?: boolean } = {},
-): Promise<void> {
-  const planned = await resolveConfigWriteTarget(configuredPath);
-  const current = await resolveConfigWriteTarget(configuredPath);
-  assertSameConfigWriteTarget(planned, current);
-  await writeJsonAtomic(current.writePath, data, {
-    ...(await configurationWriteOptions(current)),
-    trailingNewline: opts.trailingNewline,
-  });
 }

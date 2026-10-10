@@ -41,7 +41,7 @@ Strict `.json` files also work. Not sure which file is active? Run `/quota_statu
 | Write quota JSON for another tool           | `export.enabled: true`                      |
 | Keep OpenCode's normal retry after a limit  | `waitForQuotaReset: false`                  |
 
-The installer picks `allWindows`. If the setting is missing, the default is `singleWindow`.
+If the setting is missing, the default is `singleWindow`.
 
 Example:
 
@@ -112,15 +112,9 @@ Session totals count only the current session by default. `sessionTokenScope: "t
 
 ## Custom providers
 
-A custom provider connects OpenCode Quota to a provider that is not built in, or tunes a maintained local estimate. Use the guided command:
+A custom provider connects OpenCode Quota to a provider that is not built in, or tunes a maintained local estimate. Ask your agent to add a custom provider: [Custom providers](providers.md#custom-providers) has a copy-paste prompt.
 
-```bash
-npx @slkiser/opencode-quota@latest provider add
-```
-
-- It asks what kind of provider you have, previews the full merged global config, and asks before writing. It never asks for a response body, credential, or secret.
-- For `json-v1`, it walks you through the optional rows path and each mapping one field at a time, and checks the result with the same validator used at startup.
-- It writes to the global `quota-toast.jsonc` or `.json` if one exists, otherwise to the global `opencode.jsonc` or `.json`. Project definitions are not allowed.
+To edit it yourself, add the definition to `quotaProviders` in the global `quota-toast.jsonc` or `.json` if one exists, otherwise to `experimental.quotaToast.quotaProviders` in the global `opencode.jsonc` or `.json`. Project definitions are not allowed. `/quota_status` (or the `quota_status` tool) checks it with the same validator used at startup.
 
 Rules:
 
@@ -141,7 +135,7 @@ Rules:
 <details>
 <summary><strong>Complete example (no separate quota settings file)</strong></summary>
 
-Without a `quota-toast` file, the guided command writes `experimental.quotaToast.quotaProviders` in the global OpenCode config. Set up the normal OpenCode `provider` block yourself:
+Without a `quota-toast` file, `quotaProviders` goes in `experimental.quotaToast` in the global OpenCode config, next to the normal OpenCode `provider` block:
 
 ```jsonc
 {
@@ -183,7 +177,7 @@ Without a `quota-toast` file, the guided command writes `experimental.quotaToast
 
 ## Full configuration reference
 
-Most settings go in the `opencode-quota/quota-toast.jsonc` or `.json` file described above. The guided editor keeps `quotaProviders` in that file when it exists; otherwise it uses the global OpenCode JSONC/JSON `experimental.quotaToast` section; do not duplicate it in a second file. Existing `experimental.quotaToast` settings still work. To also mirror settings into `experimental.quotaToast` for another tool, run `npx @slkiser/opencode-quota init --sync-legacy-config`.
+Most settings go in the `opencode-quota/quota-toast.jsonc` or `.json` file described above. Keep `quotaProviders` in that file when it exists; otherwise use the global OpenCode JSONC/JSON `experimental.quotaToast` section; do not duplicate it in a second file. Existing `experimental.quotaToast` settings still work.
 
 Provider credentials (API keys, cookies, tokens) are never set here. See [API keys](providers.md#api-keys) and each provider's [setup notes](providers.md#provider-setup-notes).
 
@@ -266,7 +260,7 @@ Toasts appear only in the TUI, never in Web or Desktop.
 | `cursorIncludedApiUsd`       | unset                              | Override Cursor's monthly included API budget in USD. |
 | `cursorBillingCycleStartDay` | unset                              | Billing day `1`–`28`. Unset uses the local calendar month. |
 
-The old `opencodeZenDisplay` setting is gone. If it is still in your config, it is ignored and `/quota_status` reports it; `update` can migrate it. See [What can change automatically](updating.md#what-can-change-automatically).
+The old `opencodeZenDisplay` setting is gone. If it is still in your config, it is ignored and `/quota_status` reports it; use root `accountingDetail` (`"summary"` or `"detailed"`) instead.
 
 ### Export and telemetry settings
 

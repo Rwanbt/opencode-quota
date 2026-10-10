@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 
 import {
   getQuotaFormatStyleDefinition,
-  getQuotaFormatStyleLabel,
   isQuotaFormatStyle,
   resolveQuotaFormatStyle,
 } from "../src/lib/quota-format-style.js";
@@ -32,9 +31,7 @@ describe("quota format style helpers", () => {
     expect(resolveQuotaFormatStyle("all_windows")).toBe("singleWindow");
   });
 
-  it("exposes labels and behavior mapping from the shared registry", () => {
-    expect(getQuotaFormatStyleLabel("classic")).toBe("Single window");
-    expect(getQuotaFormatStyleLabel("allWindows")).toBe("All windows");
+  it("exposes the behavior mapping from the shared registry", () => {
     expect(getQuotaFormatStyleDefinition("grouped")).toMatchObject({
       id: "allWindows",
       projection: "allWindows",

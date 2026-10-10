@@ -22,7 +22,6 @@ import {
   MAX_CONFIG_SYMLINK_HOPS,
   NEW_CONFIG_FILE_MODE,
   resolveConfigWriteTarget,
-  writeConfiguredJsonAtomic,
   writeResolvedConfigText,
 } from "../src/lib/config-write-target.js";
 
@@ -288,21 +287,5 @@ describe("writeResolvedConfigText", () => {
     expect(readFileSync(join(dest, "keep.txt"), "utf8")).toBe("safe\n");
     expect(readdirSync(dir).filter((name) => name.includes(".tmp-"))).toEqual([]);
     expect(existsSync(dest)).toBe(true);
-  });
-});
-
-describe("writeConfiguredJsonAtomic", () => {
-  it("writes through a symlink without replacing the link", async () => {
-    const dir = makeTempDir();
-    const real = join(dir, "dotfiles", "opencode.json");
-    const link = join(dir, "opencode.json");
-    mkdirSync(join(dir, "dotfiles"), { recursive: true });
-    writeFileSync(real, '{"plugin":[]}\n');
-    symlinkSync(real, link);
-
-    await writeConfiguredJsonAtomic(link, { plugin: ["a"] }, { trailingNewline: true });
-
-    expect(lstatSync(link).isSymbolicLink()).toBe(true);
-    expect(JSON.parse(readFileSync(real, "utf8"))).toEqual({ plugin: ["a"] });
   });
 });

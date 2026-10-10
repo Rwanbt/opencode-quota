@@ -30,11 +30,10 @@ import type {
 } from "./types.js";
 import { DEFAULT_CONFIG } from "./types.js";
 
-export const QUOTA_TOAST_CONFIG_RELATIVE_PATHS = [
+const QUOTA_TOAST_CONFIG_RELATIVE_PATHS = [
   "opencode-quota/quota-toast.jsonc",
   "opencode-quota/quota-toast.json",
 ] as const;
-export const QUOTA_TOAST_CONFIG_RELATIVE_PATH = QUOTA_TOAST_CONFIG_RELATIVE_PATHS[1];
 
 export const QUOTA_TOAST_SETTING_SOURCE_KEYS = [
   "enabled",
@@ -204,10 +203,7 @@ export interface ConfigLayerCandidate {
   kind: ConfigLayerKind;
 }
 
-export function getQuotaToastConfigPath(
-  configRootDir: string,
-  format: "json" | "jsonc" = "json",
-): string {
+function getQuotaToastConfigPath(configRootDir: string, format: "json" | "jsonc" = "json"): string {
   return join(configRootDir, `opencode-quota/quota-toast.${format}`);
 }
 
@@ -1237,7 +1233,7 @@ function buildConfigLayerCandidatesForRoot(
   ];
 }
 
-export function buildConfigLayerCandidates(
+function buildConfigLayerCandidates(
   globalConfigDir: string,
   configRootDir: string,
 ): ConfigLayerCandidate[] {

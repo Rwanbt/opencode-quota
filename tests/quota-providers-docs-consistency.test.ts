@@ -58,12 +58,13 @@ describe("quota provider Phase 7 documentation consistency", () => {
     const troubleshootingProviderFixes = readMarkdownSection(troubleshooting, /^Provider fixes$/);
     const externalJsonBasics = readMarkdownSection(external, /^JSON basics$/);
 
-    const providerAddCommand = "npx @slkiser/opencode-quota@latest provider add";
-    expect(readmeCommands).toContain(providerAddCommand);
-    expect(readmeCustomProviders).toContain(providerAddCommand);
+    expect(readmeCommands).not.toContain("provider add");
+    expect(readmeCustomProviders).toContain("Ask your agent to add a custom provider");
     expect(
       hasMarkdownLinkTo(readmeCustomProviders, "docs/readme/providers.md#custom-providers"),
     ).toBe(true);
+    expect(providerGuideCustomProviders).toContain("Ask your agent to add a custom provider");
+    expect(providerGuideCustomProviders).toContain("docs/readme/providers.md#custom-providers");
     expect(readme).not.toContain("experimental.quotaToast");
     expect(readme).not.toContain("apiKeyEnv");
 
@@ -78,7 +79,7 @@ describe("quota provider Phase 7 documentation consistency", () => {
       expect(document).not.toContain("accounting-v1");
     }
 
-    expect(configuration).toContain("provider add");
+    expect(configuration).toContain("Ask your agent to add a custom provider");
     expect(configuration).toContain("experimental.quotaToast");
     expect(configuration).toContain("quotaProviders");
     expect(configuration).toContain("JSONC");

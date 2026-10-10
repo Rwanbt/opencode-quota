@@ -53,7 +53,6 @@ The TUI, Web, and Desktop get their numbers from OpenCode's background service. 
 | Pricing looks old                                           | Run `/pricing_refresh`.                                                                                  |
 | Web report columns do not line up                           | Expected: Web uses a proportional font. Use the TUI or `npx @slkiser/opencode-quota show`.               |
 | Terminal shows a sign-in as expired but OpenCode shows data | The terminal never refreshes tokens. Open OpenCode (or use that provider in it) once, then retry.        |
-| The updater reports findings or fails                       | See [Updating safely](updating.md#what-stays-manual). Never paste credential values into reports.        |
 
 ## Provider fixes
 
@@ -66,7 +65,7 @@ Run `/quota_status` first and check that provider's section. Setup steps and API
 
 | Symptom                                    | Fix |
 | ------------------------------------------ | --- |
-| Config is rejected                         | Run `opencode-quota provider add` and keep `quotaProviders` in global OpenCode JSONC/JSON. Remove `customSources`, unknown fields, duplicate IDs/request identities, or overlapping model coverage. |
+| Config is rejected                         | Keep `quotaProviders` in global config only ([where](providers.md#custom-providers)). Remove `customSources`, unknown fields, duplicate IDs/request identities, or overlapping model coverage. |
 | Definition is `unavailable`                | Confirm OpenCode reports the exact `providerId`. With `onlyCurrentModel`, the model id (without provider prefix) must match `modelIds`, or omit `modelIds`. |
 | `missing_credential`                       | Set the `apiKeyEnv` variable, trusted global `provider.<providerId>.options.apiKey`, or an API-key login saved in OpenCode 2 for that provider id. |
 | `http_error`, `timeout`, or response error | Check the endpoint and its response format. `/quota_status` intentionally hides URLs, request/response contents, raw errors, and secret material. |
@@ -141,7 +140,7 @@ Check the Alibaba login, tier, state-file path, and `alibaba_coding_plan` live c
 | Symptom              | Fix |
 | -------------------- | --- |
 | API key not detected | See [API keys](providers.md#api-keys). Repo-local provider secrets are ignored. |
-| Limits need tuning   | Run `opencode-quota provider add`, choose local estimate, and use the `alibaba-coding-plan` id with its five-hour, weekly, and monthly rolling windows. |
+| Limits need tuning   | Add a local-estimate [custom provider](providers.md#custom-providers) with the `alibaba-coding-plan` id and its five-hour, weekly, and monthly rolling windows. |
 | Counters do not move | Make sure the current model is `alibaba/*` or `alibaba-cn/*`. |
 | Quota seems stale    | Check the state-file path shown in `/quota_status`. |
 
