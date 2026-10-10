@@ -1,9 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { projectQuotaProviderResults } from "../src/lib/quota-accounting-projection.js";
 import { formatQuotaCommand } from "../src/lib/quota-command-format.js";
-import { formatQuotaRowsGrouped } from "../src/lib/toast-format-grouped.js";
-import { buildCompactQuotaStatusLine } from "../src/lib/tui-compact-format.js";
-import { buildSidebarQuotaPanelLines } from "../src/lib/tui-sidebar-format.js";
 import { openaiProvider } from "../src/providers/openai.js";
 import {
   expectAttemptedWithErrorLabel,
@@ -194,19 +191,9 @@ describe("openai provider", () => {
 
     const result = await openaiProvider.fetch({ config: {} } as any);
     const data = { entries: result.entries, errors: result.errors };
-    const outputs = [
-      buildSidebarQuotaPanelLines({
-        data,
-        config: { formatStyle: "allWindows", percentDisplayMode: "remaining" },
-      }).join("\n"),
-      formatQuotaCommand(data),
-      formatQuotaRowsGrouped(data),
-    ];
-
-    for (const output of outputs) {
-      expect(output).toContain(expected);
-      expect(output).not.toContain("[OpenAI (OpenAI)]");
-    }
+    const output = formatQuotaCommand(data);
+    expect(output).toContain(expected);
+    expect(output).not.toContain("[OpenAI (OpenAI)]");
   });
 
   it("shows a login OpenCode could not return as its own error row next to working ones", async () => {
@@ -396,23 +383,6 @@ describe("openai provider", () => {
       ["[OpenAI] (active)", "key-id"],
       ["[OpenAI Work] (Pro)", "oauth-id"],
     ]);
-    for (const formatStyle of ["allWindows", "singleWindow"] as const) {
-      const lines = buildSidebarQuotaPanelLines({
-        data: { entries: out.entries, errors: out.errors },
-        config: { formatStyle, percentDisplayMode: "remaining" },
-      });
-      expect(lines.some((line) => line.includes("[OpenAI Work] (Pro)"))).toBe(true);
-      expect(lines.some((line) => line.includes("42%"))).toBe(true);
-      expect(lines.filter((line) => line === "[OpenAI] (active)")).toHaveLength(1);
-      const statusLines = lines
-        .slice(
-          lines.indexOf("[OpenAI] (active)") + 1,
-          lines.findIndex((line) => line.startsWith("[OpenAI Work] (Pro)")),
-        )
-        .filter(Boolean);
-      expect(statusLines.every((line) => line === line.trim())).toBe(true);
-      expect(statusLines.join(" ")).toBe("ChatGPT quota unavailable for API key");
-    }
     expect(out.statusDetails).toEqual(
       expect.arrayContaining([
         { key: "auth_configured", value: "true" },
@@ -425,7 +395,7 @@ describe("openai provider", () => {
   it.each([
     true,
     false,
-  ])("keeps the active API-key account on a 60-column mixed-credential compact line (key first: %s)", async (keyFirst) => {
+  ])("lists the active API-key account first among mixed credentials (key first: %s)", async (keyFirst) => {
     const { readCredentialRows } = await import("../src/lib/opencode-auth.js");
     const { queryOpenAIQuota, resolveOpenAIOAuth } = await import("../src/lib/openai.js");
     const keyRow = {
@@ -465,12 +435,6 @@ describe("openai provider", () => {
       "oauth-id",
       "oauth-id",
     ]);
-    expect(
-      buildCompactQuotaStatusLine({
-        data: { entries: out.entries, errors: out.errors },
-        maxWidth: 60,
-      }),
-    ).toBe("OpenAI - ChatGPT quota unavailable for API key");
   });
 
   it.each([
@@ -530,16 +494,6 @@ describe("openai provider", () => {
         { key: "token_status", value: firstId === "oauth-id" ? "valid" : "api key" },
       ]),
     );
-    expect(
-      buildCompactQuotaStatusLine({
-        data: { entries: out.entries, errors: out.errors },
-        maxWidth: 60,
-      }),
-    ).toBe(
-      firstId === "oauth-id"
-        ? "OpenAI Work 42% | +1"
-        : "OpenAI - ChatGPT quota unavailable for API key | +1",
-    );
   });
 
   it("keeps other active rows and inactive rows in source order after the session's active row", async () => {
@@ -593,11 +547,7 @@ describe("openai provider", () => {
       labels.map((_, index) => `key-${index}`),
     );
     const data = { entries: out.entries, errors: out.errors };
-    const outputs = [
-      formatQuotaRowsGrouped(data),
-      buildSidebarQuotaPanelLines({ data, config: { formatStyle: "allWindows" } }).join("\n"),
-      formatQuotaCommand(data),
-    ];
+    const outputs = [formatQuotaCommand(data)];
     for (const output of outputs) {
       for (const name of names) {
         expect(
@@ -607,7 +557,7 @@ describe("openai provider", () => {
     }
   });
 
-  it("keeps an explicit numeric API-key alias separate from numbered unnamed accounts on every grouped surface", async () => {
+  it("keeps an explicit numeric API-key alias separate from numbered unnamed accounts on /quota", async () => {
     const { readCredentialRows } = await import("../src/lib/opencode-auth.js");
     const labels = ["API key", "default", "2"];
     vi.mocked(readCredentialRows).mockResolvedValueOnce(
@@ -624,11 +574,7 @@ describe("openai provider", () => {
     const names = ["[OpenAI] (active)", "[OpenAI 3]", "[OpenAI 2]"];
     expect(out.entries.map((entry) => entry.group)).toEqual(names);
     const data = { entries: out.entries, errors: out.errors };
-    const outputs = [
-      formatQuotaRowsGrouped(data),
-      buildSidebarQuotaPanelLines({ data, config: { formatStyle: "allWindows" } }).join("\n"),
-      formatQuotaCommand(data),
-    ];
+    const outputs = [formatQuotaCommand(data)];
     for (const output of outputs) {
       for (const name of names) {
         expect(
@@ -713,7 +659,7 @@ describe("openai provider", () => {
     );
   });
 
-  it("renders the API-key status row on sidebar, /quota, toast, compact line, and single-window projection", async () => {
+  it("renders the API-key status row on /quota and in the single-window projection", async () => {
     const { readCredentialRows } = await import("../src/lib/opencode-auth.js");
     const { resolveOpenAIOAuth } = await import("../src/lib/openai.js");
     vi.mocked(readCredentialRows).mockResolvedValueOnce([
@@ -729,25 +675,10 @@ describe("openai provider", () => {
 
     const result = await openaiProvider.fetch({ config: {} } as any);
     const data = { entries: result.entries, errors: result.errors };
-    const outputs = [
-      buildSidebarQuotaPanelLines({
-        data,
-        config: { formatStyle: "allWindows", percentDisplayMode: "remaining" },
-      }).join("\n"),
-      formatQuotaCommand(data),
-      formatQuotaRowsGrouped(data),
-      buildCompactQuotaStatusLine({ data, maxWidth: 200 }),
-    ];
-
-    for (const output of outputs) {
-      // Narrow surfaces wrap the sentence; collapsing whitespace keeps the phrase checkable.
-      const collapsed = output.replace(/\s+/gu, " ");
-      expect(collapsed).toContain("OpenAI Key");
-      expect(collapsed).toContain("ChatGPT quota unavailable for API key");
-    }
-
-    const sidebarLines = outputs[0]!.split("\n");
-    expect(sidebarLines.filter((line) => line === "[OpenAI Key]")).toHaveLength(1);
+    // Narrow dialogs wrap the sentence; collapsing whitespace keeps the phrase checkable.
+    const collapsed = formatQuotaCommand(data).replace(/\s+/gu, " ");
+    expect(collapsed).toContain("OpenAI Key");
+    expect(collapsed).toContain("ChatGPT quota unavailable for API key");
 
     const singleWindow = projectQuotaProviderResults([result], "singleWindow", "summary");
     expect(singleWindow).toHaveLength(1);

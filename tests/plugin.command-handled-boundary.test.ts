@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { QUOTA_DIALOG_COMMANDS } from "../src/lib/quota-dialog-command-specs.js";
-import tuiPlugin from "../src/tui-v2.js";
+import tuiPlugin from "../src/tui/index.js";
 import { createFakeIntegration } from "./helpers/fake-integration.js";
 
 // The TUI must never read logins or build reports itself: the server plugin does both.
@@ -24,10 +24,37 @@ vi.mock("../src/lib/opencode-auth.js", async (importOriginal) => ({
 
 // Canned answers of the server plugin's quota RPC.
 const rpc = {
-  surface: vi.fn(),
-  footer: vi.fn(),
-  writeExport: vi.fn(),
+  snapshot: vi.fn(),
+  refresh: vi.fn(),
+  notices: vi.fn(),
   command: vi.fn(),
+  events: { on: vi.fn(() => () => {}) },
+};
+const SNAPSHOT = {
+  version: 6,
+  providers: [
+    {
+      providerId: "copilot",
+      label: "Copilot",
+      rows: [
+        {
+          id: "copilot.allowance",
+          providerId: "copilot",
+          label: "Plan",
+          type: "quota",
+          method: "remote_api",
+          authority: "provider_reported",
+          prominence: "primary",
+          percentRemaining: 81,
+        },
+      ],
+      okAtMs: 1,
+      refreshing: false,
+      debug: [],
+    },
+  ],
+  resetNotices: [],
+  generatedAtMs: 1,
 };
 
 function startTui() {
@@ -42,6 +69,22 @@ function startTui() {
     location: { directory: process.cwd() },
     client: { rpc: vi.fn(() => rpc) },
     theme: { text: { base: "base", muted: "muted" } },
+    // Display settings with a toast after every reply.
+    storage: {
+      store: (key: string, options: { initial: any }) => {
+        const value =
+          key === "settings"
+            ? {
+                ...options.initial,
+                settings: {
+                  ...options.initial.settings,
+                  toast: { ...options.initial.settings.toast, afterReply: "always" },
+                },
+              }
+            : options.initial;
+        return [value, async () => {}];
+      },
+    },
     data: {
       session: { get: vi.fn() },
       on: vi.fn((name: string, callback: (event: { data?: Record<string, unknown> }) => void) => {
@@ -83,11 +126,9 @@ function startTui() {
 
 describe("V2 CLI command boundary", () => {
   beforeEach(() => {
-    rpc.surface.mockReset().mockResolvedValue({
-      quota: { message: "Copilot 81%", duration: 5000, activeProviderCount: 1 },
-    });
-    rpc.footer.mockReset().mockResolvedValue({ lines: ["Copilot 81%"] });
-    rpc.writeExport.mockReset().mockResolvedValue({ written: false });
+    rpc.snapshot.mockReset().mockResolvedValue({ snapshot: SNAPSHOT });
+    rpc.refresh.mockReset().mockResolvedValue({ snapshot: SNAPSHOT });
+    rpc.notices.mockReset().mockResolvedValue({ homeLine: "" });
     rpc.command.mockReset().mockResolvedValue({
       state: "output",
       command: "quota",
@@ -181,13 +222,16 @@ describe("V2 CLI command boundary", () => {
     tui.listeners.get("session.execution.succeeded")?.({ data: { sessionID: "ses_1" } });
     for (const command of tui.commands.values()) await command.run();
     await vi.waitFor(() => expect(tui.toast).toHaveBeenCalledOnce());
-    await vi.waitFor(() => expect(rpc.writeExport).toHaveBeenCalledOnce());
+    expect(tui.toast.mock.calls[0]?.[0].message).toContain("Copilot Plan");
 
-    expect(rpc.surface.mock.calls.map(([input]) => input)).toEqual([
-      { surface: "sidebar", sessionID: "ses_1" },
-      { surface: "idle", sessionID: "ses_1" },
+    // The surfaces read the server's snapshot over the RPC; one call serves both of ses_1's.
+    expect(rpc.snapshot.mock.calls.filter(([input]) => input.sessionID === "ses_1")).toHaveLength(
+      1,
+    );
+    expect(rpc.refresh.mock.calls.map(([input]) => input)).toEqual([
+      { reason: "turn", sessionID: "ses_1" },
     ]);
-    expect(rpc.footer).toHaveBeenCalledTimes(2);
+    expect(rpc.notices).toHaveBeenCalledOnce();
     // /tokens_between stops at its date prompt, which this fake cancels.
     expect(rpc.command).toHaveBeenCalledTimes(QUOTA_DIALOG_COMMANDS.length - 1);
     expect(mocks.readAuthFile).not.toHaveBeenCalled();

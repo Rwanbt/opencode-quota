@@ -33,8 +33,8 @@ describe("contribution guidance", () => {
     expect(templateEvidence).toContain("Web output");
     expect(templateEvidence).toContain("TUI sidebar");
     expect(templateEvidence).toContain("toast");
-    expect(templateEvidence).toContain("compact line below the message input");
-    expect(templateEvidence).toContain("prompt bar or command dialog when relevant");
+    expect(templateEvidence).toContain("status line below the message input");
+    expect(templateEvidence).toContain("command dialog when relevant");
     expect(templateEvidence).toContain("unchanged or untested");
     expect(templateEvidence).toMatch(
       /redact credentials, account identifiers, private paths, and other sensitive information/i,
@@ -50,9 +50,9 @@ describe("contribution guidance", () => {
     expect(contributingEvidence).toContain("must include before-and-after screenshots");
     expect(contributingEvidence).toContain("same config, model, theme, and window size");
     expect(contributingEvidence).toContain(
-      "Web, TUI sidebar, toast, and the compact line under the message input",
+      "Web, TUI sidebar, toast, and the status line under the message input",
     );
-    expect(contributingEvidence).toContain("prompt bar or command dialog if relevant");
+    expect(contributingEvidence).toContain("command dialog if relevant");
     expect(contributingEvidence).toContain("Say which ones you didn't test");
     expect(contributingEvidence).toContain(
       "credentials, account identifiers, and private paths hidden",

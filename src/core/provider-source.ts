@@ -23,6 +23,7 @@ import {
   type QuotaRuntimeClient,
   resolveQuotaRuntimeContext,
 } from "../lib/quota-runtime-context.js";
+import type { MaintainerAnnouncementHomeFrequency, SessionTokenScope } from "../lib/types.js";
 import { rowsFromLegacyResult } from "./rows.js";
 import type { ProviderIdentity, StoreProvider, StoreSource } from "./store.js";
 
@@ -32,18 +33,26 @@ export type ProviderSourceHost = { client: QuotaRuntimeClient; roots: RuntimeCon
 export type SessionModel = { id?: string; providerID?: string };
 
 /** The settings the server reads besides the providers themselves. */
-export type ModelProviderSettings = {
+export type ServerSettings = {
+  /** False when the user turned OpenCode Quota off. */
+  enabled: boolean;
   waitForQuotaReset: boolean;
   /** The enabled providers that serve `model`. */
   providerIdsForModel: (model: SessionModel) => string[];
+  /** Session tokens of the session only, or with its subagents. */
+  sessionTokenScope: SessionTokenScope;
+  /** The maintainer notice on Home: off, once a day, or every time. */
+  homeNotice: "off" | MaintainerAnnouncementHomeFrequency;
+  /** The export file, written after each snapshot change when on. */
+  export: { enabled: boolean; path: string };
+  /** Quota gauges through the host's OpenTelemetry MeterProvider. */
+  telemetry: boolean;
 };
 
 async function loadRuntime(host: ProviderSourceHost) {
-  // The source never configures telemetry: the v5 surfaces still own it.
   return resolveQuotaRuntimeContext({
     client: host.client,
     roots: host.roots,
-    configureTelemetry: false,
   });
 }
 
@@ -112,7 +121,6 @@ export async function loadProviderSource(host: ProviderSourceHost): Promise<Stor
     session: {},
     resolveRuntimeProviderIds: runtime.resolveRuntimeProviderIds,
     workspaceRoot: runtime.roots.workspaceRoot,
-    configureTelemetry: false,
   });
   const enabled = !config.enabled
     ? []
@@ -146,11 +154,11 @@ export async function loadProviderSource(host: ProviderSourceHost): Promise<Stor
   };
 }
 
-export async function loadModelProviderSettings(
-  host: ProviderSourceHost,
-): Promise<ModelProviderSettings> {
+export async function loadServerSettings(host: ProviderSourceHost): Promise<ServerSettings> {
   const { config, providers } = await loadRuntime(host);
+  const announcements = config.maintainerAnnouncements;
   return {
+    enabled: config.enabled,
     waitForQuotaReset: config.waitForQuotaReset,
     providerIdsForModel: (model) =>
       providers
@@ -164,5 +172,12 @@ export async function loadModelProviderSettings(
           }),
         )
         .map((provider) => provider.id),
+    sessionTokenScope: config.sessionTokenScope,
+    homeNotice:
+      config.enabled && announcements.enabled && announcements.home
+        ? announcements.homeFrequency
+        : "off",
+    export: { enabled: config.enabled && config.export.enabled, path: config.export.path },
+    telemetry: config.enabled && config.telemetry.enabled,
   };
 }

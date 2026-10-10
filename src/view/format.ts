@@ -1,0 +1,148 @@
+/**
+ * Words and numbers every quota surface shows: percents, reset times, bars, amounts and
+ * token counts. Pure functions, shared by the TUI, the Web text and the CLI.
+ */
+import type { Amount, QuotaRow, ResetStyle, SessionTokens, Words } from "../core/types.js";
+import { formatTokenCount } from "../lib/format-utils.js";
+
+/** The words until the server sends its own (docs/v6-build.local.md §5). */
+export const DEFAULT_WORDS: Words = {
+  percent: "left",
+  reset: "exact",
+  resetDecimals: 1,
+  detail: "summary",
+  runsOut: false,
+  onlyCurrentModel: false,
+  sessionTokens: "current",
+};
+
+const PERCENT_WORDS: Record<Words["percent"], string> = {
+  left: "left",
+  remaining: "remaining",
+  bare: "",
+  used: "used",
+};
+
+/** The word after a percent ("left", "used", or "" for the bare style). */
+export function percentWord(words: Words): string {
+  return PERCENT_WORDS[words.percent];
+}
+
+/** A raw percent left as a whole number from 0 to 100. */
+export function clampPercent(percent: number): number {
+  return Math.max(0, Math.min(100, Math.round(percent)));
+}
+
+/** "58% left", "42% used", or "58%" without the word. */
+export function percentText(words: Words, percentRemaining: number, withWord: boolean): string {
+  const left = clampPercent(percentRemaining);
+  const value = words.percent === "used" ? 100 - left : left;
+  const word = withWord ? percentWord(words) : "";
+  return word ? `${value}% ${word}` : `${value}%`;
+}
+
+/** docs/v6-plan.local.md §4.7. Zero units are dropped in every style; the past is "now". */
+export function formatDuration(ms: number, style: ResetStyle, decimals: number): string {
+  if (!(ms > 0)) return "now";
+  const minutes = Math.ceil(ms / 60_000);
+  if (style === "decimal") {
+    return minutes >= 1440
+      ? `${(minutes / 1440).toFixed(decimals)}d`
+      : `${(minutes / 60).toFixed(decimals)}h`;
+  }
+  const days = Math.floor(minutes / 1440);
+  const hours = Math.floor((minutes % 1440) / 60);
+  const rest = minutes % 60;
+  let parts = [days && `${days}d`, hours && `${hours}h`, rest && `${rest}m`].filter(
+    (part): part is string => Boolean(part),
+  );
+  if (style === "short") parts = parts.slice(0, days ? 2 : 1);
+  return parts.join(style === "compact" ? "" : " ");
+}
+
+/** The time until a row resets, in the words' style; "" when the row has no reset time. */
+export function resetText(row: QuotaRow, nowMs: number, words: Words): string {
+  const resetMs = Date.parse(row.resetsAt ?? "");
+  if (!Number.isFinite(resetMs)) return "";
+  return formatDuration(resetMs - nowMs, words.reset, words.resetDecimals);
+}
+
+export type BarShape = "blocks" | "shades" | "line" | "squares" | "dots" | "none";
+
+const BAR_CHARACTERS: Record<Exclude<BarShape, "none">, [string, string]> = {
+  blocks: ["█", "░"],
+  shades: ["▓", "░"],
+  line: ["━", "─"],
+  squares: ["■", "□"],
+  dots: ["●", "○"],
+};
+
+/** A bar in two parts (left, used), so each can have its own color. */
+export function barParts(
+  shape: BarShape,
+  percentRemaining: number,
+  width: number,
+): [string, string] {
+  if (shape === "none" || width <= 0) return ["", ""];
+  const [full, empty] = BAR_CHARACTERS[shape];
+  const filled = Math.round((clampPercent(percentRemaining) / 100) * width);
+  return [full.repeat(filled), empty.repeat(width - filled)];
+}
+
+export type Level = "good" | "warning" | "low";
+export type Thresholds = { warningBelow: number; lowBelow: number };
+
+/** Plenty left, getting low, or almost out. */
+export function levelOf(percentRemaining: number, thresholds: Thresholds): Level {
+  const left = clampPercent(percentRemaining);
+  if (left < thresholds.lowBelow) return "low";
+  return left < thresholds.warningBelow ? "warning" : "good";
+}
+
+function groupDigits(integer: string): string {
+  return integer.replace(/\B(?=(\d{3})+(?!\d))/gu, ",");
+}
+
+/** "$12.40", "12.40 EUR", "1,200 requests", "30 nano". */
+export function amountText(amount: Amount): string {
+  const { unit } = amount;
+  if (unit.kind === "currency") {
+    const value = Number(amount.decimal);
+    const sign = value < 0 ? "-" : "";
+    const [integer = "0", cents = "00"] = Math.abs(value).toFixed(2).split(".");
+    const money = `${groupDigits(integer)}.${cents}`;
+    return unit.code === "USD" ? `${sign}$${money}` : `${sign}${money} ${unit.code}`;
+  }
+  const [integer = "0", fraction] = amount.decimal.replace(/^-/u, "").split(".");
+  const sign = amount.decimal.startsWith("-") ? "-" : "";
+  const number = `${sign}${groupDigits(integer)}${fraction ? `.${fraction}` : ""}`;
+  if (unit.kind === "custom") return `${number} ${unit.symbol}`;
+  return unit.unit === "unit" ? number : `${number} ${unit.unit}`;
+}
+
+/** The value of a row without a percent: its text, amount, used/limit, or yes/no. */
+export function rowValueText(row: QuotaRow): string {
+  if (row.text !== undefined) return row.text;
+  if (row.amount) {
+    const amount = amountText(row.amount);
+    if (row.type === "balance") return `${amount} left`;
+    return row.type === "usage" ? `${amount} used` : amount;
+  }
+  if (row.remaining) return `${amountText(row.remaining)} left`;
+  if (row.used && row.limit) return `${amountText(row.used)}/${amountText(row.limit)}`;
+  if (row.used) return `${amountText(row.used)} used`;
+  if (row.flag !== undefined) return row.flag ? "Enabled" : "Disabled";
+  return "";
+}
+
+/** "12.3K in · 2.1K out". */
+export function sessionTokensText(tokens: SessionTokens): string {
+  return `${formatTokenCount(tokens.input)} in · ${formatTokenCount(tokens.output)} out`;
+}
+
+/** `text` cut to `width` with "…" ("Copilot…", not "Copilot …"), else padded to it. */
+export function fit(text: string, width: number): string {
+  if (width <= 0) return "";
+  const cut = text.length > width ? `${text.slice(0, width - 1).trimEnd()}…` : text;
+  return cut.padEnd(width);
+}

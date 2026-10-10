@@ -23,7 +23,6 @@ import {
   resolveQuotaRuntimeContext,
 } from "../src/lib/quota-runtime-context.js";
 import { buildQuotaProviderStateCacheKey } from "../src/lib/quota-state.js";
-import { __resetQuotaTelemetryForTests } from "../src/lib/quota-telemetry.js";
 import { createRuntimeProviderIdResolver } from "../src/lib/runtime-provider-ids.js";
 import { DEFAULT_CONFIG } from "../src/lib/types.js";
 
@@ -41,7 +40,6 @@ describe("quota runtime context", () => {
   let xdgConfigHome: string;
 
   beforeEach(() => {
-    __resetQuotaTelemetryForTests();
     delete process.env.OPENCODE_CONFIG_DIR;
     tempDir = mkdtempSync(join(tmpdir(), "opencode-quota-runtime-context-"));
     mockedHomeDir.value = tempDir;
@@ -66,7 +64,6 @@ describe("quota runtime context", () => {
   });
 
   afterEach(() => {
-    __resetQuotaTelemetryForTests();
     process.chdir(originalCwd);
     process.env = originalEnv;
     mockedHomeDir.value = "";
@@ -218,30 +215,6 @@ describe("quota runtime context", () => {
     expect(buildQuotaProviderStateCacheKey("openai", providerContext)).toBe(
       buildQuotaProviderStateCacheKey("openai", summaryContext),
     );
-  });
-
-  it("scopes telemetry tokens to enabled normalized provider configuration without I/O", () => {
-    const client = createClient();
-    const createContext = (enabled: boolean, enabledProviders = DEFAULT_CONFIG.enabledProviders) =>
-      createQuotaProviderRuntimeContext({
-        client,
-        resolveRuntimeProviderIds: createRuntimeProviderIdResolver(client),
-        config: {
-          ...DEFAULT_CONFIG,
-          enabled,
-          enabledProviders,
-          telemetry: { enabled: true },
-        },
-        session: {},
-      });
-
-    expect(createContext(false).config.telemetryToken).toBeUndefined();
-    const first = createContext(true).config.telemetryToken;
-    expect(first).toBeDefined();
-    expect(createContext(true).config.telemetryToken).toEqual(first);
-    expect(createContext(true, ["openai"]).config.telemetryToken).not.toEqual(first);
-    expect(client.config.get).not.toHaveBeenCalled();
-    expect(client.config.providers).not.toHaveBeenCalled();
   });
 
   it("copies default request timeout without marking it explicitly configured", () => {

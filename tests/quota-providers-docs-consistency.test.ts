@@ -231,9 +231,10 @@ describe("quota provider Phase 7 documentation consistency", () => {
   it("keeps surface formatters generic", () => {
     for (const path of [
       "src/lib/quota-command-format.ts",
-      "src/lib/toast-format-grouped.ts",
-      "src/lib/tui-sidebar-format.ts",
-      "src/lib/tui-compact-format.ts",
+      "src/view/select.ts",
+      "src/view/text.ts",
+      "src/tui/sidebar.tsx",
+      "src/tui/status-line.tsx",
     ]) {
       const formatter = read(path);
       expect(formatter).not.toContain("quota-providers");

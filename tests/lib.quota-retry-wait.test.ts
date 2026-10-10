@@ -161,11 +161,11 @@ describe("resolveQuotaResetRetryDelayMs", () => {
   /** The plugin's retry host: a store over today's providers and settings, in memory. */
   async function createHost() {
     const { createQuotaStore } = await import("../src/core/store.js");
-    const { loadModelProviderSettings, loadProviderSource } = await import(
+    const { loadServerSettings, loadProviderSource } = await import(
       "../src/core/provider-source.js"
     );
     const store = createQuotaStore({ source: () => loadProviderSource(sourceHost), file: null });
-    return { store, loadSettings: () => loadModelProviderSettings(sourceHost) };
+    return { store, loadSettings: () => loadServerSettings(sourceHost) };
   }
 
   async function resolve(event: QuotaRetryEvent) {

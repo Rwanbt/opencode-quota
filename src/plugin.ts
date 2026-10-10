@@ -1,19 +1,22 @@
 /**
  * OpenCode V2 server plugin: quota slash commands for every client, a diagnostics tool, and
- * the quota RPC that computes the TUI surfaces. Inside OpenCode, logins are read only here,
+ * the quota RPC that serves the quota snapshot to the TUI. It also writes the export file and
+ * the OpenTelemetry gauges from each snapshot. Inside OpenCode, logins are read only here,
  * through OpenCode's integration API.
  */
 import { join } from "node:path";
 import { Plugin } from "@opencode/plugin";
 import {
-  loadModelProviderSettings,
   loadProviderSource,
+  loadServerSettings,
   type ProviderSourceHost,
 } from "./core/provider-source.js";
+import { createSnapshotPublisher } from "./core/snapshot-publisher.js";
 import { createQuotaStore } from "./core/store.js";
 import type { QuotaSnapshot } from "./core/types.js";
 import { resolveOpenCodeLocationRoots } from "./lib/config-file-utils.js";
 import { sanitizeDisplayText } from "./lib/display-sanitize.js";
+import { homeNoticeLine } from "./lib/maintainer-home-notice.js";
 import {
   bindCredentialSource,
   createIntegrationCredentialSource,
@@ -36,13 +39,8 @@ import {
 } from "./lib/quota-report-message.js";
 import { resolveQuotaResetRetryDelayMs } from "./lib/quota-retry-wait.js";
 import type { QuotaSessionModelContext } from "./lib/quota-runtime-context.js";
-import {
-  getQuotaFooter,
-  getQuotaMessage,
-  type QuotaSurfaceHost,
-  writeQuotaExportIfEnabled,
-} from "./lib/quota-surface-data.js";
 import { messageDocument } from "./lib/report-document.js";
+import { fetchSessionTokensForDisplay } from "./lib/session-tokens.js";
 import { QuotaRpc, type QuotaRpcCommandOutput } from "./rpc.js";
 
 type ModelMessage = {
@@ -153,8 +151,6 @@ export const QuotaToastPlugin = Plugin.define({
         return {};
       }
     };
-    const surfaceHost: QuotaSurfaceHost = { client, roots, resolveSessionMeta };
-
     // The v6 quota store: last known rows, saved in the state dir, refreshed in the background.
     // Building it reads nothing; the first snapshot or refresh call loads the file.
     const sourceHost: ProviderSourceHost = { client, roots };
@@ -162,36 +158,49 @@ export const QuotaToastPlugin = Plugin.define({
       source: () => loadProviderSource(sourceHost),
       file: join(getOpencodeRuntimeDirs().stateDir, "opencode-quota", "snapshot-v6.json"),
     });
-    // With a session, a snapshot also names the providers serving its current model.
+    // With a session, a snapshot also names the providers serving its current model and the
+    // tokens the session used so far.
     const forSession = async (
       snapshot: QuotaSnapshot,
       sessionID: string | undefined,
     ): Promise<{ snapshot: QuotaSnapshot }> => {
-      const model = sessionID ? await resolveSessionMeta(sessionID) : {};
-      if (!model.modelID && !model.providerID) return { snapshot };
-      const settings = await loadModelProviderSettings(sourceHost);
+      if (!sessionID) return { snapshot };
+      const [model, settings] = await Promise.all([
+        resolveSessionMeta(sessionID),
+        loadServerSettings(sourceHost),
+      ]);
       const shown = new Set(snapshot.providers.map((provider) => provider.providerId));
-      const currentModelProviderIds = settings
-        .providerIdsForModel({ id: model.modelID, providerID: model.providerID })
-        .filter((id) => shown.has(id));
-      return { snapshot: { ...snapshot, currentModelProviderIds } };
+      const currentModelProviderIds =
+        model.modelID || model.providerID
+          ? settings
+              .providerIdsForModel({ id: model.modelID, providerID: model.providerID })
+              .filter((id) => shown.has(id))
+          : undefined;
+      const { sessionTokens } = await fetchSessionTokensForDisplay({
+        enabled: true,
+        sessionID,
+        scope: settings.sessionTokenScope,
+      });
+      return {
+        snapshot: {
+          ...snapshot,
+          ...(currentModelProviderIds ? { currentModelProviderIds } : {}),
+          ...(sessionTokens
+            ? {
+                sessionTokens: {
+                  input: sessionTokens.totalInput,
+                  cachedInput: sessionTokens.totalCachedInput ?? 0,
+                  output: sessionTokens.totalOutput,
+                },
+              }
+            : {}),
+        },
+      };
     };
 
     // Awaited so the plugin is active only once the RPC is registered: OpenCode waits for
     // activation before it routes an RPC call, so the first TUI call cannot miss it.
     const registration = await ctx.rpc.register(QuotaRpc, {
-      surface: (input) =>
-        logRpcFailure("surface", async () => ({
-          quota: (await getQuotaMessage(surfaceHost, input.sessionID, input.surface)) ?? null,
-        })),
-      footer: (input) =>
-        logRpcFailure("footer", async () => ({
-          lines: await getQuotaFooter(surfaceHost, input.sessionID, input.surface),
-        })),
-      writeExport: () =>
-        logRpcFailure("writeExport", async () => ({
-          written: await writeQuotaExportIfEnabled(surfaceHost),
-        })),
       command: async (input): Promise<QuotaRpcCommandOutput> => {
         try {
           return await buildOutput(input.command, input.sessionID, input.arguments, {
@@ -220,8 +229,25 @@ export const QuotaToastPlugin = Plugin.define({
           const options = { reason: input.reason, providerIds: input.providerIds };
           return forSession(await store.refresh(options), input.sessionID);
         }),
+      // A notice can target the users of some providers: the enabled and available ones,
+      // found without asking any provider for quota.
+      notices: () =>
+        logRpcFailure("notices", async () => {
+          const settings = await loadServerSettings(sourceHost);
+          if (settings.homeNotice === "off") return { homeLine: "" };
+          const providerIds = (await loadProviderSource(sourceHost)).providers.map(({ id }) => id);
+          return {
+            homeLine: await homeNoticeLine({ frequency: settings.homeNotice, providerIds }),
+          };
+        }),
+    });
+    // The export file and the gauges follow the snapshot; neither asks a provider again.
+    const publisher = createSnapshotPublisher({
+      loadSettings: () => loadServerSettings(sourceHost),
+      log: (message, error) => console.warn(`[opencode-quota] ${message}: ${logReason(error)}`),
     });
     const unsubscribeStore = store.subscribe((snapshot) => {
+      publisher.publish(snapshot);
       void (async () => {
         try {
           await registration.events.emit("changed", { snapshot });
@@ -314,7 +340,7 @@ export const QuotaToastPlugin = Plugin.define({
     await ctx.session.hook("retry", async (event) => {
       try {
         const delay = await resolveQuotaResetRetryDelayMs(
-          { store, loadSettings: () => loadModelProviderSettings(sourceHost) },
+          { store, loadSettings: () => loadServerSettings(sourceHost) },
           event,
         );
         if (delay !== undefined) event.decision = { retry: true, delay };
@@ -349,6 +375,7 @@ export const QuotaToastPlugin = Plugin.define({
     return () => {
       credentialEvents.abort();
       unsubscribeStore();
+      publisher.dispose();
       unbindCredentialSource();
     };
   },

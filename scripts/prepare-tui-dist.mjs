@@ -1,8 +1,6 @@
 // Compiles every `src/**/*.tsx` to `dist/**/*.js` with Babel (Solid's universal JSX for OpenTUI)
 // and deletes the `.jsx` files tsc leaves behind (tsconfig has `jsx: preserve`). Then writes
-// `dist/tui.js`, the TUI entry in package.json: it re-exports `src/tui/index.tsx` once that
-// exists, else today's `src/tui-v2.tsx`.
-import { existsSync } from "node:fs";
+// `dist/tui.js`, the TUI entry in package.json, which re-exports `src/tui/index.tsx`.
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -44,7 +42,6 @@ for (const sourcePath of await listTsxFiles(srcDir)) {
   await fs.rm(`${distStem}.jsx.map`, { force: true });
 }
 
-const entry = existsSync(path.join(srcDir, "tui", "index.tsx")) ? "./tui/index.js" : "./tui-v2.js";
-const reexport = `export { default } from "${entry}";\n`;
+const reexport = `export { default } from "./tui/index.js";\n`;
 await fs.writeFile(path.join(distDir, "tui.js"), reexport);
 await fs.writeFile(path.join(distDir, "tui.d.ts"), reexport);

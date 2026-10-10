@@ -23,7 +23,7 @@ pnpm install
 
 ## Checks
 
-Run `pnpm verify` before opening a PR. It runs lint and formatting, typecheck, build, all tests, the four-surface test, and package checks. CI runs the same command, then installs the packed package on Node 22 and 24 as a smoke test.
+Run `pnpm verify` before opening a PR. It runs lint and formatting, typecheck, build, all tests, the cross-surface test, and package checks. CI runs the same command, then installs the packed package on Node 22 and 24 as a smoke test.
 
 For quick iteration: `pnpm run test:watch`.
 
@@ -76,7 +76,7 @@ Make the smallest safe fix for the root cause. Match current OpenCode behavior i
 
 ## Before-and-after screenshots (required)
 
-Every PR that changes what users see must include before-and-after screenshots taken with the same config, model, theme, and window size, with credentials, account identifiers, and private paths hidden. For quota changes, report each surface: Web, TUI sidebar, toast, and the compact line under the message input (plus the prompt bar or command dialog if relevant). Say which ones you didn't test. Tests don't replace screenshots, and screenshots don't replace tests. No visible change? Write `Not applicable` and why.
+Every PR that changes what users see must include before-and-after screenshots taken with the same config, model, theme, and window size, with credentials, account identifiers, and private paths hidden. For quota changes, report each surface: Web, TUI sidebar, toast, and the status line under the message input (plus the command dialog if relevant). Say which ones you didn't test. Tests don't replace screenshots, and screenshots don't replace tests. No visible change? Write `Not applicable` and why.
 
 ## PR checklist
 

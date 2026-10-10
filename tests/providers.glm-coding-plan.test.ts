@@ -2,9 +2,6 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { formatQuotaCommand } from "../src/lib/quota-command-format.js";
 import type { QuotaRenderData } from "../src/lib/quota-render-data.js";
-import { formatQuotaRowsGrouped } from "../src/lib/toast-format-grouped.js";
-import { buildCompactQuotaStatusLine } from "../src/lib/tui-compact-format.js";
-import { buildSidebarQuotaPanelLines } from "../src/lib/tui-sidebar-format.js";
 
 import {
   expectAttemptedWithErrorLabel,
@@ -258,7 +255,7 @@ describe("Z.ai credit quota surfaces", () => {
     vi.clearAllMocks();
   });
 
-  it("renders credit-backed five-hour and weekly percentages on all four surfaces", async () => {
+  it("renders credit-backed five-hour and weekly percentages on /quota", async () => {
     mocks.queryZaiQuota.mockResolvedValueOnce({
       success: true,
       label: "Z.ai",
@@ -289,25 +286,10 @@ describe("Z.ai credit quota surfaces", () => {
 
     const data: QuotaRenderData = { entries: out.entries, errors: out.errors };
     const command = formatQuotaCommand({ ...data, generatedAtMs: 0 });
-    const toast = formatQuotaRowsGrouped(data);
-    const sidebar = buildSidebarQuotaPanelLines({
-      data,
-      config: { formatStyle: "allWindows", percentDisplayMode: "remaining" },
-    }).join("\n");
-    const compact = buildCompactQuotaStatusLine({
-      data,
-      percentDisplayMode: "remaining",
-      maxWidth: 240,
-    });
-
-    for (const output of [command, toast, sidebar, compact]) {
-      expect(output).toContain("Z.ai");
-      expect(output).toContain("96%");
-      expect(output).toContain("89%");
-    }
-    for (const output of [command, toast, sidebar]) {
-      expect(output).toContain("5h");
-      expect(output).toMatch(/\bWeek(?:ly)?\b/u);
-    }
+    expect(command).toContain("Z.ai");
+    expect(command).toContain("96%");
+    expect(command).toContain("89%");
+    expect(command).toContain("5h");
+    expect(command).toMatch(/\bWeek(?:ly)?\b/u);
   });
 });

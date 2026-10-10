@@ -30,10 +30,16 @@ import {
   messageDocument,
   type ReportDocument,
 } from "../src/lib/report-document.js";
-import plugin from "../src/tui-v2.tsx";
+import plugin from "../src/tui/index.tsx";
 
 // The server plugin's quota RPC runs palette commands; the TUI shows their output.
-const rpc = vi.hoisted(() => ({ command: vi.fn() }));
+const rpc = vi.hoisted(() => ({
+  command: vi.fn(),
+  snapshot: vi.fn(),
+  refresh: vi.fn(),
+  notices: vi.fn(),
+  events: { on: vi.fn(() => () => {}) },
+}));
 
 type Node = { type: string; props: Record<string, any> };
 
@@ -124,6 +130,9 @@ function startTui(
         background: { action: { primary: { focused: "action-bg" } } },
       })),
     },
+    storage: {
+      store: (_key: string, options: { initial: unknown }) => [options.initial, async () => {}],
+    },
     data: {
       on: vi.fn((name: string, listener: Listener) => {
         listeners.set(name, listener);
@@ -212,6 +221,7 @@ describe("V2 quota TUI commands", () => {
     expect(context.data.on.mock.calls.map(([event]) => event)).toEqual([
       "session.execution.succeeded",
       "session.compaction.ended",
+      "session.step.ended",
       "session.tool.input.started",
       "session.tool.success",
       "session.tool.failed",

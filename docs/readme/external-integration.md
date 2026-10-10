@@ -54,7 +54,7 @@ Use this for a status bar or another tool that checks quota often. Add this to `
 ```
 
 - The file is `~/.cache/opencode/quota-export.json` (or `$XDG_CACHE_HOME/opencode/quota-export.json` when `XDG_CACHE_HOME` is set). `export.path` changes it.
-- OpenCode's background service rewrites it about once a minute while the TUI Home screen is open, and it keeps its last contents when OpenCode stops.
+- OpenCode's background service rewrites it each time its quota snapshot changes (providers are asked when a TUI shows quota or a reply ends, at most once per `minIntervalMs`), and it keeps its last contents when OpenCode stops.
 - A write error is logged but never breaks the TUI.
 
 ### tmux example (add to your tmux config)
@@ -103,7 +103,7 @@ It reads results already in memory and never starts its own refresh loop. If the
 Label values stay limited:
 
 - `quota.provider` is a maintained provider ID, `custom`, or `other`.
-- `quota.result_type` is `quota`, `rate_limit`, `usage`, `spend`, `budget`, `balance`, or `status`.
+- `quota.result_type` is `quota` (rate limits too), `usage` (spending too), `budget`, `balance`, or `status`.
 - `quota.window` is `rpm`, `five_hour`, `hour`, `day`, `week`, `month`, `year`, `mcp`, `code_review`, or `unknown`.
 
 When several rows map to the same safe labels, OpenCode Quota reports the highest consumed ratio or oldest cache age. Display names, account IDs, configured source IDs, credentials, URLs, paths, errors, and raw responses are never labels.
@@ -155,14 +155,14 @@ A percentage entry uses `renderType: "percent"` and `percentRemaining`. A value 
 - Version 2 does not expose internal metrics, row prominence, used/limit/remaining basis facts, or per-fact authority.
 - Threshold checks use percentage rows only.
 
-Optional entry fields include `window`, `resetAt`, `observedAt`, and `sourceId`. A provider can also include `rawDetails`: curated, safe provider facts that stay out of normal quota displays. Custom `quotaProviders` rows include `sourceId`, and the `quota-providers` result has a `sources` list so tools can match each row to its definition. Treat `status: "partial"` as incomplete.
+Optional entry fields include `window`, `resetAt`, `observedAt`, and `sourceId`. A provider can also include `rawDetails`: curated, safe provider facts that stay out of normal quota displays. In `show --json`, custom `quotaProviders` rows include `sourceId`, and the `quota-providers` result has a `sources` list so tools can match each row to its definition. The export file is built from the server's quota snapshot instead: its rows have no `sourceId` or `observedAt`, their `resultType` is `quota`, `usage`, `budget`, `balance`, or `status`, and there is no `sources` list. Treat `status: "partial"` as incomplete.
 
 Secrets, credentials, URLs, checked paths, and raw provider responses remain excluded from public JSON. Use `/quota_status` for live diagnostics.
 
 <details>
 <summary><strong>Configured source details</strong></summary>
 
-Rows from a configured `quotaProviders` definition appear under `providers["quota-providers"]` and keep their stable `sourceId`:
+In `show --json`, rows from a configured `quotaProviders` definition appear under `providers["quota-providers"]` and keep their stable `sourceId`:
 
 ```json
 {

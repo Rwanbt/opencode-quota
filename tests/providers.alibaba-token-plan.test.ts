@@ -1,11 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 
-import type { QuotaToastEntry } from "../src/lib/entries.js";
 import { modelProviderMatchesRuntimeId } from "../src/lib/provider-model-matching.js";
 import { matchesQuotaProviderCurrentSelection } from "../src/lib/quota-render-data.js";
 import { alibabaCodingPlanProvider } from "../src/providers/alibaba-coding-plan.js";
 import { alibabaTokenPlanProvider } from "../src/providers/alibaba-token-plan.js";
-import { renderAccountingFourSurfaces } from "./helpers/accounting-four-surface.js";
 import {
   expectAttemptedWithErrorLabel,
   expectAttemptedWithNoErrors,
@@ -33,13 +31,6 @@ vi.mock("../src/lib/alibaba-coding-plan-local-quota.js", async (importOriginal) 
     readAlibabaCodingPlanQuotaState: vi.fn(actual.readAlibabaCodingPlanQuotaState),
   };
 });
-
-const accounting = {
-  resultType: "quota" as const,
-  acquisitionMethod: "local_cli" as const,
-  ownership: "maintained" as const,
-  authority: "provider_reported" as const,
-};
 
 describe("alibaba-token-plan provider", () => {
   it("is available from explicit selection or recognized runtime presence without probing PATH", async () => {
@@ -229,31 +220,5 @@ describe("alibaba-token-plan provider", () => {
     expectAttemptedWithErrorLabel(out, "Alibaba Personal Token Plan");
     expect(out.errors[0]?.message).toContain("bl auth login --console");
     expect(JSON.stringify(out)).not.toContain("stderr");
-  });
-});
-
-describe("alibaba-token-plan four-surface formatting", () => {
-  it("renders only returned windows across command, toast, sidebar, and compact", () => {
-    const entries: QuotaToastEntry[] = [
-      {
-        accounting,
-        name: "Alibaba Personal Token Plan Weekly",
-        group: "Alibaba Personal Token Plan",
-        label: "Weekly:",
-        percentRemaining: 60,
-      },
-    ];
-    const outputs = renderAccountingFourSurfaces({
-      data: { entries, errors: [] },
-      accountingDetail: "summary",
-      toastMaxWidth: 80,
-      toastNarrowAt: 44,
-      compactMaxWidth: 160,
-    });
-    for (const output of Object.values(outputs)) {
-      expect(output).toContain("Alibaba Personal Token Plan");
-      expect(output).toContain("60%");
-      expect(output).not.toContain("Alibaba Coding Plan");
-    }
   });
 });

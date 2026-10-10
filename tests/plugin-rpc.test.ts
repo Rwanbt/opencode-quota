@@ -1,5 +1,7 @@
-import { existsSync } from "node:fs";
+import { existsSync, mkdtempSync } from "node:fs";
 import { readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { QuotaSnapshot } from "../src/core/types.js";
 import {
@@ -20,7 +22,8 @@ import {
   seedDefaultPluginBootstrapMocks,
 } from "./helpers/plugin-test-harness.js";
 
-const TEST_RUNTIME_ROOT = "/tmp/opencode-quota-plugin-rpc-tests";
+// Unique per run: other checkouts run this file at the same time.
+const TEST_RUNTIME_ROOT = mkdtempSync(join(tmpdir(), "opencode-quota-plugin-rpc-"));
 const TEST_ACCOUNTING = {
   resultType: "quota",
   acquisitionMethod: "remote_api",
@@ -145,30 +148,23 @@ describe("server quota RPC", () => {
       },
     ]);
     mocks.reconcileDetectedProvidersInGlobalConfig.mockResolvedValue({ changed: false });
-    await rm(TEST_RUNTIME_ROOT, { recursive: true, force: true });
+    await rm(TEST_RUNTIME_ROOT, { recursive: true, force: true, maxRetries: 3 });
     const { __resetQuotaStateForTests } = await import("../src/lib/quota-state.js");
     __resetQuotaStateForTests();
   });
 
   afterEach(async () => {
     vi.restoreAllMocks();
-    await rm(TEST_RUNTIME_ROOT, { recursive: true, force: true });
+    await rm(TEST_RUNTIME_ROOT, { recursive: true, force: true, maxRetries: 3 });
   });
 
-  it("registers the quota RPC with its six methods during setup", async () => {
+  it("registers the quota RPC with its four methods during setup", async () => {
     const { QuotaRpc } = await import("../src/rpc.js");
     const { definition, handlers } = await setupServer();
 
     expect(definition).toBe(QuotaRpc);
     expect(definition.id).toBe("slkiser.opencode-quota");
-    expect(Object.keys(definition.methods)).toEqual([
-      "surface",
-      "footer",
-      "writeExport",
-      "command",
-      "snapshot",
-      "refresh",
-    ]);
+    expect(Object.keys(definition.methods)).toEqual(["command", "snapshot", "refresh", "notices"]);
     expect(Object.keys(handlers)).toEqual(Object.keys(definition.methods));
   });
 
@@ -326,66 +322,59 @@ describe("server quota RPC", () => {
     expect(fetch).toHaveBeenCalledTimes(2);
   });
 
-  it("serves the sidebar panel and the idle toast", async () => {
-    useConfig({ enableToast: true, showOnIdle: true, toastDurationMs: 7000 });
-    const { call } = await setupServer();
-
-    const sidebar = (await call("surface", { surface: "sidebar", sessionID: "session-1" })) as {
-      quota: { message: string };
-    };
-    expect(sidebar).toEqual({
-      quota: expect.objectContaining({ duration: 7000, activeProviderCount: 1 }),
-    });
-    expect(sidebar.quota.message).toContain("Copilot");
-
-    const idle = (await call("surface", { surface: "idle", sessionID: "session-1" })) as {
-      quota: { message: string };
-    };
-    expect(idle).toEqual({
-      quota: expect.objectContaining({ duration: 7000, activeProviderCount: 1 }),
-    });
-    expect(idle.quota.message).toContain("Copilot");
-  });
-
-  it("returns a null quota when the surface is turned off", async () => {
-    useConfig({ enableToast: true, showOnIdle: false });
-    const { call } = await setupServer();
-
-    await expect(call("surface", { surface: "idle", sessionID: "session-1" })).resolves.toEqual({
-      quota: null,
-    });
-  });
-
-  it("serves the session prompt line and the Home compact line", async () => {
-    useConfig({
-      tuiPromptBar: { enabled: true },
-      tuiCompactStatus: { enabled: true, homeBottom: true, sessionPrompt: false, maxWidth: 96 },
+  it("adds the session's tokens to a session snapshot", async () => {
+    useConfig({ sessionTokenScope: "tree" });
+    mocks.fetchSessionTokensForDisplay.mockResolvedValue({
+      sessionTokens: { models: [], totalInput: 1200, totalCachedInput: 300, totalOutput: 80 },
     });
     const { call } = await setupServer();
 
-    const prompt = (await call("footer", { surface: "prompt", sessionID: "session-1" })) as {
-      lines: string[];
+    const session = (await call("snapshot", { sessionID: "session-1" })) as {
+      snapshot: QuotaSnapshot;
     };
-    expect(prompt.lines).toHaveLength(1);
-    expect(prompt.lines[0]).toContain("Copilot");
-    await expect(call("footer", { surface: "prompt" })).resolves.toEqual({ lines: [] });
-
-    const home = (await call("footer", { surface: "home" })) as { lines: string[] };
-    expect(home.lines).toHaveLength(1);
-    expect(home.lines[0]).toContain("Copilot");
+    expect(session.snapshot.sessionTokens).toEqual({ input: 1200, cachedInput: 300, output: 80 });
+    expect(mocks.fetchSessionTokensForDisplay).toHaveBeenCalledWith({
+      enabled: true,
+      sessionID: "session-1",
+      scope: "tree",
+    });
+    const global = (await call("snapshot", {})) as { snapshot: QuotaSnapshot };
+    expect(global.snapshot).not.toHaveProperty("sessionTokens");
   });
 
-  it("writes the export file only when the export is enabled", async () => {
+  it("serves the Home notice line only when the Home notice is on", async () => {
+    const { formatMaintainerAnnouncementHomeCountLine, getMaintainerAnnouncementsSummary } =
+      await import("../src/lib/maintainer-announcements.js");
+    const expected = formatMaintainerAnnouncementHomeCountLine(
+      getMaintainerAnnouncementsSummary({ enabledProviders: ["copilot"] }).activeCount,
+    );
+    useConfig({ maintainerAnnouncements: { enabled: true, home: true, homeFrequency: "always" } });
+    await expect((await setupServer()).call("notices", {})).resolves.toEqual({
+      homeLine: expected,
+    });
+
+    useConfig({ maintainerAnnouncements: { enabled: true, home: false } });
+    await expect((await setupServer()).call("notices", {})).resolves.toEqual({ homeLine: "" });
+  });
+
+  it("writes the export file from each new snapshot only when the export is enabled", async () => {
     const exportPath = `${TEST_RUNTIME_ROOT}/quota-export.json`;
     useConfig({ export: { enabled: false, path: exportPath } });
     const disabled = await setupServer();
-    await expect(disabled.call("writeExport", {})).resolves.toEqual({ written: false });
+    await disabled.call("refresh", { reason: "manual" });
+    await vi.waitFor(() => expect(disabled.emit).toHaveBeenCalled());
     expect(existsSync(exportPath)).toBe(false);
 
     useConfig({ export: { enabled: true, path: exportPath } });
     const enabled = await setupServer();
-    await expect(enabled.call("writeExport", {})).resolves.toEqual({ written: true });
-    expect(existsSync(exportPath)).toBe(true);
+    await enabled.call("refresh", { reason: "manual" });
+    await vi.waitFor(() => expect(existsSync(exportPath)).toBe(true));
+    const exported = JSON.parse(await readFile(exportPath, "utf8"));
+    expect(exported).toMatchObject({
+      version: 2,
+      fromCache: true,
+      providers: { copilot: { status: "ok", entries: [{ name: "Copilot Plan" }] } },
+    });
   });
 
   it("runs palette commands on the server and returns their output", async () => {
@@ -454,21 +443,19 @@ describe("server quota RPC", () => {
   });
 
   it("treats a session the server cannot find as a session without a model", async () => {
-    useConfig({ onlyCurrentModel: true });
-    const input = { surface: "sidebar", sessionID: "missing" };
-    const withoutModel = await setupServer(vi.fn().mockResolvedValue({}));
-    const expected = await withoutModel.call("surface", input);
+    useConfig({});
     const sessionGet = vi.fn().mockRejectedValue(new Error("Session not found"));
-    const missing = await setupServer(sessionGet);
+    const { call } = await setupServer(sessionGet);
 
-    await expect(missing.call("surface", input)).resolves.toEqual(expected);
+    const output = (await call("snapshot", { sessionID: "missing" })) as {
+      snapshot: QuotaSnapshot;
+    };
+    expect(output.snapshot).not.toHaveProperty("currentModelProviderIds");
     expect(sessionGet).toHaveBeenCalledWith({ sessionID: "missing" });
   });
 
   it("computes quota for the location's project folder, not the service's working folder", async () => {
-    useConfig({
-      tuiCompactStatus: { enabled: true, homeBottom: true, sessionPrompt: false, maxWidth: 96 },
-    });
+    useConfig({});
     const workspaceRoots: string[] = [];
     mocks.getProviders.mockReturnValue([
       {
@@ -487,25 +474,23 @@ describe("server quota RPC", () => {
     const project = `${TEST_RUNTIME_ROOT}/project`;
     const { call } = await setupServer(undefined, project);
 
-    await call("surface", { surface: "sidebar", sessionID: "session-1" });
-    await call("footer", { surface: "home" });
+    await call("refresh", { reason: "manual" });
     await call("command", { command: "quota", sessionID: "session-1" });
 
-    expect(workspaceRoots).toHaveLength(3);
+    expect(workspaceRoots).toHaveLength(2);
     expect(new Set(workspaceRoots)).toEqual(new Set([project]));
     expect(project).not.toBe(process.cwd());
   });
 
-  it("logs why a surface, footer or export RPC failed, without tokens, and still fails it", async () => {
+  it("logs why a snapshot or notices RPC failed, without tokens, and still fails it", async () => {
     const token = `eyJ${"a".repeat(24)}.${"b".repeat(24)}.${"c".repeat(24)}`;
     mocks.loadConfig.mockRejectedValue(new Error(`config broke ${token}`));
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const { handlers } = await setupServer();
 
     for (const [method, input] of [
-      ["surface", { surface: "sidebar", sessionID: "session-1" }],
-      ["footer", { surface: "home" }],
-      ["writeExport", {}],
+      ["snapshot", { sessionID: "session-1" }],
+      ["notices", {}],
     ] as const) {
       await expect(handlers[method](input, callContext)).rejects.toThrow("config broke");
       expect(warn).toHaveBeenLastCalledWith(

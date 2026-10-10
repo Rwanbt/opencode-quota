@@ -3,7 +3,7 @@
  * shows a used-up window for that model's provider, OpenCode retries once that window resets
  * instead of following its normal retry timing.
  */
-import type { ModelProviderSettings } from "../core/provider-source.js";
+import type { ServerSettings } from "../core/provider-source.js";
 import type { QuotaStore } from "../core/store.js";
 import type { QuotaRow } from "../core/types.js";
 
@@ -21,7 +21,7 @@ export type QuotaRetryEvent = {
 /** Where the retry decision reads quota and settings from. */
 export type QuotaRetryHost = {
   store: Pick<QuotaStore, "refresh">;
-  loadSettings: () => Promise<ModelProviderSettings>;
+  loadSettings: () => Promise<Pick<ServerSettings, "waitForQuotaReset" | "providerIdsForModel">>;
 };
 
 /** OpenCode's error types for a provider rate limit or used-up quota, or any HTTP 429. */

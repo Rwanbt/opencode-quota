@@ -1,5 +1,4 @@
 import type { QuotaProviderDefinition } from "./quota-providers.js";
-import type { QuotaTelemetryToken } from "./quota-telemetry.js";
 import type { ResolvedAuthIdentity } from "./resolved-auth-identity.js";
 import type { RuntimeProviderIdResolver } from "./runtime-provider-ids.js";
 import type { CursorQuotaPlan, OpenCodeGoWindowKey } from "./types.js";
@@ -387,7 +386,6 @@ export interface QuotaProviderContext {
     currentProviderID?: string;
     enabledProviders: string[] | "auto";
     quotaProviders?: QuotaProviderDefinition[];
-    telemetryToken?: QuotaTelemetryToken;
   };
 }
 

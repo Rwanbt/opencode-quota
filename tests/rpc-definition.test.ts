@@ -33,18 +33,11 @@ async function expectRejected(schema: StandardSchema, value: unknown, message: s
 const methods = QuotaRpc.methods;
 
 describe("quota RPC definition", () => {
-  it("defines the plain RPC id, the changed event and six methods", () => {
+  it("defines the plain RPC id, the changed event and four methods", () => {
     expect(QUOTA_RPC_ID).toBe("slkiser.opencode-quota");
     expect(QuotaRpc.id).toBe(QUOTA_RPC_ID);
     expect(Object.keys(QuotaRpc.events)).toEqual(["changed"]);
-    expect(Object.keys(methods)).toEqual([
-      "surface",
-      "footer",
-      "writeExport",
-      "command",
-      "snapshot",
-      "refresh",
-    ]);
+    expect(Object.keys(methods)).toEqual(["command", "snapshot", "refresh", "notices"]);
   });
 
   it("uses Standard Schema v1 validators that carry no runtime types", () => {
@@ -58,54 +51,6 @@ describe("quota RPC definition", () => {
       );
       expect(schema["~standard"]).not.toHaveProperty("types");
     }
-  });
-
-  it("validates surface input", async () => {
-    for (const surface of ["sidebar", "idle", "compacted", "question"]) {
-      await expectAccepted(methods.surface.input, { surface, sessionID: "session-1" });
-    }
-    await expectRejected(methods.surface.input, null, "input must be an object");
-    await expectRejected(methods.surface.input, [], "input must be an object");
-    await expectRejected(
-      methods.surface.input,
-      { sessionID: "session-1" },
-      "surface must be one of sidebar, idle, compacted, question",
-    );
-    await expectRejected(
-      methods.surface.input,
-      { surface: "prompt", sessionID: "session-1" },
-      "surface must be one of sidebar, idle, compacted, question",
-    );
-    await expectRejected(methods.surface.input, { surface: "idle" }, "sessionID must be a string");
-    await expectRejected(
-      methods.surface.input,
-      { surface: "idle", sessionID: 1 },
-      "sessionID must be a string",
-    );
-  });
-
-  it("validates footer input", async () => {
-    await expectAccepted(methods.footer.input, { surface: "prompt", sessionID: "session-1" });
-    await expectAccepted(methods.footer.input, { surface: "prompt" });
-    await expectAccepted(methods.footer.input, { surface: "home" });
-    await expectRejected(methods.footer.input, "home", "input must be an object");
-    await expectRejected(methods.footer.input, {}, "surface must be one of prompt, home");
-    await expectRejected(
-      methods.footer.input,
-      { surface: "sidebar" },
-      "surface must be one of prompt, home",
-    );
-    await expectRejected(
-      methods.footer.input,
-      { surface: "home", sessionID: null },
-      "sessionID must be a string",
-    );
-  });
-
-  it("validates writeExport input", async () => {
-    await expectAccepted(methods.writeExport.input, {});
-    await expectRejected(methods.writeExport.input, undefined, "input must be an object");
-    await expectRejected(methods.writeExport.input, null, "input must be an object");
   });
 
   it("validates command input", async () => {
@@ -172,12 +117,21 @@ describe("quota RPC definition", () => {
     );
   });
 
-  it("requires every v5 output to be an object", async () => {
-    for (const method of [methods.surface, methods.footer, methods.writeExport, methods.command]) {
-      await expectAccepted(method.output, { any: "object" });
-      for (const value of [undefined, null, "text", 1, []]) {
-        await expectRejected(method.output, value, "output must be an object");
-      }
+  it("requires command output to be an object", async () => {
+    await expectAccepted(methods.command.output, { any: "object" });
+    for (const value of [undefined, null, "text", 1, []]) {
+      await expectRejected(methods.command.output, value, "output must be an object");
+    }
+  });
+
+  it("validates notices input and requires a homeLine string in its output", async () => {
+    await expectAccepted(methods.notices.input, {});
+    for (const value of [undefined, null, []]) {
+      await expectRejected(methods.notices.input, value, "input must be an object");
+    }
+    await expectAccepted(methods.notices.output, { homeLine: "" });
+    for (const value of [null, {}, { homeLine: 1 }]) {
+      await expectRejected(methods.notices.output, value, "output must carry a homeLine string");
     }
   });
 

@@ -162,7 +162,12 @@ describe("CLI reports", () => {
         fetch: vi.fn().mockResolvedValue({
           attempted: true,
           entries: [
-            { accounting: TEST_ACCOUNTING, name: "Synthetic Weekly", percentRemaining: 75 },
+            {
+              accounting: TEST_ACCOUNTING,
+              name: "Synthetic Weekly",
+              label: "Weekly:",
+              percentRemaining: 75,
+            },
           ],
           errors: [],
         }),
@@ -180,7 +185,7 @@ describe("CLI reports", () => {
       expect(provider.fetch).toHaveBeenCalledOnce();
     });
 
-    it("adds a Quota mode heading for bare CLI labels and spaces reset units by default", async () => {
+    it("shows used percents and the time to the reset", async () => {
       vi.useFakeTimers();
       vi.setSystemTime(new Date("2026-01-15T10:00:00.000Z"));
       mockProviders.push({
@@ -193,6 +198,7 @@ describe("CLI reports", () => {
             {
               accounting: TEST_ACCOUNTING,
               name: "Synthetic Weekly",
+              label: "Weekly:",
               percentRemaining: 81,
               resetTimeIso: "2026-01-17T15:14:00.000Z",
             },
@@ -200,67 +206,15 @@ describe("CLI reports", () => {
           errors: [],
         }),
       });
-      writeQuotaConfig({
-        enabledProviders: ["synthetic"],
-        percentDisplayMode: "used",
-        percentLabelStyle: "bare",
-      });
+      writeQuotaConfig({ enabledProviders: ["synthetic"], percentDisplayMode: "used" });
 
       const report = await buildCliShowText({ runtime: await runtimeFor() });
 
-      expect(report.exitCode).toBe(0);
-      expect(report.stdout.startsWith("Quota [Used]\n\n")).toBe(true);
-      expect(report.stdout).toContain("19%");
-      expect(report.stdout).not.toContain("19% used");
-      expect(report.stdout).toContain("2d 5h 14m");
-      expect(report.stderr).toBe("");
-    });
-
-    it("renders default-off runway in human-readable CLI output only when configured", async () => {
-      vi.useFakeTimers();
-      vi.setSystemTime(new Date("2026-09-09T10:00:00.000Z"));
-      mockProviders.push({
-        id: "synthetic",
-        cachePolicy: { kind: "account-neutral" as const },
-        isAvailable: vi.fn().mockResolvedValue(true),
-        fetch: vi.fn().mockResolvedValue({
-          attempted: true,
-          entries: [
-            {
-              accounting: {
-                ...TEST_ACCOUNTING,
-                observedAtIso: "2026-09-09T10:00:00.000Z",
-              },
-              name: "Synthetic Fixed Window",
-              percentRemaining: 55,
-              resetTimeIso: "2026-09-09T14:00:00.000Z",
-              fixedWindow: {
-                kind: "fixed_window",
-                startedAtIso: "2026-09-09T09:20:00.000Z",
-                observedAtIso: "2026-09-09T10:00:00.000Z",
-                endsAtIso: "2026-09-09T14:00:00.000Z",
-                fullReset: true,
-              },
-            },
-          ],
-          errors: [],
-        }),
+      expect(report).toEqual({
+        exitCode: 0,
+        stdout: "Synthetic Weekly    19% used      2d 5h 14m\n",
+        stderr: "",
       });
-
-      const run = async (quotaProjection?: "runway") => {
-        writeQuotaConfig({
-          enabledProviders: ["synthetic"],
-          ...(quotaProjection ? { quotaProjection } : {}),
-        });
-        __resetQuotaStateForTests();
-        const report = await buildCliShowText({ runtime: await runtimeFor() });
-        expect(report.exitCode).toBe(0);
-        expect(report.stderr).toBe("");
-        return report.stdout;
-      };
-
-      expect(await run()).not.toContain("Runs out");
-      expect(await run("runway")).toContain("Runs out  ≈ 49m");
     });
 
     it("uses the provider as an invocation override", async () => {
@@ -411,7 +365,7 @@ describe("CLI reports", () => {
 
     it("outputs valid JSON with cached provider data", async () => {
       const provider = syntheticProvider([
-        { accounting: TEST_ACCOUNTING, name: "Synthetic", percentRemaining: 75 },
+        { accounting: TEST_ACCOUNTING, name: "Synthetic", label: "Weekly:", percentRemaining: 75 },
       ]);
       mockProviders.push(provider);
       writeQuotaConfig({ enabledProviders: ["synthetic"] });

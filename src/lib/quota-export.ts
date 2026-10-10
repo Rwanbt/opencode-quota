@@ -1,5 +1,9 @@
 import { homedir } from "os";
 import { join } from "path";
+import { describeError } from "../core/errors.js";
+import type { ProviderSnapshot, QuotaRow, QuotaSnapshot } from "../core/types.js";
+import { WINDOWS } from "../core/windows.js";
+import { rowValueText } from "../view/format.js";
 import { interpretAccountingRow } from "./accounting-format.js";
 import { writeJsonAtomic } from "./atomic-json.js";
 import { sanitizeSingleLineDisplaySnippet } from "./display-sanitize.js";
@@ -20,7 +24,7 @@ import type {
   QuotaExportRawDetail,
   QuotaExportSource,
 } from "./quota-export-types.js";
-import { MAINTAINED_LOCAL_ESTIMATE_IDS } from "./quota-providers.js";
+import { MAINTAINED_LOCAL_ESTIMATE_IDS, QUOTA_PROVIDERS_AGGREGATE_ID } from "./quota-providers.js";
 import type { QuotaRuntimeContext } from "./quota-runtime-context.js";
 import { createQuotaProviderRuntimeContext } from "./quota-runtime-context.js";
 import { readCachedProviderResult } from "./quota-state.js";
@@ -61,7 +65,6 @@ export function createExportProviderContext(runtime: QuotaRuntimeContext): Quota
       showSessionTokens: false,
     },
     session: {},
-    configureTelemetry: false,
   });
 }
 
@@ -267,6 +270,88 @@ export async function buildQuotaExport(params: {
     exportedAt,
     fromCache: params.fromCache,
     cacheAgeSeconds,
+    providers,
+  };
+}
+
+function snapshotEntry(provider: ProviderSnapshot, row: QuotaRow): QuotaExportEntry {
+  const account = row.account ? ` (${row.account})` : "";
+  const window = row.window
+    ? (EXPORT_WINDOW_LABELS[row.window as AccountingWindow] ?? WINDOWS[row.window].label)
+    : undefined;
+  const resetAt = unixSecondsFromIso(row.resetsAt);
+  const base = {
+    name: sanitizeSingleLineDisplaySnippet(
+      `${provider.label}${account} ${row.label}`,
+      EXPORT_ERROR_MAX_LENGTH,
+    ),
+    resultType: row.type,
+    acquisitionMethod: row.method,
+    ownership:
+      provider.providerId === QUOTA_PROVIDERS_AGGREGATE_ID
+        ? ("user_configured" as const)
+        : ("maintained" as const),
+    authority: row.authority,
+    ...(window ? { window } : {}),
+    ...(resetAt !== undefined ? { resetAt } : {}),
+  };
+  if (row.percentRemaining !== undefined) {
+    return { ...base, renderType: "percent", percentRemaining: row.percentRemaining };
+  }
+  return {
+    ...base,
+    renderType: "value",
+    value: sanitizeSingleLineDisplaySnippet(rowValueText(row), EXPORT_ERROR_MAX_LENGTH),
+  };
+}
+
+/**
+ * Builds the export document from the quota snapshot: the server's last known rows, so no
+ * provider is asked again. A provider that has never answered is "unavailable".
+ */
+export function buildQuotaExportFromSnapshot(
+  snapshot: QuotaSnapshot,
+  nowMs: number = Date.now(),
+): QuotaExport {
+  const providers: Record<string, QuotaExportProvider> = {};
+  const fetchedAtValues: number[] = [];
+  for (const provider of snapshot.providers) {
+    const answeredAtMs = provider.okAtMs ?? provider.checkedAtMs;
+    if (answeredAtMs === undefined) {
+      providers[provider.providerId] = { status: "unavailable" };
+      continue;
+    }
+    const fetchedAt = Math.floor(answeredAtMs / 1000);
+    fetchedAtValues.push(fetchedAt);
+    const withRawDetails =
+      provider.debug.length > 0 ? { rawDetails: provider.debug.map(toExportRawDetail) } : {};
+    const entries = provider.rows.map((row) => snapshotEntry(provider, row));
+    const error = provider.error
+      ? sanitizeSingleLineDisplaySnippet(
+          describeError(provider.error, provider.label, nowMs),
+          EXPORT_ERROR_MAX_LENGTH,
+        )
+      : undefined;
+    if (error === undefined) {
+      providers[provider.providerId] = { status: "ok", fetchedAt, entries, ...withRawDetails };
+    } else if (entries.length > 0) {
+      providers[provider.providerId] = {
+        status: "partial",
+        fetchedAt,
+        entries,
+        errors: [toExportError({ label: provider.label, message: error })],
+        ...withRawDetails,
+      };
+    } else {
+      providers[provider.providerId] = { status: "error", fetchedAt, error, ...withRawDetails };
+    }
+  }
+  const exportedAt = Math.floor(nowMs / 1000);
+  return {
+    version: 2,
+    exportedAt,
+    fromCache: true,
+    cacheAgeSeconds: fetchedAtValues.length > 0 ? exportedAt - Math.min(...fetchedAtValues) : 0,
     providers,
   };
 }

@@ -1,22 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { QuotaProviderResult } from "../src/lib/entries.js";
+import type { ProviderSnapshot, QuotaRow, QuotaSnapshot } from "../src/core/types.js";
 import {
   __flushQuotaTelemetryInitializationForTests,
   __resetQuotaTelemetryForTests,
   __setQuotaTelemetryApiLoaderForTests,
   configureQuotaTelemetry,
   disposeQuotaTelemetryOwner,
-  retainQuotaTelemetryProviders,
-  updateQuotaTelemetrySnapshot,
+  publishQuotaTelemetry,
 } from "../src/lib/quota-telemetry.js";
-
-const ACCOUNTING = {
-  resultType: "quota",
-  acquisitionMethod: "remote_api",
-  ownership: "maintained",
-  authority: "provider_reported",
-} as const;
 
 type Observation = {
   value: number;
@@ -62,16 +54,29 @@ function createOtelHarness(options: { throwOnAdd?: string } = {}) {
   };
 }
 
-function quotaResult(
-  entries: QuotaProviderResult["entries"],
-  extras: Partial<QuotaProviderResult> = {},
-): QuotaProviderResult {
+function row(providerId: string, key: string, extras: Partial<QuotaRow> = {}): QuotaRow {
   return {
-    attempted: true,
-    entries,
-    errors: [],
+    id: `${providerId}.${key}`,
+    providerId,
+    label: key,
+    type: "quota",
+    method: "remote_api",
+    authority: "provider_reported",
+    prominence: "primary",
     ...extras,
   };
+}
+
+function provider(
+  providerId: string,
+  rows: QuotaRow[],
+  extras: Partial<ProviderSnapshot> = {},
+): ProviderSnapshot {
+  return { providerId, label: providerId, rows, refreshing: false, debug: [], ...extras };
+}
+
+function snapshot(...providers: ProviderSnapshot[]): QuotaSnapshot {
+  return { version: 6, providers, resetNotices: [], generatedAtMs: 0 };
 }
 
 function enable(owner: object, identity = "config-a") {
@@ -147,56 +152,41 @@ describe("quota telemetry", () => {
     __setQuotaTelemetryApiLoaderForTests(async () => otel.api);
     const token = enable({});
 
-    updateQuotaTelemetrySnapshot({
+    publishQuotaTelemetry(
       token,
-      snapshotId: "openai-cache",
-      providerId: "openai",
-      cacheTimestamp: Date.parse("2026-07-25T12:00:00.000Z"),
-      result: quotaResult(
-        [
+      snapshot(
+        provider(
+          "openai",
+          [
+            row("openai", "five_hour", {
+              account: "account@example.com",
+              window: "five_hour",
+              percentRemaining: 25,
+            }),
+            row("openai", "five_hour", {
+              account: "another@example.com",
+              window: "five_hour",
+              percentRemaining: -20,
+            }),
+            row("openai", "private", {
+              label: "Private https://sensitive.example",
+              percentRemaining: 120,
+            }),
+            row("openai", "balance", {
+              type: "balance",
+              amount: { decimal: "42", unit: { kind: "currency", code: "USD" } },
+            }),
+          ],
           {
-            accounting: {
-              ...ACCOUNTING,
-              sourceId: "account@example.com",
-              observedAtIso: "2026-07-25T11:59:00.000Z",
-            },
-            name: "OpenAI account@example.com",
-            label: "5h:",
-            percentRemaining: 25,
+            okAtMs: Date.parse("2026-07-25T12:00:00.000Z"),
+            error: { code: "provider_error", detail: "token secret" },
           },
-          {
-            accounting: ACCOUNTING,
-            name: "OpenAI another@example.com",
-            label: "5 hour:",
-            percentRemaining: -20,
-          },
-          {
-            accounting: { ...ACCOUNTING, resultType: "rate_limit" },
-            name: "Private https://sensitive.example",
-            percentRemaining: 120,
-          },
-          {
-            accounting: { ...ACCOUNTING, resultType: "balance" },
-            kind: "value",
-            name: "Balance",
-            value: "$42.00",
-          },
-        ],
-        { errors: [{ label: "OpenAI", message: "token secret" }] },
+        ),
+        provider("private-customer-provider", [
+          row("private-customer-provider", "monthly", { percentRemaining: 50 }),
+        ]),
       ),
-    });
-    updateQuotaTelemetrySnapshot({
-      token,
-      snapshotId: "unknown-provider",
-      providerId: "private-customer-provider",
-      result: quotaResult([
-        {
-          accounting: ACCOUNTING,
-          name: "Private Customer",
-          percentRemaining: 50,
-        },
-      ]),
-    });
+    );
     await __flushQuotaTelemetryInitializationForTests();
 
     const consumed = otel.collect("opencode.quota.consumed");
@@ -225,92 +215,47 @@ describe("quota telemetry", () => {
       },
     });
     expect(JSON.stringify(consumed)).not.toMatch(
-      /account@example\.com|another@example\.com|sensitive\.example|token secret|\$42/,
+      /account@example\.com|another@example\.com|sensitive\.example|token secret|42/,
     );
 
     expect(otel.collect("opencode.quota.cache.age")).toEqual([
-      {
-        value: 42,
-        attributes: { "quota.provider": "openai" },
-      },
+      { value: 42, attributes: { "quota.provider": "openai" } },
     ]);
   });
 
-  it("keeps structured telemetry percent-only and uses typed semantic windows", async () => {
+  it.each([
+    { name: "a weekly quota", extras: { window: "week" as const }, attributes: ["week", "quota"] },
+    {
+      name: "a monthly budget",
+      extras: { window: "month" as const, type: "budget" as const },
+      attributes: ["month", "budget"],
+    },
+    { name: "a row without a window", extras: {}, attributes: ["unknown", "quota"] },
+  ])("names $name by the row's window and type", async ({ extras, attributes }) => {
     const otel = createOtelHarness();
     __setQuotaTelemetryApiLoaderForTests(async () => otel.api);
-    const token = enable({});
-
-    updateQuotaTelemetrySnapshot({
-      token,
-      snapshotId: "structured",
-      providerId: "openai",
-      result: quotaResult([
-        {
-          kind: "quantity",
-          accounting: { ...ACCOUNTING, resultType: "balance" },
-          semantic: {
-            metric: { kind: "component", component: "current_balance" },
-            prominence: "supplementary",
-          },
-          name: "Balance",
-          quantity: { decimal: "12.5", unit: { kind: "currency", code: "USD" } },
-        },
-        {
-          kind: "boolean",
-          accounting: { ...ACCOUNTING, resultType: "status" },
-          semantic: {
-            metric: { kind: "component", component: "auto_reload" },
-            prominence: "supplementary",
-          },
-          name: "Auto-reload",
-          value: true,
-        },
-        {
-          kind: "value",
-          accounting: { ...ACCOUNTING, resultType: "usage" },
-          name: "Legacy usage",
-          value: "12 requests",
-        },
-        {
-          accounting: ACCOUNTING,
-          semantic: { metric: { kind: "window", window: "week" }, prominence: "primary" },
-          basis: {
-            remaining: {
-              quantity: { decimal: "25", unit: { kind: "count", unit: "request" } },
-              authority: "provider_reported",
-            },
-          },
-          name: "Typed weekly quota",
-          label: "Monthly:",
-          percentRemaining: 25,
-        },
-        {
-          accounting: { ...ACCOUNTING, resultType: "budget" },
-          semantic: { metric: { kind: "aggregate" }, prominence: "primary" },
-          name: "Aggregate budget",
-          label: "Daily:",
-          percentRemaining: 80,
-        },
-      ]),
-    });
+    publishQuotaTelemetry(
+      enable({}),
+      snapshot(
+        provider("copilot", [
+          row("copilot", "row", { ...extras, percentRemaining: 40 }),
+          row("copilot", "spend", {
+            type: "usage",
+            amount: { decimal: "3", unit: { kind: "currency", code: "USD" } },
+          }),
+          row("copilot", "enabled", { type: "status", flag: true }),
+        ]),
+      ),
+    );
     await __flushQuotaTelemetryInitializationForTests();
 
     expect(otel.collect("opencode.quota.consumed")).toEqual([
       {
-        value: 0.2,
+        value: 0.6,
         attributes: {
-          "quota.provider": "openai",
-          "quota.window": "unknown",
-          "quota.result_type": "budget",
-        },
-      },
-      {
-        value: 0.75,
-        attributes: {
-          "quota.provider": "openai",
-          "quota.window": "week",
-          "quota.result_type": "quota",
+          "quota.provider": "copilot",
+          "quota.window": attributes[0],
+          "quota.result_type": attributes[1],
         },
       },
     ]);
@@ -319,146 +264,66 @@ describe("quota telemetry", () => {
   it("maps aggregate sources to custom and reduces privacy-collapsed series by maximum", async () => {
     const otel = createOtelHarness();
     __setQuotaTelemetryApiLoaderForTests(async () => otel.api);
-    const token = enable({});
-    const entries = [
-      {
-        accounting: { ...ACCOUNTING, sourceId: "source-one" },
-        name: "First private source",
-        label: "Monthly:",
-        percentRemaining: 60,
-      },
-      {
-        accounting: { ...ACCOUNTING, sourceId: "source-two" },
-        name: "Second private source",
-        label: "Month:",
-        percentRemaining: 20,
-      },
-    ] satisfies QuotaProviderResult["entries"];
-
-    updateQuotaTelemetrySnapshot({
-      token,
-      snapshotId: "aggregate",
-      providerId: "quota-providers",
-      cacheTimestamp: 1_000,
-      result: quotaResult([...entries].reverse()),
-    });
-    updateQuotaTelemetrySnapshot({
-      token,
-      snapshotId: "aggregate:private-source",
-      providerId: "quota-providers:private-source",
-      cacheTimestamp: 500,
-      result: quotaResult(entries),
-    });
+    publishQuotaTelemetry(
+      enable({}),
+      snapshot(
+        provider("quota-providers", [
+          row("quota-providers", "team", { window: "month", percentRemaining: 70 }),
+          row("quota-providers", "gateway", { window: "month", percentRemaining: 40 }),
+        ]),
+        provider("private-a", [row("private-a", "monthly", { percentRemaining: 80 })]),
+        provider("private-b", [row("private-b", "monthly", { percentRemaining: 30 })]),
+      ),
+    );
     await __flushQuotaTelemetryInitializationForTests();
 
     expect(otel.collect("opencode.quota.consumed")).toEqual([
       {
-        value: 0.8,
+        value: 0.6,
         attributes: {
           "quota.provider": "custom",
           "quota.window": "month",
           "quota.result_type": "quota",
         },
       },
-    ]);
-    vi.spyOn(Date, "now").mockReturnValue(2_000);
-    expect(otel.collect("opencode.quota.cache.age")).toEqual([
       {
-        value: 1.5,
-        attributes: { "quota.provider": "custom" },
+        value: 0.7,
+        attributes: {
+          "quota.provider": "other",
+          "quota.window": "unknown",
+          "quota.result_type": "quota",
+        },
       },
     ]);
   });
 
-  it("preserves newer cache timestamps, omits age for uncached data, and clamps future age", async () => {
+  it("replaces the owner's series with each snapshot and ages them from the last answer", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-25T12:00:00.000Z"));
     const otel = createOtelHarness();
     __setQuotaTelemetryApiLoaderForTests(async () => otel.api);
     const token = enable({});
-    const result = (percentRemaining: number) =>
-      quotaResult([
-        {
-          accounting: ACCOUNTING,
-          name: "Synthetic",
-          percentRemaining,
-        },
-      ]);
-
-    updateQuotaTelemetrySnapshot({
-      token,
-      snapshotId: "cache",
-      providerId: "synthetic",
-      cacheTimestamp: 2_000,
-      result: result(50),
-    });
-    updateQuotaTelemetrySnapshot({
-      token,
-      snapshotId: "cache",
-      providerId: "synthetic",
-      cacheTimestamp: 1_000,
-      result: result(0),
-    });
-    updateQuotaTelemetrySnapshot({
-      token,
-      snapshotId: "uncached",
-      providerId: "other-private",
-      result: result(25),
-    });
     await __flushQuotaTelemetryInitializationForTests();
+    const ages = (okAtMs: number | undefined, providerId = "copilot") => {
+      publishQuotaTelemetry(
+        token,
+        snapshot(
+          provider(providerId, [row(providerId, "m", { percentRemaining: 50 })], { okAtMs }),
+        ),
+      );
+      return otel.collect("opencode.quota.cache.age");
+    };
 
-    expect(
-      otel
-        .collect("opencode.quota.consumed")
-        .map(({ value }) => value)
-        .sort(),
-    ).toEqual([0.5, 0.75]);
-    vi.spyOn(Date, "now").mockReturnValue(1_500);
-    expect(otel.collect("opencode.quota.cache.age")).toEqual([
-      {
-        value: 0,
-        attributes: { "quota.provider": "synthetic" },
-      },
+    expect(ages(Date.now() - 10_000)).toEqual([
+      { value: 10, attributes: { "quota.provider": "copilot" } },
     ]);
-  });
-
-  it("keeps owners isolated, rejects stale generations, prunes providers, and disposes cleanly", async () => {
-    const otel = createOtelHarness();
-    __setQuotaTelemetryApiLoaderForTests(async () => otel.api);
-    const firstOwner = {};
-    const secondOwner = {};
-    const stale = enable(firstOwner, "first");
-    const second = enable(secondOwner, "second");
-    const result = quotaResult([
-      { accounting: ACCOUNTING, name: "Synthetic", percentRemaining: 50 },
+    // Before a provider ever answered there is no age; a clock that went back gives 0.
+    expect(ages(undefined)).toEqual([]);
+    expect(ages(Date.now() + 5_000)).toEqual([
+      { value: 0, attributes: { "quota.provider": "copilot" } },
     ]);
-
-    updateQuotaTelemetrySnapshot({
-      token: stale,
-      snapshotId: "first",
-      providerId: "synthetic",
-      result,
-    });
-    updateQuotaTelemetrySnapshot({
-      token: second,
-      snapshotId: "second",
-      providerId: "openai",
-      result,
-    });
-    const current = enable(firstOwner, "changed");
-    updateQuotaTelemetrySnapshot({
-      token: stale,
-      snapshotId: "late",
-      providerId: "anthropic",
-      result,
-    });
-    updateQuotaTelemetrySnapshot({
-      token: current,
-      snapshotId: "current",
-      providerId: "anthropic",
-      result,
-    });
-    retainQuotaTelemetryProviders({ token: current, providerIds: [] });
-    await __flushQuotaTelemetryInitializationForTests();
-
+    // A provider missing from the next snapshot leaves no series behind.
+    ages(Date.now() - 1_000, "openai");
     expect(otel.collect("opencode.quota.consumed")).toEqual([
       {
         value: 0.5,
@@ -469,7 +334,31 @@ describe("quota telemetry", () => {
         },
       },
     ]);
+  });
+
+  it("keeps owners isolated, rejects stale generations, and disposes cleanly", async () => {
+    const otel = createOtelHarness();
+    __setQuotaTelemetryApiLoaderForTests(async () => otel.api);
+    const firstOwner = {};
+    const secondOwner = {};
+    const stale = enable(firstOwner, "config-a");
+    const current = enable(firstOwner, "config-b");
+    const second = enable(secondOwner);
+    expect(current.generation).toBeGreaterThan(stale.generation);
+    const weekly = (percentRemaining: number) =>
+      snapshot(provider("copilot", [row("copilot", "w", { window: "week", percentRemaining })]));
+
+    publishQuotaTelemetry(stale, weekly(0));
+    publishQuotaTelemetry(current, weekly(90));
+    publishQuotaTelemetry(second, weekly(60));
+    await __flushQuotaTelemetryInitializationForTests();
+    expect(otel.collect("opencode.quota.consumed").map(({ value }) => value)).toEqual([0.4]);
+
     disposeQuotaTelemetryOwner(secondOwner);
+    expect(otel.collect("opencode.quota.consumed").map(({ value }) => value)).toEqual([
+      expect.closeTo(0.1),
+    ]);
+    configureQuotaTelemetry({ owner: firstOwner, enabled: false, identity: "config-b" });
     expect(otel.collect("opencode.quota.consumed")).toEqual([]);
   });
 
@@ -506,15 +395,15 @@ describe("quota telemetry", () => {
     const otel = createOtelHarness();
     __setQuotaTelemetryApiLoaderForTests(async () => otel.api);
     const token = enable({});
-    updateQuotaTelemetrySnapshot({
+    publishQuotaTelemetry(
       token,
-      snapshotId: "one",
-      providerId: "openai",
-      result: quotaResult([
-        { accounting: ACCOUNTING, name: "Daily", percentRemaining: 50 },
-        { accounting: ACCOUNTING, name: "Weekly", percentRemaining: 25 },
-      ]),
-    });
+      snapshot(
+        provider("openai", [
+          row("openai", "daily", { window: "day", percentRemaining: 50 }),
+          row("openai", "weekly", { window: "week", percentRemaining: 25 }),
+        ]),
+      ),
+    );
     await __flushQuotaTelemetryInitializationForTests();
 
     let attempts = 0;

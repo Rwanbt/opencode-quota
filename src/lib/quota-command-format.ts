@@ -40,7 +40,6 @@ import {
   type ReportSection,
   renderPlainTextReport,
 } from "./report-document.js";
-import { SESSION_TOKEN_SECTION_HEADING } from "./session-tokens-format.js";
 import type { QuotaToastConfig } from "./types.js";
 
 /** The time until the reset, or "reset" when it is due; "" without a valid reset time. */
@@ -252,7 +251,7 @@ export function buildQuotaCommandDocument(params: {
       blocks: [
         {
           kind: "quota",
-          // The dialog's provider rows drop the brackets, as the compact line does.
+          // The dialog's provider rows drop the brackets, as the status line does.
           provider: formatGroupedHeader(group.group).replace(/^\[([^\]]+)\]/u, "$1"),
           percentMode: params.percentDisplayMode ?? "remaining",
           lines,
@@ -265,7 +264,7 @@ export function buildQuotaCommandDocument(params: {
   if (params.sessionTokens && params.sessionTokens.models.length > 0) {
     sections.push({
       id: "session-tokens",
-      title: SESSION_TOKEN_SECTION_HEADING,
+      title: "Session input/output tokens",
       blocks: [
         {
           kind: "lines",

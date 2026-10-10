@@ -20,7 +20,6 @@ import type { QuotaFormatStyle } from "./quota-format-style.js";
 import { createQuotaProviderRuntimeContext } from "./quota-runtime-context.js";
 import { fetchQuotaProviderResult } from "./quota-state.js";
 import type { SessionTokenError } from "./quota-status.js";
-import { retainQuotaTelemetryProviders } from "./quota-telemetry.js";
 import {
   createRuntimeProviderIdResolver,
   type RuntimeProviderIdResolver,
@@ -214,10 +213,6 @@ export async function resolveQuotaRenderSelection(params: {
     ? allProviders
     : allProviders.filter((provider) => config.enabledProviders.includes(provider.id));
   if (!isAutoMode && providers.length === 0) {
-    retainQuotaTelemetryProviders({
-      token: ctx.config.telemetryToken,
-      providerIds: [],
-    });
     return null;
   }
 
@@ -488,10 +483,6 @@ export async function collectQuotaRenderData(params: {
   }
 
   if (selection.waitingForCurrentSelection) {
-    retainQuotaTelemetryProviders({
-      token: selection.ctx.config.telemetryToken,
-      providerIds: [],
-    });
     return {
       selection,
       availability: [],
@@ -513,10 +504,6 @@ export async function collectQuotaRenderData(params: {
   );
 
   const active = availability.filter((item) => item.ok).map((item) => item.provider);
-  retainQuotaTelemetryProviders({
-    token: selection.ctx.config.telemetryToken,
-    providerIds: active.map((provider) => provider.id),
-  });
   const explicitProviderIssues = buildExplicitProviderIssues({
     selection,
     availability,

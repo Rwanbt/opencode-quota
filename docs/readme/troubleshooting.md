@@ -45,10 +45,9 @@ The TUI, Web, and Desktop get their numbers from OpenCode's background service. 
 | ----------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
 | Slash commands are missing                                  | Check the plugin entry above, then restart OpenCode.                                                     |
 | `/quota` shows no providers                                 | Run `/quota_status` and check provider detection and [logins](#logins).                                  |
-| Sidebar is missing                                          | Set `tuiSidebarPanel.enabled` to `true`.                                                                 |
-| Compact line is missing                                     | Set `tuiCompactStatus.enabled` to `true`.                                                                |
-| Compact line appears on Home only                           | Set `tuiCompactStatus.sessionPrompt` to `true`.                                                          |
-| TUI toast is missing                                        | Check `enableToast`, `showOnIdle`, `showOnQuestion`, and `showOnCompact`. Toasts appear only in the TUI. |
+| Sidebar is missing                                          | Open a session: the `Quota` panel is in its sidebar. A collapsed panel opens when you click its title.   |
+| Status line is missing                                      | It uses only the free room in the footer under the message box. Widen the terminal.                      |
+| TUI toast is missing                                        | Toasts show after compaction and when every provider fails. Toasts appear only in the TUI.               |
 | Token reports are empty                                     | Start OpenCode once so it creates `opencode.db`, then use a model.                                       |
 | Pricing looks old                                           | Run `/pricing_refresh`.                                                                                  |
 | Web report columns do not line up                           | Expected: Web uses a proportional font. Use the TUI or `npx @slkiser/opencode-quota show`.               |
@@ -72,7 +71,7 @@ Run `/quota_status` first and check that provider's section. Setup steps and API
 | `http_error`, `timeout`, or response error | Check the endpoint and its response format. `/quota_status` intentionally hides URLs, request/response contents, raw errors, and secret material. |
 | One definition fails but others show       | Expected. Working definitions stay visible; the failed one stays an error row. |
 | Single-window output shows fewer rows      | Each source keeps only its lowest remaining percentage, or first value row. Use `"formatStyle": "allWindows"` for every row. |
-| CLI/export looks stale                     | `show --json` and the export file are cache-only. Trigger a normal TUI refresh first. `/quota_status` is the live check. |
+| CLI/export looks stale                     | `show --json` is cache-only, and the export file changes only when the server's quota does. Open a TUI session first. `/quota_status` is the live check. |
 
 </details>
 

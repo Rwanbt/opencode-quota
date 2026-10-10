@@ -121,12 +121,39 @@ export type ResetNotice = {
   atMs: number;
 };
 
+/** Tokens a session used so far (with its subagents when the words say "tree"). */
+export type SessionTokens = { input: number; cachedInput: number; output: number };
+
+/** "58% left", "58% remaining", "58%", or "42% used". */
+export type PercentStyle = "left" | "remaining" | "bare" | "used";
+/** How a time until a reset reads: "2h 14m", "2h14m", "2h", or "2.2h". */
+export type ResetStyle = "exact" | "compact" | "short" | "decimal";
+
+/** The words every surface uses, on every client (TUI, Web, Desktop, CLI). */
+export type Words = {
+  percent: PercentStyle;
+  reset: ResetStyle;
+  /** Decimals of the "decimal" reset style. */
+  resetDecimals: number;
+  /** "detailed" also shows supplementary rows. */
+  detail: "summary" | "detailed";
+  runsOut: boolean;
+  /** Show only the providers serving the session's current model. */
+  onlyCurrentModel: boolean;
+  /** Session tokens of this session, or with its subagents. */
+  sessionTokens: "current" | "tree";
+};
+
 export type QuotaSnapshot = {
   version: 6;
   /** Enabled and available providers, in registration order. */
   providers: ProviderSnapshot[];
   /** With a session: the providers serving its current model (the "current model only" filter). */
   currentModelProviderIds?: string[];
+  /** With a session: the tokens it used so far. */
+  sessionTokens?: SessionTokens;
+  /** The server's words; clients use their defaults until the server sends them. */
+  words?: Words;
   resetNotices: ResetNotice[];
   generatedAtMs: number;
 };

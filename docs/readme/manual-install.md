@@ -43,13 +43,6 @@ Create `opencode-quota/quota-toast.jsonc` next to that OpenCode config:
   // Find providers from your OpenCode config and logins.
   "enabledProviders": "auto",
 
-  // Show the Quota panel in the TUI sidebar.
-  "tuiSidebarPanel": { "enabled": true },
-
-  // Keep the other automatic TUI displays off.
-  "enableToast": false,
-  "tuiCompactStatus": { "enabled": false },
-
   // Show the count of maintainer notices on Home, once a day for 10 minutes.
   "maintainerAnnouncements": { "enabled": true, "home": true },
 }
@@ -57,17 +50,9 @@ Create `opencode-quota/quota-toast.jsonc` next to that OpenCode config:
 
 Restart OpenCode, then run `/quota` and `/quota_status` in the TUI. `/quota_status` shows the exact files OpenCode Quota loaded.
 
-## Choose what appears in the TUI
+## What appears in the TUI
 
-| You want                   | Setting                                   |
-| -------------------------- | ----------------------------------------- |
-| Sidebar panel              | `tuiSidebarPanel.enabled: true`           |
-| Popup quota notifications  | `enableToast: true`                       |
-| Compact quota line         | `tuiCompactStatus.enabled: true`          |
-| Quota bar under the prompt | `tuiPromptBar.enabled: true`              |
-| Slash commands only        | Turn off sidebar, toast, and compact line |
-
-Web and Desktop show none of these. See [Configuration](configuration.md) for every setting.
+The TUI shows the `Quota` panel in the session sidebar, a status line under the message box, and a toast after compaction. For now their look is built in; see [TUI surfaces](configuration.md#tui-surfaces). Web and Desktop show none of these. See [Configuration](configuration.md) for every setting.
 
 ## Web and Desktop notes
 

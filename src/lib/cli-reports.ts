@@ -2,9 +2,13 @@
  * The reports behind `opencode-quota show` and `status`. The terminal command builds them
  * in its own process (`cli-show.ts`) and prints them.
  */
-import { sanitizeQuotaRenderData } from "./display-sanitize.js";
-import { formatQuotaRows } from "./format.js";
-import { formatQuotaModeHeading } from "./format-utils.js";
+import { rowsFromLegacyResult } from "../core/rows.js";
+import type { QuotaSnapshot, Words } from "../core/types.js";
+import { DEFAULT_WORDS } from "../view/format.js";
+import { type RowSettings, type SurfaceRows, visibleGroups } from "../view/select.js";
+import { plainLines } from "../view/text.js";
+import { sanitizeDisplayText, sanitizeQuotaRenderData } from "./display-sanitize.js";
+import { getQuotaProviderDisplayLabel } from "./provider-metadata.js";
 import { buildStatusReportData } from "./quota-dialog-commands.js";
 import { buildQuotaExport, createExportProviderContext } from "./quota-export.js";
 import { resolveQuotaFormatStyle } from "./quota-format-style.js";
@@ -14,7 +18,6 @@ import {
   type QuotaRuntimeContext,
 } from "./quota-runtime-context.js";
 import type { QuotaToastConfig } from "./types.js";
-import { getPackageVersion } from "./version.js";
 
 export type CliReport = { exitCode: number; stdout: string; stderr: string };
 
@@ -41,7 +44,18 @@ function cloneCliConfig(config: QuotaToastConfig): QuotaToastConfig {
   };
 }
 
-/** `show`: live quota rows as text. Exit 1 when no provider returned a row. */
+/** `show` lists every row of every provider. */
+const ALL_ROWS: SurfaceRows = { enabled: true, hidden: [], providerOrder: [], rowOrder: {} };
+const CLI_ROWS: RowSettings = {
+  labels: {},
+  window: {},
+  surfaces: { sidebar: ALL_ROWS, collapsed: ALL_ROWS, statusLine: ALL_ROWS, toast: ALL_ROWS },
+};
+
+/**
+ * `show`: live quota rows as text, the same lines as a quota toast, then one line per provider
+ * problem. Exit 1 when no provider returned a row.
+ */
 export async function buildCliShowText(params: {
   runtime: QuotaRuntimeContext;
   providerId?: string;
@@ -73,34 +87,39 @@ export async function buildCliShowText(params: {
     return { exitCode: 1, stdout: "", stderr: line("No provider data available.") };
   }
 
-  const data = sanitizeQuotaRenderData(result.data);
-  const version = (await getPackageVersion()) ?? "";
-  const output = formatQuotaRows({
-    version,
-    layout: config.layout,
-    entries: data.entries,
-    errors: data.errors,
-    style: resolveQuotaFormatStyle(config.formatStyle),
-    percentDisplayMode: config.percentDisplayMode,
-    percentLabelStyle: config.percentLabelStyle,
-    accountingDetail: config.accountingDetail,
-    resetTimeDecimals: config.resetTimeDecimals,
-    resetTimeSpaced: config.resetTimeSpaced,
-  });
+  // The rows of each provider that answered; problems print below as the report states them.
+  const nowMs = Date.now();
+  const snapshot: QuotaSnapshot = {
+    version: 6,
+    providers: result.providerResults.map(({ providerId: id, result: providerResult }) => ({
+      providerId: id,
+      label: getQuotaProviderDisplayLabel(id),
+      rows: rowsFromLegacyResult(id, providerResult, nowMs).rows,
+      okAtMs: nowMs,
+      refreshing: false,
+      debug: [],
+    })),
+    resetNotices: [],
+    generatedAtMs: nowMs,
+  };
+  const words: Words = {
+    ...DEFAULT_WORDS,
+    percent: config.percentDisplayMode === "used" ? "used" : "left",
+    detail: config.accountingDetail === "detailed" ? "detailed" : "summary",
+  };
+  const groups = visibleGroups(snapshot, CLI_ROWS, "toast", words);
+  const errors = sanitizeQuotaRenderData(result.data).errors;
+  const lines = [
+    ...plainLines({ groups, words, nowMs }).map(sanitizeDisplayText),
+    ...errors.map((error) => `${error.label}: ${error.message}`),
+  ];
 
-  if (!output.trim()) {
+  if (lines.length === 0) {
     return { exitCode: 1, stdout: "", stderr: line("No provider data available.") };
   }
 
-  return {
-    exitCode: data.entries.length > 0 ? 0 : 1,
-    stdout: line(
-      config.percentLabelStyle === "bare"
-        ? `${formatQuotaModeHeading(config.percentDisplayMode)}\n\n${output}`
-        : output,
-    ),
-    stderr: "",
-  };
+  const anyRow = groups.some((group) => group.rows.length > 0);
+  return { exitCode: anyRow ? 0 : 1, stdout: line(lines.join("\n")), stderr: "" };
 }
 
 /**

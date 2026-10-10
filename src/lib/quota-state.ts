@@ -22,7 +22,6 @@ import {
   encodePersistedQuotaProviderCacheEntry,
   normalizeQuotaProviderResult,
 } from "./quota-state-codec.js";
-import { updateQuotaTelemetrySnapshot } from "./quota-telemetry.js";
 import type { ResolvedAuthIdentity } from "./resolved-auth-identity.js";
 import { getPackageVersion } from "./version.js";
 
@@ -323,27 +322,6 @@ function readProcessLocalLatest(params: {
   };
 }
 
-function publishQuotaTelemetry(params: {
-  ctx: QuotaProviderContext;
-  providerId: string;
-  snapshotId: string;
-  result: QuotaProviderResult;
-  cacheTimestamp?: number;
-}): void {
-  if (!params.ctx.config.telemetryToken) return;
-  const uncachedSnapshotId = `uncached:${params.providerId}`;
-  const cachedSnapshotId = `cached:${params.providerId}`;
-  const isUncached = params.snapshotId.startsWith("uncached:");
-  updateQuotaTelemetrySnapshot({
-    token: params.ctx.config.telemetryToken,
-    snapshotId: isUncached ? uncachedSnapshotId : cachedSnapshotId,
-    supersededSnapshotIds: [isUncached ? cachedSnapshotId : uncachedSnapshotId],
-    providerId: params.providerId,
-    result: params.result,
-    ...(params.cacheTimestamp !== undefined ? { cacheTimestamp: params.cacheTimestamp } : {}),
-  });
-}
-
 export async function fetchQuotaProviderResult(params: {
   provider: QuotaProvider;
   ctx: QuotaProviderContext;
@@ -357,12 +335,6 @@ export async function fetchQuotaProviderResult(params: {
   ): Promise<QuotaProviderResult> => {
     const snapshot = await fetchValidatedProviderResult(provider, ctx, cacheContext);
     rememberProcessLocalLatest({ provider, ctx, result: snapshot });
-    publishQuotaTelemetry({
-      ctx,
-      providerId: provider.id,
-      snapshotId: `uncached:${provider.id}`,
-      result: snapshot,
-    });
     return snapshot;
   };
 
@@ -399,13 +371,6 @@ export async function fetchQuotaProviderResult(params: {
       ...entry,
       result: cloneQuotaProviderResult(entry.result),
     });
-    publishQuotaTelemetry({
-      ctx,
-      providerId: provider.id,
-      snapshotId: key,
-      result: snapshot,
-      cacheTimestamp: entry.timestamp,
-    });
     return snapshot;
   }
 
@@ -424,26 +389,12 @@ export async function fetchQuotaProviderResult(params: {
     ttlMs > 0 &&
     now - inMemory.timestamp < ttlMs
   ) {
-    publishQuotaTelemetry({
-      ctx,
-      providerId: provider.id,
-      snapshotId: key,
-      result: inMemory.result,
-      cacheTimestamp: inMemory.timestamp,
-    });
     return cloneQuotaProviderResult(inMemory.result);
   }
 
   const inFlight = inFlightByKey.get(key);
   if (inFlight) {
     const snapshot = await inFlight;
-    publishQuotaTelemetry({
-      ctx,
-      providerId: provider.id,
-      snapshotId: key,
-      result: snapshot,
-      cacheTimestamp: inMemoryCache.get(key)?.timestamp,
-    });
     return cloneQuotaProviderResult(snapshot);
   }
 
@@ -461,26 +412,12 @@ export async function fetchQuotaProviderResult(params: {
       ...persisted,
       result: cloneQuotaProviderResult(persisted.result),
     });
-    publishQuotaTelemetry({
-      ctx,
-      providerId: provider.id,
-      snapshotId: key,
-      result: persisted.result,
-      cacheTimestamp: persisted.timestamp,
-    });
     return cloneQuotaProviderResult(persisted.result);
   }
 
   const inFlightAfterDiskRead = inFlightByKey.get(key);
   if (inFlightAfterDiskRead) {
     const snapshot = await inFlightAfterDiskRead;
-    publishQuotaTelemetry({
-      ctx,
-      providerId: provider.id,
-      snapshotId: key,
-      result: snapshot,
-      cacheTimestamp: inMemoryCache.get(key)?.timestamp,
-    });
     return cloneQuotaProviderResult(snapshot);
   }
 
@@ -517,13 +454,6 @@ export async function fetchQuotaProviderResult(params: {
 
   inFlightByKey.set(key, fetchPromise);
   const snapshot = await fetchPromise;
-  publishQuotaTelemetry({
-    ctx,
-    providerId: provider.id,
-    snapshotId: key,
-    result: snapshot,
-    cacheTimestamp: inMemoryCache.get(key)?.timestamp,
-  });
   return cloneQuotaProviderResult(snapshot);
 }
 
@@ -559,13 +489,6 @@ export async function readCachedProviderResult(params: {
 
   const inMemory = inMemoryCache.get(key);
   if (inMemory) {
-    publishQuotaTelemetry({
-      ctx: params.ctx,
-      providerId: params.provider.id,
-      snapshotId: key,
-      result: inMemory.result,
-      cacheTimestamp: inMemory.timestamp,
-    });
     return {
       hit: true,
       result: cloneQuotaProviderResult(inMemory.result),
@@ -587,13 +510,6 @@ export async function readCachedProviderResult(params: {
     inMemoryCache.set(key, {
       ...persisted,
       result: cloneQuotaProviderResult(persisted.result),
-    });
-    publishQuotaTelemetry({
-      ctx: params.ctx,
-      providerId: params.provider.id,
-      snapshotId: key,
-      result: persisted.result,
-      cacheTimestamp: persisted.timestamp,
     });
     return {
       hit: true,

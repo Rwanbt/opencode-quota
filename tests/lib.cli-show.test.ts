@@ -140,7 +140,14 @@ describe("runCliShowCommand", () => {
       isAvailable: vi.fn().mockResolvedValue(true),
       fetch: vi.fn().mockResolvedValue({
         attempted: true,
-        entries: [{ accounting: TEST_ACCOUNTING, name: "Synthetic Weekly", percentRemaining: 75 }],
+        entries: [
+          {
+            accounting: TEST_ACCOUNTING,
+            name: "Synthetic Weekly",
+            label: "Weekly:",
+            percentRemaining: 75,
+          },
+        ],
         errors: [],
       }),
     };
@@ -199,7 +206,12 @@ describe("runCliShowCommand", () => {
         return {
           attempted: true,
           entries: [
-            { accounting: TEST_ACCOUNTING, name: "Synthetic Weekly", percentRemaining: 75 },
+            {
+              accounting: TEST_ACCOUNTING,
+              name: "Synthetic Weekly",
+              label: "Weekly:",
+              percentRemaining: 75,
+            },
           ],
           errors: [],
         };
@@ -449,7 +461,14 @@ describe("runCliShowCommand", () => {
       isAvailable: vi.fn().mockResolvedValue(true),
       fetch: vi.fn().mockResolvedValue({
         attempted: true,
-        entries: [{ accounting: TEST_ACCOUNTING, name: "Synthetic", percentRemaining: 75 }],
+        entries: [
+          {
+            accounting: TEST_ACCOUNTING,
+            name: "Synthetic",
+            label: "Weekly:",
+            percentRemaining: 75,
+          },
+        ],
         errors: [],
       }),
     };

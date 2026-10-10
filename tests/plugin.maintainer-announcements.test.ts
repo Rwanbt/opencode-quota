@@ -156,13 +156,30 @@ async function startCli() {
     unknown,
     Parameters<typeof createQuotaRpcBridge>[0],
   ];
-  const { default: plugin } = await import("../src/tui-v2.js");
+  const { default: plugin } = await import("../src/tui/index.js");
   const listeners = new Map<string, (event: { data: Record<string, unknown> }) => void>();
   const renderers = new Map<string, () => unknown>();
   const toast = vi.fn();
   const context = {
     location: { directory: process.cwd() },
     client: { rpc: createQuotaRpcBridge(handlers) },
+    theme: { text: { base: "base", muted: "muted" } },
+    // Display settings with the question toast turned on.
+    storage: {
+      store: (key: string, options: { initial: any }) => {
+        const value =
+          key === "settings"
+            ? {
+                ...options.initial,
+                settings: {
+                  ...options.initial.settings,
+                  toast: { ...options.initial.settings.toast, afterQuestion: true },
+                },
+              }
+            : options.initial;
+        return [value, async () => {}];
+      },
+    },
     data: {
       session: { get: vi.fn(() => undefined) },
       on: vi.fn((name: string, listener: (event: { data: Record<string, unknown> }) => void) => {
@@ -345,9 +362,9 @@ describe("maintainer announcement plugin integration", () => {
     configureQuestionQuotaToast();
     const cli = await startCli();
     cli.renderHome();
-    // The Home footer shows the lines the server returns over the RPC.
+    // The Home footer shows the notice line the server returns over the RPC.
     await vi.waitFor(() =>
-      expect(signals.map((read) => read())).toContainEqual([ANNOUNCEMENT_HOME_MESSAGE]),
+      expect(signals.map((read) => read())).toContain(ANNOUNCEMENT_HOME_MESSAGE),
     );
     expect(announcementMocks.getMaintainerAnnouncementsSummary).toHaveBeenCalledWith(
       expect.objectContaining({ enabledProviders: ["copilot"] }),
@@ -368,20 +385,12 @@ describe("maintainer announcement plugin integration", () => {
   });
 
   it("does not show the Home announcement when maintainerAnnouncements.home is off", async () => {
-    configureQuestionQuotaToast({
-      maintainerAnnouncements: { enabled: true, home: false },
-      tuiCompactStatus: {
-        enabled: true,
-        homeBottom: true,
-        sessionPrompt: false,
-        maxWidth: 96,
-      },
-    });
-    const [copilot] = mocks.getProviders();
+    configureQuestionQuotaToast({ maintainerAnnouncements: { enabled: true, home: false } });
     const cli = await startCli();
     cli.renderHome();
-    // The Home compact line fetches quota after the announcement check would have run.
-    await vi.waitFor(() => expect(copilot.fetch).toHaveBeenCalled());
+    // The notices call reads the settings, then stops.
+    await vi.waitFor(() => expect(mocks.loadConfig).toHaveBeenCalled());
+    await flushMaintainerFallbackWork();
 
     expect(announcementMocks.getMaintainerAnnouncementsSummary).not.toHaveBeenCalled();
     expect(announcementMocks.formatMaintainerAnnouncementHomeCountLine).not.toHaveBeenCalled();

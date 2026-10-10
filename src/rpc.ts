@@ -4,9 +4,9 @@
  * Imports from `@opencode/*` and `./core/*` stay type-only, so loading this file loads no
  * OpenCode package and no server code.
  *
- * v6 methods: `snapshot` (the last known quota, instantly) and `refresh`, plus the `changed`
- * event with every new snapshot. The v5 methods `surface`, `footer`, `writeExport` and
- * `command` stay until the v6 TUI replaces them.
+ * Methods: `snapshot` (the last known quota, instantly), `refresh`, `notices` (the Home
+ * notice line), and `command` (the report dialogs, until the v6 window replaces them); the
+ * `changed` event carries every new snapshot.
  */
 import type { Rpc } from "@opencode/plugin";
 import type { QuotaSnapshot } from "./core/types.js";
@@ -18,22 +18,6 @@ import {
 
 export const QUOTA_RPC_ID = "slkiser.opencode-quota";
 
-export type QuotaRpcSurfaceInput = {
-  surface: "sidebar" | "idle" | "compacted" | "question";
-  sessionID: string;
-};
-export type QuotaRpcSurfaceOutput = {
-  quota: {
-    message: string;
-    duration: number;
-    activeProviderCount: number;
-    resetNotification?: string;
-  } | null;
-};
-export type QuotaRpcFooterInput = { surface: "prompt" | "home"; sessionID?: string };
-export type QuotaRpcFooterOutput = { lines: string[] };
-export type QuotaRpcWriteExportInput = Record<string, never>;
-export type QuotaRpcWriteExportOutput = { written: boolean };
 export type QuotaRpcCommandInput = {
   command: QuotaDialogCommandId;
   arguments?: string;
@@ -49,6 +33,9 @@ export type QuotaRpcRefreshInput = {
 };
 /** Answer of `snapshot` and `refresh`, and the data of the `changed` event. */
 export type QuotaRpcSnapshotOutput = { snapshot: QuotaSnapshot };
+export type QuotaRpcNoticesInput = Record<string, never>;
+/** The maintainer notice line for the bottom of Home; "" when there is none to show now. */
+export type QuotaRpcNoticesOutput = { homeLine: string };
 
 type StandardValueSchema = Extract<Rpc.PortableValueSchema, { "~standard": unknown }>;
 type StandardEventSchema = Extract<Rpc.PortableEventDefinition["schema"], { "~standard": unknown }>;
@@ -107,8 +94,6 @@ function checkSnapshotOutput(value: unknown): string | null {
   return isObject(value) && isObject(value.snapshot) ? null : "output must carry a snapshot";
 }
 
-const SURFACES = ["sidebar", "idle", "compacted", "question"];
-const FOOTER_SURFACES = ["prompt", "home"];
 const REFRESH_REASONS: readonly QuotaRpcRefreshReason[] = ["poll", "turn", "manual"];
 
 export const QuotaRpc = {
@@ -117,33 +102,6 @@ export const QuotaRpc = {
     changed: { schema: eventSchema<QuotaRpcSnapshotOutput>(checkSnapshotOutput) },
   },
   methods: {
-    surface: {
-      input: schema<QuotaRpcSurfaceInput>((value) => {
-        if (!isObject(value)) return "input must be an object";
-        if (typeof value.surface !== "string" || !SURFACES.includes(value.surface)) {
-          return `surface must be one of ${SURFACES.join(", ")}`;
-        }
-        if (typeof value.sessionID !== "string") return "sessionID must be a string";
-        return null;
-      }),
-      output: schema<QuotaRpcSurfaceOutput>(checkOutput),
-    },
-    footer: {
-      input: schema<QuotaRpcFooterInput>((value) => {
-        if (!isObject(value)) return "input must be an object";
-        if (typeof value.surface !== "string" || !FOOTER_SURFACES.includes(value.surface)) {
-          return `surface must be one of ${FOOTER_SURFACES.join(", ")}`;
-        }
-        return checkOptionalString(value, "sessionID");
-      }),
-      output: schema<QuotaRpcFooterOutput>(checkOutput),
-    },
-    writeExport: {
-      input: schema<QuotaRpcWriteExportInput>((value) =>
-        isObject(value) ? null : "input must be an object",
-      ),
-      output: schema<QuotaRpcWriteExportOutput>(checkOutput),
-    },
     command: {
       input: schema<QuotaRpcCommandInput>((value) => {
         if (!isObject(value)) return "input must be an object";
@@ -176,6 +134,16 @@ export const QuotaRpc = {
         return checkOptionalString(value, "sessionID");
       }),
       output: schema<QuotaRpcSnapshotOutput>(checkSnapshotOutput),
+    },
+    notices: {
+      input: schema<QuotaRpcNoticesInput>((value) =>
+        isObject(value) ? null : "input must be an object",
+      ),
+      output: schema<QuotaRpcNoticesOutput>((value) =>
+        isObject(value) && typeof value.homeLine === "string"
+          ? null
+          : "output must carry a homeLine string",
+      ),
     },
   },
 } satisfies Rpc.PortableDefinition;

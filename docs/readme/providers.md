@@ -572,7 +572,7 @@ API key order:
 - Without an API key: a sign-in OpenCode cannot return shows as an error, and a failed Console call (including HTTP 403) shows no Go quota.
 - If the Console reports no Go subscription (for example HTTP 404), no Go rows appear.
 - A window with API status `rate-limited` is shown as used up (0% left) with its reset time. Other windows stay visible.
-- `opencodeGoWindows` picks which of **Five-hour**, **Weekly**, and **Monthly** appear everywhere. `tuiSidebarPanel.opencodeGoPreferredWindow` (`rolling`, `weekly`, or `monthly`) picks the row shown while the sidebar is collapsed; if unset or unavailable, the lowest remaining window is used.
+- `opencodeGoWindows` picks which of **Five-hour**, **Weekly**, and **Monthly** appear everywhere. The collapsed sidebar shows the window with the least left.
 - Old workspace/cookie setups cannot be converted to an API key. See [OpenCode Go findings](updating.md#opencode-go-findings).
 
 <a id="opencode-zen"></a>
