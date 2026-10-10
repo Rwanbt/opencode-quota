@@ -1,3 +1,8 @@
+import { loadProviderSource } from "../core/provider-source.js";
+import { createQuotaStore } from "../core/store.js";
+import type { ProviderSnapshot } from "../core/types.js";
+import { type UsageReport, usageReport } from "../core/usage.js";
+import { loadSettings } from "../settings/index.js";
 import {
   formatYmd,
   parseQuotaBetweenArgs,
@@ -20,6 +25,7 @@ import {
   setPricingSnapshotAutoRefresh,
   setPricingSnapshotSelection,
 } from "./modelsdev-pricing.js";
+import { getCredentialSourceDiagnostics } from "./opencode-auth.js";
 import { buildQuotaCommandDocument } from "./quota-command-format.js";
 import {
   QUOTA_DIALOG_COMMANDS_BY_ID,
@@ -34,9 +40,7 @@ import {
   type CollectQuotaRenderDataResult,
   collectConcreteEnabledProviderIds,
   collectQuotaRenderData,
-  collectQuotaStatusLiveProbes,
   matchesQuotaProviderCurrentSelection,
-  type QuotaStatusLiveProbe,
   type SessionModelMeta,
 } from "./quota-render-data.js";
 import {
@@ -274,6 +278,7 @@ export interface QuotaStatusReportPayload {
     matchesCurrentModel?: boolean;
   }>;
   pricing: QuotaStatusReportPricingPayload;
+  /** One per enabled and available provider: ok when its check had no error. */
   liveProbes: Array<{ id: string; ok: boolean }>;
 }
 
@@ -284,26 +289,50 @@ export interface QuotaStatusReportData {
   hasComparableProviderData: boolean;
 }
 
-export function summarizeQuotaStatusLiveProbes(
-  probes: QuotaStatusLiveProbe[],
-): QuotaStatusReportPayload["liveProbes"] {
-  return probes.map((probe) => ({
-    id: probe.providerId,
-    ok: probe.result.attempted && probe.result.errors.length === 0,
-  }));
+/**
+ * A fresh check of every enabled and available provider (or only `providerId`), through a
+ * store of its own that keeps nothing: the same providers, rows, errors and debug details the
+ * plugin's store would hold.
+ */
+async function checkProviders(
+  runtime: QuotaRuntimeContext,
+  providerId: string | undefined,
+): Promise<ProviderSnapshot[]> {
+  const roots = { ...runtime.roots, fallbackDirectory: runtime.roots.workspaceRoot };
+  const store = createQuotaStore({
+    source: () => loadProviderSource({ client: runtime.client, roots }),
+    file: null,
+  });
+  try {
+    const providerIds = providerId ? [providerId] : undefined;
+    const snapshot = await store.refresh({ reason: "manual", providerIds });
+    return snapshot.providers.filter(
+      (provider) => !providerId || provider.providerId === providerId,
+    );
+  } finally {
+    await store.dispose();
+  }
+}
+
+/** The last 30 days of usage, for the models without a price; null when it can't be read. */
+async function readRecentUsage(nowMs: number): Promise<UsageReport | null> {
+  try {
+    return await usageReport({ range: "30d" }, nowMs);
+  } catch {
+    return null;
+  }
 }
 
 export async function buildStatusReportData(params: {
   runtime: QuotaRuntimeContext;
   sessionID?: string;
   generatedAtMs: number;
-  lastSessionTokenError?: SessionTokenError;
-  log?: (message: string, extra?: Record<string, unknown>) => Promise<void>;
   onDetectedProviderIds?: (providerIds: string[]) => Promise<void>;
-  /** When set, restrict provider availability and live probes to this provider id. */
+  /** When set, restrict provider availability and live checks to this provider id. */
   providerFilterId?: string;
 }): Promise<QuotaStatusReportData> {
-  const runtimeConfig = params.runtime.config;
+  const { runtime } = params;
+  const runtimeConfig = runtime.config;
   if (!runtimeConfig.enabled) {
     return { document: null, output: null, payload: null, hasComparableProviderData: false };
   }
@@ -311,10 +340,9 @@ export async function buildStatusReportData(params: {
     reason: "status",
     maxWaitMs: 750,
     snapshotSelection: runtimeConfig.pricingSnapshot.source,
-    log: params.log,
   });
 
-  const currentSession = params.runtime.session.sessionMeta ?? {};
+  const currentSession = runtime.session.sessionMeta ?? {};
   const currentModel = currentSession.modelID;
   const currentProviderID = currentSession.providerID;
   const sessionModelLookup: "ok" | "not_found" | "no_session" = !params.sessionID
@@ -326,11 +354,11 @@ export async function buildStatusReportData(params: {
   const isAutoMode = runtimeConfig.enabledProviders === "auto";
 
   const providers = params.providerFilterId
-    ? params.runtime.providers.filter((provider) => provider.id === params.providerFilterId)
-    : params.runtime.providers;
+    ? runtime.providers.filter((provider) => provider.id === params.providerFilterId)
+    : runtime.providers;
   const providerContext = createQuotaProviderRuntimeContext({
-    ...params.runtime,
-    workspaceRoot: params.runtime.roots.workspaceRoot,
+    ...runtime,
+    workspaceRoot: runtime.roots.workspaceRoot,
   });
   const availability = await Promise.all(
     providers.map(async (p) => {
@@ -364,29 +392,11 @@ export async function buildStatusReportData(params: {
     );
   }
 
-  // Status diagnostics belong to provider results, including missing or disabled
-  // providers. Provider fetch implementations must keep unconfigured cases local.
-  const liveProbeProviders = providers;
-
-  let providerLiveProbes: QuotaStatusLiveProbe[] = [];
-  if (liveProbeProviders.length > 0) {
-    try {
-      providerLiveProbes = await collectQuotaStatusLiveProbes({
-        client: params.runtime.client,
-        resolveRuntimeProviderIds: params.runtime.resolveRuntimeProviderIds,
-        config: runtimeConfig,
-        configMeta: params.runtime.configMeta,
-        request: createQuotaRuntimeRequestContext(params.runtime),
-        workspaceRoot: params.runtime.roots.workspaceRoot,
-        providers: liveProbeProviders,
-      });
-    } catch (error) {
-      await params.log?.("Failed to collect /quota_status live probes", {
-        providers: liveProbeProviders.map((provider) => provider.id),
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-  }
+  const [checked, v6Settings, usage] = await Promise.all([
+    checkProviders(runtime, params.providerFilterId),
+    loadSettings({ projectDir: runtime.roots.workspaceRoot }),
+    readRecentUsage(params.generatedAtMs),
+  ]);
 
   const announcementProviderIds = availability
     .filter((item) => item.enabled && item.available)
@@ -395,46 +405,43 @@ export async function buildStatusReportData(params: {
     enabledProviders: announcementProviderIds,
   });
 
+  const configMeta = runtime.configMeta;
   const document = await buildQuotaStatusReportDocument({
-    runtimeRoots: params.runtime.roots,
-    configSource: params.runtime.configMeta.source,
-    configPaths: params.runtime.configMeta.paths,
-    globalConfigPaths: params.runtime.configMeta.globalConfigPaths,
-    workspaceConfigPaths: params.runtime.configMeta.workspaceConfigPaths,
-    settingSources: params.runtime.configMeta.settingSources,
-    configIssues: params.runtime.configMeta.configIssues,
+    runtimeRoots: runtime.roots,
+    configSource: configMeta.source,
+    configPaths: configMeta.paths,
+    globalConfigPaths: configMeta.globalConfigPaths,
+    workspaceConfigPaths: configMeta.workspaceConfigPaths,
+    settingSources: configMeta.settingSources,
+    configIssues: configMeta.configIssues,
     enabledProviders: runtimeConfig.enabledProviders,
-    anthropicBinaryPath: runtimeConfig.anthropicBinaryPath,
-    cursorPlan: runtimeConfig.cursorPlan,
-    cursorIncludedApiUsd: runtimeConfig.cursorIncludedApiUsd,
-    cursorBillingCycleStartDay: runtimeConfig.cursorBillingCycleStartDay,
-    opencodeGoWindows: runtimeConfig.opencodeGoWindows,
-    pricingSnapshotSource: runtimeConfig.pricingSnapshot.source,
     onlyCurrentModel: runtimeConfig.onlyCurrentModel,
+    quotaProviders: runtimeConfig.quotaProviders,
+    pricingSnapshotSource: runtimeConfig.pricingSnapshot.source,
+    v6Settings,
     currentModel,
     sessionModelLookup,
     providerAvailability: availability,
-    providerLiveProbes,
-    quotaProviders: runtimeConfig.quotaProviders,
-    sessionTokenError: params.lastSessionTokenError,
+    providers: checked,
+    credentialSource: getCredentialSourceDiagnostics(),
     maintainerAnnouncements: {
       config: runtimeConfig.maintainerAnnouncements,
       summary: maintainerAnnouncementsSummary,
     },
+    usage,
     generatedAtMs: params.generatedAtMs,
   });
 
   const version = (await getPackageVersion()) ?? "unknown";
   const pricingMeta = getPricingSnapshotMeta();
-  const activePricingSource = getPricingSnapshotSource();
   const payload: QuotaStatusReportPayload = {
     version,
     generatedAt: new Date(params.generatedAtMs).toISOString(),
     config: {
-      configSource: params.runtime.configMeta.source,
-      configPaths: params.runtime.configMeta.paths,
-      globalConfigPaths: params.runtime.configMeta.globalConfigPaths,
-      workspaceConfigPaths: params.runtime.configMeta.workspaceConfigPaths,
+      configSource: configMeta.source,
+      configPaths: configMeta.paths,
+      globalConfigPaths: configMeta.globalConfigPaths,
+      workspaceConfigPaths: configMeta.workspaceConfigPaths,
       enabledProviders: runtimeConfig.enabledProviders,
       onlyCurrentModel: runtimeConfig.onlyCurrentModel,
       pricingSnapshotSource: runtimeConfig.pricingSnapshot.source,
@@ -442,7 +449,7 @@ export async function buildStatusReportData(params: {
     providers: availability,
     pricing: {
       selection: runtimeConfig.pricingSnapshot.source,
-      activeSource: activePricingSource,
+      activeSource: getPricingSnapshotSource(),
       snapshot: {
         source: pricingMeta.source,
         generatedAt:
@@ -452,14 +459,17 @@ export async function buildStatusReportData(params: {
       snapshotPath: getRuntimePricingSnapshotPath(),
       refreshStatePath: getRuntimePricingRefreshStatePath(),
     },
-    liveProbes: summarizeQuotaStatusLiveProbes(providerLiveProbes),
+    liveProbes: checked.map((provider) => ({
+      id: provider.providerId,
+      ok: provider.error === undefined,
+    })),
   };
 
   return {
     document,
     output: renderPlainTextReport(document),
     payload,
-    hasComparableProviderData: providerLiveProbes.some((probe) => probe.result.entries.length > 0),
+    hasComparableProviderData: checked.some((provider) => provider.rows.length > 0),
   };
 }
 
@@ -734,7 +744,6 @@ export async function buildQuotaDialogCommandOutput(params: {
   sessionMeta?: SessionModelMeta;
   resolveSessionMeta?: (sessionID: string) => Promise<SessionModelMeta>;
   generatedAtMs?: number;
-  lastSessionTokenError?: SessionTokenError;
   setLastSessionTokenError?: (error: SessionTokenError | undefined) => void;
   log?: (message: string, extra?: Record<string, unknown>) => Promise<void>;
   onDetectedProviderIds?: (providerIds: string[]) => Promise<void>;
@@ -792,8 +801,6 @@ export async function buildQuotaDialogCommandOutput(params: {
       runtime,
       sessionID: params.sessionID,
       generatedAtMs,
-      lastSessionTokenError: params.lastSessionTokenError,
-      log: params.log,
       onDetectedProviderIds: params.onDetectedProviderIds,
     });
     return data.document && data.output
