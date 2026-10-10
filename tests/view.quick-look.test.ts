@@ -51,7 +51,7 @@ const OPENROUTER = provider("openrouter", "OpenRouter", [], {
   error: { code: "provider_error", status: 500 },
 });
 /** A custom definition "team-accounting" (label "Team") that serves OpenCode's "team-gateway". */
-const TEAM = provider("quota-providers", "Quota providers", [
+const TEAM = provider("quota-providers", "Custom providers", [
   row("quota-providers.custom.team-accounting.monthly", {
     account: "Team",
     label: "Monthly",
@@ -237,7 +237,7 @@ describe("quick look: providers", () => {
     });
     const blocks = lines.filter((line) => line.startsWith("● "));
     expect(blocks).toEqual([
-      "● Quota providers (Team)       $3.39  100.0% of cost · 1.00M tokens · 2 sessions",
+      "● Custom providers (Team)      $3.39  100.0% of cost · 1.00M tokens · 2 sessions",
     ]);
     const team = lines.indexOf(blocks[0]);
     expect(lines[team + 1]).toMatch(/^ {4}Monthly [█░]{20} {3}64% left$/u);
@@ -365,7 +365,7 @@ describe("quick look: short text", () => {
       "  5.10M tokens",
       "● Z.ai",
       "  5h 30% left  $12.50",
-      "● Quota providers (Te…",
+      "● Custom providers (T…",
       "  Monthly 64% left  $3.39",
     ]);
   });

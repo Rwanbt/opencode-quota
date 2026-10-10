@@ -260,7 +260,7 @@ describe("quota-providers aggregate provider", () => {
       attempted: true,
       accounts: [
         {
-          name: "Quota providers",
+          name: "Custom providers",
           rows: [],
           errors: [{ message: "Failed to read exact runtime provider identities" }],
         },

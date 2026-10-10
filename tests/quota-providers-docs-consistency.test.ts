@@ -179,7 +179,7 @@ describe("quota provider Phase 7 documentation consistency", () => {
     expect(external).not.toContain("custom-sources");
     expect(external).not.toContain("Custom-provider");
     expect(external).not.toContain("quotaProviders");
-    expect(externalJsonBasics).toContain('"name": "Quota providers (OpenRouter primary) Monthly"');
+    expect(externalJsonBasics).toContain('"name": "Custom providers (OpenRouter primary) Monthly"');
     expect(externalJsonBasics).toContain('"sources": [');
     expect(externalJsonBasics).toContain('"id": "openrouter-primary"');
     expect(externalJsonBasics).toContain('"entryCount": 1');

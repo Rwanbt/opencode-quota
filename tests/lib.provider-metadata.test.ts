@@ -51,7 +51,7 @@ describe("provider-metadata", () => {
     ["deep-seek", "deepseek", "DeepSeek", ["deepseek"]],
     ["opencode-zen", "opencode", "OpenCode Zen", ["opencode", "opencode-zen"]],
     ["xiaomi-token-plan-ams", "xiaomi", "Xiaomi MiMo", XIAOMI],
-    ["quota-providers", "quota-providers", "Quota providers", []],
+    ["quota-providers", "quota-providers", "Custom providers", []],
     ["kilo-gateway", undefined, "kilo-gateway", []],
     ["google-antigravity", undefined, "google-antigravity", []],
     ["mimo", undefined, "mimo", []],

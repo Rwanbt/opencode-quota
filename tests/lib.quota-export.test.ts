@@ -94,7 +94,7 @@ function customCheck(result: ProviderFetchResult, checkedAtMs: number): Check {
   return {
     fetched: rowsFromProviderResult("quota-providers", result, checkedAtMs),
     checkedAtMs,
-    label: "Quota providers",
+    label: "Custom providers",
     accounts: result.accounts,
   };
 }
@@ -509,12 +509,12 @@ describe("the export of each provider's last check", () => {
         {
           // The id names the definition the row came from.
           id: "quota-providers.custom.same-label-one.Remaining",
-          name: "Quota providers (Same label) Remaining",
+          name: "Custom providers (Same label) Remaining",
           ownership: "user_configured",
           percentRemaining: 25,
         },
       ],
-      errors: [{ label: "Quota providers", message: "Nothing reported" }],
+      errors: [{ label: "Custom providers", message: "Nothing reported" }],
       sources: [
         { id: "same-label-one", providerId: "gateway-one", status: "ok", entryCount: 1 },
         { id: "same-label-two", providerId: "gateway-two", status: "error", entryCount: 0 },

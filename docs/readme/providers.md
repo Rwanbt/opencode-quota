@@ -96,7 +96,7 @@ These show only your own member API key's usage, not the whole organization's.
 
 - `Quota` covers quota and rate-limit windows; both export as `quota`.
 - OpenCode Zen, NanoGPT, Xiaomi MiMo, Kilo Gateway, DeepSeek, and Cursor keep quota, rate limit, budget, usage, spend, credits, and balance as separate rows. A balance is not remaining allowance, and spend is not a budget percentage.
-- Money uses uppercase currency codes such as `USD 12.50` or `CNY 8.25`. OpenCode Quota never converts, combines, or picks a preferred currency.
+- Money shows USD with a `$` prefix, such as `$12.50`, and other currencies with an uppercase currency code after the amount, such as `8.25 CNY`. OpenCode Quota never converts, combines, or picks a preferred currency.
 - `words.detail: "detailed"` adds supplementary balance, status, and spend rows. See [All settings](configuration.md#all-settings).
 
 ## Custom providers

@@ -34,7 +34,7 @@ For quick iteration: `pnpm run test:watch`.
 - **Server vs. TUI.** The server plugin (`src/plugin.ts`) reads providers, settings, and OpenCode's history, and registers the slash commands, the agent tools, and the `slkiser.opencode-quota` RPC. The TUI plugin (`src/tui/index.tsx`) only draws what the RPC returns and never imports provider or credential code. Web and Desktop get the slash commands only; OpenCode 2 has no plugin UI hooks there.
 - **One status report.** `/quota_status`, the `quota_status` tool, and the RPC `status` method go through `buildQuotaDialogCommandOutput()`.
 - **Credentials.** Read OpenCode logins only through `ctx.integration` in `src/lib/opencode-auth.ts`. The only exception is the terminal command (`src/lib/cli-show.ts`), which uses `src/lib/opencode-auth-sqlite.ts`; the plugins must never reach that file.
-- **Money.** Show amounts with the provider's ISO code through the shared formatter (e.g. `USD 12.50`). No symbols, conversions, or adding up different currencies.
+- **Money.** Use the shared formatter, which shows USD as `$12.50` and other currencies with an ISO code after the amount, such as `8.25 CNY`. Never convert amounts or add up different currencies.
 - Keep these boundary tests passing and up to date: `tests/plugin.command-handled-boundary.test.ts`, `tests/tui-dist-import-graph.test.ts`, `tests/quota-provider-boundary.test.ts`, `tests/v6-cross-surface.test.ts`.
 
 ## Provider changes

@@ -574,7 +574,7 @@ describe("v6 surfaces on the quota snapshot", () => {
       expect.arrayContaining([
         "Plan ██████░░ 81% left",
         "5h ░░░░░░░░ 0% left 2h 14m",
-        "Quota providers (Team) Provider er…",
+        "Custom providers (Team) Provider e…",
         "Session 1.20K in · 45 out",
       ]),
     );
@@ -596,7 +596,7 @@ describe("v6 surfaces on the quota snapshot", () => {
     expect(words(sidebar())).toEqual(
       expect.arrayContaining([
         "▶ Quota (3 providers, 1 error)",
-        "Quota pr… 30d █████░░░ 64% Provi…",
+        "Custom p… 30d █████░░░ 64% Provi…",
       ]),
     );
 
@@ -610,7 +610,7 @@ describe("v6 surfaces on the quota snapshot", () => {
     await vi.waitFor(() => expect(tui.toast).toHaveBeenCalledOnce());
     const toast = tui.toast.mock.calls[0]?.[0];
     expect(toast).toMatchObject({ variant: "info", title: "OpenCode Quota" });
-    expect(toast.message).toContain("Quota providers (T… Provider error 503\nSession  1.20K in");
+    expect(toast.message).toContain("Custom providers (… Provider error 503\nSession  1.20K in");
 
     // /quota opens the quick look: one block per provider, OpenCode's usage of the last 7 days
     // next to the limits. Anthropic has only usage, MiniMax only limits.
@@ -630,7 +630,7 @@ describe("v6 surfaces on the quota snapshot", () => {
         "● MiniMax Token Plan — no usage in OpenCode",
         "5h ░░░░░░░░░│░░░░░░░░░░ 0% left · resets in 2h 14m · using it faster than it refills",
         "Weekly ████████░░░░░░░░░░░░ 40% left",
-        "● Quota providers (Team) — no usage in OpenCode",
+        "● Custom providers (Team) — no usage in OpenCode",
         "Cost by type",
         "c/t cost or tokens · ←/→ range · u full usage · s settings · esc close",
       ]),
@@ -666,7 +666,7 @@ describe("v6 surfaces on the quota snapshot", () => {
     );
     tabs.find((node) => textLines(node)[0] === "Limits")?.props.onMouseUp();
     await vi.waitFor(() =>
-      expect(quotaWindow()).toContain(" Quota providers · Team   Provider error 503"),
+      expect(quotaWindow()).toContain(" Custom providers · Team   Provider error 503"),
     );
     expect(quotaWindow()).toEqual(
       expect.arrayContaining([
@@ -699,7 +699,7 @@ describe("v6 surfaces on the quota snapshot", () => {
       "● Anthropic             $3.00",
       "● Copilot (pro)         Plan 81% left  $1.50",
       "● MiniMax Token Plan    5h 0% left · 7d 40% left",
-      "● Quota providers (Te…  Provider error 503",
+      "● Custom providers (T…  Provider error 503",
       "  30d 64% left",
     ];
     expect(tui.toast.mock.calls[1]?.[0]).toMatchObject({
@@ -742,7 +742,7 @@ describe("v6 surfaces on the quota snapshot", () => {
           ["MiniMax Token Plan Weekly", 40],
         ],
       ],
-      ["quota-providers", "partial", [["Quota providers (Team) Monthly", 64]]],
+      ["quota-providers", "partial", [["Custom providers (Team) Monthly", 64]]],
     ]);
     expect(exported.providers["quota-providers"]).toMatchObject({
       entries: [{ window: "Monthly", ownership: "user_configured" }],

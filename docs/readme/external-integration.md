@@ -54,7 +54,10 @@ Use this for a status bar or another tool that checks quota often. Add this to `
 ```
 
 - The file is `~/.cache/opencode/quota-export.json` (or `$XDG_CACHE_HOME/opencode/quota-export.json` when `XDG_CACHE_HOME` is set). `export.path` changes it.
-- OpenCode's background service rewrites it each time its quota snapshot changes (providers are asked at most once per `checking.minIntervalMs`, 30 s after a model step, and at once when you open `/quota` or the Limits tab), and it keeps its last contents when OpenCode stops.
+- OpenCode's background service rewrites it each time its quota snapshot changes. The file keeps its last contents when OpenCode stops.
+- After a model step, the plugin may check providers again once 30 seconds have passed since the last check, even when that is sooner than `checking.minIntervalMs`.
+- The TUI dialog and toast forms of `/quota`, and the Limits tab, ask providers right away.
+- Web, Desktop, and the TUI chat form of `/quota` use `poll` refreshes and wait out `checking.minIntervalMs`.
 - A write error is logged but never breaks the TUI.
 
 ### tmux example (add to your tmux config)
@@ -182,7 +185,7 @@ Rows from a `providers.custom` definition appear under `providers["quota-provide
 ```json
 {
   "id": "quota-providers.custom.openrouter-primary.Monthly",
-  "name": "Quota providers (OpenRouter primary) Monthly",
+  "name": "Custom providers (OpenRouter primary) Monthly",
   "account": "OpenRouter primary",
   "renderType": "percent",
   "percentRemaining": 40
