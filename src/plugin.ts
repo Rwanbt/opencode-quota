@@ -230,6 +230,17 @@ export const QuotaToastPlugin = Plugin.define({
           const options = { reason: input.reason, providerIds: input.providerIds, model };
           return withSessionTokens(await store.refresh(options), input.sessionID);
         }),
+      // A notice can target the users of some providers: the enabled and available ones,
+      // found without asking any provider for quota.
+      notices: () =>
+        logRpcFailure("notices", async () => {
+          const settings = await loadServerSettings(sourceHost);
+          if (settings.homeNotice === "off") return { homeLine: "" };
+          const providerIds = (await loadProviderSource(sourceHost)).providers.map(({ id }) => id);
+          return {
+            homeLine: await homeNoticeLine({ frequency: settings.homeNotice, providerIds }),
+          };
+        }),
       usage: (input) =>
         logRpcFailure("usage", async () => {
           // Use the configured price list. As the token reports do, give a due price
@@ -244,17 +255,6 @@ export const QuotaToastPlugin = Plugin.define({
           });
           const { range, sessionID, from, to } = input;
           return { report: await usageReport({ range, sessionID, from, to }) };
-        }),
-      // A notice can target the users of some providers: the enabled and available ones,
-      // found without asking any provider for quota.
-      notices: () =>
-        logRpcFailure("notices", async () => {
-          const settings = await loadServerSettings(sourceHost);
-          if (settings.homeNotice === "off") return { homeLine: "" };
-          const providerIds = (await loadProviderSource(sourceHost)).providers.map(({ id }) => id);
-          return {
-            homeLine: await homeNoticeLine({ frequency: settings.homeNotice, providerIds }),
-          };
         }),
     });
     // The export file and the gauges follow the snapshot; neither asks a provider again.

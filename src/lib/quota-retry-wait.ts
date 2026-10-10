@@ -22,7 +22,12 @@ export type QuotaRetryEvent = {
 /** Where the retry decision reads quota and settings from. */
 export type QuotaRetryHost = {
   store: Pick<QuotaStore, "refresh">;
-  loadSettings: () => Promise<Pick<ServerSettings, "waitForQuotaReset" | "providerIdsForModel">>;
+  loadSettings: () => Promise<
+    Pick<
+      ServerSettings,
+      "waitForQuotaReset" | "providerIdsForModel" | "customDefinitionIdsForModel"
+    >
+  >;
 };
 
 /** OpenCode's error types for a provider rate limit or used-up quota, or any HTTP 429. */

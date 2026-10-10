@@ -331,7 +331,18 @@ describe("server quota RPC", () => {
   });
 
   it("names the providers of the session's model in the snapshot", async () => {
-    useConfig({ enabledProviders: ["copilot", "openai"] });
+    // Later settings reads (the session's tokens) see OpenAI turned off; the model's
+    // providers must still come from the read the snapshot's providers came from.
+    useConfig({ enabledProviders: ["copilot"] });
+    mocks.loadConfig.mockResolvedValueOnce(
+      makeQuotaToastTestConfig({
+        enabled: true,
+        enabledProviders: ["copilot", "openai"],
+        minIntervalMs: 0,
+        showSessionTokens: false,
+        maintainerAnnouncements: { enabled: false, home: false },
+      }),
+    );
     mocks.getProviders.mockReturnValue(
       ["copilot", "openai"].map((id) => ({
         id,
@@ -352,8 +363,6 @@ describe("server quota RPC", () => {
       "openai",
     ]);
     expect(output.snapshot.currentModelProviderIds).toEqual(["openai"]);
-    // The providers and the model's providers come from one settings read.
-    expect(mocks.loadConfig).toHaveBeenCalledOnce();
   });
 
   it("waits for the store's running fetch and file write when the plugin is cleaned up", async () => {
