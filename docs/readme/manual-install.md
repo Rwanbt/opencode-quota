@@ -56,8 +56,8 @@ The TUI shows the `Quota` panel in the session sidebar, a status line under the 
 
 ## Web and Desktop notes
 
-- Slash commands work in the TUI, Web, and Desktop. Add arguments after the command, like `/tokens_between 2026-09-01 2026-09-25`.
-- **TUI:** `/quota` opens the quota window above the message box, with tabs for limits, maintainer notices and the `/quota_status` report. The other slash commands open their report in a popup and leave no chat message. The command palette runs the same commands and asks for missing dates.
+- Slash commands work in the TUI, Web, and Desktop. Add a range after `/quota_usage`, like `/quota_usage between 2026-09-01 2026-09-25`.
+- **TUI:** `/quota`, `/quota_usage` and `/quota_status` open the quota window above the message box, with tabs for limits, usage, maintainer notices and the `/quota_status` report. They leave no chat message. The command palette has the same commands.
 - **Web and Desktop:** `/quota` posts your limits and the maintainer notices in the chat as your message; the other commands post their report the same way. The AI never answers it, and the plugin filters it out of every AI request. If you uninstall the plugin, old reports in past chats are no longer filtered.
 - Each report starts with `[OpenCode Quota report]` and ends with `[End of OpenCode Quota report]`, which also keeps it out of compaction summaries.
 - Web uses a proportional font, so columns may not line up. Use the TUI or `npx @slkiser/opencode-quota show` for aligned columns.

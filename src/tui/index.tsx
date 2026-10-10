@@ -3,13 +3,14 @@
  * OpenCode Quota's TUI plugin. It draws the server's quota snapshot: the Quota panel in the
  * session sidebar, the status line under the message box (and on Home when turned on), the
  * toasts, and the quota window that `/quota` opens above the message box (`window/`). It reads
- * only the quota RPC and the display settings in OpenCode's plugin storage. The report dialogs
- * of the token and pricing commands live in `legacy-dialogs.tsx`.
+ * only the quota RPC and the display settings in OpenCode's plugin storage. The quota slash
+ * commands typed in the prompt run through `legacy-dialogs.tsx`.
  */
 import { Plugin } from "@opencode/plugin/tui";
 import type { JSX } from "@opentui/solid";
 import { onCleanup, Show } from "solid-js";
 import type { QuotaSnapshot } from "../core/types.js";
+import { parseUsageArguments } from "../core/usage-ranges.js";
 import { type ClientHost, createQuotaClient, reportFailure } from "./client.js";
 import {
   applyDisplayImport,
@@ -17,11 +18,7 @@ import {
   type DisplayStorage,
   loadDisplaySettings,
 } from "./display.js";
-import {
-  type LegacyDialogHost,
-  registerTypedQuotaCommands,
-  reportCommands,
-} from "./legacy-dialogs.js";
+import { registerTypedQuotaCommands, type TypedCommandHost } from "./legacy-dialogs.js";
 import { SidebarPanel, type SurfaceHost } from "./sidebar.js";
 import { HomeFooter, StatusLine } from "./status-line.js";
 import type { Theme } from "./theme.js";
@@ -31,17 +28,17 @@ import { createQuotaWindow, type WindowHost } from "./window/shell.js";
 type SidebarState = { open: boolean };
 type TuiEvent = { data?: Record<string, unknown> };
 
-/** What the plugin needs from OpenCode's TUI context, besides the dialogs' and the window's needs. */
-type TuiContext = LegacyDialogHost &
+/** What the plugin needs from OpenCode's TUI context, besides the window's and typed commands' needs. */
+type TuiContext = TypedCommandHost &
   WindowHost &
   ClientHost & {
-    theme: Theme & LegacyDialogHost["theme"] & WindowHost["theme"];
+    theme: Theme & WindowHost["theme"];
     storage: DisplayStorage;
-    data: LegacyDialogHost["data"] & {
+    data: WindowHost["data"] & {
       on: (event: string, handler: (event: TuiEvent) => void) => () => void;
       session: { get: (sessionID: string) => { parentID?: string } | undefined };
     };
-    ui: LegacyDialogHost["ui"] & {
+    ui: WindowHost["ui"] & {
       slot: (
         claim:
           | { append: "app"; render: () => null }
@@ -123,6 +120,16 @@ const plugin = Plugin.define({
     });
     const host: SurfaceHost = { theme: () => api.theme, display, quota };
     const quotaWindow = createQuotaWindow(api, host);
+    /** `/quota_usage [range]`: the Usage tab, on the typed range; a wrong range says why. */
+    const openUsage = (argumentsText: string) => {
+      if (!argumentsText) {
+        quotaWindow.open("usage");
+        return;
+      }
+      const parsed = parseUsageArguments(argumentsText);
+      if (parsed.ok) quotaWindow.openUsage(parsed);
+      else api.ui.toast.show({ variant: "warning", title: TOAST_TITLE, message: parsed.error });
+    };
 
     let disposeMount: (() => void) | undefined;
     const questionToolCalls = new Set<string>();
@@ -155,17 +162,24 @@ const plugin = Plugin.define({
               run: () => quotaWindow.open("limits"),
             },
             {
+              id: "quota.usage",
+              title: "Quota usage: tokens and API cost",
+              group: "OpenCode Quota",
+              palette: true,
+              run: () => quotaWindow.open("usage"),
+            },
+            {
               id: "quota.status",
               title: "Quota status report",
               group: "OpenCode Quota",
               palette: true,
               run: () => quotaWindow.open("status"),
             },
-            ...reportCommands(api),
           ],
         }));
         registerTypedQuotaCommands(api, {
           quota: () => quotaWindow.open("limits"),
+          quota_usage: openUsage,
           quota_status: () => quotaWindow.open("status"),
         });
         const afterTurn = (event: TuiEvent, trigger: TurnEnd) => {

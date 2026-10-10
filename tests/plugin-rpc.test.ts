@@ -6,11 +6,7 @@ import { parse as parseJsonc } from "jsonc-parser";
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import type { QuotaSnapshot } from "../src/core/types.js";
 import type { UsageReport } from "../src/core/usage.js";
-import {
-  messageDocument,
-  type ReportDocument,
-  renderPlainTextReport,
-} from "../src/lib/report-document.js";
+import { messageDocument } from "../src/lib/report-document.js";
 import { createFakeIntegration } from "./helpers/fake-integration.js";
 import {
   createAlibabaAuthModuleMock,
@@ -173,20 +169,20 @@ describe("server quota RPC", () => {
     await rm(TEST_RUNTIME_ROOT, { recursive: true, force: true, maxRetries: 3 });
   });
 
-  it("registers the quota RPC with its seven methods during setup", async () => {
+  it("registers the quota RPC with its nine methods during setup", async () => {
     const { QuotaRpc } = await import("../src/rpc.js");
     const { definition, handlers } = await setupServer();
 
     expect(definition).toBe(QuotaRpc);
     expect(definition.id).toBe("slkiser.opencode-quota");
     expect(Object.keys(definition.methods)).toEqual([
-      "command",
       "snapshot",
       "refresh",
       "notices",
       "noticeList",
       "status",
       "usage",
+      "downloadPrices",
       "saveSettings",
       "acknowledgeDisplayImport",
     ]);
@@ -821,39 +817,40 @@ describe("server quota RPC", () => {
     expect(JSON.stringify(enabled.emit.mock.calls)).not.toContain("exportPart");
   });
 
-  it("runs palette commands on the server and returns their output", async () => {
-    useSettings();
+  it.each([
+    {
+      name: "downloads new prices whatever their age, and says when the settings keep the built-in ones",
+      source: "bundled" as const,
+      refresh: { attempted: true, updated: true, state: { version: 1, updatedAt: 1 } },
+      answer: {
+        ok: true,
+        message:
+          "Downloaded new prices. Usage keeps the built-in prices: the pricing source setting is bundled.",
+      },
+    },
+    {
+      name: "reports a failed price download with its error",
+      source: "auto" as const,
+      refresh: {
+        attempted: true,
+        updated: false,
+        reason: "fetch_failed",
+        error: "network down",
+        state: { version: 1, updatedAt: 1 },
+      },
+      answer: { ok: false, message: "Couldn't download new prices: network down." },
+    },
+  ])("$name", async ({ source, refresh, answer }) => {
+    useSettings({ pricing: { source, autoRefreshDays: 3 } });
+    mocks.maybeRefreshPricingSnapshot.mockResolvedValue(refresh);
     const { call } = await setupServer();
 
-    const output = (await call("command", { command: "tokens_all" })) as {
-      output: string;
-      document: ReportDocument;
-    };
-    expect(output).toEqual(
-      expect.objectContaining({
-        state: "output",
-        command: "tokens_all",
-        title: "Tokens used (All Time)",
-      }),
-    );
-    expect(output.output).toContain("# Tokens used (All Time) (/tokens_all)");
-    expect(output.document.heading?.line).toContain("Tokens used (All Time)");
-  });
-
-  it("returns a failed palette command as output instead of an RPC error", async () => {
-    useSettings();
-    const dialogModule = await import("../src/lib/quota-dialog-commands.js");
-    vi.spyOn(dialogModule, "buildQuotaDialogCommandOutput").mockRejectedValue(
-      new Error("tokens \u001b[31mbroke"),
-    );
-    const { call } = await setupServer();
-
-    await expect(call("command", { command: "tokens_today" })).resolves.toEqual({
-      state: "output",
-      command: "tokens_today",
-      title: "Tokens used (Today)",
-      output: "tokens broke",
-      document: messageDocument("tokens broke"),
+    await expect(call("downloadPrices", {})).resolves.toEqual(answer);
+    expect(mocks.maybeRefreshPricingSnapshot).toHaveBeenCalledWith({
+      reason: "manual",
+      force: true,
+      snapshotSelection: source,
+      allowRefreshWhenSelectionBundled: true,
     });
   });
 

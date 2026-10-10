@@ -1,6 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { REPORT_COMMANDS } from "../src/rpc.js";
 import tuiPlugin from "../src/tui/index.js";
 import { createFakeIntegration } from "./helpers/fake-integration.js";
 
@@ -27,7 +26,6 @@ const rpc = {
   snapshot: vi.fn(),
   refresh: vi.fn(),
   notices: vi.fn(),
-  command: vi.fn(),
   events: { on: vi.fn(() => () => {}) },
 };
 const SNAPSHOT = {
@@ -123,84 +121,13 @@ describe("V2 CLI command boundary", () => {
     rpc.snapshot.mockReset().mockResolvedValue({ snapshot: SNAPSHOT });
     rpc.refresh.mockReset().mockResolvedValue({ snapshot: SNAPSHOT });
     rpc.notices.mockReset().mockResolvedValue({ homeLine: "" });
-    rpc.command.mockReset().mockResolvedValue({
-      state: "output",
-      command: "tokens_today",
-      title: "Tokens",
-      output: "Tokens ready",
-    });
   });
 
-  it("registers the 11 palette commands without slash entries, not V1 server command hooks", () => {
+  it("registers the palette commands without slash entries, not V1 server command hooks", () => {
     const tui = startTui();
-    expect([...tui.commands.keys()]).toEqual([
-      "quota.window",
-      "quota.status",
-      ...REPORT_COMMANDS.map((item) => `quota.${item.id}`),
-    ]);
-    expect(tui.commands.size).toBe(11);
+    expect([...tui.commands.keys()]).toEqual(["quota.window", "quota.usage", "quota.status"]);
     expect([...tui.commands.values()].some((item) => item.slash !== undefined)).toBe(false);
     expect(tui.context.ui.slot).toHaveBeenCalledWith(expect.objectContaining({ append: "app" }));
-    tui.dispose?.();
-  });
-
-  it("isolates commands from the model transcript and presents quota output locally", async () => {
-    const tui = startTui();
-    await tui.commands.get("quota.tokens_today")?.run();
-    expect(rpc.command).toHaveBeenCalledWith(
-      { command: "tokens_today", sessionID: undefined, arguments: undefined },
-      expect.objectContaining({ location: { directory: process.cwd() } }),
-    );
-    expect(tui.show).toHaveBeenCalledOnce();
-    expect(tui.set).toHaveBeenCalledWith({ size: "xlarge" });
-    expect(tui.context.data.session.get).not.toHaveBeenCalled();
-    tui.dispose?.();
-  });
-
-  it("passes the prompted /tokens_between range to the deterministic output builder", async () => {
-    const tui = startTui();
-    tui.prompt.mockResolvedValue("not-a-date-range");
-    await tui.commands.get("quota.tokens_between")?.run();
-    expect(rpc.command).toHaveBeenCalledWith(
-      expect.objectContaining({
-        command: "tokens_between",
-        arguments: "not-a-date-range",
-      }),
-      expect.anything(),
-    );
-    tui.dispose?.();
-  });
-
-  it("prompts for missing date ranges and does not invoke the command when cancelled", async () => {
-    const tui = startTui();
-    await tui.commands.get("quota.tokens_between")?.run();
-    expect(tui.prompt).toHaveBeenCalledWith(
-      expect.objectContaining({ placeholder: "YYYY-MM-DD YYYY-MM-DD" }),
-    );
-    expect(rpc.command).not.toHaveBeenCalled();
-    tui.dispose?.();
-  });
-
-  it("returns without a dialog when quota is disabled", async () => {
-    rpc.command.mockResolvedValue({ state: "noop", command: "tokens_today", reason: "disabled" });
-    const tui = startTui();
-    await tui.commands.get("quota.tokens_today")?.run();
-    expect(tui.show).not.toHaveBeenCalled();
-    expect(tui.toast).not.toHaveBeenCalled();
-    tui.dispose?.();
-  });
-
-  it("shows command failures as sanitized TUI error toasts rather than injecting a message", async () => {
-    rpc.command.mockRejectedValue({ type: "rpc.internal", message: "quota unavailable" });
-    const tui = startTui();
-    await tui.commands.get("quota.tokens_today")?.run();
-    expect(tui.toast).toHaveBeenCalledWith(
-      expect.objectContaining({
-        variant: "error",
-        message: "quota unavailable",
-      }),
-    );
-    expect(tui.show).not.toHaveBeenCalled();
     tui.dispose?.();
   });
 
@@ -229,8 +156,6 @@ describe("V2 CLI command boundary", () => {
       { reason: "turn", sessionID: "ses_1" },
     ]);
     expect(rpc.notices).toHaveBeenCalledOnce();
-    // /tokens_between stops at its date prompt, which this fake cancels.
-    expect(rpc.command).toHaveBeenCalledTimes(REPORT_COMMANDS.length - 1);
     expect(mocks.readAuthFile).not.toHaveBeenCalled();
     expect(mocks.readAuthFileCached).not.toHaveBeenCalled();
     expect(mocks.readCredentialRows).not.toHaveBeenCalled();

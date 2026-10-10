@@ -77,21 +77,15 @@ Full list: [Moving to OpenCode 2](docs/readme/updating.md#moving-to-opencode-2).
 
 ### Slash commands
 
-Type these in OpenCode. Add dates after the command, like `/tokens_between 2026-09-01 2026-09-25`.
+Type these in OpenCode. Add a range after `/quota_usage`, like `/quota_usage 30d` or `/quota_usage between 2026-09-01 2026-09-25`.
 
-| Command                                 | What it shows                                        |
-| --------------------------------------- | ---------------------------------------------------- |
-| `/quota`                                | Quota window: limits, maintainer notices, status     |
-| `/quota_status`                         | Setup check: logins, providers, pricing, and notices |
-| `/pricing_refresh`                      | Refreshes token pricing from `models.dev`            |
-| `/tokens_today`                         | Tokens used today                                    |
-| `/tokens_daily`                         | Tokens used in the last 24 hours                     |
-| `/tokens_weekly`                        | Tokens used in the last 7 days                       |
-| `/tokens_monthly`                       | Tokens used in the last 30 days, with pricing        |
-| `/tokens_all`                           | Tokens used across all local history                 |
-| `/tokens_session`                       | Tokens used in this session                          |
-| `/tokens_session_all`                   | This session plus its subagent sessions              |
-| `/tokens_between YYYY-MM-DD YYYY-MM-DD` | Tokens used between two dates                        |
+| Command                | What it shows                                                                                                   |
+| ---------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `/quota`               | Quota window: limits, usage, maintainer notices, status                                                         |
+| `/quota_usage [range]` | Tokens and API cost: `today`, `24h`, `7d` (default), `30d`, `all`, `session`, `session_tree`, `between` two dates |
+| `/quota_status`        | Setup check: logins, providers, pricing, and notices                                                            |
+
+In the terminal, `/quota_usage` opens the window's Usage tab on that range: change it there, and click a model for its details. **Download new prices** there refreshes pricing from `models.dev`.
 
 ### CLI commands
 
@@ -198,7 +192,7 @@ Track a provider that is not listed, from its quota API or from a local estimate
 2. Provider missing? Log in to it again in OpenCode 2.
 3. Using a companion plugin (Cursor, Google)? List it **before** `@slkiser/opencode-quota` in `opencode.json`.
 4. `claude` or `bl` not found? See [Service environment](docs/readme/troubleshooting.md#service-environment).
-5. Token reports empty? Start OpenCode once, then use a model.
+5. `/quota_usage` empty? Start OpenCode once, then use a model.
 
 More fixes: [Troubleshooting](docs/readme/troubleshooting.md).
 
