@@ -1,6 +1,6 @@
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { vi } from "vitest";
-
-import { DEFAULT_CONFIG } from "../../src/lib/types.js";
 
 type MockFunction = ReturnType<typeof vi.fn>;
 
@@ -35,13 +35,11 @@ interface AuthPlanMocks {
 }
 
 interface PluginBootstrapMocks extends PricingMocks, AuthPlanMocks {
-  loadConfig: MockFunction;
   getProviders?: MockFunction;
   fetchSessionTokensForDisplay?: MockFunction;
 }
 
 interface PluginBootstrapOptions {
-  configOverrides?: Partial<typeof DEFAULT_CONFIG>;
   providers?: unknown[];
   resetModules?: boolean;
   resetPluginState?: boolean;
@@ -54,21 +52,6 @@ interface PluginRuntimeRoot {
   configDir: string;
   dataDir: string;
   stateDir: string;
-}
-
-export function createConfigModuleMock(loadConfig: MockFunction) {
-  return {
-    loadConfig,
-    createLoadConfigMeta: () => ({
-      source: "defaults",
-      paths: [],
-      globalConfigPaths: [],
-      workspaceConfigPaths: [],
-      settingSources: {},
-      networkSettingSources: {},
-      configIssues: [],
-    }),
-  };
 }
 
 export function createProvidersRegistryModuleMock(getProviders: MockFunction) {
@@ -122,53 +105,14 @@ export function resetPluginTestState(): void {
   // Per-test module resets clear in-memory plugin/cache singletons.
 }
 
-export function makeQuotaToastTestConfig(
-  overrides: Partial<typeof DEFAULT_CONFIG> = {},
-): typeof DEFAULT_CONFIG {
-  return {
-    ...DEFAULT_CONFIG,
-    ...overrides,
-    enabledProviders:
-      overrides.enabledProviders !== undefined
-        ? Array.isArray(overrides.enabledProviders)
-          ? [...overrides.enabledProviders]
-          : overrides.enabledProviders
-        : Array.isArray(DEFAULT_CONFIG.enabledProviders)
-          ? [...DEFAULT_CONFIG.enabledProviders]
-          : DEFAULT_CONFIG.enabledProviders,
-    opencodeGoWindows: [...(overrides.opencodeGoWindows ?? DEFAULT_CONFIG.opencodeGoWindows)],
-    resetNotifications: {
-      ...DEFAULT_CONFIG.resetNotifications,
-      ...overrides.resetNotifications,
-      windows: [
-        ...(overrides.resetNotifications?.windows ?? DEFAULT_CONFIG.resetNotifications.windows),
-      ],
-    },
-    pricingSnapshot: {
-      ...DEFAULT_CONFIG.pricingSnapshot,
-      ...overrides.pricingSnapshot,
-    },
-    tuiSidebarPanel: {
-      ...DEFAULT_CONFIG.tuiSidebarPanel,
-      ...overrides.tuiSidebarPanel,
-    },
-    tuiCompactStatus: {
-      ...DEFAULT_CONFIG.tuiCompactStatus,
-      ...overrides.tuiCompactStatus,
-    },
-    maintainerAnnouncements: {
-      ...DEFAULT_CONFIG.maintainerAnnouncements,
-      ...overrides.maintainerAnnouncements,
-    },
-    telemetry: {
-      ...DEFAULT_CONFIG.telemetry,
-      ...overrides.telemetry,
-    },
-    layout: {
-      ...DEFAULT_CONFIG.layout,
-      ...overrides.layout,
-    },
-  };
+/**
+ * Writes the server settings file (settings.jsonc) under the runtime root of
+ * `createPluginRuntimePathsMockModule(root)`.
+ */
+export function writePluginTestSettings(root: string, settings: Record<string, unknown>): void {
+  const dir = join(createPluginBootstrapRuntimeRoot(root).configDir, "opencode-quota");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "settings.jsonc"), JSON.stringify(settings, null, 2));
 }
 
 export function seedDefaultPricingMocks(mocks: PricingMocks): void {
@@ -215,7 +159,6 @@ export function seedDefaultPluginBootstrapMocks(
     resetPluginTestState();
   }
 
-  mocks.loadConfig.mockResolvedValue(makeQuotaToastTestConfig(options.configOverrides));
   mocks.getProviders?.mockReturnValue(options.providers ?? []);
 
   if (mocks.fetchSessionTokensForDisplay && options.seedSessionTokens !== false) {

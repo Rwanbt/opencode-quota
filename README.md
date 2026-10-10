@@ -51,8 +51,8 @@ Also:
 - **Terminal:** `npx @slkiser/opencode-quota@latest show` works even with OpenCode closed.
 - **Web and Desktop:** slash commands post the report in the chat.
 - **Scripts and status bars:** JSON, an export file, and metrics. See [External integration](docs/readme/external-integration.md).
-- **Your look:** used or left, reset style, a runs-out estimate, and more. See [Configuration](docs/readme/configuration.md).
-- **Retry at the reset:** when a request hits a limit and that provider's quota shows a used-up window, OpenCode retries after it resets. Turn off with `waitForQuotaReset: false`.
+- **Your words:** used or left, reset style, and more. See [Configuration](docs/readme/configuration.md).
+- **Retry at the reset:** when a request hits a limit and that provider's quota shows a used-up window, OpenCode retries after it resets. Turn off with `checking.waitForQuotaReset: false`.
 
 ## Updating
 
@@ -60,7 +60,7 @@ Also:
 opencode plugin update
 ```
 
-Restart OpenCode. Coming from 5.x? See [Updating](docs/readme/updating.md).
+Restart OpenCode. Coming from 5.x? Your old settings are converted automatically on the first start; see [Moving from 5.x](docs/readme/updating.md#moving-from-5x).
 
 ### Breaking changes in 5.0.0
 
@@ -68,7 +68,7 @@ Restart OpenCode. Coming from 5.x? See [Updating](docs/readme/updating.md).
 > - OpenCode 1 is no longer supported. OpenCode 1 users stay on 4.x (`@slkiser/opencode-quota@4`).
 > - Logins come from OpenCode 2, never from `auth.json`. If a provider is missing, log in again.
 > - Web and Desktop get the slash commands, but no toasts or panels.
-> - TUI reports open in a popup. To keep them in the chat, set `tuiCommandDisplay: "inline"`.
+> - TUI reports open in a popup.
 > - OpenCode Zen uses your OpenCode Console sign-in: `opencode auth login opencode`.
 
 Full list: [Moving to OpenCode 2](docs/readme/updating.md#moving-to-opencode-2).
@@ -77,21 +77,15 @@ Full list: [Moving to OpenCode 2](docs/readme/updating.md#moving-to-opencode-2).
 
 ### Slash commands
 
-Type these in OpenCode. Add dates after the command, like `/tokens_between 2026-09-01 2026-09-25`.
+Type these in OpenCode. Add a range after `/quota_usage`, like `/quota_usage 30d` or `/quota_usage between 2026-09-01 2026-09-25`.
 
-| Command                                 | What it shows                                        |
-| --------------------------------------- | ---------------------------------------------------- |
-| `/quota`                                | Quota window: limits, notices, status, TUI settings  |
-| `/quota_status`                         | Setup check: logins, providers, pricing, and notices |
-| `/pricing_refresh`                      | Refreshes token pricing from `models.dev`            |
-| `/tokens_today`                         | Tokens used today                                    |
-| `/tokens_daily`                         | Tokens used in the last 24 hours                     |
-| `/tokens_weekly`                        | Tokens used in the last 7 days                       |
-| `/tokens_monthly`                       | Tokens used in the last 30 days, with pricing        |
-| `/tokens_all`                           | Tokens used across all local history                 |
-| `/tokens_session`                       | Tokens used in this session                          |
-| `/tokens_session_all`                   | This session plus its subagent sessions              |
-| `/tokens_between YYYY-MM-DD YYYY-MM-DD` | Tokens used between two dates                        |
+| Command                | What it shows                                                                                                   |
+| ---------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `/quota`               | Quota window: limits, usage, maintainer notices, status, TUI settings                                           |
+| `/quota_usage [range]` | Tokens and API cost: `today`, `24h`, `7d` (default), `30d`, `all`, `session`, `session_tree`, `between` two dates |
+| `/quota_status`        | Setup check: logins, providers, pricing, and notices                                                            |
+
+In the terminal, `/quota_usage` opens the window's Usage tab on that range: change it there, and click a model for its details. **Download new prices** there refreshes pricing from `models.dev`.
 
 ### CLI commands
 
@@ -190,7 +184,7 @@ These show only your own member API key's usage, not the whole organization's.
 
 ### Custom providers
 
-Track a provider that is not listed, from its quota API or from a local estimate. Ask your agent to add a custom provider: its `quota_provider_add` tool saves and tests one; [docs/readme/providers.md#custom-providers](docs/readme/providers.md#custom-providers) has a copy-paste prompt.
+Track a provider that is not listed, from its quota API or from a local estimate. Ask your agent to add a custom provider: its `quota_provider_add` tool saves one switched off, and you switch it on (`"enabled": true` in `opencode-quota/settings.jsonc`, or `/quota_settings` → **Providers**); [docs/readme/providers.md#custom-providers](docs/readme/providers.md#custom-providers) has a copy-paste prompt.
 
 ## Troubleshooting
 
@@ -198,7 +192,7 @@ Track a provider that is not listed, from its quota API or from a local estimate
 2. Provider missing? Log in to it again in OpenCode 2.
 3. Using a companion plugin (Cursor, Google)? List it **before** `@slkiser/opencode-quota` in `opencode.json`.
 4. `claude` or `bl` not found? See [Service environment](docs/readme/troubleshooting.md#service-environment).
-5. Token reports empty? Start OpenCode once, then use a model.
+5. `/quota_usage` empty? Start OpenCode once, then use a model.
 
 More fixes: [Troubleshooting](docs/readme/troubleshooting.md).
 

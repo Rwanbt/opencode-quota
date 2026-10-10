@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  applyDisplayImport,
   createDisplayStore,
   cycleField,
   cyclePreset,
@@ -109,7 +110,7 @@ describe("display settings in plugin storage", () => {
     const { storage, live } = fakeStorage();
     const display = createDisplayStore(storage);
     expect(display.saved().statusLine.home).toBe(false);
-    live.value!.settings.statusLine.home = true;
+    live.value!.settings = setIn(defaultDisplaySettings(), ["statusLine", "home"], true);
     expect(display.saved().statusLine.home).toBe(true);
   });
 
@@ -120,7 +121,7 @@ describe("display settings in plugin storage", () => {
     expect([display.shown().layout.barWidth, display.saved().layout.barWidth]).toEqual([12, 8]);
     expect(display.dirty()).toBe(true);
     await display.save();
-    expect([live.value?.settings.layout.barWidth, display.dirty()]).toEqual([12, false]);
+    expect([live.value?.settings?.layout.barWidth, display.dirty()]).toEqual([12, false]);
 
     display.edit((settings) => setIn(settings, ["layout", "barWidth"], 4));
     display.discard();
@@ -160,7 +161,7 @@ describe("display settings in plugin storage", () => {
     display.edit((settings) => setIn(settings, ["layout", "bar"], "dots"));
     write();
     await saving;
-    expect([live.value?.settings.layout.barWidth, live.value?.settings.layout.bar]).toEqual([
+    expect([live.value?.settings?.layout.barWidth, live.value?.settings?.layout.bar]).toEqual([
       12,
       "blocks",
     ]);
@@ -171,7 +172,7 @@ describe("display settings in plugin storage", () => {
     const { storage, live } = fakeStorage();
     const display = createDisplayStore(storage);
     display.edit((settings) => setIn(settings, ["layout", "barWidth"], 8));
-    live.value!.settings.statusLine.home = true;
+    live.value!.settings = setIn(defaultDisplaySettings(), ["statusLine", "home"], true);
     expect([display.shown().statusLine.home, display.dirty()]).toEqual([true, false]);
   });
 
@@ -207,6 +208,45 @@ describe("display settings in plugin storage", () => {
     display.edit((settings) => setIn(settings, ["statusLine", "home"], true));
     await expect(display.save()).rejects.toThrow(NEWER_SETTINGS);
     expect([live.value, display.dirty()]).toEqual([newer, true]);
+  });
+
+  it.each([
+    {
+      name: "saves the v5 looks over the defaults while nothing is saved",
+      saved: undefined,
+      displayImport: {
+        statusLine: { detail: "one" as const },
+        toast: { afterReply: "always" as const },
+      },
+      expected: { detail: "one", afterReply: "always", afterCompaction: true },
+    },
+    {
+      name: "never overwrites settings saved before",
+      saved: { version: 1, settings: { toast: { afterReply: "low" } } },
+      displayImport: {
+        statusLine: { detail: "one" as const },
+        toast: { afterReply: "always" as const },
+      },
+      expected: { detail: "auto", afterReply: "low", afterCompaction: true },
+    },
+    {
+      name: "saves nothing for an empty import",
+      saved: undefined,
+      displayImport: {},
+      expected: { detail: "auto", afterReply: "off", afterCompaction: true },
+    },
+  ])("applyDisplayImport $name", async ({ saved, displayImport, expected }) => {
+    const { storage, live } = fakeStorage(saved);
+    await applyDisplayImport(storage, displayImport);
+    const display = createDisplayStore(storage).saved();
+    expect({
+      detail: display.statusLine.detail,
+      afterReply: display.toast.afterReply,
+      afterCompaction: display.toast.afterCompaction,
+    }).toEqual(expected);
+    if (Object.keys(displayImport).length === 0 && !saved) {
+      expect(live.value).toEqual({ version: 1 });
+    }
   });
 });
 

@@ -434,14 +434,18 @@ export function statusLayout(
 /**
  * §4.3 "one provider, big bar" (v5's prompt bar): the first group with a 10-cell bar. The
  * error's words take the place of the reset time; without a percent row the line shows the
- * group's error or value instead of a bar.
+ * group's error or value instead of a bar. Cut to `width` columns when given, keeping " ⚠"
+ * when the error's words don't fit.
  */
-export function bigStatusLine(input: StatusInput): Line | undefined {
+export function bigStatusLine(input: StatusInput, width?: number): Line | undefined {
   const group = input.groups[0];
   if (!group) return undefined;
   const picked = pickRow(group, input.window[group.providerId]);
   const percent = picked?.row.percentRemaining;
-  if (!picked || percent === undefined) return statusSegment(input, group, "full");
+  if (!picked || percent === undefined) {
+    const line = statusSegment(input, group, "full");
+    return width === undefined ? line : { ...line, segments: clip(line.segments, width) };
+  }
   const error = errorWords(group, input.nowMs);
   const reset = resetText(picked.row, input.nowMs, input.words);
   const after: Segment | undefined = error
@@ -450,16 +454,14 @@ export function bigStatusLine(input: StatusInput): Line | undefined {
       ? { text: ` · ${reset}`, role: "reset", percent }
       : undefined;
   const runsOut = runsOutText(input.runsOut, picked.row, input.nowMs, input.words);
-  return {
-    id: group.providerId,
-    segments: [
-      { text: `${statusName(input, group)} ${shortWindow(picked)} `, role: "statusName", percent },
-      ...barSegments(input.layout.bar, percent, 10),
-      { text: ` ${percentText(input.words, percent, true)}`, role: "percent", percent },
-      ...(after ? [after] : []),
-      ...(runsOut ? [{ text: ` · ${runsOut}`, role: "warning" as const }] : []),
-    ],
-  };
+  const segments: Segment[] = [
+    { text: `${statusName(input, group)} ${shortWindow(picked)} `, role: "statusName", percent },
+    ...barSegments(input.layout.bar, percent, 10),
+    { text: ` ${percentText(input.words, percent, true)}`, role: "percent", percent },
+    ...(after ? [after] : []),
+    ...(runsOut ? [{ text: ` · ${runsOut}`, role: "warning" as const }] : []),
+  ];
+  return { id: group.providerId, segments: width === undefined ? segments : clip(segments, width) };
 }
 
 /**

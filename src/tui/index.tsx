@@ -3,40 +3,38 @@
  * OpenCode Quota's TUI plugin. It draws the server's quota snapshot: the Quota panel in the
  * session sidebar, the status line under the message box (and on Home when turned on), the
  * toasts, and the quota window that `/quota` opens above the message box (`window/`). It reads
- * only the quota RPC and the display settings in OpenCode's plugin storage. The report dialogs
- * of the token and pricing commands live in `legacy-dialogs.tsx`.
+ * only the quota RPC and the display settings in OpenCode's plugin storage. The quota slash
+ * commands typed in the prompt run through `legacy-dialogs.tsx`.
  */
 import { Plugin } from "@opencode/plugin/tui";
 import type { JSX } from "@opentui/solid";
 import { onCleanup, Show } from "solid-js";
+import type { QuotaSnapshot } from "../core/types.js";
+import { parseUsageArguments } from "../core/usage-ranges.js";
 import { type ClientHost, createQuotaClient, reportFailure } from "./client.js";
-import { createDisplayStore, type DisplayStorage } from "./display.js";
-import {
-  type LegacyDialogHost,
-  registerTypedQuotaCommands,
-  reportCommands,
-} from "./legacy-dialogs.js";
+import { applyDisplayImport, createDisplayStore, type DisplayStorage } from "./display.js";
+import { registerTypedQuotaCommands, type TypedCommandHost } from "./legacy-dialogs.js";
 import { SidebarPanel, type SurfaceHost } from "./sidebar.js";
 import { HomeFooter, StatusLine } from "./status-line.js";
 import type { Theme } from "./theme.js";
-import { createToasts, type TurnEnd } from "./toasts.js";
+import { createToasts, TOAST_TITLE, type TurnEnd } from "./toasts.js";
 import { createSettingsEditor } from "./window/settings.js";
 import { createQuotaWindow, type WindowHost } from "./window/shell.js";
 
 type SidebarState = { open: boolean };
 type TuiEvent = { data?: Record<string, unknown> };
 
-/** What the plugin needs from OpenCode's TUI context, besides the dialogs' and the window's needs. */
-type TuiContext = LegacyDialogHost &
+/** What the plugin needs from OpenCode's TUI context, besides the window's and typed commands' needs. */
+type TuiContext = TypedCommandHost &
   WindowHost &
   ClientHost & {
-    theme: Theme & LegacyDialogHost["theme"] & WindowHost["theme"];
+    theme: Theme & WindowHost["theme"];
     storage: DisplayStorage;
-    data: LegacyDialogHost["data"] & {
+    data: WindowHost["data"] & {
       on: (event: string, handler: (event: TuiEvent) => void) => () => void;
       session: { get: (sessionID: string) => { parentID?: string } | undefined };
     };
-    ui: LegacyDialogHost["ui"] & {
+    ui: WindowHost["ui"] & {
       slot: (
         claim:
           | { append: "app"; render: () => null }
@@ -50,6 +48,10 @@ type TuiContext = LegacyDialogHost &
       ) => () => void;
     };
   };
+
+const SETTINGS_CONVERTED_MESSAGE =
+  "Settings converted from v5 to settings.jsonc, details in /quota_status";
+const SETTINGS_CONVERTED_TOAST_MS = 15_000;
 
 function eventSessionID(event: TuiEvent): string | undefined {
   const sessionID = event.data?.sessionID;
@@ -81,7 +83,27 @@ const plugin = Plugin.define({
 
     const isChildSession = (sessionID: string) =>
       Boolean(api.data.session.get(sessionID)?.parentID);
-    const quota = createQuotaClient(api, (snapshot) => toasts.showResetNotices(snapshot));
+    // The server converted the v5 settings: apply their looks (only where nothing is saved),
+    // tell the server, and say so once in this TUI process.
+    let conversionShown = false;
+    const showConversion = (snapshot: QuotaSnapshot) => {
+      const { displayImport } = snapshot;
+      if (!displayImport || conversionShown) return;
+      conversionShown = true;
+      api.ui.toast.show({
+        variant: "info",
+        title: TOAST_TITLE,
+        message: SETTINGS_CONVERTED_MESSAGE,
+        duration: SETTINGS_CONVERTED_TOAST_MS,
+      });
+      applyDisplayImport(api.storage, displayImport.display)
+        .then(() => quota.acknowledgeDisplayImport(displayImport.id))
+        .catch(reportFailure);
+    };
+    const quota = createQuotaClient(api, (snapshot) => {
+      toasts.showResetNotices(snapshot);
+      showConversion(snapshot);
+    });
     const toasts = createToasts({
       show: (toast) => api.ui.toast.show(toast),
       display: display.shown,
@@ -96,6 +118,16 @@ const plugin = Plugin.define({
       editing: settings,
     };
     const quotaWindow = createQuotaWindow(api, host, settings);
+    /** `/quota_usage [range]`: the Usage tab, on the typed range; a wrong range says why. */
+    const openUsage = (argumentsText: string) => {
+      if (!argumentsText) {
+        quotaWindow.open("usage");
+        return;
+      }
+      const parsed = parseUsageArguments(argumentsText);
+      if (parsed.ok) quotaWindow.openUsage(parsed);
+      else api.ui.toast.show({ variant: "warning", title: TOAST_TITLE, message: parsed.error });
+    };
 
     let disposeMount: (() => void) | undefined;
     const questionToolCalls = new Set<string>();
@@ -107,6 +139,16 @@ const plugin = Plugin.define({
         // listeners, so each mount stops the last one's and registers everything again.
         disposeMount?.();
         const stopQuota = quota.start();
+        // The first snapshot carries the converted v5 looks (`displayImport`). Ask for it once
+        // the slot is mounted: on Home nothing else does until those looks turn the status
+        // line on.
+        queueMicrotask(() => {
+          try {
+            quota.watch()();
+          } catch (error) {
+            reportFailure(error);
+          }
+        });
         api.keymap.layer(() => ({
           mode: "global",
           commands: [
@@ -118,17 +160,24 @@ const plugin = Plugin.define({
               run: () => quotaWindow.open("limits"),
             },
             {
+              id: "quota.usage",
+              title: "Quota usage: tokens and API cost",
+              group: "OpenCode Quota",
+              palette: true,
+              run: () => quotaWindow.open("usage"),
+            },
+            {
               id: "quota.status",
               title: "Quota status report",
               group: "OpenCode Quota",
               palette: true,
               run: () => quotaWindow.open("status"),
             },
-            ...reportCommands(api),
           ],
         }));
         registerTypedQuotaCommands(api, {
           quota: () => quotaWindow.open("limits"),
+          quota_usage: openUsage,
           quota_status: () => quotaWindow.open("status"),
         });
         const afterTurn = (event: TuiEvent, trigger: TurnEnd) => {

@@ -79,6 +79,24 @@ describe("TUI quota client", () => {
     stop();
   });
 
+  it("ignores a late answer from the server it moved away from", async () => {
+    const { client, answer, changed } = fakeRpc();
+    const stop = client.start();
+    const pending = client.refresh("turn", "ses_1");
+    changed(snapshot(20));
+    changed(snapshot(1, 0, "server-2"));
+    answer(0, snapshot(21, 500));
+    await pending;
+    // Neither its snapshot nor what it says about the session is taken.
+    const shown = client.snapshot("ses_1");
+    expect([shown?.serverId, shown?.revision, shown?.sessionTokens]).toEqual([
+      "server-2",
+      1,
+      undefined,
+    ]);
+    stop();
+  });
+
   it("keeps a session's part from the latest call that asked about it", async () => {
     const { client, answer } = fakeRpc();
     const stop = client.start();
@@ -92,6 +110,19 @@ describe("TUI quota client", () => {
       revision: 3,
       sessionTokens: { input: 200 },
     });
+    stop();
+  });
+
+  it("keeps which custom sources serve a session's model to that session", async () => {
+    const { client, answer } = fakeRpc();
+    const stop = client.start();
+    const prefixes = { "quota-providers": ["quota-providers.custom.alpha."] };
+    const asked = client.refresh("turn", "ses_1");
+    answer(0, { ...snapshot(2), currentModelRowPrefixes: prefixes });
+    await asked;
+    expect(client.snapshot("ses_1")?.currentModelRowPrefixes).toEqual(prefixes);
+    expect(client.snapshot("ses_2")?.currentModelRowPrefixes).toBeUndefined();
+    expect(client.snapshot()?.currentModelRowPrefixes).toBeUndefined();
     stop();
   });
 

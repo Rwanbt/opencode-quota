@@ -222,11 +222,12 @@ function checkProviders(key: string, value: unknown): CheckedSetting {
   }
   const known: string[] = [];
   const unknown: string[] = [];
-  for (const item of value) {
+  value.forEach((item, index) => {
     const id = typeof item === "string" ? canonicalProviderId(item) : undefined;
+    // Anything but a string is named by its position, so no name inside it is repeated.
     if (id) known.push(id);
-    else unknown.push(typeof item === "string" ? item : JSON.stringify(item));
-  }
+    else unknown.push(typeof item === "string" ? item : `item ${index + 1}`);
+  });
   if (unknown.length === 0) return { value: [...new Set(known)], issues: [] };
   const message = `unknown provider id(s): ${unknown.join(", ")}; valid: ${PROVIDER_IDS.join(", ")}`;
   const issues = [{ key, message }];
@@ -248,7 +249,7 @@ function checkCustomProviders(key: string, value: unknown): CheckedSetting {
 /** Checks one value against its rule; `key` must be in SETTINGS_SCHEMA. */
 export function checkSetting(key: string, value: unknown): CheckedSetting {
   const rule = Object.hasOwn(RULES, key) ? RULES[key] : undefined;
-  if (!rule) return { issues: [unknownKeyIssue(key)] };
+  if (!rule) return { issues: [{ key, message: "unknown setting" }] };
   const invalid = { issues: [{ key, message: `expected ${describeRule(rule)}` }] };
   switch (rule.kind) {
     case "boolean":
@@ -273,10 +274,16 @@ export function checkSetting(key: string, value: unknown): CheckedSetting {
   }
 }
 
-export function unknownKeyIssue(key: string): SettingsIssue {
-  const group = key.includes(".") ? key.slice(0, key.lastIndexOf(".")) : "";
+/** The issue key for the top level of a file or patch, which has no settings key of its own. */
+const TOP_LEVEL_KEY = "$top";
+
+/** A name at `position` (from 1) in `group` ("" for the top level) that is not a setting. */
+function unknownKeyIssue(group: string, position: number): SettingsIssue {
   const where = group ? ` in ${group}` : "";
-  return { key, message: `unknown setting; valid${where}: ${keysUnder(group).join(", ")}` };
+  return {
+    key: group || TOP_LEVEL_KEY,
+    message: `unknown setting (key ${position}); valid${where}: ${keysUnder(group).join(", ")}`,
+  };
 }
 
 /** One `key: value` a file or a patch sets, in the order it sets them. */
@@ -314,12 +321,14 @@ export const NODE_WALKER: Walker<Node> = {
 /** A file sets a key twice: reading uses the last valid value, saving refuses. */
 export const DUPLICATE_KEY = "duplicate key; the last valid value is used";
 /** A name with a dot ("words.percent") is not read (settings nest), and saving refuses it. */
-export const DOTTED_KEY = "a key with a dot is not read; nest it instead";
+export const DOTTED_KEY = "a key with a dot is not read";
 
 /**
  * The settings an object sets, as dotted keys in order. Unknown, duplicate and dotted keys
  * become issues; a group set to something other than an object becomes an assignment of the group
- * key, so the caller decides (an issue when reading, a reset when a patch says null).
+ * key, so the caller decides (an issue when reading, a reset when a patch says null). An issue
+ * names a settings key, or the position of a name that is not one: a name that is not a setting
+ * is never repeated, so a secret typed as a key name stays out of every message.
  */
 export function flattenSettings<T>(
   walker: Walker<T>,
@@ -329,14 +338,15 @@ export function flattenSettings<T>(
   const assignments: Assignment[] = [];
   const issues: SettingsIssue[] = [];
   const names = new Set<string>();
-  for (const [name, child] of walker.entries(value) ?? []) {
+  for (const [index, [name, child]] of (walker.entries(value) ?? []).entries()) {
     const key = prefix ? `${prefix}.${name}` : name;
-    if (names.has(name)) issues.push({ key, message: DUPLICATE_KEY });
+    const isSetting = Object.hasOwn(RULES, key) || GROUPS.has(key);
+    if (isSetting && names.has(name)) issues.push({ key, message: DUPLICATE_KEY });
     names.add(name);
     if (name.includes(".")) {
       issues.push({
-        key: `${prefix ? `${prefix}.` : ""}${JSON.stringify(name)}`,
-        message: DOTTED_KEY,
+        key: prefix || TOP_LEVEL_KEY,
+        message: `${DOTTED_KEY} (key ${index + 1}); nest it instead`,
       });
     } else if (Object.hasOwn(RULES, key)) {
       assignments.push({ key, value: walker.leaf(child) });
@@ -347,7 +357,7 @@ export function flattenSettings<T>(
     } else if (GROUPS.has(key)) {
       assignments.push({ key, value: walker.leaf(child) });
     } else {
-      issues.push(unknownKeyIssue(key));
+      issues.push(unknownKeyIssue(prefix, index + 1));
     }
   }
   return { assignments, issues };

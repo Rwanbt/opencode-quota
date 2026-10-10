@@ -34,21 +34,21 @@ Add OpenCode Quota to `opencode.jsonc` or `opencode.json`, and keep your other p
 }
 ```
 
-## 2. Add quota settings
+## 2. Add quota settings (optional)
 
-Create `opencode-quota/quota-toast.jsonc` next to that OpenCode config:
+OpenCode Quota works without settings. To change something, create `opencode-quota/settings.jsonc` in the global OpenCode folder (or in `$OPENCODE_CONFIG_DIR`), also for a project install:
 
 ```jsonc
 {
   // Find providers from your OpenCode config and logins.
-  "enabledProviders": "auto",
+  "providers": { "enabled": "auto" },
 
   // Show the count of maintainer notices on Home, once a day for 10 minutes.
-  "maintainerAnnouncements": { "enabled": true, "home": true },
+  "announcements": { "enabled": true, "home": true },
 }
 ```
 
-Restart OpenCode, then run `/quota` and `/quota_status` in the TUI. `/quota_status` shows the exact files OpenCode Quota loaded.
+Restart OpenCode, then run `/quota` and `/quota_status` in the TUI. `/quota_status` shows the settings file OpenCode Quota read.
 
 ## What appears in the TUI
 
@@ -56,8 +56,8 @@ The TUI shows the `Quota` panel in the session sidebar, a status line under the 
 
 ## Web and Desktop notes
 
-- Slash commands work in the TUI, Web, and Desktop. Add arguments after the command, like `/tokens_between 2026-09-01 2026-09-25`.
-- **TUI:** `/quota` opens the quota window above the message box, with tabs for limits, maintainer notices and the `/quota_status` report, and Settings tabs for the sidebar, status line and toasts. The other slash commands open their report in a popup and leave no chat message. The command palette runs the same commands and asks for missing dates.
+- Slash commands work in the TUI, Web, and Desktop. Add a range after `/quota_usage`, like `/quota_usage between 2026-09-01 2026-09-25`.
+- **TUI:** `/quota`, `/quota_usage` and `/quota_status` open the quota window above the message box, with tabs for limits, usage, maintainer notices and the `/quota_status` report, and Settings tabs for the sidebar, status line and toasts. They leave no chat message. The command palette has the same commands.
 - **Web and Desktop:** `/quota` posts your limits and the maintainer notices in the chat as your message; the other commands post their report the same way. The AI never answers it, and the plugin filters it out of every AI request. If you uninstall the plugin, old reports in past chats are no longer filtered.
 - Each report starts with `[OpenCode Quota report]` and ends with `[End of OpenCode Quota report]`, which also keeps it out of compaction summaries.
 - Web uses a proportional font, so columns may not line up. Use the TUI or `npx @slkiser/opencode-quota show` for aligned columns.

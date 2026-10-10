@@ -114,6 +114,7 @@ export function visibleGroups(
   const shown = settings.surfaces[surface];
   const hidden = new Set(shown.hidden);
   const currentModel = words.onlyCurrentModel ? snapshot.currentModelProviderIds : undefined;
+  const rowPrefixes = words.onlyCurrentModel ? snapshot.currentModelRowPrefixes : undefined;
   const providers = ordered(
     snapshot.providers,
     (provider) => provider.providerId,
@@ -124,8 +125,13 @@ export function visibleGroups(
       (currentModel === undefined || currentModel.includes(provider.providerId)),
   );
   return providers.flatMap((provider) => {
+    // A provider whose rows serve different models shows only those of the current one.
+    const prefixes = rowPrefixes?.[provider.providerId];
     const rows = ordered(provider.rows, (row) => row.id, shown.rowOrder[provider.providerId] ?? [])
       .filter((row) => !hidden.has(row.id))
+      .filter(
+        (row) => prefixes === undefined || prefixes.some((prefix) => row.id.startsWith(prefix)),
+      )
       .filter((row) => words.detail === "detailed" || row.prominence === "primary")
       .map((row) => ({ row, label: settings.labels[row.id] ?? row.label }));
     return groupsOf(provider, rows, provider.rows.length > 0);

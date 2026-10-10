@@ -2,7 +2,8 @@
  * HTTP utilities for provider API calls.
  */
 
-import { REQUEST_TIMEOUT_MS } from "./types.js";
+/** Request timeout in milliseconds. */
+export const REQUEST_TIMEOUT_MS = 5000;
 
 export type FetchWithTimeoutOptions<T> = {
   request: Omit<RequestInit, "signal">;

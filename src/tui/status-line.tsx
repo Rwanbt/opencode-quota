@@ -99,7 +99,8 @@ export function StatusLine(props: { host: SurfaceHost; sessionID?: string }): JS
     >
       <Show when={big() ? input() : undefined}>
         {(current: () => StatusInput) => (
-          <Show when={bigStatusLine(current())}>
+          // The room is 0 until OpenCode measures the box; until then the line is drawn whole.
+          <Show when={bigStatusLine(current(), room() || undefined)}>
             {(line: () => Line) => (
               <LineText line={line()} host={host} marked={line().id === marked()} />
             )}
@@ -148,12 +149,14 @@ export function StatusLine(props: { host: SurfaceHost; sessionID?: string }): JS
   );
 }
 
-/** The bottom of Home: the maintainer notice line, then the status line when it is on for Home. */
+/**
+ * The bottom of Home: the maintainer notice line, then the status line when it is on for Home.
+ * Home has its own switch (`statusLine.home`); the one for sessions does not hide it.
+ */
 export function HomeFooter(props: { host: SurfaceHost }): JSX.Element {
   const host = props.host;
   onCleanup(host.quota.watchHome());
-  const showStatus = () =>
-    host.display().surfaces.statusLine.enabled && host.display().statusLine.home;
+  const showStatus = () => host.display().statusLine.home;
   return (
     <Show when={host.quota.homeLine() || showStatus()}>
       <box

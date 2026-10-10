@@ -1,12 +1,13 @@
 /**
  * What the server does with each new quota snapshot besides telling the TUIs: publish the
- * OpenTelemetry gauges from it and write the export file (version 2, read from the provider
- * cache the store's fetches fill), each only when its setting is on. Neither asks a provider
- * again. While one publication runs, only the newest snapshot waits.
+ * OpenTelemetry gauges and write the export file, each only when its setting is on. Neither
+ * asks a provider again. While one publication runs, only the newest snapshot waits.
  */
-
-import { resolveExportPath, writeQuotaExport } from "../lib/quota-export.js";
-import type { QuotaExport } from "../lib/quota-export-types.js";
+import {
+  buildQuotaExportFromSnapshot,
+  resolveExportPath,
+  writeQuotaExport,
+} from "../lib/quota-export.js";
 import {
   configureQuotaTelemetry,
   disposeQuotaTelemetryOwner,
@@ -25,8 +26,6 @@ export type SnapshotPublisher = {
 
 export function createSnapshotPublisher(params: {
   loadSettings: () => Promise<Pick<ServerSettings, "export" | "telemetry">>;
-  /** The export document, read from the provider cache. */
-  buildExport: () => Promise<QuotaExport>;
   log: (message: string, error: unknown) => void;
 }): SnapshotPublisher {
   // The telemetry owner: its gauges replace each other and go away with it.
@@ -46,7 +45,7 @@ export function createSnapshotPublisher(params: {
     publishQuotaTelemetry(token, snapshot);
     if (settings.export.enabled) {
       const path = resolveExportPath(settings.export.path);
-      await writeQuotaExport(await params.buildExport(), path);
+      await writeQuotaExport(buildQuotaExportFromSnapshot(snapshot), path);
     }
   }
 
