@@ -14,7 +14,7 @@ import { isRecord } from "../lib/json-guards.js";
 import { getOpencodeRuntimeDirs } from "../lib/opencode-runtime-paths.js";
 import { isQuotaErrorCode } from "./errors.js";
 import { safeDebugValue, safeDetail } from "./redact.js";
-import type { DebugDetail, QuotaError, QuotaErrorCode, QuotaRow, ResetNotice } from "./types.js";
+import type { DebugDetail, QuotaError, QuotaRow, ResetNotice } from "./types.js";
 import { validateRows } from "./validate.js";
 import { isQuotaWindow } from "./windows.js";
 

@@ -17,14 +17,18 @@ interface SessionTokensData {
   totalOutput: number;
 }
 
-/** The token totals, or undefined when no message used a token. */
+/**
+ * The token totals of the messages that used a token, or undefined unless some model's own
+ * input (new plus cached) or output adds up to more than zero.
+ */
 function sumSessionTokens(messages: readonly OpenCodeMessage[]): SessionTokensData | undefined {
   let totalInput = 0;
   let totalCachedInput = 0;
   let totalOutput = 0;
-  let used = false;
+  const byModel = new Map<string, { input: number; output: number }>();
 
-  for (const { tokens } of messages) {
+  for (const message of messages) {
+    const { tokens } = message;
     if (!tokens) continue;
     const input = typeof tokens.input === "number" ? tokens.input : 0;
     const cachedInput = typeof tokens.cache?.read === "number" ? tokens.cache.read : 0;
@@ -34,9 +38,14 @@ function sumSessionTokens(messages: readonly OpenCodeMessage[]): SessionTokensDa
     totalInput += input;
     totalCachedInput += cachedInput;
     totalOutput += output;
-    used = true;
+    const modelID = message.modelID ?? "unknown";
+    const model = byModel.get(modelID) ?? { input: 0, output: 0 };
+    model.input += input + cachedInput;
+    model.output += output;
+    byModel.set(modelID, model);
   }
 
+  const used = [...byModel.values()].some((model) => model.input > 0 || model.output > 0);
   return used ? { totalInput, totalCachedInput, totalOutput } : undefined;
 }
 

@@ -145,6 +145,22 @@ describe("pricing runtime refresh policy", () => {
     });
   });
 
+  it("reads a models list models.dev sent as an array, keyed by position", async () => {
+    const { pricing, refresh } = await setup();
+    const fetchFn = vi
+      .fn()
+      .mockResolvedValue(
+        new Response(
+          JSON.stringify({ openai: { models: [{ cost: { input: 0.2, output: 0.8 } }] } }),
+        ),
+      );
+
+    const result = await refresh({ fetchFn });
+
+    expect(result.updated).toBe(true);
+    expect(pricing.lookupCost("openai", "0")).toEqual({ input: 0.2, output: 0.8 });
+  });
+
   it.each([
     [7, false],
     [1, true],

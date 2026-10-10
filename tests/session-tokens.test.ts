@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { resolveSessionTree } from "../src/lib/opencode-storage.js";
 import { fetchSessionTokensForDisplay } from "../src/lib/session-tokens.js";
 import { type SessionDatabaseMessage, writeSessionDatabase } from "./helpers/session-database.js";
 
@@ -80,5 +81,37 @@ describe("fetchSessionTokensForDisplay", () => {
     await expect(
       fetchSessionTokensForDisplay({ sessionID: "ses_missing", scope: "current" }),
     ).resolves.toEqual({ sessionTokens: undefined });
+  });
+
+  it("has no tokens when no model's own input and output add up to more than zero", async () => {
+    writeSessionDatabase(join(root, "data", "opencode", "opencode.db"), {
+      sessions: [{ id: "ses_root", created: 1 }],
+      messages: [message("msg_1", "ses_root", { input: -1, output: 0 })],
+    });
+
+    await expect(
+      fetchSessionTokensForDisplay({ sessionID: "ses_root", scope: "current" }),
+    ).resolves.toEqual({ sessionTokens: undefined });
+  });
+});
+
+describe("resolveSessionTree", () => {
+  it("lists recursive descendants in preorder, by session creation order", async () => {
+    writeSessionDatabase(join(root, "data", "opencode", "opencode.db"), {
+      sessions: [
+        { id: "ses_root", created: 1 },
+        { id: "ses_child_b", parentID: "ses_root", created: 30 },
+        { id: "ses_grandchild", parentID: "ses_child_a", created: 20 },
+        { id: "ses_child_a", parentID: "ses_root", created: 10 },
+      ],
+      messages: [],
+    });
+
+    await expect(resolveSessionTree("ses_root")).resolves.toEqual([
+      "ses_root",
+      "ses_child_a",
+      "ses_grandchild",
+      "ses_child_b",
+    ]);
   });
 });

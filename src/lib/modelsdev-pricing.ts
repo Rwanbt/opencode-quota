@@ -4,7 +4,6 @@ import { join } from "path";
 
 import { writeJsonAtomic } from "./atomic-json.js";
 import { fetchWithTimeout } from "./http.js";
-import { asRecord } from "./json-guards.js";
 import { getOpencodeRuntimeDirs, type OpencodeRuntimeDirs } from "./opencode-runtime-paths.js";
 
 /** Which price list reports use: "auto" (runtime when valid, else bundled), or one of them. */
@@ -109,6 +108,11 @@ let SNAPSHOT_SELECTION: PricingSnapshotSource = "auto";
 let REFRESH_IN_FLIGHT: Promise<PricingRefreshResult> | null = null;
 let PROCESS_REFRESH_CHECKED = false;
 let CONFIGURED_MAX_AGE_MS = DEFAULT_PRICING_SNAPSHOT_MAX_AGE_MS;
+
+/** An object or an array (an array's entries are keyed by position). */
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" ? (value as Record<string, unknown>) : null;
+}
 
 /** Sorted by key, so a saved snapshot reads and diffs in a stable order. */
 function sortByKey<T>(record: Record<string, T>): Record<string, T> {

@@ -56,7 +56,7 @@ const USAGE: Record<CliCommand, string> = {
     "Options:",
     "  --provider <provider-id>  Restrict provider availability and live probes to one provider",
     "  --json                    Machine-readable JSON output:",
-    '                            { version: "6", generatedAt, config, providers, pricing, liveProbes }',
+    "                            { version, generatedAt, config, providers, pricing, liveProbes }",
     "  --help, -h                Show help",
     "",
     "Exit codes:",

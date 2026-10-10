@@ -61,6 +61,9 @@ vi.mock("../src/lib/quota-dialog-commands.js", async (importOriginal) => {
   return { ...actual, buildStatusReportData: vi.fn(actual.buildStatusReportData) };
 });
 
+import { snapshotFilePath } from "../src/core/persist.js";
+import { loadProviderSource } from "../src/core/provider-source.js";
+import { createQuotaStore } from "../src/core/store.js";
 import {
   createCliQuotaClient,
   runCliShowCommand,
@@ -77,6 +80,7 @@ import {
   readCredentialRows,
 } from "../src/lib/opencode-auth.js";
 import { buildStatusReportData } from "../src/lib/quota-dialog-commands.js";
+import { loadSettings } from "../src/settings/index.js";
 import { writeCredentialDatabase } from "./helpers/credential-database.js";
 
 /** The Synthetic provider; its check answers with one 75% weekly row. */
@@ -370,6 +374,42 @@ describe("runCliShowCommand", () => {
     expect((await run("show", ["--json", "--threshold", "10"])).code).toBe(2);
     expect(provider.fetch).not.toHaveBeenCalled();
   });
+
+  it("--json outputs the quota OpenCode saved last", async () => {
+    const provider = synthetic();
+    mockProviders.push(provider);
+
+    // OpenCode's store checks the providers and saves the snapshot.
+    const loaded = await loadSettings();
+    const store = createQuotaStore({
+      source: () =>
+        loadProviderSource({
+          client: { config: { providers: async () => ({ data: { providers: [] } }) } },
+          workspaceRoot: workspaceDir,
+          settings: () => loaded,
+        }),
+      file: snapshotFilePath(),
+    });
+    await store.refresh({ reason: "manual" });
+    await store.dispose();
+    expect(provider.fetch).toHaveBeenCalledOnce();
+
+    const result = await run("show", ["--json"]);
+
+    expect(result.code).toBe(0);
+    expect(result.stderr).toBe("");
+    const parsed = JSON.parse(result.stdout);
+    expect(parsed).toHaveProperty("version", 3);
+    expect(parsed).toHaveProperty("exportedAt");
+    expect(parsed).toHaveProperty("fromCache", true);
+    expect(parsed).toHaveProperty("cacheAgeSeconds");
+    expect(parsed.providers.synthetic.status).toBe("ok");
+    expect(parsed.providers.synthetic.entries[0].name).toBe("Synthetic Weekly");
+    expect(parsed.providers.synthetic.entries[0].percentRemaining).toBe(75);
+    expect(parsed.providers.synthetic.entries[0].renderType).toBe("percent");
+    expect(parsed.providers.synthetic.entries[0]).not.toHaveProperty("unlimited");
+    expect(provider.fetch).toHaveBeenCalledTimes(1); // only OpenCode's store asked it
+  });
 });
 
 describe("runCliStatusCommand", () => {
@@ -397,6 +437,19 @@ describe("runCliStatusCommand", () => {
     expect(buildStatusReportData).toHaveBeenCalledWith(
       expect.objectContaining({ providerFilterId }),
     );
+  });
+
+  it("--provider --json forwards the provider filter and still emits JSON", async () => {
+    mockProviders.push(synthetic());
+    const result = await run("status", ["--json", "--provider", "synthetic"]);
+
+    expect(result.code).toBe(0);
+    expect(buildStatusReportData).toHaveBeenCalledWith(
+      expect.objectContaining({ providerFilterId: "synthetic" }),
+    );
+    const parsed = JSON.parse(result.stdout);
+    expect(parsed.providers).toHaveLength(1);
+    expect(parsed).not.toHaveProperty("providerFilterId");
   });
 
   it("builds the report with the database login source bound and unbinds it afterwards", async () => {

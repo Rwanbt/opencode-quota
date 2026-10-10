@@ -555,6 +555,18 @@ describeVendor("nanogpt", [
       ["nanogpt.balance.usd", null, "Balance", null, "12.50 USD", null],
     ],
   },
+  {
+    // An array window reads as one with no counts, so the limit alone gives the row.
+    name: "shows a window NanoGPT sent as an empty list from its limit",
+    reply: byUrl({
+      [NANOGPT_USAGE]: { active: true, state: "active", limits: { daily: 100 }, daily: [] },
+      [NANOGPT_BALANCE]: { usd_balance: "12.50" },
+    }),
+    rows: [
+      ["nanogpt.daily", null, "Daily", "day", "100 (? of 100 request)", null],
+      ["nanogpt.balance.usd", null, "Balance", null, "12.50 USD", null],
+    ],
+  },
 ]);
 
 it("nanogpt shows a failure of both endpoints as one error", async () => {
