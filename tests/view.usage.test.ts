@@ -190,6 +190,56 @@ function longReport(): UsageReport {
   });
 }
 
+/** Names in CJK and emoji, which take two terminal columns per character. */
+function wideNamesReport(): UsageReport {
+  return buildReport({
+    sessions: 2,
+    providers: [["测试云", 2, 3, 3 * M]],
+    models: [
+      ["测试云", "模型-超长的名字-专业版-二零二六", 2, 2 * M],
+      [
+        "测试云",
+        "👍🏽👍🏽👍🏽👍🏽👍🏽👍🏽👍🏽👍🏽👍🏽👍🏽👍🏽👍🏽👍🏽👍🏽👍🏽👍🏽👍🏽👍🏽👍🏽👍🏽👍🏽👍🏽",
+        1,
+        1 * M,
+      ],
+    ],
+    days: [
+      [1, 1 * M],
+      [2, 2 * M],
+    ],
+    tokens: { cachedInput: 1 * M, uncachedInput: 1 * M, output: 1 * M },
+    costByType: { input: 1, cacheRead: 1, cacheWrite: 0, output: 1 },
+    cacheSavingsUsd: 0,
+  });
+}
+
+/** One provider, one model and these days ([cost, tokens], oldest first). */
+function daysReport(days: Amounts[]): UsageReport {
+  const cost = days.reduce((sum, [dayCost]) => sum + dayCost, 0);
+  const tokens = days.reduce((sum, [, dayTokens]) => sum + dayTokens, 0);
+  return buildReport({
+    sessions: 1,
+    providers: [["anthropic", 1, cost, tokens]],
+    models: [["anthropic", "claude-test", cost, tokens]],
+    days,
+    tokens: { cachedInput: 0, uncachedInput: tokens, output: 0 },
+    costByType: { input: cost, cacheRead: 0, cacheWrite: 0, output: 0 },
+    cacheSavingsUsd: 0,
+  });
+}
+
+const GRAPHEMES = new Intl.Segmenter("en", { granularity: "grapheme" });
+
+/** Terminal columns of the strings in these tests: CJK and emoji take two. */
+function columnsIn(text: string): number {
+  let columns = 0;
+  for (const { segment } of GRAPHEMES.segment(text)) {
+    columns += /[\u4E00-\u9FFF]|\p{Emoji_Presentation}/u.test(segment) ? 2 : 1;
+  }
+  return columns;
+}
+
 describe("number formats", () => {
   it.each([
     [formatUsd, 0, "$0.00"],
@@ -197,25 +247,33 @@ describe("number formats", () => {
     [formatUsd, 0.005, "$0.01"],
     [formatUsd, 1234.5, "$1,234.50"],
     [formatUsd, 49_636.93, "$49,636.93"],
+    [formatTokens, 12, "12"],
     [formatTokens, 950, "950"],
     [formatTokens, 12_345, "12.3K"],
     [formatTokens, 8.97 * M, "8.97M"],
     [formatTokens, 146 * M, "146M"],
     [formatTokens, 13_396 * M, "13.4B"],
-    [formatTokens, 999_950, "1M"],
+    [formatTokens, 8 * M, "8.00M"],
+    [formatTokens, 49.97 * M, "50.0M"],
+    [formatTokens, 999_950, "1.00M"],
     [formatShare, 0, "0%"],
     [formatShare, 0.0004, "<0.1%"],
     [formatShare, 0.009, "0.9%"],
     [formatShare, 0.925, "92.5%"],
-    [formatShare, 0.05, "5%"],
-    [formatShare, 1, "100%"],
+    [formatShare, 0.05, "5.0%"],
+    [formatShare, 1, "100.0%"],
   ])("%o(%d) is %s", (format, value, expected) => {
     expect(format(value)).toBe(expected);
   });
 });
 
 describe("usageView", () => {
-  const reports = { t3: t3Report(), unpriced: unpricedReport(), long: longReport() };
+  const reports = {
+    t3: t3Report(),
+    unpriced: unpricedReport(),
+    long: longReport(),
+    wideNames: wideNamesReport(),
+  };
   const cases = Object.entries(reports).flatMap(([name, report]) =>
     [10, 32, 64, 80, 109, 110, 160, 240].flatMap((width) =>
       (["cost", "tokens"] as const).flatMap((mode) =>
@@ -228,9 +286,24 @@ describe("usageView", () => {
     const lines = usageView(testCase.report, testCase);
     expect(lines.length).toBeGreaterThan(10);
     for (const line of lines) {
-      expect(textOf(line).length).toBeLessThanOrEqual(testCase.width);
-      for (const part of line) expect(part.text).not.toMatch(/^$|\n/);
+      expect(columnsIn(textOf(line))).toBeLessThanOrEqual(testCase.width);
+      // No empty span, no line break, no half of a surrogate pair.
+      for (const part of line) {
+        expect(part.text).not.toMatch(/^$|\n|[\uD800-\uDBFF](?![\uDC00-\uDFFF])/);
+      }
     }
+  });
+
+  it("measures names in terminal columns and cuts them between characters", () => {
+    const lines = from(
+      usageView(wideNamesReport(), { mode: "cost", breakdown: "model", width: 60 }),
+      "Breakdown",
+    );
+    const rows = lines.slice(1).map(textOf);
+    expect(rows.map(columnsIn)).toEqual([60, 60, 60]);
+    expect(rows[1]).toMatch(/^1 {2}● 模型-超长的名字-专业版-二零二六 +\$2\.00 /u);
+    const emojiName = lines[3].find((part) => part.role === "text")?.text ?? "";
+    expect(emojiName).toMatch(/^(👍🏽)+… *$/u);
   });
 
   it.each([
@@ -285,11 +358,16 @@ describe("usageView", () => {
       Array.from({ length: 6 }, () => ["muted", "bar"]),
     );
     expect(rows[0][0].text).toBe("$1,232.63 ");
-    expect(rows[5][0].text).toBe("        0 ");
+    expect(rows.slice(1).map((row) => row[0].text.trim())).toEqual(["", "", "", "", ""]);
     // Only the Sep 26 spike reaches the top row; Sep 11 and Sep 15 cost nothing, so no block.
     expect(rows[0][1].text.trim()).toMatch(/^█+$/);
     expect(rows[5][1].text).toMatch(/^ +▁+ +▁/);
-    expect(textOf(lines[7]).trim()).toMatch(/^Sep 11 +Sep 26 +Oct 10$/);
+    // 0 sits on its own baseline under the bars, as wide as the bars.
+    expect(lines[7]).toEqual([
+      { text: "        0 ", role: "muted" },
+      { text: "─".repeat(rows[5][1].text.length), role: "muted" },
+    ]);
+    expect(textOf(lines[8]).trim()).toMatch(/^Sep 11 +Sep 26 +Oct 10$/);
   });
 
   it("charts many days a few to a column, with the year on dates outside this year", () => {
@@ -298,7 +376,27 @@ describe("usageView", () => {
       "per",
     );
     expect(lines[0]).toEqual([{ text: "Cost per 8 days", role: "heading" }]);
-    expect(textOf(lines[7]).trim()).toMatch(/^Sep 6, 2025 +.+ +Oct 10$/);
+    expect(textOf(lines[8]).trim()).toMatch(/^Sep 6, 2025 +.+ +Oct 10$/);
+  });
+
+  it.each([
+    {
+      name: "the top label is wider than the total's (900 vs 1K tokens)",
+      mode: "tokens" as const,
+      days: Array.from({ length: 57 }, (_, index): Amounts => {
+        return [0, index === 0 ? 900 : index === 56 ? 100 : 0];
+      }),
+    },
+    {
+      name: "the top label is wider than the total's (<$0.01 vs $0.01)",
+      mode: "cost" as const,
+      days: Array.from({ length: 54 }, (_, index): Amounts => [index === 0 ? 0.004 : 0.0001, 1000]),
+    },
+  ])("keeps every day on the chart when $name", ({ mode, days }) => {
+    const lines = usageView(daysReport(days), { mode, breakdown: "model", width: 60 });
+    const heading = lines.findIndex((line) => /^(Daily|Cost per|Tokens per) /.test(textOf(line)));
+    // The first day is the highest, so its column is the one that reaches the top row.
+    expect(lines[heading + 1][1].text).toMatch(/^█/);
   });
 
   it.each([
@@ -335,7 +433,7 @@ describe("usageView", () => {
       ["13.4B", "value"],
       ["13.2B", "value"],
       ["146M", "value"],
-      ["50M", "value"],
+      ["50.0M", "value"],
       ["$49,636.93", "value"],
     ]);
   });
@@ -350,32 +448,36 @@ describe("usageView", () => {
         "part:cacheWrite": 1716.2,
         "part:output": 580.29,
       },
-      legend: "▒ Input $369.53   ░ Cache read $2,749.39   ▓ Cache write $1,716.20",
+      legend: [
+        "▒ Input $369.53   ░ Cache read $2,749.39",
+        "▓ Cache write $1,716.20   █ Output $580.29",
+      ],
     },
     {
       mode: "tokens" as const,
       title: "Tokens by type",
       parts: { "part:cacheRead": 13_200, "part:input": 146, "part:output": 49.97 },
-      legend: "░ Cached input 13.2B   ▒ Uncached input 146M   █ Output 50M",
+      legend: ["░ Cached input 13.2B   ▒ Uncached input 146M   █ Output 50.0M"],
     },
-  ])("$title: one bar across the width in proportion, then a legend", ({
+  ])("$title: one bar of at most 64 columns in proportion, then a legend", ({
     mode,
     title,
     parts,
     legend,
   }) => {
-    const lines = from(usageView(t3Report(), { mode, breakdown: "model", width: 80 }), title);
+    const lines = from(usageView(t3Report(), { mode, breakdown: "model", width: 110 }), title);
     const bar = lines[1];
-    expect(textOf(bar)).toHaveLength(80);
+    expect(textOf(bar)).toHaveLength(64);
     const total = Object.values(parts).reduce((sum, amount) => sum + amount, 0);
     expect(bar.map((part) => part.role)).toEqual(Object.keys(parts));
     for (const part of bar) {
-      const exact = (parts[part.role as keyof typeof parts] / total) * 80;
+      const exact = (parts[part.role as keyof typeof parts] / total) * 64;
       // A part above 0 always shows, even when it would round to nothing.
       expect(part.text.length).toBeGreaterThanOrEqual(Math.max(1, Math.floor(exact) - 1));
       expect(part.text.length).toBeLessThanOrEqual(Math.ceil(exact) + 1);
     }
-    expect(textOf(lines[2])).toBe(legend);
+    expect(lines.slice(2, 2 + legend.length).map(textOf)).toEqual(legend);
+    expect(lines[2 + legend.length]).toEqual([]);
     expect(lines[2][0].role).toBe(bar[0].role);
   });
 
@@ -433,9 +535,9 @@ describe("usageView", () => {
       "Breakdown",
     );
     expect(lines.slice(2).map((line) => textOf(line).replace(/ {2,}/g, " | "))).toEqual([
-      "1 | Thu, Oct 8 | no price | 0% | 1M",
-      "2 | Wed, Oct 7 | $0.00 | 0% | 1M",
-      "3 | Tue, Oct 6 | $1.50 | 100% | 3M",
+      "1 | Thu, Oct 8 | no price | 0% | 1.00M",
+      "2 | Wed, Oct 7 | $0.00 | 0% | 1.00M",
+      "3 | Tue, Oct 6 | $1.50 | 100.0% | 3.00M",
     ]);
   });
 
@@ -445,10 +547,14 @@ describe("usageView", () => {
       name: "a fifth unpriced",
       report: unpricedReport(),
       width: 80,
-      note: ["20% of tokens have no price (exo-free); the cost leaves them out."],
+      note: [
+        { text: "Unpriced tokens excluded: ", role: "muted" },
+        { text: "20.0%", role: "warning" },
+        { text: " (exo-free)", role: "muted" },
+      ],
     },
     {
-      name: "many unpriced models, wrapped",
+      name: "many unpriced models, cut to the width",
       report: {
         ...unpricedReport(),
         models: ["a-1", "b-2", "c-3", "d-4", "e-5"].map((modelID) => ({
@@ -457,13 +563,17 @@ describe("usageView", () => {
         })),
       },
       width: 40,
-      note: ["20% of tokens have no price (a-1, b-2,", "c-3 +2 more); the cost leaves them out."],
+      note: [
+        { text: "Unpriced tokens excluded: ", role: "muted" },
+        { text: "20.0%", role: "warning" },
+        { text: " (a-1, …)", role: "muted" },
+      ],
     },
-  ])("the unpriced note under the total: $name", ({ report, width, note }) => {
+  ])("one unpriced note line under the total: $name", ({ report, width, note }) => {
     const lines = usageView(report, { mode: "cost", breakdown: "model", width });
-    const warnings = lines.filter((line) => line.some((part) => part.role === "warning"));
-    expect(warnings.map(textOf)).toEqual(note ?? []);
-    if (note) expect(lines.indexOf(warnings[0])).toBe(1);
+    const notes = lines.filter((line) => line.some((part) => part.role === "warning"));
+    expect(notes).toEqual(note ? [note] : []);
+    if (note) expect(lines[1]).toBe(notes[0]);
   });
 
   it("says so in one line when the range has no usage", () => {

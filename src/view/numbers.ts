@@ -6,6 +6,7 @@
 const USD = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" });
 const COMPACT = new Intl.NumberFormat("en-US", {
   notation: "compact",
+  minimumSignificantDigits: 3,
   maximumSignificantDigits: 3,
 });
 
@@ -15,14 +16,15 @@ export function formatUsd(usd: number): string {
   return usd > 0 && text === "$0.00" ? "<$0.01" : text;
 }
 
-/** Three significant digits: "950", "12.3K", "8.97M", "146M", "13.4B". */
+/** Whole below 1,000, then always three significant digits: "950", "12.3K", "8.00M", "13.4B". */
 export function formatTokens(count: number): string {
-  return COMPACT.format(count);
+  const whole = Math.round(count);
+  return whole < 1000 ? String(whole) : COMPACT.format(whole);
 }
 
-/** A 0..1 share: "92.5%", "6%", "100%", and "<0.1%" above 0 that would show as 0%. */
+/** A 0..1 share with one decimal: "92.5%", "5.0%", "100.0%"; "<0.1%" above 0; "0%" for 0. */
 export function formatShare(share: number): string {
+  if (share === 0) return "0%";
   const text = (share * 100).toFixed(1);
-  if (share > 0 && text === "0.0") return "<0.1%";
-  return `${text.replace(/\.0$/, "")}%`;
+  return share > 0 && text === "0.0" ? "<0.1%" : `${text}%`;
 }
