@@ -413,7 +413,7 @@ describe("runCliShowCommand", () => {
     expect(jsonErr.output).toBe("");
 
     const parsed = JSON.parse(jsonOut.output);
-    expect(parsed).toHaveProperty("version", 2);
+    expect(parsed).toHaveProperty("version", 3);
     expect(parsed).toHaveProperty("exportedAt");
     expect(parsed).toHaveProperty("fromCache", true);
     expect(parsed).toHaveProperty("cacheAgeSeconds");

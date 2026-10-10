@@ -427,7 +427,7 @@ describe("v6 surfaces on the quota snapshot", () => {
     await tui.command("quota").run();
     expect(tui.dialogs[0]).toContain(tui.toast.mock.calls[0]?.[0].message);
 
-    // The export file (version 2) and the gauges follow the snapshot without asking a provider
+    // The export file (version 3) and the gauges follow the snapshot without asking a provider
     // again.
     const exportPath = join(mocks.root, "quota-export.json");
     const exported = await vi.waitFor(async () => {

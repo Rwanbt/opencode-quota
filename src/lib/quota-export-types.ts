@@ -4,11 +4,17 @@ import type { RowAuthority, RowMethod, RowType } from "../core/types.js";
  * Export types for external tool consumption.
  *
  * These types define the schema for the periodic JSON export file
- * written when `config.export.enabled` is true, and for the
+ * written when the `export.enabled` setting is on, and for the
  * `show --json` CLI output.
  */
 
 interface QuotaExportEntryBase {
+  /**
+   * The row id, `${providerId}.${key}`, e.g. "copilot.allowance" or
+   * "quota-providers.custom.<definition id>.<key>". It never changes for a row; the rows of
+   * two accounts of one provider share it.
+   */
+  id: string;
   /** Provider label, account and row label, e.g. "Copilot (pro) Premium requests". */
   name: string;
   /** What the number means (ADR 0001). */
@@ -28,7 +34,7 @@ interface QuotaExportEntryBase {
   resetAt?: number;
 }
 
-/** A single normalized accounting row in the v2 export document. */
+/** One row in the version 3 export document. */
 export type QuotaExportEntry =
   | (QuotaExportEntryBase & {
       renderType: "percent";
@@ -39,17 +45,12 @@ export type QuotaExportEntry =
       value: string;
     });
 
-/** Ordered configured-source identity and coarse cached status. */
 export type QuotaExportError = {
   label: string;
   message: string;
 };
 
-export type QuotaExportRawDetail = {
-  key: string;
-  value: string;
-};
-
+/** A configured custom definition's identity and coarse status, in configured order. */
 export type QuotaExportSource = {
   id: string;
   providerId: string;
@@ -76,14 +77,12 @@ export type QuotaExportProvider = (
 ) & {
   /** Present for aggregate providers; preserves configured source order. */
   sources?: QuotaExportSource[];
-  /** Optional safe provider-owned facts that are intentionally hidden from human quota rows. */
-  rawDetails?: QuotaExportRawDetail[];
 };
 
-/** Top-level v2 export document assembled from all configured providers. */
+/** The version 3 export document, assembled from all configured providers. */
 export interface QuotaExport {
   /** Schema version. */
-  version: 2;
+  version: 3;
   /** Unix seconds when this document was assembled. */
   exportedAt: number;
   /** True when data was read from disk cache without a live fetch. */

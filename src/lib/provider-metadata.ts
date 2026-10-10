@@ -4,7 +4,6 @@ import {
   type QuotaProviderAuthentication,
   type QuotaProviderAuthFallback,
   type QuotaProviderAutoSetup,
-  type QuotaProviderQuotaSource,
   type QuotaProviderRegistrationSourceEntry,
 } from "./provider-registration.js";
 
@@ -16,7 +15,6 @@ export interface QuotaProviderShape {
   autoSetup: QuotaProviderAutoSetup;
   authentication: QuotaProviderAuthentication;
   authFallbacks?: QuotaProviderAuthFallback[];
-  quota: QuotaProviderQuotaSource;
   quickSetupAnchor?: string;
   notes?: string;
 }

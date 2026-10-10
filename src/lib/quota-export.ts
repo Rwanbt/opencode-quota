@@ -1,5 +1,5 @@
 /**
- * The export file (version 2) for scripts and status bars, and `opencode-quota show --json`,
+ * The export file (version 3) for scripts and status bars, and `opencode-quota show --json`,
  * written from quota rows. Each check gives its provider's part of the file
  * (`exportProviderFromCheck`): the server keeps that part, in memory only, next to the
  * provider's snapshot, so the file shows the last check, a failed one too. A provider without
@@ -106,6 +106,7 @@ function rowEntry(providerId: string, providerLabel: string, row: QuotaRow): Quo
   const account = row.account ? ` (${row.account})` : "";
   const resetAt = unixSecondsFromIso(row.resetsAt);
   const base = {
+    id: row.id,
     name: sanitizeSingleLineDisplaySnippet(
       `${providerLabel}${account} ${row.label}`,
       EXPORT_ERROR_MAX_LENGTH,
@@ -210,7 +211,7 @@ export function buildQuotaExportFromSnapshot(
   }
   const exportedAt = Math.floor(nowMs / 1000);
   return {
-    version: 2,
+    version: 3,
     exportedAt,
     fromCache: true,
     cacheAgeSeconds: fetchedAtValues.length > 0 ? exportedAt - Math.min(...fetchedAtValues) : 0,

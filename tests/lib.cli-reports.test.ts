@@ -270,7 +270,7 @@ describe("CLI reports", () => {
       expect(report.stderr).toBe("");
       expect(report.stdout.endsWith("\n")).toBe(true);
       const parsed = JSON.parse(report.stdout);
-      expect(parsed).toHaveProperty("version", 2);
+      expect(parsed).toHaveProperty("version", 3);
       expect(parsed).toHaveProperty("exportedAt");
       expect(parsed).toHaveProperty("fromCache", true);
       expect(parsed).toHaveProperty("cacheAgeSeconds");

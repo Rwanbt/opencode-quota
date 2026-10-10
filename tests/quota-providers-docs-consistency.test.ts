@@ -165,7 +165,7 @@ describe("quota provider Phase 7 documentation consistency", () => {
     expect(hiddenDiagnostics).toMatch(
       /\b(?:hide|hides|hidden|exclude|excludes)\b[\s\S]*URLs[\s\S]*request\/response contents[\s\S]*raw errors/i,
     );
-    expect(externalJsonBasics).toContain('"version": 2');
+    expect(externalJsonBasics).toContain('"version": 3');
     expect(externalJsonBasics).toContain('providers["quota-providers"]');
     expect(externalJsonBasics).toContain("`providers.custom` definition");
     expect(external).not.toContain("custom-sources");

@@ -689,12 +689,14 @@ describe("server quota RPC", () => {
     // The snapshot before the check is written first; the check's own part follows.
     await vi.waitFor(async () => {
       expect(JSON.parse(await readFile(exportPath, "utf8"))).toMatchObject({
-        version: 2,
+        version: 3,
         fromCache: true,
         providers: {
           copilot: {
             status: "ok",
-            entries: [{ name: "Copilot Premium requests", percentRemaining: 81 }],
+            entries: [
+              { id: "copilot.allowance", name: "Copilot Premium requests", percentRemaining: 81 },
+            ],
           },
         },
       });

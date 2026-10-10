@@ -204,7 +204,7 @@ describe("the export of each provider's last check", () => {
       },
     });
 
-    expect(exportData.version).toBe(2);
+    expect(exportData.version).toBe(3);
     expect(exportData.fromCache).toBe(true);
     expect(exportData.exportedAt).toBe(Math.floor(Date.now() / 1000));
     expect(exportData.cacheAgeSeconds).toBe(3600);
@@ -213,6 +213,7 @@ describe("the export of each provider's last check", () => {
       fetchedAt: unix("2026-06-01T11:00:00.000Z"),
       entries: [
         {
+          id: "copilot.allowance",
           name: "Copilot (pro) Premium requests",
           ...REMOTE,
           window: "Monthly",
@@ -221,6 +222,7 @@ describe("the export of each provider's last check", () => {
           percentRemaining: 75,
         },
         {
+          id: "copilot.additional_budget",
           name: "Copilot Budget",
           ...REMOTE,
           resultType: "budget",
@@ -429,6 +431,7 @@ describe("the export of each provider's last check", () => {
       new Set(["remote_api", "dashboard_scrape", "local_cli", "local_estimation"]),
     );
     const allowedKeys = new Set([
+      "id",
       "name",
       "resultType",
       "acquisitionMethod",
@@ -530,11 +533,13 @@ describe("the export of each provider's last check", () => {
 
     const actual = exportAfter({ "quota-providers": check }, definitions);
 
-    expect(actual.version).toBe(2);
+    expect(actual.version).toBe(3);
     expect(actual.providers["quota-providers"]).toMatchObject({
       status: "partial",
       entries: [
         {
+          // The id names the definition the row came from.
+          id: "quota-providers.custom.same-label-one.Remaining",
           name: "Quota providers (Same label) Remaining",
           ownership: "user_configured",
           percentRemaining: 25,
@@ -689,7 +694,7 @@ describe("writeQuotaExport", () => {
   });
 
   it("calls writeJsonAtomic with the resolved path and trailing newline", async () => {
-    const exportData: any = { version: 2, providers: {} };
+    const exportData: any = { version: 3, providers: {} };
     await writeQuotaExport(exportData, testPaths.explicitExport);
 
     expect(writeJsonAtomic).toHaveBeenCalledWith(testPaths.explicitExport, exportData, {

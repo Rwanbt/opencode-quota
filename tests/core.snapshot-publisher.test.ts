@@ -66,17 +66,18 @@ describe("export built from the quota snapshot rows", () => {
     );
   });
 
-  it("writes each row as an entry in the v2 export shape", () => {
+  it("writes each row as an entry in the v3 export shape", () => {
     const exported = buildQuotaExportFromSnapshot(
       snapshot([provider({ error: { code: "timeout" } })]),
       NOW,
     );
-    expect(exported).toMatchObject({ version: 2, fromCache: true, cacheAgeSeconds: 30 });
+    expect(exported).toMatchObject({ version: 3, fromCache: true, cacheAgeSeconds: 30 });
     expect(exported.providers.copilot).toEqual({
       status: "partial",
       fetchedAt: Math.floor((NOW - 30_000) / 1000),
       entries: [
         expect.objectContaining({
+          id: "copilot.allowance",
           name: "Copilot (pro) Premium requests",
           resultType: "quota",
           acquisitionMethod: "remote_api",
