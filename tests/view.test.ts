@@ -494,6 +494,42 @@ describe("view text", () => {
     expect(bigStatusLine(statusInput([]))).toBeUndefined();
   });
 
+  it("adds runs out in each place only where it is on, for a limit used faster than it refills", () => {
+    // The weekly limit has 12% left with 45% of its week still to come; the 5h one has spare.
+    const base = { layout: display.layout, words: DEFAULT_WORDS, nowMs: NOW, window: {} };
+    const sidebar = (runsOut: boolean) =>
+      sidebarLines({ ...base, groups: groups("sidebar", [CLAUDE]), width: 40, runsOut });
+    const status = { ...statusInput([CLAUDE]), runsOut: true };
+    expect({
+      sidebar: sidebar(true).map(lineText),
+      off: sidebar(false).length,
+      collapsed: collapsedLines({
+        ...base,
+        groups: groups("collapsed", [CLAUDE]),
+        width: 40,
+        runsOut: true,
+      }).map(lineText),
+      status: lineText(statusLayout(status, 200, 0, "full").shown[0]!),
+      big: lineText(bigStatusLine(status)!),
+      plain: plainLines({ ...base, groups: groups("toast", [CLAUDE]), runsOut: true }),
+    }).toEqual({
+      sidebar: [
+        "Claude",
+        " 5h       █████░░░  58% left 2h 14m",
+        " Weekly   █░░░░░░░  12% left  3d 4h",
+        "          runs out in 12h 33m",
+      ],
+      off: 3,
+      collapsed: ["Claude    7d   █░░░░░░░  12%   3d 4h", "          runs out in 12h 33m"],
+      status: "Claude █░░░░ 12% 3d 4h (runs out in 12h 33m)",
+      big: "Claude 7d █░░░░░░░░░ 12% left · 3d 4h · runs out in 12h 33m",
+      plain: [
+        "Claude 5h           58% left      2h 14m",
+        "Claude Weekly       12% left      3d 4h  runs out in 12h 33m",
+      ],
+    });
+  });
+
   it("writes plain lines for toasts and the CLI, errors and session tokens last", () => {
     expect(
       plainLines({

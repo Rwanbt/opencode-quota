@@ -40,6 +40,7 @@ export function StatusLine(props: { host: SurfaceHost; sessionID?: string }): JS
       words,
       nowMs: nowMs(),
       window: display().window,
+      runsOut: display().runsOut.statusLine,
     };
   };
   const big = () => display().statusLine.detail === "one";
@@ -52,6 +53,15 @@ export function StatusLine(props: { host: SurfaceHost; sessionID?: string }): JS
   const count = () => input()?.groups.length ?? 0;
   const step = (delta: number) => setStart(Math.max(0, Math.min(count() - 1, start() + delta)));
   const color = (role: "arrows" | "separator") => roleColor(host.theme(), display(), role);
+
+  const marked = () => host.editing.marked("statusLine");
+  // The provider selected on the Settings tab scrolls into view.
+  createEffect(() => {
+    const index = input()?.groups.findIndex((group) => group.providerId === marked()) ?? -1;
+    const current = layout();
+    if (index < 0 || !current || room() === 0) return;
+    if (index < current.start || index >= current.start + current.shown.length) setStart(index);
+  });
 
   // Optional: page through by itself every few seconds.
   createEffect(() => {
@@ -90,7 +100,9 @@ export function StatusLine(props: { host: SurfaceHost; sessionID?: string }): JS
       <Show when={big() ? input() : undefined}>
         {(current: () => StatusInput) => (
           <Show when={bigStatusLine(current())}>
-            {(line: () => Line) => <LineText line={line()} host={host} />}
+            {(line: () => Line) => (
+              <LineText line={line()} host={host} marked={line().id === marked()} />
+            )}
           </Show>
         )}
       </Show>
@@ -115,7 +127,7 @@ export function StatusLine(props: { host: SurfaceHost; sessionID?: string }): JS
                     {display().layout.separator}
                   </text>
                 </Show>
-                <LineText line={line} host={host} />
+                <LineText line={line} host={host} marked={line.id === marked()} />
               </>
             ))}
             <Show when={current().hiddenAfter > 0 && current().shown.length > 0}>

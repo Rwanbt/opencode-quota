@@ -10,7 +10,7 @@ import { Plugin } from "@opencode/plugin/tui";
 import type { JSX } from "@opentui/solid";
 import { onCleanup, Show } from "solid-js";
 import { type ClientHost, createQuotaClient, reportFailure } from "./client.js";
-import { type DisplaySettings, type DisplayStorage, loadDisplaySettings } from "./display.js";
+import { createDisplayStore, type DisplayStorage } from "./display.js";
 import {
   type LegacyDialogHost,
   registerTypedQuotaCommands,
@@ -20,6 +20,7 @@ import { SidebarPanel, type SurfaceHost } from "./sidebar.js";
 import { HomeFooter, StatusLine } from "./status-line.js";
 import type { Theme } from "./theme.js";
 import { createToasts, type TurnEnd } from "./toasts.js";
+import { createSettingsEditor, type SettingsHost } from "./window/settings.js";
 import { createQuotaWindow, type WindowHost } from "./window/shell.js";
 
 type SidebarState = { open: boolean };
@@ -28,6 +29,7 @@ type TuiEvent = { data?: Record<string, unknown> };
 /** What the plugin needs from OpenCode's TUI context, besides the dialogs' and the window's needs. */
 type TuiContext = LegacyDialogHost &
   WindowHost &
+  SettingsHost &
   ClientHost & {
     theme: Theme & LegacyDialogHost["theme"] & WindowHost["theme"];
     storage: DisplayStorage;
@@ -68,11 +70,7 @@ const plugin = Plugin.define({
   setup(context) {
     const api = context as unknown as TuiContext;
     // Plugin storage is first read when a surface draws, never during setup.
-    let readDisplay: (() => DisplaySettings) | undefined;
-    const display = () => {
-      readDisplay ??= loadDisplaySettings(api.storage);
-      return readDisplay();
-    };
+    const display = createDisplayStore(api.storage);
     let sidebarStore: ReturnType<DisplayStorage["store"]> | undefined;
     const sidebarState = () => {
       sidebarStore ??= api.storage.store<SidebarState>("sidebar", { initial: { open: true } });
@@ -87,12 +85,18 @@ const plugin = Plugin.define({
     const quota = createQuotaClient(api, (snapshot) => toasts.showResetNotices(snapshot));
     const toasts = createToasts({
       show: (toast) => api.ui.toast.show(toast),
-      display,
+      display: display.shown,
       quota,
       isChildSession,
     });
-    const host: SurfaceHost = { theme: () => api.theme, display, quota };
-    const quotaWindow = createQuotaWindow(api, host);
+    const settings = createSettingsEditor(api, display);
+    const host: SurfaceHost = {
+      theme: () => api.theme,
+      display: display.shown,
+      quota,
+      editing: settings,
+    };
+    const quotaWindow = createQuotaWindow(api, host, settings);
 
     let disposeMount: (() => void) | undefined;
     const questionToolCalls = new Set<string>();
@@ -190,7 +194,7 @@ const plugin = Plugin.define({
       append: "prompt.footer",
       // Home has a message box too; Home's status line sits in its own footer instead.
       render: (props) => (
-        <Show when={props.sessionID && display().surfaces.statusLine.enabled}>
+        <Show when={props.sessionID && display.shown().surfaces.statusLine.enabled}>
           <StatusLine host={host} sessionID={props.sessionID} />
         </Show>
       ),

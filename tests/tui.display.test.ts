@@ -1,10 +1,21 @@
 import { describe, expect, it } from "vitest";
 import {
+  createDisplayStore,
+  cycleField,
+  cyclePreset,
   type DisplaySettings,
   defaultDisplaySettings,
-  loadDisplaySettings,
+  FIELDS,
+  type Field,
+  presetChoice,
   readDisplaySettings,
+  renameRow,
+  resetTab,
   SETTINGS_VERSION,
+  type StoredDisplay,
+  setIn,
+  typedColor,
+  valueAt,
 } from "../src/tui/display.js";
 
 const stored = (settings: unknown) => ({ version: SETTINGS_VERSION, settings });
@@ -73,17 +84,146 @@ describe("display settings in plugin storage", () => {
     expect(pick(readDisplaySettings(stored(settings)))).toEqual(expected);
   });
 
-  it("reads the live store, so an edit from another TUI shows at once", () => {
-    let value: { version: number; settings: Partial<DisplaySettings> } | undefined;
-    const read = loadDisplaySettings({
+  /** A plugin store like OpenCode's: one live value, changed only through `update`. */
+  function fakeStorage(initial?: unknown) {
+    const live: { value?: StoredDisplay } = {};
+    const storage = {
       store: <Value extends object>(key: string, options: { readonly initial: Value }) => {
         expect(key).toBe("settings");
-        value = structuredClone(options.initial) as never;
-        return [value as unknown as Value, async () => {}] as const;
+        live.value = structuredClone((initial ?? options.initial) as StoredDisplay);
+        const update = async (mutation: (draft: Value) => void) => {
+          mutation(live.value as unknown as Value);
+        };
+        return [live.value as unknown as Value, update] as const;
       },
+    };
+    return { storage, live };
+  }
+
+  it("reads the live store, so an edit from another TUI shows at once", () => {
+    const { storage, live } = fakeStorage();
+    const display = createDisplayStore(storage);
+    expect(display.saved().statusLine.home).toBe(false);
+    live.value!.settings.statusLine.home = true;
+    expect(display.saved().statusLine.home).toBe(true);
+  });
+
+  it("shows a draft until Save stores it, and Discard drops it", async () => {
+    const { storage, live } = fakeStorage();
+    const display = createDisplayStore(storage);
+    display.edit((settings) => setIn(settings, ["layout", "barWidth"], 12));
+    expect([display.shown().layout.barWidth, display.saved().layout.barWidth]).toEqual([12, 8]);
+    expect(display.dirty()).toBe(true);
+    await display.save();
+    expect([live.value?.settings.layout.barWidth, display.dirty()]).toEqual([12, false]);
+
+    display.edit((settings) => setIn(settings, ["layout", "barWidth"], 4));
+    display.discard();
+    expect([display.shown().layout.barWidth, display.dirty()]).toEqual([12, false]);
+    // A change made and then undone leaves nothing to save.
+    display.edit((settings) => setIn(settings, ["colors", "good"], "#00ff00"));
+    display.edit((settings) => setIn(settings, ["colors", "good"], undefined));
+    expect(display.dirty()).toBe(false);
+  });
+
+  it("keeps what still fits from settings of another version, and saves the current one", async () => {
+    const { storage, live } = fakeStorage({
+      version: SETTINGS_VERSION + 1,
+      settings: { layout: { barWidth: 10, bar: "zigzag" }, runsOut: { toast: true }, extra: 1 },
     });
-    expect(read().statusLine.home).toBe(false);
-    value!.settings.statusLine = { ...defaultDisplaySettings().statusLine, home: true };
-    expect(read().statusLine.home).toBe(true);
+    const display = createDisplayStore(storage);
+    expect([display.saved().layout.barWidth, display.saved().runsOut.toast]).toEqual([10, true]);
+    display.edit((settings) => setIn(settings, ["statusLine", "home"], true));
+    await display.save();
+    expect(live.value).toEqual({
+      version: SETTINGS_VERSION,
+      settings: readDisplaySettings({
+        settings: {
+          layout: { barWidth: 10 },
+          runsOut: { toast: true },
+          statusLine: { home: true },
+        },
+      }),
+    });
+  });
+});
+
+describe("the Settings tabs' field table", () => {
+  const field = (path: string) => FIELDS.find((item) => item.path === path) as Field;
+
+  it.each(
+    FIELDS.map((item) => [item.path, item] as const),
+  )("%s starts at one of its values", (_path, item) => {
+    expect(item.values).toContain(valueAt(defaultDisplaySettings(), item.path));
+  });
+
+  it.each([
+    { path: "layout.barWidth", delta: 1, expected: 10 },
+    { path: "layout.barWidth", delta: -1, expected: 6 },
+    { path: "layout.separator", delta: -1, expected: "  " },
+    { path: "statusLine.detail", delta: 1, expected: "one" },
+    { path: "runsOut.statusLine", delta: 1, expected: true },
+    { path: "colors.reset", delta: 1, expected: "text" },
+    { path: "colors.reset", delta: -1, expected: "bar" },
+    { path: "colors.good", delta: -1, expected: "blue" },
+  ])("‹ › on $path by $delta gives $expected", ({ path, delta, expected }) => {
+    const next = cycleField(defaultDisplaySettings(), field(path), delta);
+    expect(valueAt(next, path)).toBe(expected);
+    // The rest stays as it was.
+    expect(setIn(next, path.split("."), valueAt(defaultDisplaySettings(), path))).toEqual(
+      defaultDisplaySettings(),
+    );
+  });
+
+  it.each([
+    { text: "#89B4FA", expected: "#89b4fa" },
+    { text: " 89b4fa ", expected: "#89b4fa" },
+    { text: "", expected: undefined },
+    { text: "pink", expected: "#112233" },
+  ])("a typed color $text gives $expected", ({ text, expected }) => {
+    const before = setIn(defaultDisplaySettings(), ["colors", "reset"], "#112233");
+    expect(typedColor(before, field("colors.reset"), text).colors.reset).toBe(expected);
+  });
+
+  it("names the preset the lines match, else your own, and a preset sets its lines", () => {
+    const defaults = defaultDisplaySettings();
+    expect([presetChoice(defaults, "layout"), presetChoice(defaults, "toast")]).toEqual([
+      "comfortable",
+      "normal",
+    ]);
+    const own = cycleField(defaults, field("layout.indent"), 1);
+    expect(presetChoice(own, "layout")).toBeUndefined();
+    expect(presetChoice(cyclePreset(own, "layout", 1), "layout")).toBe("compact");
+    const roomy = cyclePreset(defaults, "layout", 1);
+    expect([presetChoice(roomy, "layout"), roomy.layout]).toEqual([
+      "roomy",
+      { ...defaults.layout, barWidth: 10, indent: 2, providerGap: 1 },
+    ]);
+    expect(cyclePreset(defaults, "toast", -1).toast.afterCompaction).toBe(false);
+  });
+
+  it("renames a row whose id holds a dot, and its own name or nothing puts it back", () => {
+    const renamed = renameRow(defaultDisplaySettings(), "anthropic.five_hour", "5h", " Session ");
+    expect(renamed.labels).toEqual({ "anthropic.five_hour": "Session" });
+    expect(renameRow(renamed, "anthropic.five_hour", "5h", "5h").labels).toEqual({});
+    expect(renameRow(renamed, "anthropic.five_hour", "5h", "").labels).toEqual({});
+  });
+
+  it("resets only the tab's lines, its surface and its windows; row names stay", () => {
+    let changed = defaultDisplaySettings();
+    changed = setIn(changed, ["runsOut", "collapsed"], true);
+    changed = setIn(changed, ["surfaces", "collapsed", "providerOrder"], ["openai", "anthropic"]);
+    changed = setIn(changed, ["window", "anthropic"], "week");
+    changed = setIn(changed, ["runsOut", "sidebar"], true);
+    changed = setIn(changed, ["labels", "anthropic.five_hour"], "Session");
+    const reset = resetTab(changed, "collapsed");
+    expect(reset).toEqual(
+      setIn(
+        setIn(defaultDisplaySettings(), ["runsOut", "sidebar"], true),
+        ["labels", "anthropic.five_hour"],
+        "Session",
+      ),
+    );
+    expect(resetTab(changed, "layout")).toEqual(changed);
   });
 });

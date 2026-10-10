@@ -1,7 +1,8 @@
 /** @jsxImportSource @opentui/solid */
 /**
  * The quota window. `/quota` opens it above the message box of a session, where it covers the
- * chat with the same size on every tab: Limits, Notices and Status. While it is focused (it is
+ * chat with the same size on every tab: Limits, Notices, Status and the Settings tabs
+ * (`settings.tsx`). While it is focused (it is
  * after opening; click it to give it the keyboard again) its keys work: ↑↓ select or scroll,
  * space/enter use a line, ←/→ change it, tab switches tabs, esc closes. Closing gives the
  * keyboard back to whatever had it before.
@@ -24,16 +25,18 @@ import {
   type QuotaRpcStatusOutput,
 } from "../../rpc.js";
 import { rpcErrorMessage } from "../client.js";
+import type { SettingsTab } from "../display.js";
 import type { SurfaceHost } from "../sidebar.js";
 import type { Theme } from "../theme.js";
 import { type NoticeBoard, noticeOptions } from "./notices.js";
+import { isSettingsTab, SETTINGS_TABS, type SettingsEditor } from "./settings.js";
 import { LimitsView, NoticesView, type StatusReport, StatusView } from "./views.js";
 
 const RPC_TIMEOUT_MS = 60_000;
 /** Columns inside the window until it knows its real width. */
 const DEFAULT_WIDTH = 120;
 
-export type WindowTab = "limits" | "notices" | "status";
+export type WindowTab = "limits" | "notices" | "status" | SettingsTab;
 
 const TABS: ReadonlyArray<{ tab: WindowTab; title: string; note: string }> = [
   {
@@ -52,6 +55,8 @@ const TABS: ReadonlyArray<{ tab: WindowTab; title: string; note: string }> = [
     note: "What quota found and when it last checked. Copy it into a bug report.",
   },
 ];
+/** Every tab in the order tab and shift+tab go through them. */
+const ALL_TABS: readonly WindowTab[] = [...TABS, ...SETTINGS_TABS].map((item) => item.tab);
 
 /** The theme tokens the window reads, besides the surfaces' ones (OpenCode's `ResolvedTheme`). */
 export type WindowTheme = Theme & {
@@ -96,6 +101,7 @@ export type WindowHost = {
       build: () => {
         target: () => Renderable | undefined;
         priority: number;
+        enabled?: () => boolean;
         commands: WindowKey[];
       },
     ): void;
@@ -126,7 +132,11 @@ export type QuotaWindow = {
   Slot(props: { sessionID: string }): JSX.Element;
 };
 
-export function createQuotaWindow(api: WindowHost, host: SurfaceHost): QuotaWindow {
+export function createQuotaWindow(
+  api: WindowHost,
+  host: SurfaceHost,
+  settings: SettingsEditor,
+): QuotaWindow {
   const [tab, setTab] = createSignal<WindowTab>();
   const [selected, setSelected] = createSignal("");
   const [board, setBoard] = createSignal<NoticeBoard>();
@@ -175,6 +185,7 @@ export function createQuotaWindow(api: WindowHost, host: SurfaceHost): QuotaWind
 
   /** Each tab asks the server again when it shows: Limits a refresh, the others their data. */
   function showTab(next: WindowTab): void {
+    settings.setTab(next);
     setTab(next);
     const sessionID = routeSessionID();
     if (next === "limits") void host.quota.refresh("manual", sessionID);
@@ -237,15 +248,18 @@ export function createQuotaWindow(api: WindowHost, host: SurfaceHost): QuotaWind
     setTimeout(() => windowBox?.focus(), 50);
   }
 
+  /** Esc or Close. With unsaved settings the bottom bar asks first. */
   function close(): void {
+    if (settings.askBeforeClose()) return;
+    settings.setTab(undefined);
     setTab(undefined);
     if (focusBefore && !focusBefore.isDestroyed) focusBefore.focus();
     focusBefore = null;
   }
 
   function switchTab(delta: number): void {
-    const index = TABS.findIndex((item) => item.tab === tab());
-    showTab(TABS[(index + delta + TABS.length) % TABS.length].tab);
+    const index = ALL_TABS.indexOf(tab() ?? "limits");
+    showTab(ALL_TABS[(index + delta + ALL_TABS.length) % ALL_TABS.length] as WindowTab);
   }
 
   /** ↑↓ select the next line; past the first or last one (or with none) they scroll. */
@@ -261,27 +275,6 @@ export function createQuotaWindow(api: WindowHost, host: SurfaceHost): QuotaWind
     if (option && (kind === "any" || option.kind === "switch")) option.run();
   }
 
-  function Button(props: { label: string; primary?: boolean; run: () => void }): JSX.Element {
-    const theme = () => api.theme;
-    return (
-      <box
-        paddingLeft={2}
-        paddingRight={2}
-        backgroundColor={
-          props.primary ? theme().background.action.primary.focused : theme().background.raised.high
-        }
-        onMouseUp={props.run}
-      >
-        <text
-          fg={props.primary ? theme().text.action.primary.focused : theme().text.base}
-          selectable={false}
-        >
-          {props.label}
-        </text>
-      </box>
-    );
-  }
-
   function OptionLine(props: { option: WindowOption }): JSX.Element {
     const theme = () => api.theme;
     const active = () => selected() === props.option.id;
@@ -293,7 +286,7 @@ export function createQuotaWindow(api: WindowHost, host: SurfaceHost): QuotaWind
         flexDirection="row"
         backgroundColor={active() ? theme().background.action.primary.focused : TRANSPARENT}
         onMouseDown={() => setSelected(props.option.id)}
-        onMouseUp={props.option.run}
+        onMouseUp={settings.click(props.option.run)}
       >
         <text fg={fg()} wrapMode="none" selectable={false}>
           {`   ${props.option.title.padEnd(28)} `}
@@ -367,6 +360,8 @@ export function createQuotaWindow(api: WindowHost, host: SurfaceHost): QuotaWind
     api.keymap.layer(() => ({
       target: () => windowBox,
       priority: 10,
+      // While a Settings line takes typed text, the keys go to its input.
+      enabled: () => !settings.typing(),
       commands: [
         { bind: "up", title: "Previous line", group: KEYS, run: () => select(-1) },
         { bind: "down", title: "Next line", group: KEYS, run: () => select(1) },
@@ -393,10 +388,28 @@ export function createQuotaWindow(api: WindowHost, host: SurfaceHost): QuotaWind
     }));
 
     const current = () => TABS.find((item) => item.tab === tab()) ?? TABS[0];
+    const settingsTab = () => {
+      const shown = tab();
+      return isSettingsTab(shown) ? shown : undefined;
+    };
     const hint = () =>
-      hasKeyboard()
+      settings.hint(tab() ?? "", hasKeyboard()) ??
+      (hasKeyboard()
         ? "↑↓ select or scroll · space/enter or click to use a line · ‹ › (or ←/→) to change · tab next tab · esc close"
-        : "The keyboard is somewhere else (the message box, a dialog). Click this box to use ↑↓ space tab esc here.";
+        : "The keyboard is somewhere else (the message box, a dialog). Click this box to use ↑↓ space tab esc here.");
+    const tabTitle = (item: { tab: WindowTab; title: string }) => (
+      <text
+        fg={item.tab === tab() ? theme().text.action.primary.selected : theme().text.muted}
+        attributes={
+          item.tab === tab() ? TextAttributes.BOLD | TextAttributes.UNDERLINE : TextAttributes.NONE
+        }
+        wrapMode="none"
+        selectable={false}
+        onMouseUp={settings.click(() => showTab(item.tab))}
+      >
+        {item.title}
+      </text>
+    );
 
     return (
       <box
@@ -412,7 +425,10 @@ export function createQuotaWindow(api: WindowHost, host: SurfaceHost): QuotaWind
         borderColor={hasKeyboard() ? theme().text.action.primary.selected : theme().border.base}
         paddingLeft={1}
         paddingRight={1}
-        onMouseDown={() => windowBox?.focus()}
+        onMouseDown={() => {
+          settings.pressed();
+          if (!settings.typing()) windowBox?.focus();
+        }}
         onSizeChange={function (this: BoxRenderable) {
           // Inside the border and the padding.
           const measured = this.width - 4;
@@ -423,32 +439,31 @@ export function createQuotaWindow(api: WindowHost, host: SurfaceHost): QuotaWind
           <text fg={theme().text.base} wrapMode="none" selectable={false}>
             <b>Quota</b>
           </text>
-          {TABS.map((item) => (
-            <text
-              fg={item.tab === tab() ? theme().text.action.primary.selected : theme().text.muted}
-              attributes={
-                item.tab === tab()
-                  ? TextAttributes.BOLD | TextAttributes.UNDERLINE
-                  : TextAttributes.NONE
-              }
-              wrapMode="none"
-              selectable={false}
-              onMouseUp={() => showTab(item.tab)}
-            >
-              {item.title}
-            </text>
-          ))}
+          {TABS.map(tabTitle)}
+          <text fg={theme().text.muted} wrapMode="none" selectable={false}>
+            │ Settings:
+          </text>
+          {SETTINGS_TABS.map(tabTitle)}
           <box flexGrow={1} />
-          <text fg={theme().text.muted} selectable={false} onMouseUp={close}>
+          <text fg={theme().text.muted} selectable={false} onMouseUp={settings.click(close)}>
             esc
           </text>
         </box>
-        {/* Padding instead of leading spaces, so a note that wraps stays indented. */}
-        <box paddingLeft={3} marginTop={1} flexShrink={0}>
-          <text fg={theme().text.muted} wrapMode="word" selectable={false}>
-            {current().note}
-          </text>
-        </box>
+        <Show
+          when={settingsTab()}
+          fallback={
+            // Padding instead of leading spaces, so a note that wraps stays indented.
+            <box paddingLeft={3} marginTop={1} flexShrink={0}>
+              <text fg={theme().text.muted} wrapMode="word" selectable={false}>
+                {current().note}
+              </text>
+            </box>
+          }
+        >
+          {(shown: () => SettingsTab) => (
+            <settings.Header tab={shown()} refocus={() => windowBox?.focus()} />
+          )}
+        </Show>
         <scrollbox
           ref={(element: ScrollBoxRenderable) => {
             scroll = element;
@@ -475,9 +490,26 @@ export function createQuotaWindow(api: WindowHost, host: SurfaceHost): QuotaWind
           <Show when={tab() === "status"}>
             <StatusView theme={theme()} report={status()} />
           </Show>
+          <Show when={settingsTab()}>
+            {(shown: () => SettingsTab) => (
+              <settings.Body
+                tab={shown()}
+                host={host}
+                sessionID={props.sessionID}
+                box={() => windowBox}
+                scroll={() => scroll}
+              />
+            )}
+          </Show>
         </scrollbox>
         <box flexDirection="row" gap={2} marginTop={1} flexShrink={0}>
-          <Button label="Close" primary run={close} />
+          <settings.Buttons
+            tab={tab() ?? ""}
+            host={host}
+            sessionID={props.sessionID}
+            box={() => windowBox}
+            close={close}
+          />
         </box>
         {/* Two lines tall either way, so the box doesn't move when the hint changes. */}
         <text

@@ -36,7 +36,7 @@ Strict `.json` files also work. Not sure which file is active? Run `/quota_statu
 
 If the setting is missing, the default is `singleWindow`.
 
-These settings shape `/quota` and terminal `show`. The TUI sidebar, status line and toasts have their own built-in look; see [TUI surfaces](#tui-surfaces).
+These settings shape `/quota` and terminal `show`. The TUI sidebar, status line and toasts have their own look, set in the quota window's Settings tabs; see [TUI surfaces](#tui-surfaces).
 
 Example:
 
@@ -189,11 +189,11 @@ Provider credentials (API keys, cookies, tokens) are never set here. See [API ke
 
 ### TUI surfaces
 
-The sidebar, the status line and toasts draw the server's last quota snapshot with a built-in look (kept in OpenCode's plugin storage). They don't read `tuiSidebarPanel`, `tuiCompactStatus`, `tuiPromptBar`, `enableToast`, `toastDurationMs`, `showOnIdle`, `showOnQuestion`, `showOnCompact`, `showOnBothFail`, `layout`, `debug`, or `resetNotifications`.
+The sidebar, the status line and toasts draw the server's last quota snapshot. Their look is set in the Settings tabs of the `/quota` window (Sidebar, Collapsed, Status line, Toast, Colors, Layout) and kept in OpenCode's plugin storage, never in a config file. While you edit, the real surfaces show the change; Save (ctrl+s) keeps it. Each of the four places has its own **Runs out in …** switch (off by default) for a limit that, used at your pace so far, runs out before its reset; the Limits tab always shows the pace. They don't read `tuiSidebarPanel`, `tuiCompactStatus`, `tuiPromptBar`, `enableToast`, `toastDurationMs`, `showOnIdle`, `showOnQuestion`, `showOnCompact`, `showOnBothFail`, `layout`, `debug`, or `resetNotifications`.
 
 - **Sidebar:** the `Quota` panel of each session, with a bar per row and the session tokens. Click its title to collapse it to one line per provider; OpenCode remembers the choice.
 - **Status line:** under the message box, in the room OpenCode's footer leaves free. Each provider shows its lowest window with as much detail as fits; when not all fit, scroll with the mouse wheel or click `‹` and `+N ›`.
-- **Toasts:** after compaction and when every provider fails, for 9 seconds. Toasts appear only in the TUI, never in Web or Desktop.
+- **Toasts:** by default after compaction and when every provider fails, for 9 seconds. Toasts appear only in the TUI, never in Web or Desktop.
 
 ### Maintainer notices
 

@@ -48,6 +48,24 @@ export type Toasts = {
   cancel(): void;
 };
 
+/** The rows the Toast tab shows, one line each, then the session tokens. */
+export function toastText(
+  snapshot: QuotaSnapshot,
+  display: DisplaySettings,
+  nowMs: number,
+): string {
+  const words = snapshot.words ?? DEFAULT_WORDS;
+  return plainLines({
+    groups: visibleGroups(snapshot, display, "toast", words),
+    words,
+    nowMs,
+    runsOut: display.runsOut.toast,
+    ...(display.toast.sessionTokens && snapshot.sessionTokens
+      ? { sessionTokens: snapshot.sessionTokens }
+      : {}),
+  }).join("\n");
+}
+
 function wantsTurnToast(display: DisplaySettings, trigger: TurnEnd, anyLow: boolean): boolean {
   if (trigger === "compaction") return display.toast.afterCompaction;
   if (trigger === "question") return display.toast.afterQuestion;
@@ -104,14 +122,7 @@ export function createToasts(host: ToastHost): Toasts {
     );
     const duration = display.toast.seconds * 1000;
     if (wantsTurnToast(display, trigger, anyLow)) {
-      const message = plainLines({
-        groups,
-        words,
-        nowMs,
-        ...(display.toast.sessionTokens && snapshot.sessionTokens
-          ? { sessionTokens: snapshot.sessionTokens }
-          : {}),
-      }).join("\n");
+      const message = toastText(snapshot, display, nowMs);
       if (message) host.show({ variant: "info", title: TOAST_TITLE, message, duration });
       return;
     }

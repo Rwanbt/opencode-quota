@@ -2,7 +2,8 @@
  * The v6 surfaces end to end: the real server plugin (`src/plugin.ts`) and the real TUI plugin
  * (`src/tui/index.tsx`) on fake OpenCode hosts, joined by a JSON RPC bridge. Three providers:
  * Copilot with only its plan, MiniMax over its quota, and a custom json-v1 source next to a
- * failing one. API keys and a private error body are canaries no surface may show.
+ * failing one. API keys and a private error body are canaries no surface may show. Last, the
+ * quota window's Settings tabs change a surface and save to plugin storage.
  */
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -519,6 +520,35 @@ describe("v6 surfaces on the quota snapshot", () => {
       exported,
       gauges,
       savedSnapshot,
+    );
+
+    // Settings: the window's Sidebar tab edits a draft that the real sidebar shows at once (the
+    // tab expands the panel collapsed above); Save stores it in plugin storage and closes.
+    const windowTree = () => tui.render("session.composer.top", { sessionID: "ses_1" });
+    const clickable = (tree: unknown, text: string) =>
+      findAll(
+        tree,
+        (node) =>
+          typeof node.props?.onMouseUp === "function" && textLines(node).join("").trim() === text,
+      )[0]!;
+    clickable(windowTree(), "Sidebar").props.onMouseUp();
+    expect(words(sidebar())).toContain("Session 1.20K in · 45 out");
+    const sessionTokens = findAll(
+      windowTree(),
+      (node) => node.props?.id === "quota-settings.sidebar.sessionTokens",
+    );
+    expect(words(sessionTokens)).toEqual(["Session tokens line", "‹", "shown", "›", ""]);
+    clickable(sessionTokens, "›").props.onMouseUp();
+    expect(words(sidebar())).not.toContain("Session 1.20K in · 45 out");
+    expect(tui.stored.get("settings").settings.sidebar).toBeUndefined();
+    clickable(windowTree(), "Save").props.onMouseUp();
+    await vi.waitFor(() => expect(windowTree()).toBe(""));
+    expect(tui.stored.get("settings")).toMatchObject({
+      version: 1,
+      settings: { sidebar: { sessionTokens: false }, toast: { afterReply: "always" } },
+    });
+    expect(tui.toast).toHaveBeenLastCalledWith(
+      expect.objectContaining({ variant: "success", title: "Quota settings saved" }),
     );
     await tui.dispose();
   });

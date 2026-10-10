@@ -52,12 +52,12 @@ Restart OpenCode, then run `/quota` and `/quota_status` in the TUI. `/quota_stat
 
 ## What appears in the TUI
 
-The TUI shows the `Quota` panel in the session sidebar, a status line under the message box, and a toast after compaction. For now their look is built in; see [TUI surfaces](configuration.md#tui-surfaces). Web and Desktop show none of these. See [Configuration](configuration.md) for every setting.
+The TUI shows the `Quota` panel in the session sidebar, a status line under the message box, and a toast after compaction. Change their look in the Settings tabs of `/quota`; see [TUI surfaces](configuration.md#tui-surfaces). Web and Desktop show none of these. See [Configuration](configuration.md) for every setting.
 
 ## Web and Desktop notes
 
 - Slash commands work in the TUI, Web, and Desktop. Add arguments after the command, like `/tokens_between 2026-09-01 2026-09-25`.
-- **TUI:** `/quota` opens the quota window above the message box, with tabs for limits, maintainer notices and the `/quota_status` report. The other slash commands open their report in a popup and leave no chat message. The command palette runs the same commands and asks for missing dates.
+- **TUI:** `/quota` opens the quota window above the message box, with tabs for limits, maintainer notices and the `/quota_status` report, and Settings tabs for the sidebar, status line and toasts. The other slash commands open their report in a popup and leave no chat message. The command palette runs the same commands and asks for missing dates.
 - **Web and Desktop:** `/quota` posts your limits and the maintainer notices in the chat as your message; the other commands post their report the same way. The AI never answers it, and the plugin filters it out of every AI request. If you uninstall the plugin, old reports in past chats are no longer filtered.
 - Each report starts with `[OpenCode Quota report]` and ends with `[End of OpenCode Quota report]`, which also keeps it out of compaction summaries.
 - Web uses a proportional font, so columns may not line up. Use the TUI or `npx @slkiser/opencode-quota show` for aligned columns.
