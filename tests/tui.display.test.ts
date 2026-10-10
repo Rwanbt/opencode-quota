@@ -2,20 +2,21 @@ import { describe, expect, it } from "vitest";
 import {
   applyDisplayImport,
   createDisplayStore,
-  cycleField,
-  cyclePreset,
   type DisplaySettings,
   defaultDisplaySettings,
   FIELDS,
   type Field,
   NEWER_SETTINGS,
+  type PresetName,
   presetChoice,
+  presetValues,
   readDisplaySettings,
   renameRow,
   resetTab,
   SETTINGS_VERSION,
   type StoredDisplay,
   setIn,
+  stepIn,
   typedColor,
   valueAt,
 } from "../src/tui/display.js";
@@ -174,6 +175,38 @@ describe("display settings in plugin storage", () => {
     expect([display.shown().layout.bar, display.dirty()]).toEqual(["dots", true]);
   });
 
+  it("keeps a change back to the saved value made while Save writes, unsaved", async () => {
+    const { storage, live } = fakeStorage();
+    const display = createDisplayStore(storage);
+    let write = () => {};
+    live.gate = new Promise((resolve) => {
+      write = resolve;
+    });
+    display.edit((settings) => setIn(settings, ["layout", "barWidth"], 12));
+    const saving = display.save();
+    display.edit((settings) => setIn(settings, ["layout", "barWidth"], 8));
+    write();
+    await saving;
+    expect(live.value?.settings?.layout.barWidth).toBe(12);
+    expect([display.shown().layout.barWidth, display.dirty()]).toEqual([8, true]);
+  });
+
+  it("refuses a Save that waited while a newer plugin saved, and keeps the newer settings", async () => {
+    const { storage, live } = fakeStorage();
+    const display = createDisplayStore(storage);
+    let write = () => {};
+    live.gate = new Promise((resolve) => {
+      write = resolve;
+    });
+    display.edit((settings) => setIn(settings, ["statusLine", "home"], true));
+    const saving = display.save();
+    const newer = { version: SETTINGS_VERSION + 1, settings: { layout: { barWidth: 10 } } };
+    Object.assign(live.value as StoredDisplay, structuredClone(newer));
+    write();
+    await expect(saving).rejects.toThrow(NEWER_SETTINGS);
+    expect([live.value, display.dirty()]).toEqual([newer, true]);
+  });
+
   it("stays live after an edit that changes nothing", () => {
     const { storage, live } = fakeStorage();
     const display = createDisplayStore(storage);
@@ -261,9 +294,26 @@ describe("display settings in plugin storage", () => {
 
 describe("the Settings tabs' field table", () => {
   const field = (path: string) => FIELDS.find((item) => item.path === path) as Field;
+  /** ‹ or › on a line, as the Settings tab does it. */
+  const cycled = (settings: DisplaySettings, item: Field, delta: number) => {
+    const values = item.choices?.(settings) ?? item.values;
+    return setIn(
+      settings,
+      item.path.split("."),
+      stepIn(values, valueAt(settings, item.path), delta),
+    );
+  };
+  const choiceOf = (settings: DisplaySettings, name: PresetName) =>
+    presetChoice(name, (path) => valueAt(settings, path));
+  /** ‹ or › on a preset line. */
+  const withPreset = (settings: DisplaySettings, name: PresetName, delta: number) =>
+    Object.entries(presetValues(name, choiceOf(settings, name), delta)).reduce(
+      (next, [path, value]) => setIn(next, path.split("."), value),
+      settings,
+    );
 
   it.each(
-    FIELDS.map((item) => [item.path, item] as const),
+    FIELDS.filter((item) => item.store === "display").map((item) => [item.path, item] as const),
   )("%s starts at one of its values", (_path, item) => {
     expect(item.values).toContain(valueAt(defaultDisplaySettings(), item.path));
   });
@@ -287,7 +337,7 @@ describe("the Settings tabs' field table", () => {
       from === undefined
         ? defaultDisplaySettings()
         : setIn(defaultDisplaySettings(), ["thresholds"], { warningBelow: from, lowBelow: from });
-    const next = cycleField(start, field(path), delta);
+    const next = cycled(start, field(path), delta);
     expect(valueAt(next, path)).toBe(expected);
     // The rest stays as it was.
     expect(setIn(next, path.split("."), valueAt(start, path))).toEqual(start);
@@ -313,19 +363,19 @@ describe("the Settings tabs' field table", () => {
 
   it("names the preset the lines match, else your own, and a preset sets its lines", () => {
     const defaults = defaultDisplaySettings();
-    expect([presetChoice(defaults, "layout"), presetChoice(defaults, "toast")]).toEqual([
+    expect([choiceOf(defaults, "layout"), choiceOf(defaults, "toast")]).toEqual([
       "comfortable",
       "normal",
     ]);
-    const own = cycleField(defaults, field("layout.indent"), 1);
-    expect(presetChoice(own, "layout")).toBeUndefined();
-    expect(presetChoice(cyclePreset(own, "layout", 1), "layout")).toBe("compact");
-    const roomy = cyclePreset(defaults, "layout", 1);
-    expect([presetChoice(roomy, "layout"), roomy.layout]).toEqual([
+    const own = cycled(defaults, field("layout.indent"), 1);
+    expect(choiceOf(own, "layout")).toBeUndefined();
+    expect(choiceOf(withPreset(own, "layout", 1), "layout")).toBe("compact");
+    const roomy = withPreset(defaults, "layout", 1);
+    expect([choiceOf(roomy, "layout"), roomy.layout]).toEqual([
       "roomy",
       { ...defaults.layout, barWidth: 10, indent: 2, providerGap: 1 },
     ]);
-    expect(cyclePreset(defaults, "toast", -1).toast.afterCompaction).toBe(false);
+    expect(withPreset(defaults, "toast", -1).toast.afterCompaction).toBe(false);
   });
 
   it("renames a row whose id holds a dot, and its own name or nothing puts it back", () => {

@@ -1,31 +1,30 @@
 import { describe, expect, it, vi } from "vitest";
 import type { QuotaRpcSaveSettingsInput, QuotaRpcSettingsOutput } from "../src/rpc.js";
 import { checkSetting, SETTINGS_SCHEMA } from "../src/settings/index.js";
+import { CHANGED_SINCE_REVIEW } from "../src/settings/schema.js";
+import { FIELDS, type Field, presetChoice, presetValues, typedNumber } from "../src/tui/display.js";
 import {
   createServerSettings,
   isTicked,
-  SERVER_FIELDS,
-  type ServerField,
   settingsPatch,
-  steppedWording,
   withTick,
-  wordingChoice,
 } from "../src/tui/server-settings.js";
 
-const field = (key: string) => SERVER_FIELDS.find((item) => item.key === key) as ServerField;
+const SERVER_FIELDS = FIELDS.filter((item) => item.store === "server");
+const field = (path: string) => SERVER_FIELDS.find((item) => item.path === path) as Field;
 
-describe("the Words and Providers tabs' field table", () => {
+describe("the Words and Providers tabs' lines", () => {
   it("starts every line at the server's default and steps only through values it accepts", () => {
     for (const item of SERVER_FIELDS) {
-      const rule = SETTINGS_SCHEMA[item.key as keyof typeof SETTINGS_SCHEMA];
-      expect([item.key, item.initial]).toEqual([item.key, rule.default]);
+      const rule = SETTINGS_SCHEMA[item.path as keyof typeof SETTINGS_SCHEMA];
+      expect([item.path, item.initial]).toEqual([item.path, rule.default]);
       expect("fileOnly" in rule).toBe(false);
-      for (const value of item.values) expect(checkSetting(item.key, value).issues).toEqual([]);
+      for (const value of item.values) expect(checkSetting(item.path, value).issues).toEqual([]);
     }
   });
 
   it("has a line for every setting a client may change but the notices'", () => {
-    const shown = new Set([...SERVER_FIELDS.map((item) => item.key), "providers.enabled"]);
+    const shown = new Set([...SERVER_FIELDS.map((item) => item.path), "providers.enabled"]);
     const editable = Object.entries(SETTINGS_SCHEMA)
       .filter(([key, rule]) => key !== "version" && !("fileOnly" in rule))
       .map(([key]) => key)
@@ -43,7 +42,7 @@ describe("the Words and Providers tabs' field table", () => {
     { key: "providers.cursor.billingCycleStartDay", text: "1.5", value: undefined },
     { key: "providers.opencode.monthlyLimitUsd", text: "40.5", value: 40.5 },
   ])("reads $text typed into $key as $value", ({ key, text, value }) => {
-    const parsed = field(key).typed?.parse(text);
+    const parsed = typedNumber(field(key), text);
     expect(parsed).toBe(value);
     if (parsed !== undefined) expect(checkSetting(key, parsed).issues).toEqual([]);
   });
@@ -73,9 +72,9 @@ describe("the Words and Providers tabs' field table", () => {
     },
   ])("matches the Wording choice $choice and steps to $next", ({ values, choice, next }) => {
     const value = (key: string) => values[key as keyof typeof values];
-    expect(wordingChoice(value)).toBe(choice);
-    const stepped = steppedWording(value, 1);
-    expect(wordingChoice((key) => stepped[key])).toBe(next);
+    expect(presetChoice("words", value)).toBe(choice);
+    const stepped = presetValues("words", choice, 1);
+    expect(presetChoice("words", (key) => stepped[key])).toBe(next);
   });
 });
 
@@ -111,14 +110,19 @@ describe("the server settings this window edits", () => {
   const SAVED: QuotaRpcSettingsOutput = {
     values: { "words.percent": "left", "providers.enabled": "auto" },
     providers: [{ id: "copilot", label: "Copilot" }],
-    custom: [{ id: "gw", label: "Gateway", enabled: false, request: null }],
+    custom: [{ id: "gw", label: "Gateway", enabled: false, request: null, fingerprint: "fp-a" }],
   };
 
-  function fakeRpc(answer = { ok: true, issues: [] as Array<{ key: string; message: string }> }) {
+  /** The server; a save waits for `gate` when set. */
+  function fakeRpc(
+    answer = { ok: true, issues: [] as Array<{ key: string; message: string }> },
+    gate?: Promise<void>,
+  ) {
     let saved = structuredClone(SAVED);
     const rpc = {
       settings: vi.fn(async () => structuredClone(saved)),
       saveSettings: vi.fn(async (input: QuotaRpcSaveSettingsInput) => {
+        await gate;
         if (!answer.ok) return answer;
         const words = input.patch.words as { percent?: string } | undefined;
         saved = {
@@ -152,7 +156,7 @@ describe("the server settings this window edits", () => {
 
     expect(rpc.saveSettings).toHaveBeenCalledWith({
       patch: { words: { percent: "used" } },
-      customEnabled: { gw: true },
+      customEnabled: { gw: { enabled: true, fingerprint: "fp-a" } },
     });
     expect([server.dirty(), server.value("words.percent"), server.customOn("gw")]).toEqual([
       false,
@@ -171,5 +175,64 @@ describe("the server settings this window edits", () => {
     expect(server.value("words.percent")).toBe("used");
     server.discard();
     expect([server.dirty(), server.value("words.percent")]).toEqual([false, "left"]);
+  });
+
+  it("keeps a change back to the saved value made while Save waits, unsaved", async () => {
+    let answer = () => {};
+    const rpc = fakeRpc(
+      undefined,
+      new Promise((resolve) => {
+        answer = resolve;
+      }),
+    );
+    const server = createServerSettings(rpc);
+    await server.load();
+    server.set("words.percent", "used");
+
+    const saving = server.save();
+    server.set("words.percent", "left");
+    answer();
+    await saving;
+
+    expect(server.saved()?.values["words.percent"]).toBe("used");
+    expect([server.value("words.percent"), server.dirty()]).toEqual(["left", true]);
+  });
+
+  it("reloads and marks a custom provider whose definition changed since the window showed it", async () => {
+    const issue = { key: "providers.custom.gw", message: CHANGED_SINCE_REVIEW };
+    const rpc = fakeRpc({ ok: false, issues: [issue] });
+    const server = createServerSettings(rpc);
+    await server.load();
+    server.switchCustom("gw", true);
+    const now = {
+      url: "https://other.example/quota",
+      key: "environment variable OTHER",
+      insecure: false,
+    };
+    rpc.settings.mockResolvedValue({
+      ...SAVED,
+      custom: [{ id: "gw", label: "Gateway", enabled: false, request: now, fingerprint: "fp-b" }],
+    });
+
+    await expect(server.save()).rejects.toThrow(CHANGED_SINCE_REVIEW);
+
+    expect(rpc.saveSettings).toHaveBeenCalledWith({
+      patch: {},
+      customEnabled: { gw: { enabled: true, fingerprint: "fp-a" } },
+    });
+    expect(server.saved()?.custom[0]?.request).toEqual(now);
+    expect([server.customOn("gw"), server.changedSinceReview("gw"), server.dirty()]).toEqual([
+      false,
+      true,
+      false,
+    ]);
+    // Switching it on again, after looking at the new details, sends their fingerprint.
+    server.switchCustom("gw", true);
+    expect(server.changedSinceReview("gw")).toBe(false);
+    await expect(server.save()).rejects.toThrow();
+    expect(rpc.saveSettings).toHaveBeenLastCalledWith({
+      patch: {},
+      customEnabled: { gw: { enabled: true, fingerprint: "fp-b" } },
+    });
   });
 });

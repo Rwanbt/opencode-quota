@@ -16,7 +16,7 @@ import type { Rpc } from "@opencode/plugin";
 import type { QuotaSnapshot } from "./core/types.js";
 import type { UsageQuery, UsageRange, UsageReport } from "./core/usage.js";
 import { parseCalendarDate } from "./lib/calendar-date.js";
-import type { ClientSettings, SettingsIssue } from "./settings/index.js";
+import type { ClientSettings, CustomSwitch, SettingsIssue } from "./settings/index.js";
 
 export const QUOTA_RPC_ID = "slkiser.opencode-quota";
 
@@ -54,11 +54,12 @@ export type QuotaRpcSettingsInput = Record<string, never>;
 export type QuotaRpcSettingsOutput = ClientSettings;
 /**
  * A JSON merge patch of settings.jsonc; file-only keys are refused. `customEnabled` switches
- * custom providers on or off by id: the user's switch in the quota window's Providers tab.
+ * custom providers on or off by id: the user's switch in the quota window's Providers tab, with
+ * the fingerprint of the definition the tab showed.
  */
 export type QuotaRpcSaveSettingsInput = {
   patch: Record<string, unknown>;
-  customEnabled?: Record<string, boolean>;
+  customEnabled?: Record<string, CustomSwitch>;
 };
 /** Nothing is saved unless `ok`; `issues` say why. */
 export type QuotaRpcSaveSettingsOutput = { ok: boolean; issues: SettingsIssue[] };
@@ -260,9 +261,15 @@ export const QuotaRpc = {
         if (!isObject(value) || !isObject(value.patch)) return "input must carry a patch object";
         const switches = value.customEnabled;
         if (switches === undefined) return null;
-        return isObject(switches) && Object.values(switches).every((on) => typeof on === "boolean")
+        return isObject(switches) &&
+          Object.values(switches).every(
+            (item) =>
+              isObject(item) &&
+              typeof item.enabled === "boolean" &&
+              typeof item.fingerprint === "string",
+          )
           ? null
-          : "customEnabled must map provider ids to true or false";
+          : "customEnabled must map provider ids to { enabled, fingerprint }";
       }),
       output: schema<QuotaRpcSaveSettingsOutput>((value) =>
         isObject(value) && typeof value.ok === "boolean" && Array.isArray(value.issues)

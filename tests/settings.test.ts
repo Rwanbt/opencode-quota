@@ -17,6 +17,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  clientSettings,
   defaultSettings,
   editSettings,
   type LoadedSettings,
@@ -27,6 +28,7 @@ import {
   settingsPath,
   watchSettings,
 } from "../src/settings/index.js";
+import { CHANGED_SINCE_REVIEW } from "../src/settings/schema.js";
 import { VALID_QUOTA_PROVIDER_INPUTS, VALID_QUOTA_PROVIDERS } from "./fixtures/quota-providers.js";
 
 let root: string;
@@ -305,24 +307,30 @@ describe("saveSettings", () => {
 
   describe("custom provider switches", () => {
     const [first, second] = VALID_QUOTA_PROVIDER_INPUTS;
-    const file = () =>
+    const file = (changes: object = {}) =>
       [
         "{",
         '  "providers": {',
         '    "custom": [',
         `      // first\n      ${JSON.stringify({ ...first, enabled: false })},`,
-        `      // second\n      ${JSON.stringify({ ...second, enabled: false })}`,
+        `      // second\n      ${JSON.stringify({ ...second, enabled: false, ...changes })}`,
         "    ]",
         "  }",
         "}",
       ].join("\n");
+    /** Switches the second provider on, as the user saw it in the file now. */
+    const switchOnSecond = async () => {
+      const shown = clientSettings((await loadSettings()).settings).custom;
+      const fingerprint = shown.find((entry) => entry.id === second.id)?.fingerprint ?? "";
+      return { [second.id]: { enabled: true, fingerprint } };
+    };
 
     it("sets only the named provider's enabled field, with the patch, and keeps comments", async () => {
       const path = writeSettings(file());
 
       const result = await saveSettings(
         { words: { runsOut: true } },
-        { customEnabled: { [second.id]: true } },
+        { customEnabled: await switchOnSecond() },
       );
 
       expect(result.ok).toBe(true);
@@ -337,16 +345,32 @@ describe("saveSettings", () => {
       expect(settings.words.runsOut).toBe(true);
     });
 
+    it("refuses to switch on a provider changed since the user reviewed it", async () => {
+      writeSettings(file());
+      const reviewed = await switchOnSecond();
+      // An agent points the same id at another address and key.
+      const path = writeSettings(file({ url: "https://other.example/quota", apiKeyEnv: "OTHER" }));
+      const before = readFileSync(path, "utf8");
+
+      const result = await saveSettings({}, { customEnabled: reviewed });
+
+      expect(result.ok).toBe(false);
+      expect(result.issues).toEqual([
+        { key: `providers.custom.${second.id}`, message: CHANGED_SINCE_REVIEW },
+      ]);
+      expect(readFileSync(path, "utf8")).toBe(before);
+    });
+
     it.each([
       {
         name: "an id not in the file",
-        switches: { "not-there": true },
+        switches: { "not-there": { enabled: true, fingerprint: "" } },
         message: /not in the file/,
       },
       {
         name: "a switch while the list has a problem",
         text: '{ "providers": { "custom": [{ "id": "broken" }] } }',
-        switches: { broken: true },
+        switches: { broken: { enabled: true, fingerprint: "" } },
         message: /fix settings\.jsonc first/,
       },
     ])("refuses $name and writes nothing", async ({ text, switches, message }) => {
@@ -359,6 +383,16 @@ describe("saveSettings", () => {
       expect(result.issues.map((issue) => issue.message).join("\n")).toMatch(message);
       expect(readFileSync(path, "utf8")).toBe(before);
     });
+  });
+
+  it("refuses to edit a file of a version it does not write", async () => {
+    const path = writeSettings('{ "version": 7, "words": { "percent": "used" } }');
+
+    const result = await saveSettings({ words: { reset: "short" } });
+
+    expect(result.ok).toBe(false);
+    expect(result.issues[0]?.message).toMatch(/version: expected a whole number equal to 6; fix/);
+    expect(readFileSync(path, "utf8")).toBe('{ "version": 7, "words": { "percent": "used" } }');
   });
 
   it("refuses to edit a file with a syntax error", async () => {

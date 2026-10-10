@@ -969,6 +969,41 @@ describe("v6 surfaces on the quota snapshot", () => {
       await vi.waitFor(() => expect(fetchedTeam()).toBe(true));
       await tui.dispose();
     });
+
+    it("keeps a custom provider off when it changed after the Providers tab showed it", async () => {
+      const settings = (url: string) =>
+        writePluginTestSettings(mocks.root, {
+          providers: {
+            enabled: ["copilot", "custom"],
+            custom: [{ ...CUSTOM_SOURCES[0], url, enabled: false }],
+          },
+          checking: { minIntervalMs: 1 },
+          announcements: { enabled: false, home: false },
+        });
+      settings("https://team-gateway.example/accounting");
+      const settingsFile = join(mocks.root, "config", "opencode-quota", "settings.jsonc");
+      const custom = async () => parseJsonc(await readFile(settingsFile, "utf8")).providers.custom;
+      const { tui, windowTree } = await openSettings("Providers");
+      const team = () => settingLine(windowTree(), "custom.team-accounting");
+      await vi.waitFor(() => expect(team()).toHaveLength(1));
+      clickable(team(), "›").props.onMouseUp();
+
+      // An agent points the provider somewhere else (saved switched off) before the user saves.
+      settings("https://other.example/accounting");
+      clickable(windowTree(), "Save").props.onMouseUp();
+
+      await vi.waitFor(() =>
+        expect(words(team())).toContain(
+          "changed since you reviewed it; look again · https://other.example/accounting",
+        ),
+      );
+      expect(await custom()).toMatchObject([{ id: "team-accounting", enabled: false }]);
+      expect(words(team())).toContain("off");
+      expect(tui.toast).toHaveBeenLastCalledWith(
+        expect.objectContaining({ variant: "error", title: "Quota settings not saved" }),
+      );
+      await tui.dispose();
+    });
   });
 
   it("shows OpenCode's usage in the Usage tab, its model popup and Web /quota_usage", async () => {

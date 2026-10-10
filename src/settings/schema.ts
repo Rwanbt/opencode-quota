@@ -3,6 +3,7 @@
  * reading, saving and the agent tools all come from it, so a value is valid in one place exactly
  * when it is valid in the others.
  */
+import { createHash } from "node:crypto";
 import { isAbsolute } from "node:path";
 import type { Node } from "jsonc-parser";
 import { getNodeValue } from "jsonc-parser";
@@ -428,7 +429,24 @@ export type CustomProviderSwitch = {
   enabled: boolean;
   /** Where it sends its key, and which key; null for a local estimate, which sends nothing. */
   request: ReturnType<typeof describeQuotaProviderRequest>;
+  /** `customProviderFingerprint`: switching it on sends it back, so it is this definition. */
+  fingerprint: string;
 };
+
+/** Why a custom provider is not switched on: its definition is not the one the user saw. */
+export const CHANGED_SINCE_REVIEW = "changed since you reviewed it; look again";
+
+/**
+ * A hash of what the user checks before switching a custom provider on (`request`) and of the
+ * fields that decide where its request goes and which key it reads.
+ */
+export function customProviderFingerprint(definition: QuotaProviderDefinition): string {
+  const { mode, providerId } = definition;
+  const sent =
+    definition.mode === "remote-api" ? [definition.url, definition.apiKeyEnv ?? null] : [];
+  const seen = [describeQuotaProviderRequest(definition), mode, providerId, ...sent];
+  return createHash("sha256").update(JSON.stringify(seen)).digest("hex");
+}
 
 /** The settings a client shows and may change, for the quota window's Words and Providers tabs. */
 export type ClientSettings = {
@@ -460,6 +478,7 @@ export function clientSettings(settings: Settings): ClientSettings {
       label: definition.label,
       enabled: definition.enabled !== false,
       request: describeQuotaProviderRequest(definition),
+      fingerprint: customProviderFingerprint(definition),
     }));
   return { values, providers, custom };
 }

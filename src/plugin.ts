@@ -338,7 +338,11 @@ export const QuotaToastPlugin = Plugin.define({
         }),
       downloadPrices: () =>
         logRpcFailure("downloadPrices", async () => downloadPrices(loaded.settings.pricing.source)),
-      settings: () => logRpcFailure("settings", async () => clientSettings(loaded.settings)),
+      // Read now, so a custom provider changed a moment ago shows as it is before a switch-on.
+      settings: () =>
+        logRpcFailure("settings", async () =>
+          clientSettings((await loadSettings({ projectDir })).settings),
+        ),
       // The watch sees the save too; reading the file now answers with the new settings in use.
       // `customEnabled` is the user's switch in the quota window; no agent tool calls this.
       saveSettings: (input) =>

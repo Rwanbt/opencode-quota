@@ -355,7 +355,7 @@ describe("server quota RPC", () => {
     const settings = (await call("settings", {})) as {
       values: Record<string, unknown>;
       providers: Array<{ id: string; label: string }>;
-      custom: unknown[];
+      custom: Array<{ fingerprint: string }>;
     };
 
     expect(settings.values).toMatchObject({ "providers.enabled": ["copilot"] });
@@ -373,17 +373,27 @@ describe("server quota RPC", () => {
           key: 'environment variable MY_GATEWAY_KEY, else OpenCode\'s API key for provider "my-gateway"',
           insecure: true,
         },
+        fingerprint: expect.stringMatching(/^[0-9a-f]{64}$/),
       },
     ]);
 
+    const fingerprint = settings.custom[0]?.fingerprint;
     await expect(
-      call("saveSettings", { patch: {}, customEnabled: { "my-gateway": true } }),
+      call("saveSettings", {
+        patch: {},
+        customEnabled: { "my-gateway": { enabled: true, fingerprint } },
+      }),
     ).resolves.toEqual({ ok: true, issues: [] });
     expect(parseJsonc(await readFile(SETTINGS_FILE, "utf8")).providers.custom).toEqual([
       { ...gateway, enabled: true },
     ]);
     expect(((await call("settings", {})) as typeof settings).custom).toMatchObject([
       { id: "my-gateway", enabled: true },
+    ]);
+    // A definition changed on disk shows at once, before the settings watch sees it.
+    useSettings({ providers: { custom: [{ ...gateway, url: "https://other.example/quota" }] } });
+    expect(((await call("settings", {})) as typeof settings).custom).toMatchObject([
+      { request: { url: "https://other.example/quota" } },
     ]);
   });
 

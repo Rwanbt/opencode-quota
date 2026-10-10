@@ -6,13 +6,23 @@
  * (percent style, reset style, …) are the server's and come with the snapshot.
  *
  * `FIELDS` is the one table of the plain settings: each line of the quota window's Settings
- * tabs, with its default and the values a stored setting may hold. While you edit, the surfaces
- * draw the saved settings with your changes on top, until Save stores them or Discard drops them.
+ * tabs, with its default and the values a stored setting may hold. Its Words and Providers lines
+ * are the server's settings.jsonc instead (their defaults and values come from
+ * `SETTINGS_SCHEMA`). While you edit, the surfaces draw the saved settings with your changes on
+ * top, until Save stores them or Discard drops them.
  */
 import { createSignal } from "solid-js";
+import type { Words } from "../core/types.js";
 import { isQuotaWindow } from "../core/windows.js";
 import type { DisplayImport } from "../settings/index.js";
-import { type BarShape, barParts } from "../view/format.js";
+import { checkSetting, SETTINGS_SCHEMA, type SettingRule } from "../settings/schema.js";
+import {
+  type BarShape,
+  barParts,
+  DEFAULT_WORDS,
+  formatDuration,
+  percentText,
+} from "../view/format.js";
 import type { RowSettings, Surface, SurfaceRows, WindowChoice } from "../view/select.js";
 import type { ColorRole, Layout, StatusLevel } from "../view/text.js";
 
@@ -178,7 +188,7 @@ export function defaultDisplaySettings(): DisplaySettings {
     window: {},
     colors: {},
   };
-  for (const field of FIELDS) putAt(settings, field.path.split("."), field.initial);
+  for (const field of DISPLAY_FIELDS) putAt(settings, field.path.split("."), field.initial);
   return settings as DisplaySettings;
 }
 
@@ -189,7 +199,7 @@ export function defaultDisplaySettings(): DisplaySettings {
 export function readDisplaySettings(stored: unknown): DisplaySettings {
   const settings = defaultDisplaySettings();
   const from = isRecord(stored) && isRecord(stored.settings) ? stored.settings : {};
-  for (const field of FIELDS) {
+  for (const field of DISPLAY_FIELDS) {
     const value = valueAt(from, field.path);
     if (!field.color && fieldHolds(field, value)) putAt(settings, field.path.split("."), value);
   }
@@ -209,7 +219,7 @@ export function readDisplaySettings(stored: unknown): DisplaySettings {
 // ---------------------------------------------------------------------------------------------
 // The Settings tabs: one line per setting, every tab from this table.
 
-/** The quota window's Settings tabs; Words and Providers edit server settings (`server-settings.ts`). */
+/** The quota window's Settings tabs; Words and Providers edit server settings. */
 export type SettingsTab =
   | "sidebar"
   | "collapsed"
@@ -224,17 +234,19 @@ export function isSurfaceTab(tab: SettingsTab): tab is Surface {
   return SURFACES.includes(tab as Surface);
 }
 
-/** What a setting line holds; undefined only for a color that follows the theme. */
-export type FieldValue = string | number | boolean | undefined;
+/** What a setting line holds; undefined only for a color that follows the theme, null for unset. */
+export type FieldValue = string | number | boolean | null | undefined;
 
-export type PresetName = "layout" | "toast";
+export type PresetName = "layout" | "toast" | "words";
 
 /**
- * One setting line: ‹ › step through `values`; a color line also takes a typed "#rrggbb". Its
- * `path` in the display settings ("layout.barWidth") is also its id.
+ * One setting line: ‹ › step through `values`; a color line also takes a typed "#rrggbb", a
+ * line with a `placeholder` a typed number. Its `path` ("layout.barWidth") is also its id.
  */
 export type Field = {
   path: string;
+  /** Where it is saved: plugin storage, or the server's settings.jsonc (`path` is its key). */
+  store: "display" | "server";
   tab: SettingsTab;
   title: string;
   initial: FieldValue;
@@ -251,10 +263,17 @@ export type Field = {
   /** The preset on top of the tab sets this line. */
   preset?: PresetName;
   color?: true;
+  /** A number you type ("a dollar amount"); nothing typed is null. */
+  placeholder?: string;
+  /** On the Providers tab: nested under this provider's tick, while it is ticked. */
+  provider?: string;
 };
 
 type Show = (value: FieldValue) => string;
-type FieldOptions = Pick<Field, "valid" | "choices" | "group" | "note" | "preset">;
+type FieldOptions = Pick<
+  Field,
+  "valid" | "choices" | "group" | "note" | "preset" | "placeholder" | "provider"
+>;
 
 function fieldHolds(field: Field, value: unknown): boolean {
   return field.valid ? field.valid(value) : field.values.includes(value as FieldValue);
@@ -275,7 +294,7 @@ function listField(
   show: Show,
   options: FieldOptions = {},
 ): Field {
-  return { path, tab: tabOf(path), title, initial, values, show, ...options };
+  return { path, store: "display", tab: tabOf(path), title, initial, values, show, ...options };
 }
 
 const onOff = (off: string, on: string) => (value: FieldValue) => (value ? on : off);
@@ -296,6 +315,25 @@ function numberField(
 ): Field {
   const valid = (value: unknown) => isWhole(value, min, max);
   return listField(path, title, initial, values, show, { valid, ...options });
+}
+
+/**
+ * A line of the server's settings.jsonc, on Words or Providers. Its default and its values (a
+ * choice, or off and on) come from SETTINGS_SCHEMA; a number line names the `values` it steps
+ * through, or none when you type it.
+ */
+function serverField(
+  path: keyof typeof SETTINGS_SCHEMA,
+  title: string,
+  show: Show,
+  options: FieldOptions & { values?: readonly number[] } = {},
+): Field {
+  const rule: SettingRule = SETTINGS_SCHEMA[path];
+  const values =
+    rule.kind === "choice" ? rule.values : rule.kind === "boolean" ? [false, true] : [];
+  const tab = path.startsWith("words.") ? "words" : "providers";
+  const initial = rule.default as FieldValue;
+  return { path, store: "server", tab, title, initial, values, show, ...options };
 }
 
 /** One switch per place: the Limits tab always shows the pace. */
@@ -347,6 +385,14 @@ const QUICK_LOOK_TITLES: Record<QuickLookForm, string> = {
 };
 const REPLY_TOASTS = ["off", "always", "low"];
 const NOTICE_TOASTS = ["off", "weekly", "all"];
+const MINUTE_MS = 60_000;
+/** A reset 2h 14m away and one 5d 3h 20m away, as each reset style writes them. */
+const RESET_EXAMPLES_MS = [134 * MINUTE_MS, 7_400 * MINUTE_MS];
+const named = (names: Record<string, string>) => (value: FieldValue) =>
+  names[String(value)] ?? String(value);
+const usd = (unset: string) => (value: FieldValue) =>
+  typeof value === "number" ? `$${value} a month` : unset;
+const CURSOR = { provider: "cursor" } as const;
 const SHOW = {
   detail: (value) => STATUS_DETAILS[value as StatusDetail],
   width: (value) => (value ? `up to ${value} columns` : "all the free room"),
@@ -359,6 +405,20 @@ const SHOW = {
   gap: (value) => (value ? "1 empty line" : "nothing"),
   separator: (value) => (String(value).trim() ? `"${String(value).trim()}"` : "spaces"),
   quickLook: (value) => QUICK_LOOK_TITLES[value as QuickLookForm],
+  percent: (value) =>
+    percentText({ ...DEFAULT_WORDS, percent: value as Words["percent"] }, 58, true),
+  reset: (value) =>
+    RESET_EXAMPLES_MS.map((ms) => formatDuration(ms, value as Words["reset"], 1)).join(" · "),
+  decimals: (value) =>
+    `${value} (${formatDuration(RESET_EXAMPLES_MS[0] as number, "decimal", Number(value))})`,
+  minutes: (value) => `every ${Number(value) / MINUTE_MS} min`,
+  seconds: (value) => `after ${Number(value) / 1_000} s`,
+  days: (value) => (value === 1 ? "every day" : `every ${value} days`),
+  day: (value) => (typeof value === "number" ? `day ${value}` : "calendar month"),
+  rows: named({ summary: "main rows only", detailed: "all rows" }),
+  models: named({ false: "all", true: "current model's only" }),
+  tokens: named({ current: "this session", tree: "with subagents" }),
+  limitHit: named({ false: "retry like normal", true: "wait for the reset" }),
 } satisfies Record<string, Show>;
 // "Getting low" stays at or above "almost out", so ‹ › skip the values that would break that.
 const warningChoices = (settings: DisplaySettings) =>
@@ -462,7 +522,54 @@ export const FIELDS: readonly Field[] = [
     }),
     tab: "layout",
   },
+  serverField("words.percent", "Percent", SHOW.percent, { group: "Numbers", preset: "words" }),
+  serverField("words.reset", "Reset times", SHOW.reset, { preset: "words" }),
+  serverField("words.resetDecimals", "Decimals", SHOW.decimals, {
+    note: "for the decimal reset times",
+    values: [0, 1, 2],
+  }),
+  serverField("words.detail", "Extra rows", SHOW.rows, { group: "What shows" }),
+  serverField("words.onlyCurrentModel", "Providers shown", SHOW.models),
+  serverField("words.sessionTokens", "Session tokens count", SHOW.tokens),
+  serverField("words.runsOut", "Runs out in …", onOff("off", "on"), {
+    group: "Web, Desktop and CLI text",
+    note: "the sidebar, status line and toasts have their own switch",
+  }),
+  serverField("providers.cursor.plan", "Plan", named({}), CURSOR),
+  serverField("providers.cursor.includedApiUsd", "Included API budget", usd("from the plan"), {
+    ...CURSOR,
+    placeholder: "a dollar amount",
+  }),
+  serverField("providers.cursor.billingCycleStartDay", "Billing day", SHOW.day, {
+    ...CURSOR,
+    placeholder: "a day 1-28",
+  }),
+  serverField("providers.opencode.monthlyLimitUsd", "Monthly budget", usd("not set"), {
+    provider: "opencode",
+    placeholder: "a dollar amount",
+  }),
+  serverField("checking.minIntervalMs", "Check for new numbers", SHOW.minutes, {
+    group: "Checking",
+    values: [1, 2, 5, 10, 15, 30].map((count) => count * MINUTE_MS),
+  }),
+  serverField("checking.requestTimeoutMs", "Slow provider: give up", SHOW.seconds, {
+    values: [5_000, 8_000, 12_000, 20_000, 30_000],
+  }),
+  serverField("checking.waitForQuotaReset", "A model hits its limit", SHOW.limitHit),
+  serverField(
+    "pricing.source",
+    "Prices from",
+    named({ auto: "newest list", bundled: "built-in list only", runtime: "downloaded list only" }),
+    { group: "Token prices" },
+  ),
+  serverField("pricing.autoRefreshDays", "Download new prices", SHOW.days, { values: [1, 7, 30] }),
+  serverField("export.enabled", "Quota file (JSON)", onOff("off", "on"), {
+    group: "For other tools",
+    note: "for status bars and scripts; the opencode-quota CLI works either way",
+  }),
+  serverField("telemetry.enabled", "OpenTelemetry metrics", onOff("off", "on")),
 ];
+const DISPLAY_FIELDS = FIELDS.filter((field) => field.store === "display");
 
 /** A line on top of a tab that sets the lines marked with its name in one step. */
 export type Preset = {
@@ -520,6 +627,16 @@ export const PRESETS: Record<PresetName, Preset> = {
       "every reply": toastChoice("always", true, true, "all"),
     },
   },
+  words: {
+    tab: "words",
+    title: "Wording",
+    drives: "the 2 lines under it",
+    choices: {
+      normal: { "words.percent": "left", "words.reset": "exact" },
+      short: { "words.percent": "bare", "words.reset": "compact" },
+      "spelled out": { "words.percent": "remaining", "words.reset": "exact" },
+    },
+  },
 };
 
 /** The value `delta` steps from `current` in `values`, wrapping; an unknown one counts as the first. */
@@ -528,15 +645,12 @@ export function stepIn<T>(values: readonly T[], current: T, delta: number): T {
   return values[(index + delta + values.length) % values.length] as T;
 }
 
-/** ‹ or ›: the field's previous or next value that fits the other settings. */
-export function cycleField(
-  settings: DisplaySettings,
-  field: Field,
-  delta: number,
-): DisplaySettings {
-  const values = field.choices?.(settings) ?? field.values;
-  const next = stepIn(values, valueAt(settings, field.path), delta);
-  return setIn(settings, field.path.split("."), next);
+/** A typed number the server takes for the field ("$" allowed); null for nothing typed. */
+export function typedNumber(field: Field, text: string): FieldValue {
+  const trimmed = text.trim().replace(/^\$/u, "");
+  if (!trimmed) return null;
+  const value = Number(trimmed);
+  return checkSetting(field.path, value).issues.length === 0 ? value : undefined;
 }
 
 /** A typed "#89b4fa" (the # is optional); nothing typed puts the theme's color back. */
@@ -546,27 +660,25 @@ export function typedColor(settings: DisplaySettings, field: Field, text: string
   return setIn(settings, field.path.split("."), hex ? `#${hex}` : undefined);
 }
 
-/** The preset choice whose values all match the settings; undefined is "your own". */
-export function presetChoice(settings: DisplaySettings, name: PresetName): string | undefined {
+/** The preset choice whose values all match the lines' values; undefined is "your own". */
+export function presetChoice(
+  name: PresetName,
+  value: (path: string) => unknown,
+): string | undefined {
   return Object.entries(PRESETS[name].choices).find(([, values]) =>
-    Object.entries(values).every(([path, value]) => valueAt(settings, path) === value),
+    Object.entries(values).every(([path, wanted]) => value(path) === wanted),
   )?.[0];
 }
 
-/** ‹ or ›: the previous or next preset choice; from "your own", the first one. */
-export function cyclePreset(
-  settings: DisplaySettings,
+/** ‹ or ›: the values of the previous or next choice after `current`; from "your own", the first. */
+export function presetValues(
   name: PresetName,
+  current: string | undefined,
   delta: number,
-): DisplaySettings {
-  const choices = PRESETS[name].choices;
-  const current = presetChoice(settings, name);
-  const next =
-    current === undefined ? Object.keys(choices)[0] : stepIn(Object.keys(choices), current, delta);
-  return Object.entries(choices[next as string] ?? {}).reduce(
-    (result, [path, value]) => setIn(result, path.split("."), value),
-    settings,
-  );
+): Readonly<Record<string, FieldValue>> {
+  const names = Object.keys(PRESETS[name].choices);
+  const next = current === undefined ? names[0] : stepIn(names, current, delta);
+  return PRESETS[name].choices[next as string] ?? {};
 }
 
 /** Your name for a row; nothing typed, or its own name, puts its own name back. */
@@ -585,7 +697,7 @@ export function renameRow(
  * rows and switches back (and Collapsed and Status line the preferred windows); row names stay.
  */
 export function resetTab(settings: DisplaySettings, tab: SettingsTab): DisplaySettings {
-  let next = FIELDS.filter((field) => field.tab === tab).reduce(
+  let next = DISPLAY_FIELDS.filter((field) => field.tab === tab).reduce(
     (result, field) => setIn(result, field.path.split("."), field.initial),
     settings,
   );
@@ -644,34 +756,45 @@ export function createDisplayStore(storage: DisplayStorage) {
     return store;
   };
   const [changes, setChanges] = createSignal<readonly Change[]>([]);
+  /** The changes a Save is writing; this window's changes go on top of them until it is done. */
+  const [saving, setSaving] = createSignal<readonly Change[]>([]);
   const saved = () => readDisplaySettings(open()[0]);
+  const base = () => (saving().length > 0 ? withChanges(saved(), saving()) : saved());
   /** The saved settings with this window's changes on top. The surfaces draw these. */
-  const shown = () => (changes().length > 0 ? withChanges(saved(), changes()) : saved());
+  const shown = () => (changes().length > 0 ? withChanges(base(), changes()) : base());
   return {
     saved,
     shown,
     /** Only the settings that end up different from the saved ones count as changes. */
     edit(change: (settings: DisplaySettings) => DisplaySettings): void {
-      setChanges(changesBetween(saved(), readDisplaySettings({ settings: change(shown()) })));
+      setChanges(changesBetween(base(), readDisplaySettings({ settings: change(shown()) })));
     },
     dirty: () => changesBetween(saved(), shown()).length > 0,
     /**
      * Writes the changes over what storage holds at that moment, so another TUI's saved
-     * settings stay. Changes made while it writes stay unsaved.
+     * settings stay, unless a newer plugin saved them. Changes made while it writes (one back
+     * to the old value too) stay unsaved.
      */
     async save(): Promise<void> {
       const pending = changes();
       if (pending.length === 0) return;
-      const version = open()[0].version;
-      if (typeof version === "number" && version > SETTINGS_VERSION) {
-        throw new Error(NEWER_SETTINGS);
+      let newer = false;
+      setSaving(pending);
+      setChanges([]);
+      try {
+        await open()[1]((value) => {
+          newer = typeof value.version === "number" && value.version > SETTINGS_VERSION;
+          if (newer) return;
+          const next = withChanges(readDisplaySettings(value), pending);
+          value.version = SETTINGS_VERSION;
+          value.settings = JSON.parse(JSON.stringify(next));
+        });
+      } finally {
+        const now = shown();
+        setSaving([]);
+        setChanges(changesBetween(saved(), now));
       }
-      await open()[1]((value) => {
-        const next = withChanges(readDisplaySettings(value), pending);
-        value.version = SETTINGS_VERSION;
-        value.settings = JSON.parse(JSON.stringify(next));
-      });
-      setChanges(changesBetween(saved(), shown()));
+      if (newer) throw new Error(NEWER_SETTINGS);
     },
     discard: () => setChanges([]),
   };

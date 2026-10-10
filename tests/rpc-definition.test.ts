@@ -238,15 +238,18 @@ describe("quota RPC definition", () => {
       );
     }
     await expectAccepted(methods.saveSettings.input, { patch: { words: { percent: "used" } } });
-    await expectAccepted(methods.saveSettings.input, { patch: {}, customEnabled: { gw: true } });
+    await expectAccepted(methods.saveSettings.input, {
+      patch: {},
+      customEnabled: { gw: { enabled: true, fingerprint: "abc" } },
+    });
     for (const value of [undefined, {}, { patch: null }, { patch: [] }]) {
       await expectRejected(methods.saveSettings.input, value, "input must carry a patch object");
     }
-    for (const customEnabled of [[], { gw: "yes" }, null]) {
+    for (const customEnabled of [[], { gw: true }, { gw: { enabled: true } }, null]) {
       await expectRejected(
         methods.saveSettings.input,
         { patch: {}, customEnabled },
-        "customEnabled must map provider ids to true or false",
+        "customEnabled must map provider ids to { enabled, fingerprint }",
       );
     }
     await expectAccepted(methods.saveSettings.output, { ok: false, issues: [] });

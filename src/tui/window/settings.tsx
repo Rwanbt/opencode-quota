@@ -1,8 +1,8 @@
 /** @jsxImportSource @opentui/solid */
 /**
- * The quota window's Settings tabs: Sidebar, Collapsed, Status line, Toast, Colors and Layout
- * edit the display settings (the field table in `display.ts`); Words and Providers edit the
- * server settings (the field table in `server-settings.ts`). The surface tabs also list the
+ * The quota window's Settings tabs, one line per field of `FIELDS` (`display.ts`): Sidebar,
+ * Collapsed, Status line, Toast, Colors and Layout edit the display settings; Words and Providers
+ * edit the server settings (`server-settings.ts`). The surface tabs also list the
  * snapshot's providers (and rows) as a tree you drag, hide and rename. While you edit, the real
  * sidebar, status line and toast show your changes (the words too) and mark the selected line.
  * Save (ctrl+s) stores the display settings in plugin storage and sends the server ones with
@@ -23,27 +23,29 @@ import type { ProviderSnapshot, QuotaRow, QuotaSnapshot } from "../../core/types
 import { WINDOWS } from "../../core/windows.js";
 import { QuotaRpc } from "../../rpc.js";
 import type { CustomProviderSwitch } from "../../settings/index.js";
+import { CHANGED_SINCE_REVIEW } from "../../settings/schema.js";
 import { DEFAULT_WORDS, fit, percentText, resetText, rowValueText } from "../../view/format.js";
 import { pickRow, type Surface, type SurfaceRows, type WindowChoice } from "../../view/select.js";
 import type { ColorRole } from "../../view/text.js";
 import { quotaCallOptions, rpcErrorMessage } from "../client.js";
 import {
   COLOR_NAMES,
-  cycleField,
-  cyclePreset,
   type DisplayStore,
   FIELDS,
   type Field,
+  type FieldValue,
   isSurfaceTab,
   PRESETS,
   type PresetName,
   presetChoice,
+  presetValues,
   renameRow,
   resetTab,
   type SettingsTab,
   setIn,
   stepIn,
   typedColor,
+  typedNumber,
   valueAt,
 } from "../display.js";
 import {
@@ -51,13 +53,7 @@ import {
   foundProviderIds,
   isTicked,
   PROVIDERS_KEY,
-  SERVER_FIELDS,
-  type ServerField,
-  type ServerTab,
-  type ServerValue,
-  steppedWording,
   withTick,
-  wordingChoice,
 } from "../server-settings.js";
 import type { SurfaceHost } from "../sidebar.js";
 import { namedColor, roleColor } from "../theme.js";
@@ -133,9 +129,12 @@ export const SETTINGS_TABS: ReadonlyArray<{
   },
 ];
 
-function isServerTab(tab: SettingsTab): tab is ServerTab {
+function isServerTab(tab: SettingsTab): boolean {
   return tab === "words" || tab === "providers";
 }
+
+const isServerPath = (path: string) =>
+  FIELDS.some((field) => field.path === path && field.store === "server");
 
 export function isSettingsTab(tab: string | undefined): tab is SettingsTab {
   return SETTINGS_TABS.some((item) => item.tab === tab);
@@ -326,11 +325,27 @@ export function createSettingsEditor(api: WindowHost, display: DisplayStore) {
     display.discard();
     server.discard();
   };
+  /** A line's value, from the display settings or the server ones. */
+  const lineValue = (path: string): FieldValue =>
+    isServerPath(path) ? (server.value(path) as FieldValue) : valueAt(shown(), path);
+  /** Sets each line's value where it is stored. */
+  function setValues(values: Readonly<Record<string, FieldValue>>): void {
+    const own = Object.entries(values).filter(([path]) => !isServerPath(path));
+    for (const [path, value] of Object.entries(values)) {
+      if (isServerPath(path)) server.set(path, value);
+    }
+    if (own.length === 0) return;
+    display.edit((settings) =>
+      own.reduce((next, [path, value]) => setIn(next, path.split("."), value), settings),
+    );
+  }
   /** A tab's lines back to their defaults; the custom provider switches stay as they are. */
   function resetTabLines(settingsTab: SettingsTab): void {
     display.edit((settings) => resetTab(settings, settingsTab));
-    for (const field of SERVER_FIELDS) {
-      if (field.tab === settingsTab) server.set(field.key, field.initial);
+    for (const field of FIELDS) {
+      if (field.store === "server" && field.tab === settingsTab) {
+        server.set(field.path, field.initial);
+      }
     }
     if (settingsTab === "providers") server.set(PROVIDERS_KEY, "auto");
   }
@@ -358,22 +373,47 @@ export function createSettingsEditor(api: WindowHost, display: DisplayStore) {
     editSurface(surface, (rows) => ({ ...rows, enabled: !rows.enabled }));
   }
 
+  /** What typing into a line does: a color for a color line, a number for a server number. */
+  function typedValue(field: Field, role: ColorRole | undefined): Typed | undefined {
+    if (role) {
+      return {
+        placeholder: "#rrggbb",
+        hint: "Type a color like #89b4fa, then enter · enter with nothing typed = the theme's color · esc stop",
+        apply: (text) => display.edit((settings) => typedColor(settings, field, text)),
+      };
+    }
+    const placeholder = field.placeholder;
+    if (!placeholder) return undefined;
+    return {
+      placeholder,
+      hint: `Type ${placeholder}, then enter · enter with nothing typed = ${field.show(null)} · esc stop`,
+      apply: (text) => {
+        const value = typedNumber(field, text);
+        if (value !== undefined) server.set(field.path, value);
+      },
+    };
+  }
+
+  /** A field's line: ‹ › step through its values, or you type one. */
   function fieldLine(field: Field): OptionLine {
     const role = field.color ? (field.path.slice("colors.".length) as ColorRole) : undefined;
-    const typed = {
-      placeholder: "#rrggbb",
-      hint: "Type a color like #89b4fa, then enter · enter with nothing typed = the theme's color · esc stop",
-      apply: (text: string) => display.edit((settings) => typedColor(settings, field, text)),
-    };
+    const value = () => lineValue(field.path);
     return {
       id: field.path,
       group: field.group,
       title: field.title,
-      value: () => field.show(valueAt(shown(), field.path)),
-      cycle: (delta) => display.edit((settings) => cycleField(settings, field, delta)),
-      typed: role ? typed : undefined,
+      depth: field.provider ? 2 : 0,
+      value: () => field.show(value()),
+      cycle:
+        field.values.length > 0
+          ? (delta) => {
+              const values = field.choices?.(shown()) ?? field.values;
+              setValues({ [field.path]: stepIn(values, value(), delta) });
+            }
+          : undefined,
+      typed: typedValue(field, role),
       note: () =>
-        field.preset && presetChoice(shown(), field.preset) !== undefined
+        field.preset && presetChoice(field.preset, lineValue) !== undefined
           ? "from the preset"
           : (field.note ?? ""),
       swatches: role ? () => [roleColor(theme(), shown(), role, 60)] : undefined,
@@ -381,11 +421,12 @@ export function createSettingsEditor(api: WindowHost, display: DisplayStore) {
   }
 
   function presetLine(name: PresetName): OptionLine {
+    const choice = () => presetChoice(name, lineValue);
     return {
       id: `preset.${name}`,
       title: PRESETS[name].title,
-      value: () => presetChoice(shown(), name) ?? "your own",
-      cycle: (delta) => display.edit((settings) => cyclePreset(settings, name, delta)),
+      value: () => choice() ?? "your own",
+      cycle: (delta) => setValues(presetValues(name, choice(), delta)),
       note: () => `sets ${PRESETS[name].drives}`,
     };
   }
@@ -410,64 +451,27 @@ export function createSettingsEditor(api: WindowHost, display: DisplayStore) {
     },
   ];
 
-  /** A plain server setting's line: ‹ › step through its values, or you type one. */
-  function serverFieldLine(field: ServerField): OptionLine {
-    const value = () => server.value(field.key) as ServerValue;
-    const typed = field.typed;
-    return {
-      id: field.key,
-      group: field.group,
-      title: field.title,
-      depth: field.provider ? 2 : 0,
-      value: () => field.show(value()),
-      cycle:
-        field.values.length > 0
-          ? (delta) => server.set(field.key, stepIn(field.values, value(), delta))
-          : undefined,
-      typed: typed && {
-        placeholder: typed.placeholder,
-        hint: `Type ${typed.placeholder}, then enter · enter with nothing typed = ${field.show(null)} · esc stop`,
-        apply: (text) => {
-          const parsed = typed.parse(text);
-          if (parsed !== undefined) server.set(field.key, parsed);
-        },
-      },
-      note: () =>
-        field.preset && wordingChoice(server.value) !== undefined
-          ? "from the preset"
-          : (field.note ?? ""),
-    };
-  }
-
-  const wordingLine: OptionLine = {
-    id: "preset.words",
-    title: "Wording",
-    value: () => wordingChoice(server.value) ?? "your own",
-    cycle: (delta) => {
-      for (const [key, value] of Object.entries(steppedWording(server.value, delta))) {
-        server.set(key, value);
-      }
-    },
-    note: () => "sets the 2 lines under it",
-  };
-
-  /** A custom provider's switch, its web address and the key it would send. */
+  /**
+   * A custom provider's switch, its web address and the key it would send; marked when the server
+   * would not switch it on because it changed since the window showed it.
+   */
   function customLine(entry: CustomProviderSwitch, first: boolean): OptionLine {
     const on = () => server.customOn(entry.id);
     const request = entry.request;
+    const changed = server.changedSinceReview(entry.id);
+    const where = !request
+      ? "a local estimate: sends nothing"
+      : request.insecure
+        ? `${request.url}  plain http: the key travels unencrypted`
+        : request.url;
     return {
       id: `custom.${entry.id}`,
       group: first ? "Custom providers (added in settings.jsonc)" : undefined,
       title: entry.label,
       value: () => (on() ? "on" : "off"),
       cycle: () => server.switchCustom(entry.id, !on()),
-      note: () =>
-        !request
-          ? "a local estimate: sends nothing"
-          : request.insecure
-            ? `${request.url}  plain http: the key travels unencrypted`
-            : request.url,
-      warning: request?.insecure,
+      note: () => (changed ? `${CHANGED_SINCE_REVIEW} · ${where}` : where),
+      warning: changed || request?.insecure,
       detail: request ? `sends ${request.key}` : undefined,
     };
   }
@@ -508,28 +512,20 @@ export function createSettingsEditor(api: WindowHost, display: DisplayStore) {
         value: () => (ticked ? "checked" : enabled() === "auto" ? "not found" : "skipped"),
         cycle: () => server.set(PROVIDERS_KEY, withTick(enabled(), ids, found, id, !ticked)),
       };
-      const nested = ticked ? SERVER_FIELDS.filter((field) => field.provider === id) : [];
-      return [tick, ...nested.map(serverFieldLine)];
+      const nested = ticked ? FIELDS.filter((field) => field.provider === id) : [];
+      return [tick, ...nested.map(fieldLine)];
     });
     return [
       ...loaded.custom.map((entry, index) => customLine(entry, index === 0)),
       check,
       ...ticks,
-      ...SERVER_FIELDS.filter((field) => field.tab === "providers" && !field.provider).map(
-        serverFieldLine,
-      ),
+      ...FIELDS.filter((field) => field.tab === "providers" && !field.provider).map(fieldLine),
     ];
   }
 
   function optionLines(settingsTab: SettingsTab, snapshot?: QuotaSnapshot): OptionLine[] {
     if (settingsTab === "providers") return providerLines(snapshot);
-    if (settingsTab === "words") {
-      if (!server.saved()) return [];
-      return [
-        wordingLine,
-        ...SERVER_FIELDS.filter((field) => field.tab === "words").map(serverFieldLine),
-      ];
-    }
+    if (settingsTab === "words" && !server.saved()) return [];
     const presets = (Object.keys(PRESETS) as PresetName[]).filter(
       (name) => PRESETS[name].tab === settingsTab,
     );
@@ -546,7 +542,7 @@ export function createSettingsEditor(api: WindowHost, display: DisplayStore) {
   }
 
   /** Reads the server settings each time a Words or Providers tab shows. */
-  async function loadServer(settingsTab: ServerTab): Promise<void> {
+  async function loadServer(settingsTab: SettingsTab): Promise<void> {
     try {
       await server.load();
     } catch (error) {
