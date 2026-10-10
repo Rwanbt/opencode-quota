@@ -1,4 +1,7 @@
+import { mkdtempSync } from "node:fs";
 import { rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { QuotaRow } from "../src/core/types.js";
@@ -11,7 +14,8 @@ import {
   makeQuotaToastTestConfig,
 } from "./helpers/plugin-test-harness.js";
 
-const TEST_RUNTIME_ROOT = "/tmp/opencode-quota-lib-quota-retry-wait-tests";
+// A fresh folder per run, so test runs in sibling checkouts never share it.
+const TEST_RUNTIME_ROOT = mkdtempSync(join(tmpdir(), "opencode-quota-retry-wait-"));
 const NOW_MS = Date.parse("2026-01-01T00:00:00.000Z");
 const MINUTE_MS = 60_000;
 const TEST_ACCOUNTING = {
@@ -148,7 +152,11 @@ describe("resolveQuotaResetRetryDelayMs", () => {
     client: {
       config: {
         get: async () => ({ data: {} }),
-        providers: async () => ({ data: { providers: [{ id: "zai-coding-plan" }] } }),
+        providers: async () => ({
+          data: {
+            providers: [{ id: "zai-coding-plan" }, { id: "gateway-a" }, { id: "gateway-b" }],
+          },
+        }),
       },
     },
     roots: {
@@ -239,6 +247,63 @@ describe("resolveQuotaResetRetryDelayMs", () => {
     vi.setSystemTime(NOW_MS + MINUTE_MS);
     zai.fetch.mockRejectedValueOnce(new Error("fetch failed"));
     await expect(resolveQuotaResetRetryDelayMs(host, limitEvent)).resolves.toBeUndefined();
+  });
+
+  it("counts only the custom definitions that serve the retried model", async () => {
+    const customWindow = (sourceId: string, label: string, percent: number, resetMs: number) => ({
+      accounting: { ...TEST_ACCOUNTING, ownership: "user_configured" as const, sourceId },
+      name: `${label} 5h`,
+      group: label,
+      label: "5h:",
+      percentRemaining: percent,
+      resetTimeIso: at(resetMs),
+    });
+    let cacheTtlMs: number | undefined;
+    const custom = {
+      ...makeProvider("quota-providers", [], () => true),
+      fetch: vi.fn(async (ctx: { config: { providerCacheTtlMs?: number } }) => {
+        cacheTtlMs = ctx.config.providerCacheTtlMs;
+        return result([
+          customWindow("gateway-a", "Gateway A", 40, 90 * MINUTE_MS),
+          customWindow("gateway-b", "Gateway B", 0, 10 * MINUTE_MS),
+        ]);
+      }),
+    };
+    const definition = (id: string) => ({
+      id,
+      providerId: id,
+      label: id,
+      mode: "remote-api" as const,
+      format: "quota-v1" as const,
+      url: `https://${id}.example/quota`,
+    });
+    mocks.getProviders.mockReturnValue([custom]);
+    mocks.loadConfig.mockResolvedValue(
+      makeQuotaToastTestConfig({
+        enabledProviders: ["quota-providers"],
+        minIntervalMs: 60 * MINUTE_MS,
+        quotaProviders: [definition("gateway-a"), definition("gateway-b")],
+      }),
+    );
+
+    const onA = { ...limitEvent, model: { id: "model-a", providerID: "gateway-a" } };
+    await expect(resolve(onA)).resolves.toBeUndefined();
+    const onB = { ...limitEvent, model: { id: "model-b", providerID: "gateway-b" } };
+    await expect(resolve(onB)).resolves.toBe(10 * MINUTE_MS + QUOTA_RESET_RETRY_BUFFER_MS);
+    // The store keeps the interval; the aggregate's own cache would return old rows as new.
+    expect(cacheTtlMs).toBe(0);
+  });
+
+  it("ignores a provider where one of the logins failed: its kept rows are old", async () => {
+    const zai = makeProvider("zai", [window("5h", 0, at(90 * MINUTE_MS))], () => true);
+    zai.fetch.mockResolvedValue({
+      ...result([window("5h", 0, at(90 * MINUTE_MS))]),
+      errors: [{ label: "[Z.ai Work]", message: "Token expired" }],
+    });
+    mocks.getProviders.mockReturnValue([zai]);
+    mocks.loadConfig.mockResolvedValue(makeQuotaToastTestConfig({ enabledProviders: ["zai"] }));
+
+    await expect(resolve(limitEvent)).resolves.toBeUndefined();
   });
 
   it("keeps OpenCode's decision when the setting is off", async () => {

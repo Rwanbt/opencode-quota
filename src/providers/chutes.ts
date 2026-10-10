@@ -1,12 +1,5 @@
-/**
- * Chutes AI provider wrapper.
- */
-
-import {
-  getChutesKeyDiagnostics,
-  hasChutesApiKeyConfigured,
-  queryChutesQuota,
-} from "../lib/chutes.js";
+import { API_KEY_VENDORS, getApiKeyDiagnostics, hasApiKey } from "../lib/api-key-resolver.js";
+import { queryChutesQuota } from "../lib/chutes.js";
 import type { QuotaProvider, QuotaProviderContext, QuotaProviderResult } from "../lib/entries.js";
 import { isCanonicalProviderAvailable } from "../lib/provider-availability.js";
 import { modelProviderIncludesAny } from "../lib/provider-model-matching.js";
@@ -23,7 +16,7 @@ export const chutesProvider: QuotaProvider = {
     });
     if (providerAvailable) return true;
 
-    return await hasChutesApiKeyConfigured();
+    return await hasApiKey(API_KEY_VENDORS.chutes);
   },
 
   matchesCurrentModel(model: string): boolean {
@@ -31,7 +24,7 @@ export const chutesProvider: QuotaProvider = {
   },
 
   async fetch(ctx: QuotaProviderContext): Promise<QuotaProviderResult> {
-    const diagnostics = await getChutesKeyDiagnostics().catch(() => ({
+    const diagnostics = await getApiKeyDiagnostics(API_KEY_VENDORS.chutes).catch(() => ({
       configured: false,
       source: null,
       checkedPaths: [],

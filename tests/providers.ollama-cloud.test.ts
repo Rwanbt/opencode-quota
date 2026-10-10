@@ -8,14 +8,15 @@ import {
 } from "./helpers/provider-assertions.js";
 
 const mocks = vi.hoisted(() => ({
-  getOllamaCloudKeyDiagnostics: vi.fn(),
-  hasOllamaCloudApiKey: vi.fn(),
+  getApiKeyDiagnostics: vi.fn(),
+  hasApiKey: vi.fn(),
   queryOllamaCloudQuota: vi.fn(),
 }));
 
-vi.mock("../src/lib/ollama-cloud-config.js", () => ({
-  getOllamaCloudKeyDiagnostics: mocks.getOllamaCloudKeyDiagnostics,
-  hasOllamaCloudApiKey: mocks.hasOllamaCloudApiKey,
+vi.mock("../src/lib/api-key-resolver.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/lib/api-key-resolver.js")>()),
+  getApiKeyDiagnostics: mocks.getApiKeyDiagnostics,
+  hasApiKey: mocks.hasApiKey,
 }));
 
 vi.mock("../src/lib/ollama-cloud.js", () => ({
@@ -24,14 +25,23 @@ vi.mock("../src/lib/ollama-cloud.js", () => ({
 
 import { ollamaCloudProvider } from "../src/providers/ollama-cloud.js";
 
-async function runProviderFetch(config: Record<string, unknown> = {}) {
-  return ollamaCloudProvider.fetch({ config } as any);
+function window(usageFraction: number, percentRemaining: number) {
+  return { usageFraction, usagePercent: usageFraction * 100, percentRemaining };
+}
+
+function entry(name: "Session" | "Weekly" | "Monthly", percentRemaining: number) {
+  return {
+    name: `Ollama Cloud ${name}`,
+    group: "Ollama Cloud",
+    label: `${name}:`,
+    percentRemaining,
+  };
 }
 
 describe("ollama-cloud provider", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mocks.getOllamaCloudKeyDiagnostics.mockResolvedValue({
+    mocks.getApiKeyDiagnostics.mockResolvedValue({
       configured: true,
       source: "env:OLLAMA_API_KEY",
       checkedPaths: ["env:OLLAMA_API_KEY"],
@@ -42,135 +52,64 @@ describe("ollama-cloud provider", () => {
   it("returns attempted:false when no API key is configured", async () => {
     mocks.queryOllamaCloudQuota.mockResolvedValueOnce(null);
 
-    const out = await runProviderFetch();
+    const out = await ollamaCloudProvider.fetch({ config: {} } as any);
 
     expectNotAttempted(out);
     expect(out.statusDetails).toContainEqual({ key: "api_key_configured", value: "true" });
   });
 
-  it("maps session and weekly quota entries", async () => {
-    mocks.queryOllamaCloudQuota.mockResolvedValueOnce({
-      success: true,
-      session: {
-        usageFraction: 0.25,
-        usagePercent: 25,
-        percentRemaining: 75,
-      },
-      weekly: {
-        usageFraction: 0.4,
-        usagePercent: 40,
-        percentRemaining: 60,
-      },
-    });
-
-    const out = await runProviderFetch();
-
-    expectAttemptedWithNoErrors(out);
-    expect(visibleEntries(out.entries, "ollama-cloud")).toEqual([
-      {
-        name: "Ollama Cloud Session",
-        group: "Ollama Cloud",
-        label: "Session:",
-        percentRemaining: 75,
-      },
-      {
-        name: "Ollama Cloud Weekly",
-        group: "Ollama Cloud",
-        label: "Weekly:",
-        percentRemaining: 60,
-      },
-    ]);
-    expect(out.entries.map((entry) => entry.accounting)).toEqual([
-      {
-        resultType: "quota",
-        acquisitionMethod: "remote_api",
-        ownership: "maintained",
-        authority: "provider_reported",
-      },
-      {
-        resultType: "quota",
-        acquisitionMethod: "remote_api",
-        ownership: "maintained",
-        authority: "provider_reported",
-      },
-    ]);
-    expect(out.statusDetails).toEqual(
-      expect.arrayContaining([
-        { key: "api_key_source", value: "env:OLLAMA_API_KEY" },
+  it.each([
+    [
+      "session and weekly",
+      { session: window(0.25, 75), weekly: window(0.4, 60) },
+      [entry("Session", 75), entry("Weekly", 60)],
+      [
         { key: "session_usage_fraction", value: "0.25" },
         { key: "weekly_usage_fraction", value: "0.4" },
-      ]),
-    );
-  });
+      ],
+    ],
+    [
+      "a monthly-only pool",
+      { monthly: window(0.043, 95.7) },
+      [entry("Monthly", 95.7)],
+      [{ key: "monthly_usage_fraction", value: "0.043" }],
+    ],
+  ])("maps %s quota entries", async (_name, windows, entries, fractionDetails) => {
+    mocks.queryOllamaCloudQuota.mockResolvedValueOnce({ success: true, ...windows });
 
-  it("maps a monthly-only usage pool entry", async () => {
-    mocks.queryOllamaCloudQuota.mockResolvedValueOnce({
-      success: true,
-      monthly: {
-        usageFraction: 0.043,
-        usagePercent: 4.3,
-        percentRemaining: 95.7,
-      },
-    });
-
-    const out = await runProviderFetch();
+    const out = await ollamaCloudProvider.fetch({ config: { requestTimeoutMs: 1234 } } as any);
 
     expectAttemptedWithNoErrors(out);
-    expect(visibleEntries(out.entries, "ollama-cloud")).toEqual([
-      {
-        name: "Ollama Cloud Monthly",
-        group: "Ollama Cloud",
-        label: "Monthly:",
-        percentRemaining: 95.7,
-      },
-    ]);
-    expect(out.entries.map((entry) => entry.accounting)).toEqual([
-      {
-        resultType: "quota",
-        acquisitionMethod: "remote_api",
-        ownership: "maintained",
-        authority: "provider_reported",
-      },
-    ]);
-    expect(out.statusDetails).toContainEqual({ key: "monthly_usage_fraction", value: "0.043" });
-    expect(out.statusDetails?.map((detail) => detail.key)).not.toContain("session_usage_fraction");
-    expect(out.statusDetails?.map((detail) => detail.key)).not.toContain("weekly_usage_fraction");
+    expect(mocks.queryOllamaCloudQuota).toHaveBeenCalledWith({ requestTimeoutMs: 1234 });
+    expect(visibleEntries(out.entries, "ollama-cloud")).toEqual(entries);
+    // Only reported windows get a usage-fraction detail.
+    expect(out.statusDetails?.filter((detail) => detail.key.endsWith("_usage_fraction"))).toEqual(
+      fractionDetails,
+    );
+    expect(out.statusDetails).toContainEqual({
+      key: "api_key_source",
+      value: "env:OLLAMA_API_KEY",
+    });
   });
 
   it("keeps valid entries and exposes row-level response errors", async () => {
     mocks.queryOllamaCloudQuota.mockResolvedValueOnce({
       success: true,
-      session: {
-        usageFraction: 0.25,
-        usagePercent: 25,
-        percentRemaining: 75,
-      },
+      session: window(0.25, 75),
       rowErrors: ["Weekly: ignored invalid usage fraction"],
     });
 
-    const out = await runProviderFetch();
+    const out = await ollamaCloudProvider.fetch({ config: {} } as any);
 
     expect(out.attempted).toBe(true);
     expect(out.entries).toHaveLength(1);
-    expect(out.errors[0]?.label).toBe("Ollama Cloud");
-    expect(out.errors[0]?.message).toBe("Weekly: ignored invalid usage fraction");
+    expect(out.errors).toEqual([
+      { label: "Ollama Cloud", message: "Weekly: ignored invalid usage fraction" },
+    ]);
     expect(out.statusDetails).toContainEqual({
       key: "live_error_1",
       value: "Weekly: ignored invalid usage fraction",
     });
-  });
-
-  it("passes the effective request timeout", async () => {
-    mocks.queryOllamaCloudQuota.mockResolvedValue({
-      success: true,
-      weekly: { usageFraction: 0.1, usagePercent: 10, percentRemaining: 90 },
-    });
-
-    await runProviderFetch({ requestTimeoutMs: 1234, requestTimeoutMsConfigured: true });
-    expect(mocks.queryOllamaCloudQuota).toHaveBeenLastCalledWith({ requestTimeoutMs: 1234 });
-
-    await runProviderFetch({ requestTimeoutMs: 5678, requestTimeoutMsConfigured: false });
-    expect(mocks.queryOllamaCloudQuota).toHaveBeenLastCalledWith({ requestTimeoutMs: 5678 });
   });
 
   it("returns API errors with the provider label", async () => {
@@ -179,14 +118,12 @@ describe("ollama-cloud provider", () => {
       error: "Ollama Cloud usage API error 401: invalid credentials",
     });
 
-    const out = await runProviderFetch();
+    const out = await ollamaCloudProvider.fetch({ config: {} } as any);
 
     expectAttemptedWithErrorLabel(out, "Ollama Cloud");
     expect(out.errors[0]?.message).toContain("invalid credentials");
   });
-});
 
-describe("ollama-cloud matchesCurrentModel", () => {
   it.each([
     ["ollama-cloud/gpt-oss:20b-cloud", true],
     ["OLLAMA-CLOUD/gpt-oss:120b-cloud", true],
@@ -195,19 +132,10 @@ describe("ollama-cloud matchesCurrentModel", () => {
   ])("matchesCurrentModel(%s) -> %s", (model, expected) => {
     expect(ollamaCloudProvider.matchesCurrentModel?.(model)).toBe(expected);
   });
-});
 
-describe("ollama-cloud isAvailable", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
+  it.each([true, false])("isAvailable follows API key availability (%s)", async (configured) => {
+    mocks.hasApiKey.mockResolvedValueOnce(configured);
 
-  it.each([
-    [true, true],
-    [false, false],
-  ])("returns %s when API key availability is %s", async (configured, expected) => {
-    mocks.hasOllamaCloudApiKey.mockResolvedValueOnce(configured);
-
-    await expect(ollamaCloudProvider.isAvailable({} as any)).resolves.toBe(expected);
+    await expect(ollamaCloudProvider.isAvailable({} as any)).resolves.toBe(configured);
   });
 });

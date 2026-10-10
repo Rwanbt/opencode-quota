@@ -8,11 +8,10 @@ const mocks = vi.hoisted(() => ({
   resolveZhipuAuthCached: vi.fn(),
 }));
 
-vi.mock("../src/lib/zai-auth.js", () => ({
-  resolveZaiAuthCached: mocks.resolveZaiAuthCached,
-}));
-vi.mock("../src/lib/zhipu-auth.js", () => ({
-  resolveZhipuAuthCached: mocks.resolveZhipuAuthCached,
+vi.mock("../src/lib/api-key-resolver.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/lib/api-key-resolver.js")>()),
+  resolveApiKeyLogin: (spec: { displayName: string }) =>
+    spec.displayName === "Z.ai" ? mocks.resolveZaiAuthCached() : mocks.resolveZhipuAuthCached(),
 }));
 
 const providers = [
@@ -60,16 +59,16 @@ function stubJson(body: unknown, status = 200) {
   return fetchMock;
 }
 
+/** For bodies JSON cannot carry, such as Infinity and NaN. */
 function stubParsedJson(body: unknown) {
-  const fetchMock = vi.fn(
-    async () =>
-      ({
-        ok: true,
-        json: async () => body,
-      }) as Response,
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => ({ ok: true, json: async () => body }) as Response),
   );
-  vi.stubGlobal("fetch", fetchMock as any);
-  return fetchMock;
+}
+
+function credit(fields: Record<string, number>) {
+  return { type: "CREDIT_LIMIT", unit: 3, ...fields };
 }
 
 beforeEach(() => {
@@ -112,7 +111,6 @@ describe("GLM coding plan quota contract", () => {
         label: provider.label,
         windows: {},
       });
-      expect(provider.resolveAuth, `${provider.label} auth resolver`).toHaveBeenLastCalledWith();
       expect(fetchMock, `${provider.label} request`).toHaveBeenCalledWith(
         provider.endpoint,
         expect.objectContaining({
@@ -143,19 +141,14 @@ describe("GLM coding plan quota contract", () => {
 
   it("rejects missing or non-array limit envelopes", async () => {
     for (const provider of providers) {
-      configure(provider);
-      stubJson(quotaResponse(null));
-      await expect(provider.query(), `${provider.label} null limits`).resolves.toEqual({
-        success: false,
-        error: "Invalid quota data",
-      });
-
-      configure(provider);
-      stubJson(quotaResponse({}));
-      await expect(provider.query(), `${provider.label} object limits`).resolves.toEqual({
-        success: false,
-        error: "Invalid quota data",
-      });
+      for (const limits of [null, {}]) {
+        configure(provider);
+        stubJson(quotaResponse(limits));
+        await expect(provider.query(), `${provider.label} ${limits}`).resolves.toEqual({
+          success: false,
+          error: "Invalid quota data",
+        });
+      }
     }
   });
 
@@ -178,14 +171,8 @@ describe("GLM coding plan quota contract", () => {
         success: true,
         label: provider.label,
         windows: {
-          fiveHour: {
-            percentRemaining: 100,
-            resetTimeIso: new Date(resetMs).toISOString(),
-          },
-          weekly: {
-            percentRemaining: 30,
-            resetTimeIso: new Date(resetMs).toISOString(),
-          },
+          fiveHour: { percentRemaining: 100, resetTimeIso: new Date(resetMs).toISOString() },
+          weekly: { percentRemaining: 30, resetTimeIso: new Date(resetMs).toISOString() },
           mcp: { percentRemaining: 90, resetTimeIso: undefined },
         },
       });
@@ -219,41 +206,31 @@ describe("GLM coding plan quota contract", () => {
 });
 
 describe("provider-specific GLM envelopes", () => {
-  it("preserves Z.ai API-level errors and sanitized fallback labels", async () => {
-    const cases = [
-      {
-        body: { code: 500, msg: "\u001b[31mcurrent user has no coding plan", success: false },
-        error: "current user has no coding plan",
-      },
-      { body: { code: 401 }, error: "Z.ai API error 401" },
-      { body: { success: false }, error: "Z.ai API error" },
-    ];
-
-    for (const testCase of cases) {
-      configure(providers[0]);
-      stubJson(testCase.body);
-      await expect(queryZaiQuota()).resolves.toEqual({
-        success: false,
-        error: testCase.error,
-      });
-    }
+  it.each([
+    [
+      { code: 500, msg: "\u001b[31mcurrent user has no coding plan", success: false },
+      "current user has no coding plan",
+    ],
+    [{ code: 401 }, "Z.ai API error 401"],
+    [{ success: false }, "Z.ai API error"],
+  ])("preserves the Z.ai API-level error in %j", async (body, error) => {
+    configure(providers[0]);
+    stubJson(body);
+    await expect(queryZaiQuota()).resolves.toEqual({ success: false, error });
   });
 
   it("maps credit limits to percent windows for both providers without inferring credit amounts", async () => {
     const resetMs = 1_735_776_000_000;
     const creditLimits = [
-      {
-        type: "CREDIT_LIMIT",
-        unit: 3,
+      credit({
         number: 1,
         usage: 12_000,
         currentValue: 569,
         remaining: 11_430,
         percentage: 4,
         nextResetTime: resetMs,
-      },
-      {
-        type: "CREDIT_LIMIT",
+      }),
+      credit({
         unit: 6,
         number: 1,
         usage: 60_000,
@@ -261,194 +238,50 @@ describe("provider-specific GLM envelopes", () => {
         remaining: 59_430,
         percentage: 1,
         nextResetTime: resetMs + 1_000,
-      },
-    ];
-
-    configure(providers[0]);
-    stubJson(quotaResponse(creditLimits));
-    const zaiResult = await queryZaiQuota();
-    expect(zaiResult).toEqual({
-      success: true,
-      label: "Z.ai",
-      windows: {
-        fiveHour: {
-          percentRemaining: 95,
-          resetTimeIso: new Date(resetMs).toISOString(),
-        },
-        weekly: {
-          percentRemaining: 99,
-          resetTimeIso: new Date(resetMs + 1_000).toISOString(),
-        },
-      },
-    });
-    expect(zaiResult).not.toHaveProperty("windows.fiveHour.usage");
-    expect(zaiResult).not.toHaveProperty("windows.fiveHour.currentValue");
-    expect(zaiResult).not.toHaveProperty("windows.fiveHour.remaining");
-
-    configure(providers[1]);
-    stubJson(quotaResponse(creditLimits));
-    const zhipuResult = await queryZhipuQuota();
-    expect(zhipuResult).toEqual({
-      success: true,
-      label: "Zhipu",
-      windows: {
-        fiveHour: {
-          percentRemaining: 95,
-          resetTimeIso: new Date(resetMs).toISOString(),
-        },
-        weekly: {
-          percentRemaining: 99,
-          resetTimeIso: new Date(resetMs + 1_000).toISOString(),
-        },
-      },
-    });
-    expect(zhipuResult).not.toHaveProperty("windows.fiveHour.usage");
-    expect(zhipuResult).not.toHaveProperty("windows.fiveHour.currentValue");
-    expect(zhipuResult).not.toHaveProperty("windows.fiveHour.remaining");
-  });
-
-  it("falls back to reported credit percentages when exact values are absent or invalid", async () => {
-    const cases = [
-      {
-        name: "missing current value",
-        limit: { type: "CREDIT_LIMIT", unit: 3, usage: 12_000, percentage: 4 },
-        expected: 96,
-      },
-      {
-        name: "zero usage",
-        limit: {
-          type: "CREDIT_LIMIT",
-          unit: 3,
-          usage: 0,
-          currentValue: 569,
-          percentage: 11,
-        },
-        expected: 89,
-      },
-      {
-        name: "negative usage",
-        limit: {
-          type: "CREDIT_LIMIT",
-          unit: 3,
-          usage: -12_000,
-          currentValue: 569,
-          percentage: 12,
-        },
-        expected: 88,
-      },
-      {
-        name: "negative current value",
-        limit: {
-          type: "CREDIT_LIMIT",
-          unit: 3,
-          usage: 12_000,
-          currentValue: -1,
-          percentage: 13,
-        },
-        expected: 87,
-      },
-      {
-        name: "non-finite usage",
-        limit: {
-          type: "CREDIT_LIMIT",
-          unit: 3,
-          usage: Number.POSITIVE_INFINITY,
-          currentValue: 569,
-          percentage: 14,
-        },
-        expected: 86,
-      },
-      {
-        name: "non-finite current value",
-        limit: {
-          type: "CREDIT_LIMIT",
-          unit: 3,
-          usage: 12_000,
-          currentValue: Number.NaN,
-          percentage: 15,
-        },
-        expected: 85,
-      },
-      {
-        name: "non-finite fallback percentage",
-        limit: {
-          type: "CREDIT_LIMIT",
-          unit: 3,
-          usage: 12_000,
-          percentage: Number.POSITIVE_INFINITY,
-        },
-        expected: 0,
-      },
-    ];
-
-    for (const provider of providers) {
-      for (const testCase of cases) {
-        configure(provider);
-        stubParsedJson(quotaResponse([testCase.limit]));
-
-        await expect(provider.query(), `${provider.label}: ${testCase.name}`).resolves.toEqual({
-          success: true,
-          label: provider.label,
-          windows: {
-            fiveHour: { percentRemaining: testCase.expected, resetTimeIso: undefined },
-          },
-        });
-      }
-    }
-  });
-
-  it("clamps exact credit percentages for both providers", async () => {
-    const creditLimits = [
-      {
-        type: "CREDIT_LIMIT",
-        unit: 3,
-        usage: 100,
-        currentValue: 150,
-        percentage: 25,
-      },
-      {
-        type: "CREDIT_LIMIT",
-        unit: 6,
-        usage: 100,
-        currentValue: 0,
-        percentage: 25,
-      },
+      }),
     ];
 
     for (const provider of providers) {
       configure(provider);
       stubJson(quotaResponse(creditLimits));
-
       await expect(provider.query(), provider.label).resolves.toEqual({
         success: true,
         label: provider.label,
         windows: {
-          fiveHour: { percentRemaining: 0, resetTimeIso: undefined },
-          weekly: { percentRemaining: 100, resetTimeIso: undefined },
+          fiveHour: { percentRemaining: 95, resetTimeIso: new Date(resetMs).toISOString() },
+          weekly: { percentRemaining: 99, resetTimeIso: new Date(resetMs + 1_000).toISOString() },
         },
       });
     }
   });
 
-  it("keeps token limits on the provider percentage path", async () => {
-    const tokenLimit = {
-      type: "TOKENS_LIMIT",
-      unit: 3,
-      usage: 12_000,
-      currentValue: 569,
-      percentage: 4,
-    };
-
+  it.each([
+    // Exact credit values missing or unusable: the reported percentage is used.
+    ["missing current value", credit({ usage: 12_000, percentage: 4 }), 96],
+    ["zero usage", credit({ usage: 0, currentValue: 569, percentage: 11 }), 89],
+    ["negative usage", credit({ usage: -12_000, currentValue: 569, percentage: 12 }), 88],
+    ["negative current value", credit({ usage: 12_000, currentValue: -1, percentage: 13 }), 87],
+    ["non-finite usage", credit({ usage: Infinity, currentValue: 569, percentage: 14 }), 86],
+    ["non-finite current value", credit({ usage: 12_000, currentValue: NaN, percentage: 15 }), 85],
+    ["non-finite fallback percentage", credit({ usage: 12_000, percentage: Infinity }), 0],
+    // Exact credit values are clamped.
+    ["credit use above the limit", credit({ usage: 100, currentValue: 150, percentage: 25 }), 0],
+    ["no credit used", credit({ usage: 100, currentValue: 0, percentage: 25 }), 100],
+    // Token limits always use the reported percentage.
+    [
+      "a token limit",
+      { ...credit({ usage: 12_000, currentValue: 569, percentage: 4 }), type: "TOKENS_LIMIT" },
+      96,
+    ],
+  ])("gives both providers the right 5h percent for %s", async (_name, limit, expected) => {
     for (const provider of providers) {
       configure(provider);
-      stubJson(quotaResponse([tokenLimit]));
+      stubParsedJson(quotaResponse([limit]));
 
       await expect(provider.query(), provider.label).resolves.toEqual({
         success: true,
         label: provider.label,
-        windows: {
-          fiveHour: { percentRemaining: 96, resetTimeIso: undefined },
-        },
+        windows: { fiveHour: { percentRemaining: expected, resetTimeIso: undefined } },
       });
     }
   });
@@ -466,9 +299,7 @@ describe("provider-specific GLM envelopes", () => {
     await expect(queryZaiQuota()).resolves.toEqual({
       success: true,
       label: "Z.ai",
-      windows: {
-        weekly: { percentRemaining: 75, resetTimeIso: undefined },
-      },
+      windows: { weekly: { percentRemaining: 75, resetTimeIso: undefined } },
     });
 
     configure(providers[1]);

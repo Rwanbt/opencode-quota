@@ -1,6 +1,7 @@
 import { isIP } from "node:net";
 
 import type { AccountingResultType } from "./entries.js";
+import { isRecord } from "./json-guards.js";
 import { lookupCost } from "./modelsdev-pricing.js";
 import { getQuotaProviderShape } from "./provider-metadata.js";
 import { resolvePricingKey } from "./quota-stats.js";
@@ -37,6 +38,32 @@ export function resolveQuotaProviderSessionModelIdentity(params: {
     providerId: params.currentModel.slice(0, slashIndex),
     modelId: params.currentModel.slice(slashIndex + 1),
   };
+}
+
+/** A short stable hash (32-bit FNV-1a, hex) that tells names apart in row keys. */
+function shortNameHash(text: string): string {
+  let hash = 0x811c9dc5;
+  for (const char of text) {
+    hash ^= char.codePointAt(0) ?? 0;
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash.toString(16).padStart(8, "0");
+}
+
+const CUSTOM_ROW_KEY_MAX_LENGTH = 48;
+
+/**
+ * The row key a custom source's mapping or entry name gets: spaces become "_", and the name
+ * stays as it is when that leaves only letters, digits, "_" and "-" ("Daily limit" →
+ * "Daily_limit", "Daily-limit" → "Daily-limit"). Other characters are dropped and a short hash
+ * of the exact name is added, so names stay apart ("日次" → 8 hex digits).
+ */
+export function customRowKey(name: string): string {
+  const spaced = name.trim().replace(/\s+/gu, "_");
+  const kept = spaced.replace(/[^A-Za-z0-9_-]/gu, "").slice(0, CUSTOM_ROW_KEY_MAX_LENGTH);
+  if (kept === spaced && /[A-Za-z0-9]/u.test(kept)) return kept;
+  const hash = shortNameHash(name.trim());
+  return /[A-Za-z0-9]/u.test(kept) ? `${kept}_${hash}` : hash;
 }
 
 export function selectEligibleQuotaProviderDefinitions(params: {
@@ -218,12 +245,12 @@ const MAX_WINDOWS = 16;
 const MAX_ROLLING_MINUTES = 366 * 24 * 60;
 const MAX_SAFE_REQUEST_LIMIT = 1_000_000_000;
 const MAX_USD_BUDGET = 1_000_000_000;
-export const JSON_V1_MAX_MAPPINGS = 16;
+const JSON_V1_MAX_MAPPINGS = 16;
 export const JSON_V1_MAX_ADAPTER_DEPTH = 8;
 export const JSON_V1_MAX_ADAPTER_OBJECTS = 128;
 export const JSON_V1_MAX_ADAPTER_PROPERTIES = 384;
 export const JSON_V1_MAX_ADAPTER_ARRAY_ELEMENTS = 640;
-export const JSON_V1_MAX_PATH_SEGMENTS = 8;
+const JSON_V1_MAX_PATH_SEGMENTS = 8;
 export const JSON_V1_MAX_PATH_SEGMENT_CODE_POINTS = 64;
 export const JSON_V1_MAX_STATIC_NAME_CODE_POINTS = 80;
 export const JSON_V1_MAX_STATIC_UNIT_CODE_POINTS = 32;
@@ -248,10 +275,6 @@ const JSON_V1_RESULT_TYPES = new Set<AccountingResultType>([
 ]);
 const JSON_V1_MIN_TIMESTAMP_MS = 0;
 const JSON_V1_MAX_TIMESTAMP_MS = 253_402_300_799_999;
-
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 function hasOwnKey(value: Record<string, unknown>, key: string): boolean {
   return Object.hasOwn(value, key);
@@ -553,7 +576,7 @@ function validateJsonV1NumberSource(
   key: string,
   issues: QuotaProviderValidationIssue[],
 ): JsonV1NumberSource | undefined {
-  if (!isPlainObject(value)) {
+  if (!isRecord(value)) {
     adapterIssue(issues, key, "expected a path or literal number source object");
     return undefined;
   }
@@ -609,7 +632,7 @@ function validateJsonV1TextSource(
   key: string,
   issues: QuotaProviderValidationIssue[],
 ): JsonV1TextSource | undefined {
-  if (!isPlainObject(value)) {
+  if (!isRecord(value)) {
     adapterIssue(issues, key, "expected a path or literal text source object");
     return undefined;
   }
@@ -641,7 +664,7 @@ function validateJsonV1TimestampSource(
   key: string,
   issues: QuotaProviderValidationIssue[],
 ): JsonV1TimestampSource | undefined {
-  if (!isPlainObject(value)) {
+  if (!isRecord(value)) {
     adapterIssue(issues, key, "expected a timestamp source object");
     return undefined;
   }
@@ -710,7 +733,7 @@ function validateJsonV1Metric(
   key: string,
   issues: QuotaProviderValidationIssue[],
 ): JsonV1Metric | undefined {
-  if (!isPlainObject(value)) {
+  if (!isRecord(value)) {
     adapterIssue(issues, key, "expected a tagged metric object");
     return undefined;
   }
@@ -875,7 +898,7 @@ function validateJsonV1Mapping(
   providerLabel: string,
   issues: QuotaProviderValidationIssue[],
 ): JsonV1Mapping | undefined {
-  if (!isPlainObject(value)) {
+  if (!isRecord(value)) {
     adapterIssue(issues, key, "expected an object");
     return undefined;
   }
@@ -986,7 +1009,7 @@ function validateJsonV1Adapter(
   providerLabel: string,
   issues: QuotaProviderValidationIssue[],
 ): JsonV1Adapter | undefined {
-  if (!isPlainObject(value)) {
+  if (!isRecord(value)) {
     adapterIssue(issues, key, "expected an object");
     return undefined;
   }
@@ -1015,6 +1038,8 @@ function validateJsonV1Adapter(
   }
 
   const mappings: JsonV1Mapping[] = [];
+  // Each mapping's rows are keyed by its name, so two names must not give one key.
+  const rowKeys = new Map<string, number>();
   for (let index = 0; index < value.mappings.length; index += 1) {
     const mapping = validateJsonV1Mapping(
       value.mappings[index],
@@ -1022,7 +1047,19 @@ function validateJsonV1Adapter(
       providerLabel,
       issues,
     );
-    if (mapping) mappings.push(mapping);
+    if (!mapping) continue;
+    mappings.push(mapping);
+    const rowKey = customRowKey(mapping.name);
+    const first = rowKeys.get(rowKey);
+    if (first === undefined) {
+      rowKeys.set(rowKey, index);
+    } else {
+      adapterIssue(
+        issues,
+        `${key}.mappings[${index}].name`,
+        `gives the same row id as ${key}.mappings[${first}].name`,
+      );
+    }
   }
 
   return issueStart === issues.length && mappings.length === value.mappings.length
@@ -1094,7 +1131,7 @@ function validateWindows(
   for (let index = 0; index < raw.length; index += 1) {
     const item = raw[index];
     const windowKey = `${providerKey}.windows[${index}]`;
-    if (!isPlainObject(item)) {
+    if (!isRecord(item)) {
       issues.push({ key: windowKey, message: "expected an object" });
       continue;
     }
@@ -1246,7 +1283,7 @@ function validatePricingModelMap(
   issues: QuotaProviderValidationIssue[],
 ): Record<string, string> | undefined {
   if (raw === undefined) return undefined;
-  if (!isPlainObject(raw) || Object.keys(raw).length === 0) {
+  if (!isRecord(raw) || Object.keys(raw).length === 0) {
     issues.push({
       key: `${providerKey}.pricingModelMap`,
       message:
@@ -1311,7 +1348,7 @@ export function validateQuotaProviders(value: unknown): QuotaProvidersValidation
   for (let index = 0; index < value.length; index += 1) {
     const raw = value[index];
     const providerKey = `quotaProviders[${index}]`;
-    if (!isPlainObject(raw)) {
+    if (!isRecord(raw)) {
       issues.push({ key: providerKey, message: "expected an object" });
       continue;
     }

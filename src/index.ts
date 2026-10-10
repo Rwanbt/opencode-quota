@@ -33,8 +33,6 @@ export type {
   CopilotOrganizationUsageResult,
   CopilotQuotaResult,
   MaintainerAnnouncementsConfig,
-  MiniMaxResult,
-  MiniMaxResultEntry,
   PricingSnapshotSource,
   QuotaToastConfig,
   SessionTokenScope,

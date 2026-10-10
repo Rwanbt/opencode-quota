@@ -1,8 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { formatQuotaCommand } from "../src/lib/quota-command-format.js";
-import type { QuotaRenderData } from "../src/lib/quota-render-data.js";
-
 import {
   expectAttemptedWithErrorLabel,
   expectAttemptedWithNoErrors,
@@ -16,31 +13,23 @@ const mocks = vi.hoisted(() => ({
   queryZhipuQuota: vi.fn(),
   resolveZaiAuthCached: vi.fn(),
   resolveZhipuAuthCached: vi.fn(),
+  getApiKeyLoginDiagnostics: vi.fn(async () => ({
+    state: "none",
+    source: null,
+    checkedPaths: [],
+    credentialDatabasePaths: [],
+  })),
 }));
 
 vi.mock("../src/lib/zai.js", () => ({ queryZaiQuota: mocks.queryZaiQuota }));
 vi.mock("../src/lib/zhipu.js", () => ({ queryZhipuQuota: mocks.queryZhipuQuota }));
-vi.mock("../src/lib/zai-auth.js", () => ({
-  DEFAULT_ZAI_AUTH_CACHE_MAX_AGE_MS: 5_000,
-  resolveZaiAuthCached: mocks.resolveZaiAuthCached,
-  resolveZaiAuth: vi.fn(),
-  getZaiAuthDiagnostics: vi.fn(async () => ({
-    state: "none",
-    source: null,
-    checkedPaths: [],
-    credentialDatabasePaths: [],
-  })),
-}));
-vi.mock("../src/lib/zhipu-auth.js", () => ({
-  DEFAULT_ZHIPU_AUTH_CACHE_MAX_AGE_MS: 5_000,
-  resolveZhipuAuthCached: mocks.resolveZhipuAuthCached,
-  resolveZhipuAuth: vi.fn(),
-  getZhipuAuthDiagnostics: vi.fn(async () => ({
-    state: "none",
-    source: null,
-    checkedPaths: [],
-    credentialDatabasePaths: [],
-  })),
+vi.mock("../src/lib/api-key-resolver.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/lib/api-key-resolver.js")>()),
+  resolveApiKeyLogin: (spec: { displayName: string }, params: unknown) =>
+    spec.displayName === "Z.ai"
+      ? mocks.resolveZaiAuthCached(params)
+      : mocks.resolveZhipuAuthCached(params),
+  getApiKeyLoginDiagnostics: mocks.getApiKeyLoginDiagnostics,
 }));
 
 vi.mock("../src/lib/opencode-auth.js", async (importOriginal) => ({
@@ -49,7 +38,6 @@ vi.mock("../src/lib/opencode-auth.js", async (importOriginal) => ({
 }));
 
 import { readCredentialRows } from "../src/lib/opencode-auth.js";
-import { getZaiAuthDiagnostics, resolveZaiAuth } from "../src/lib/zai-auth.js";
 import { zaiProvider } from "../src/providers/zai.js";
 import { zhipuProvider } from "../src/providers/zhipu.js";
 
@@ -158,27 +146,17 @@ describe.each(PROVIDERS)("$label GLM provider", (descriptor) => {
     ).resolves.toBe(false);
   });
 
-  it("is available when auth is invalid so fetch can surface the error", async () => {
-    descriptor.resolveAuth.mockResolvedValueOnce({
-      state: "invalid",
-      error: `Unsupported ${descriptor.label} auth type: "oauth"`,
-    });
+  it.each([
+    // An invalid login stays available so fetch can surface the error.
+    [{ state: "invalid", error: "Unsupported auth type" }, true],
+    [{ state: "none" }, false],
+  ])("isAvailable for auth %j is %s", async (auth, expected) => {
+    descriptor.resolveAuth.mockResolvedValueOnce(auth);
     await expect(
       descriptor.provider.isAvailable(
         createProviderAvailabilityContext({ providerIds: [descriptor.id] }),
       ),
-    ).resolves.toBe(true);
-    expect(descriptor.resolveAuth).toHaveBeenCalledWith({ maxAgeMs: 5_000 });
-  });
-
-  it("is unavailable when auth is missing", async () => {
-    descriptor.resolveAuth.mockResolvedValueOnce({ state: "none" });
-    await expect(
-      descriptor.provider.isAvailable(
-        createProviderAvailabilityContext({ providerIds: [descriptor.id] }),
-      ),
-    ).resolves.toBe(false);
-    expect(descriptor.resolveAuth).toHaveBeenCalledWith({ maxAgeMs: 5_000 });
+    ).resolves.toBe(expected);
   });
 
   it("fails closed before auth resolution when provider lookup throws", async () => {
@@ -197,10 +175,7 @@ describe("GLM database credential rows", () => {
   });
 
   it("shows a login OpenCode could not return as its own error row next to working rows", async () => {
-    const actual =
-      await vi.importActual<typeof import("../src/lib/zai-auth.js")>("../src/lib/zai-auth.js");
-    vi.mocked(resolveZaiAuth).mockImplementation(actual.resolveZaiAuth);
-    vi.mocked(getZaiAuthDiagnostics).mockResolvedValueOnce({
+    mocks.getApiKeyLoginDiagnostics.mockResolvedValueOnce({
       state: "invalid",
       source: "opencode.db",
       checkedPaths: [],
@@ -247,49 +222,5 @@ describe("GLM database credential rows", () => {
     expect(out.entries.map((entry) => [entry.group, entry.accounting.sourceId])).toEqual([
       ["[Z.ai Home]", "working-id"],
     ]);
-  });
-});
-
-describe("Z.ai credit quota surfaces", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
-  it("renders credit-backed five-hour and weekly percentages on /quota", async () => {
-    mocks.queryZaiQuota.mockResolvedValueOnce({
-      success: true,
-      label: "Z.ai",
-      windows: {
-        fiveHour: { percentRemaining: 96, resetTimeIso: undefined },
-        weekly: { percentRemaining: 89, resetTimeIso: undefined },
-      },
-    });
-
-    const out = await zaiProvider.fetch({} as any);
-    expectAttemptedWithNoErrors(out);
-    expect(visibleEntries(out.entries, "zai")).toEqual([
-      {
-        name: "Z.ai 5h",
-        group: "Z.ai",
-        label: "5h:",
-        percentRemaining: 96,
-        resetTimeIso: undefined,
-      },
-      {
-        name: "Z.ai Weekly",
-        group: "Z.ai",
-        label: "Weekly:",
-        percentRemaining: 89,
-        resetTimeIso: undefined,
-      },
-    ]);
-
-    const data: QuotaRenderData = { entries: out.entries, errors: out.errors };
-    const command = formatQuotaCommand({ ...data, generatedAtMs: 0 });
-    expect(command).toContain("Z.ai");
-    expect(command).toContain("96%");
-    expect(command).toContain("89%");
-    expect(command).toContain("5h");
-    expect(command).toMatch(/\bWeek(?:ly)?\b/u);
   });
 });

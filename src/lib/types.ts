@@ -382,45 +382,6 @@ export interface GeminiCliOAuthAuthData {
   [key: string]: unknown;
 }
 
-export interface AlibabaAuthData {
-  type: string;
-  key?: string;
-  access?: string;
-  tier?: string;
-  plan?: string;
-  /** Set when OpenCode could not return this login; see `CredentialRow.resolveError`. */
-  resolveError?: string;
-  [key: string]: unknown;
-}
-
-export interface NanoGptAuthData {
-  type: "api";
-  key: string;
-}
-
-export interface DeepSeekAuthData {
-  type: "api";
-  key: string;
-}
-
-export interface SyntheticAuthData {
-  type: "api";
-  key: string;
-}
-
-export interface OpenCodeGoAuthData {
-  type: "api";
-  key: string;
-}
-
-export interface MiniMaxAuthData {
-  type: string;
-  key?: string;
-  access?: string;
-  /** Set when OpenCode could not return this login; see `CredentialRow.resolveError`. */
-  resolveError?: string;
-}
-
 /**
  * Copilot subscription tier.
  * See: https://docs.github.com/en/copilot/get-started/plans
@@ -492,47 +453,13 @@ export interface AuthData {
   codex?: OpenAIOAuthData;
   // Some OpenCode installs store ChatGPT auth under "chatgpt".
   chatgpt?: OpenAIOAuthData;
-  // Canonical OpenCode key. Go uses the API record; older OpenAI auth data may also exist here.
-  opencode?: OpenCodeGoAuthData | OpenAIOAuthData;
-  synthetic?: SyntheticAuthData;
-  chutes?: {
-    type: string;
-    key?: string;
-  };
-  nanogpt?: NanoGptAuthData;
-  "nano-gpt"?: NanoGptAuthData;
-  deepseek?: DeepSeekAuthData;
   cursor?: CursorAuthData;
-  alibaba?: AlibabaAuthData;
-  "alibaba-coding-plan"?: AlibabaAuthData;
-  "zai-coding-plan"?: {
-    type: "api";
-    key: string;
-  };
-  "zhipu-coding-plan"?: {
-    type: "api";
-    key: string;
-  };
-  "minimax-coding-plan"?: MiniMaxAuthData;
-  "minimax-china-coding-plan"?: MiniMaxAuthData;
-  "minimax-cn-coding-plan"?: MiniMaxAuthData;
-  "kimi-code-plan-global"?: KimiAuthData;
-  "kimi-code-plan-cn"?: KimiAuthData;
-  "kimi-for-coding"?: KimiAuthData;
-  "kimi-code"?: KimiAuthData;
-  kimi?: KimiAuthData;
   xai?: XaiOAuthData;
 }
 
 // =============================================================================
 // Kimi Types
 // =============================================================================
-
-/** Kimi auth entry in opencode.db */
-export interface KimiAuthData {
-  type: "api";
-  key: string;
-}
 
 /** Kimi quota window */
 export interface KimiQuotaWindow {
@@ -556,12 +483,6 @@ export type KimiResult = KimiQuotaResult | QuotaError;
 // Z.ai Types
 // =============================================================================
 
-/** Z.ai auth entry in opencode.db */
-export interface ZaiAuthData {
-  type: "api";
-  key: string;
-}
-
 /** Z.ai quota limit entry from API */
 export interface ZaiQuotaLimit {
   type: string;
@@ -576,17 +497,6 @@ export interface ZaiQuotaLimit {
     modelCode: string;
     usage: number;
   }>;
-}
-
-/** Z.ai API response */
-export interface ZaiQuotaResponse {
-  code: number;
-  msg: string;
-  data: {
-    limits: ZaiQuotaLimit[];
-    level: string;
-  };
-  success: boolean;
 }
 
 /** Result from fetching Z.ai quota */
@@ -777,23 +687,6 @@ export type CopilotResult =
   | null;
 export type GeminiCliResult = GeminiCliQuotaResult | QuotaError | null;
 export type ZaiResult = ZaiQuotaResult | QuotaError | null;
-/** Single entry in a MiniMax quota result */
-export interface MiniMaxResultEntry {
-  window: "five_hour" | "weekly";
-  name: string;
-  group?: string;
-  label?: string;
-  right?: string;
-  percentRemaining: number;
-  resetTimeIso?: string;
-}
-
-export type MiniMaxResult =
-  | {
-      success: true;
-      entries: MiniMaxResultEntry[];
-    }
-  | QuotaError;
 export type ChutesResult =
   | {
       success: true;
@@ -866,9 +759,3 @@ export type OpenCodeGoResult =
       monthly: OpenCodeGoWindow;
     }
   | (QuotaError & { notSubscribed?: true });
-
-/** Cached toast data */
-export interface CachedToast {
-  message: string;
-  timestamp: number;
-}

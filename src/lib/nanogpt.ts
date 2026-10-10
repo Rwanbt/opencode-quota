@@ -7,17 +7,18 @@
  */
 
 import { isCanonicalAccountingDecimal } from "./accounting-format.js";
+import { API_KEY_VENDORS, resolveApiKey } from "./api-key-resolver.js";
 import { sanitizeDisplaySnippet, sanitizeDisplayText } from "./display-sanitize.js";
 import { clampPercent } from "./format-utils.js";
 import { fetchWithTimeout } from "./http.js";
-import { resolveNanoGptApiKey } from "./nanogpt-config.js";
+import { finiteNumber, nonEmptyString } from "./json-guards.js";
 import type { QuotaError } from "./types.js";
 
 type NanoGptRecord = Record<string, unknown>;
 
-export type NanoGptEndpoint = "usage" | "balance";
+type NanoGptEndpoint = "usage" | "balance";
 
-export type NanoGptUsageWindow = {
+type NanoGptUsageWindow = {
   used: number;
   limit: number;
   remaining: number;
@@ -30,7 +31,7 @@ export type NanoGptUsageWindow = {
   };
 };
 
-export interface NanoGptSubscription {
+interface NanoGptSubscription {
   active: boolean;
   state: string;
   enforceDailyLimit: boolean;
@@ -40,12 +41,12 @@ export interface NanoGptSubscription {
   graceUntilIso?: string;
 }
 
-export interface NanoGptBalance {
+interface NanoGptBalance {
   usdBalanceRaw?: string;
   nanoBalanceRaw?: string;
 }
 
-export type NanoGptResult =
+type NanoGptResult =
   | {
       success: true;
       subscription?: NanoGptSubscription;
@@ -98,21 +99,13 @@ function isRecord(value: unknown): value is NanoGptRecord {
   return Boolean(value) && typeof value === "object";
 }
 
-function getFiniteNumber(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
-}
-
 function getFinitePositiveNumber(value: unknown): number | undefined {
-  const n = getFiniteNumber(value);
+  const n = finiteNumber(value);
   return n !== undefined && n > 0 ? n : undefined;
 }
 
-function getNonEmptyString(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
-}
-
 function getIsoString(value: unknown): string | undefined {
-  const raw = getNonEmptyString(value);
+  const raw = nonEmptyString(value);
   if (!raw) return undefined;
   const ms = Date.parse(raw);
   if (!Number.isFinite(ms)) return undefined;
@@ -132,10 +125,10 @@ function normalizeUsageWindow(
 ): NanoGptUsageWindow | undefined {
   if (!isRecord(value)) return undefined;
 
-  const used = getFiniteNumber(value.used);
-  const remainingRaw = getFiniteNumber(value.remaining);
+  const used = finiteNumber(value.used);
+  const remainingRaw = finiteNumber(value.remaining);
   const limitFromResponse = getFinitePositiveNumber(limitValue);
-  const percentUsed = getFiniteNumber(value.percentUsed);
+  const percentUsed = finiteNumber(value.percentUsed);
 
   const derivedLimit =
     limitFromResponse ??
@@ -177,7 +170,7 @@ function parseNanoGptUsage(payload: unknown): NanoGptSubscription {
   const hasSubscriptionShape =
     typeof data.active === "boolean" ||
     typeof data.enforceDailyLimit === "boolean" ||
-    Boolean(getNonEmptyString(data.state)) ||
+    Boolean(nonEmptyString(data.state)) ||
     daily !== undefined ||
     monthly !== undefined;
 
@@ -187,7 +180,7 @@ function parseNanoGptUsage(payload: unknown): NanoGptSubscription {
 
   return {
     active: typeof data.active === "boolean" ? data.active : false,
-    state: getNonEmptyString(data.state) ?? (data.active ? "active" : "unknown"),
+    state: nonEmptyString(data.state) ?? (data.active ? "active" : "unknown"),
     enforceDailyLimit: typeof data.enforceDailyLimit === "boolean" ? data.enforceDailyLimit : false,
     daily,
     monthly,
@@ -234,19 +227,18 @@ function parseNanoGptBalance(payload: unknown): {
   return { balance, fieldErrors };
 }
 
-async function fetchNanoGptUsage(
+type NanoGptEndpointFailure = { success: false; message: string; retryable: boolean };
+
+async function fetchNanoGptEndpoint<T extends object>(
+  url: string,
+  method: "GET" | "POST",
   headers: Record<string, string>,
-  requestTimeoutMs?: number,
-): Promise<
-  | { success: true; subscription: NanoGptSubscription }
-  | { success: false; message: string; retryable: boolean }
-> {
+  requestTimeoutMs: number | undefined,
+  parse: (payload: unknown) => T,
+): Promise<({ success: true } & T) | NanoGptEndpointFailure> {
   try {
-    return await fetchWithTimeout(NANOGPT_USAGE_URL, {
-      request: {
-        method: "GET",
-        headers,
-      },
+    return await fetchWithTimeout(url, {
+      request: { method, headers },
       timeoutMs: requestTimeoutMs,
       consume: async (response) => {
         if (!response.ok) {
@@ -263,10 +255,7 @@ async function fetchNanoGptUsage(
           };
         }
 
-        return {
-          success: true as const,
-          subscription: parseNanoGptUsage(await response.json()),
-        };
+        return { success: true as const, ...parse(await response.json()) };
       },
     });
   } catch (err) {
@@ -277,61 +266,11 @@ async function fetchNanoGptUsage(
     };
   }
 }
-
-async function fetchNanoGptBalance(
-  headers: Record<string, string>,
-  requestTimeoutMs?: number,
-): Promise<
-  | { success: true; balance: NanoGptBalance; fieldErrors: string[] }
-  | { success: false; message: string; retryable: boolean }
-> {
-  try {
-    return await fetchWithTimeout(NANOGPT_BALANCE_URL, {
-      request: {
-        method: "POST",
-        headers,
-      },
-      timeoutMs: requestTimeoutMs,
-      consume: async (response) => {
-        if (!response.ok) {
-          let text: string;
-          try {
-            text = await response.text();
-          } catch (error) {
-            text = sanitizeDisplayText(error instanceof Error ? error.message : String(error));
-          }
-          return {
-            success: false as const,
-            message: `NanoGPT API error ${response.status}: ${sanitizeDisplaySnippet(text, 120)}`,
-            retryable: isRetryableHttpStatus(response.status),
-          };
-        }
-
-        return {
-          success: true as const,
-          ...parseNanoGptBalance(await response.json()),
-        };
-      },
-    });
-  } catch (err) {
-    return {
-      success: false,
-      message: sanitizeDisplayText(err instanceof Error ? err.message : String(err)),
-      retryable: true,
-    };
-  }
-}
-
-export {
-  getNanoGptKeyDiagnostics,
-  hasNanoGptApiKey as hasNanoGptApiKeyConfigured,
-  type NanoGptKeySource,
-} from "./nanogpt-config.js";
 
 export async function queryNanoGptQuota(
   options: { requestTimeoutMs?: number } = {},
 ): Promise<NanoGptResult> {
-  const resolved = await resolveNanoGptApiKey();
+  const resolved = await resolveApiKey(API_KEY_VENDORS.nanogpt);
   if (!resolved) return null;
 
   const headers = {
@@ -340,8 +279,22 @@ export async function queryNanoGptQuota(
   };
 
   const [usageResult, balanceResult] = await Promise.all([
-    fetchNanoGptUsage(headers, options.requestTimeoutMs),
-    fetchNanoGptBalance(headers, options.requestTimeoutMs),
+    fetchNanoGptEndpoint(
+      NANOGPT_USAGE_URL,
+      "GET",
+      headers,
+      options.requestTimeoutMs,
+      (payload) => ({
+        subscription: parseNanoGptUsage(payload),
+      }),
+    ),
+    fetchNanoGptEndpoint(
+      NANOGPT_BALANCE_URL,
+      "POST",
+      headers,
+      options.requestTimeoutMs,
+      parseNanoGptBalance,
+    ),
   ]);
 
   const endpointErrors: Array<{ endpoint: NanoGptEndpoint; message: string }> = [];

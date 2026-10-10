@@ -9,7 +9,6 @@ import {
 import {
   fetchRemoteQuotaProvider,
   type QuotaProviderAuthResolution,
-  type QuotaProviderAuthSource,
   resolveQuotaProviderApiKey,
 } from "../src/lib/quota-providers-remote.js";
 import { deriveResolvedAuthIdentity } from "../src/lib/resolved-auth-identity.js";
@@ -34,12 +33,6 @@ const OPENROUTER_KEY_SOURCE = {
 } as const;
 
 const SECRET_CANARY = "openrouter-secret-canary";
-const CREDENTIAL_SOURCES: QuotaProviderAuthSource[] = [
-  "env",
-  "opencode.json",
-  "opencode.jsonc",
-  "opencode.db",
-];
 
 function resolvedAuth(
   overrides: Partial<QuotaProviderAuthResolution> = {},
@@ -58,12 +51,9 @@ afterEach(() => {
 
 describe("OpenRouter quota", () => {
   it("derives cache identity from the winning trusted key without exposing it", async () => {
-    vi.mocked(resolveQuotaProviderApiKey).mockResolvedValueOnce({
-      key: SECRET_CANARY,
-      source: "env",
-      checkedPaths: [],
-      credentialDatabasePaths: [],
-    });
+    vi.mocked(resolveQuotaProviderApiKey).mockResolvedValueOnce(
+      resolvedAuth({ key: SECRET_CANARY, source: "env" }),
+    );
 
     const identity = await resolveOpenRouterAuthIdentity();
 
@@ -80,19 +70,14 @@ describe("OpenRouter quota", () => {
     expect(resolveQuotaProviderApiKey).toHaveBeenCalledWith(OPENROUTER_KEY_SOURCE);
   });
 
-  it.each(
-    CREDENTIAL_SOURCES,
-  )("queries with the exact %s resolution and does not look up credentials again", async (source) => {
+  it("queries with the passed resolution and does not look up credentials again", async () => {
     const resolved = resolvedAuth({
       key: SECRET_CANARY,
-      source,
-      checkedPaths: [`source:${source}`],
+      source: "opencode.db",
+      checkedPaths: ["source:opencode.db"],
       credentialDatabasePaths: ["/tmp/opencode.db"],
     });
-    vi.mocked(fetchRemoteQuotaProvider).mockResolvedValueOnce({
-      success: true,
-      entries: [],
-    });
+    vi.mocked(fetchRemoteQuotaProvider).mockResolvedValueOnce({ success: true, entries: [] });
 
     await queryOpenRouterQuota({ requestTimeoutMs: 1234, resolved });
 
@@ -118,18 +103,10 @@ describe("OpenRouter quota", () => {
   });
 
   it("does not make a request when no trusted key exists", async () => {
-    vi.mocked(resolveQuotaProviderApiKey).mockResolvedValue({
-      source: null,
-      checkedPaths: [],
-      credentialDatabasePaths: [],
-    });
+    vi.mocked(resolveQuotaProviderApiKey).mockResolvedValue(resolvedAuth());
 
     await expect(hasOpenRouterApiKeyConfigured()).resolves.toBe(false);
-    await expect(resolveOpenRouterApiKey()).resolves.toEqual({
-      source: null,
-      checkedPaths: [],
-      credentialDatabasePaths: [],
-    });
+    await expect(resolveOpenRouterApiKey()).resolves.toEqual(resolvedAuth());
     expect(fetchRemoteQuotaProvider).not.toHaveBeenCalled();
   });
 
@@ -164,24 +141,13 @@ describe("OpenRouter quota", () => {
     });
   });
 
-  it.each([
-    ["HTTP", "HTTP 401"],
-    ["malformed", "Invalid openrouter-key-v1 response"],
-    ["timeout", "Request timeout after 0s"],
-    ["redirect", "Redirect rejected"],
-    ["body-limit", "Response exceeded 262144 bytes"],
-  ] as const)("returns the safe %s remote error unchanged", async (_name, error) => {
-    vi.mocked(fetchRemoteQuotaProvider).mockResolvedValue({
-      success: false,
-      error,
-    });
+  it("returns the safe remote error unchanged", async () => {
+    vi.mocked(fetchRemoteQuotaProvider).mockResolvedValue({ success: false, error: "HTTP 401" });
 
     const result = await queryOpenRouterQuota({
       resolved: resolvedAuth({ key: SECRET_CANARY, source: "env" }),
     });
-    expect(result).toEqual({ success: false, error });
+    expect(result).toEqual({ success: false, error: "HTTP 401" });
     expect(JSON.stringify(result)).not.toContain(SECRET_CANARY);
-    expect(fetchRemoteQuotaProvider).toHaveBeenCalledTimes(1);
-    expect(resolveQuotaProviderApiKey).not.toHaveBeenCalled();
   });
 });

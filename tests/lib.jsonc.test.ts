@@ -2,11 +2,10 @@ import { describe, expect, it } from "vitest";
 import { parseJsonOrJsonc, stringifyWithComments } from "../src/lib/jsonc.js";
 
 /**
- * `parseJsonOrJsonc` is the read half of the installer's read-modify-write cycle
- * over the user's own `opencode.jsonc` (`src/lib/init-installer.ts:546`, written
- * back at `:1280` via `writeJsonAtomic`). Anything this parser gets wrong is
- * persisted over the user's file, so the round trip has to be byte-faithful for
- * every part of the document the installer does not intend to change.
+ * `parseJsonOrJsonc` reads the user's own `opencode.jsonc` and quota settings, and
+ * `stringifyWithComments` writes JSON back (via `writeJsonAtomic`). A read-modify-write
+ * round trip has to be byte-faithful for every part of the document it does not
+ * intend to change.
  *
  * A hand-rolled trailing-comma pre-pass used to run before `parse`. It tracked
  * `"`/`'` as string delimiters with no notion of comments, so one unpaired quote
@@ -49,9 +48,9 @@ describe("parseJsonOrJsonc", () => {
   });
 
   it("preserves comment text ending in a comma across a round trip", () => {
-    // The installer rewrites one key and writes the whole document back, so a
-    // comment the pre-pass edited was persisted into the user's config. Here the
-    // trailing comma of "anthropic, openai," was deleted from their comment.
+    // A writer that changes one key writes the whole document back, so a comment
+    // the pre-pass edited was persisted into the user's config. Here the trailing
+    // comma of "anthropic, openai," was deleted from their comment.
     const source = `{
   "plugin": ["@slkiser/opencode-quota"],
   "model": "opus"
@@ -111,8 +110,7 @@ describe("parseJsonOrJsonc", () => {
 
   it("still rejects genuinely malformed content", () => {
     // Removing the pre-pass must not make the parser lenient about real syntax
-    // errors: the installer refuses to write when the existing config will not
-    // parse (`src/lib/init-installer.ts:558`), and that guard has to keep firing.
+    // errors: callers rely on a throw to skip a config that will not parse.
     expect(() => parseJsonOrJsonc(`{"a": 1`, true)).toThrow();
     expect(() => parseJsonOrJsonc(`{"a" 1}`, true)).toThrow();
     expect(() => parseJsonOrJsonc(`not json`, true)).toThrow();

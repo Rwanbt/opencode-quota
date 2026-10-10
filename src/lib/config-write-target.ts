@@ -2,7 +2,7 @@ import { realpathSync } from "node:fs";
 import { lstat, readlink } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 
-import { type WriteJsonAtomicOptions, writeJsonAtomic, writeTextAtomic } from "./atomic-json.js";
+import { type WriteJsonAtomicOptions, writeTextAtomic } from "./atomic-json.js";
 
 export const MAX_CONFIG_SYMLINK_HOPS = 40;
 export const NEW_CONFIG_FILE_MODE = 0o600;
@@ -15,8 +15,7 @@ export type ConfigWriteTargetReason =
   | "non-regular"
   | "permission"
   | "changed"
-  | "bytes-changed"
-  | "symlink-source";
+  | "bytes-changed";
 
 export interface ConfigWriteHop {
   path: string;
@@ -171,20 +170,6 @@ export async function resolveConfigWriteTarget(path: string): Promise<ConfigWrit
   }
 }
 
-export function assertNotSymlinkSource(
-  snapshot: ConfigWriteTargetSnapshot,
-  sourcePath: string,
-): void {
-  if (snapshot.hops.length === 0) {
-    return;
-  }
-  throw new ConfigWriteTargetError(
-    `Refusing to delete a symlinked config source: ${sourcePath}`,
-    sourcePath,
-    "symlink-source",
-  );
-}
-
 async function existingFileMode(path: string): Promise<number> {
   try {
     const stats = await lstat(path);
@@ -229,18 +214,4 @@ export async function writeResolvedConfigText(
   content: string,
 ): Promise<void> {
   await writeTextAtomic(snapshot.writePath, content, await configurationWriteOptions(snapshot));
-}
-
-export async function writeConfiguredJsonAtomic(
-  configuredPath: string,
-  data: unknown,
-  opts: { trailingNewline?: boolean } = {},
-): Promise<void> {
-  const planned = await resolveConfigWriteTarget(configuredPath);
-  const current = await resolveConfigWriteTarget(configuredPath);
-  assertSameConfigWriteTarget(planned, current);
-  await writeJsonAtomic(current.writePath, data, {
-    ...(await configurationWriteOptions(current)),
-    trailingNewline: opts.trailingNewline,
-  });
 }

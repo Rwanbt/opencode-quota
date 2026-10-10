@@ -139,12 +139,7 @@ try {
     "opencode-quota.js",
   );
   const cliOutput = run(process.execPath, [cliPath, "--help"], workdir);
-  for (const expected of [
-    "Usage:",
-    "opencode-quota init",
-    "opencode-quota show",
-    "opencode-quota update",
-  ]) {
+  for (const expected of ["Usage:", "opencode-quota show", "opencode-quota status"]) {
     if (!cliOutput.includes(expected)) {
       throw new Error(`Packed CLI help is missing: ${expected}`);
     }

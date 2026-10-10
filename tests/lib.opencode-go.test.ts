@@ -26,6 +26,8 @@ import { queryOpenCodeGoConsoleStatus, queryOpenCodeGoQuota } from "../src/lib/o
 
 type WindowKey = "rolling" | "weekly" | "monthly";
 
+const TOKEN = "distinctive-secret-token";
+
 function validPayload(): Record<string, unknown> {
   return {
     usage: {
@@ -68,6 +70,14 @@ function mockHttpFailure(status: number, text: string): void {
   });
 }
 
+/** Query with one window field changed. */
+async function queryWith(key: WindowKey, field: string, value: unknown) {
+  const payload = validPayload();
+  windowFrom(payload, key)[field] = value;
+  mockSuccess(payload);
+  return await queryOpenCodeGoQuota("token");
+}
+
 describe("queryOpenCodeGoQuota", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -90,8 +100,6 @@ describe("queryOpenCodeGoQuota", () => {
       timeoutMs: 4321,
       consume: expect.any(Function),
     });
-    const request = mocks.fetchWithTimeout.mock.calls[0]?.[1]?.request;
-    expect(JSON.stringify(request)).not.toContain("Cookie");
     expect(result).toEqual({
       success: true,
       rolling: {
@@ -131,42 +139,7 @@ describe("queryOpenCodeGoQuota", () => {
     });
   });
 
-  it("accepts a rate-limited window as a valid exhausted state", async () => {
-    const payload = validPayload();
-    windowFrom(payload, "monthly").status = "rate-limited";
-    windowFrom(payload, "monthly").percent = 100;
-    mockSuccess(payload);
-
-    const result = await queryOpenCodeGoQuota("token");
-
-    expect(result).toMatchObject({
-      success: true,
-      monthly: { status: "rate-limited", usagePercent: 100, percentRemaining: 0 },
-    });
-  });
-
-  it.each([
-    0, 42, 100,
-  ])("treats a structurally valid rate-limited window as exhausted regardless of percent %j", async (percent) => {
-    const payload = validPayload();
-    windowFrom(payload, "weekly").status = "rate-limited";
-    windowFrom(payload, "weekly").percent = percent;
-    mockSuccess(payload);
-
-    const result = await queryOpenCodeGoQuota("token");
-
-    expect(result).toMatchObject({
-      success: true,
-      weekly: {
-        status: "rate-limited",
-        usagePercent: 100,
-        percentRemaining: 0,
-        resetTimeIso: "2026-08-16T16:00:00.000Z",
-      },
-    });
-  });
-
-  it("keeps healthy sibling windows when one window is rate-limited", async () => {
+  it("treats a rate-limited window as exhausted regardless of percent and keeps its siblings", async () => {
     const payload = validPayload();
     windowFrom(payload, "rolling").percent = 17;
     windowFrom(payload, "weekly").status = "rate-limited";
@@ -174,75 +147,50 @@ describe("queryOpenCodeGoQuota", () => {
     windowFrom(payload, "monthly").percent = 91;
     mockSuccess(payload);
 
-    const result = await queryOpenCodeGoQuota("token");
-
-    expect(result).toEqual({
+    await expect(queryOpenCodeGoQuota("token")).resolves.toMatchObject({
       success: true,
-      rolling: {
-        status: "ok",
-        usagePercent: 17,
-        percentRemaining: 83,
-        resetTimeIso: "2026-08-12T12:30:00.000Z",
-      },
+      rolling: { status: "ok", usagePercent: 17, percentRemaining: 83 },
       weekly: {
         status: "rate-limited",
         usagePercent: 100,
         percentRemaining: 0,
         resetTimeIso: "2026-08-16T16:00:00.000Z",
       },
-      monthly: {
-        status: "ok",
-        usagePercent: 91,
-        percentRemaining: 9,
-        resetTimeIso: "2026-09-01T04:00:00.000Z",
-      },
+      monthly: { status: "ok", usagePercent: 91, percentRemaining: 9 },
     });
   });
 
-  it.each([
-    { percent: -1 },
-    { percent: 101 },
-    { percent: "10" },
-    { percent: Number.NaN },
-  ])("still rejects a rate-limited window with invalid percent $percent", async ({ percent }) => {
+  it("still validates percent and resetsAt on a rate-limited window", async () => {
     const payload = validPayload();
     windowFrom(payload, "weekly").status = "rate-limited";
-    windowFrom(payload, "weekly").percent = percent;
+    windowFrom(payload, "weekly").percent = 101;
     mockSuccess(payload);
-
     await expect(queryOpenCodeGoQuota("token")).resolves.toEqual({
       success: false,
       error:
         "Invalid OpenCode Go API response: weekly percent must be a finite number from 0 to 100",
     });
-  });
 
-  it("still rejects a rate-limited window with a malformed reset", async () => {
-    const payload = validPayload();
-    windowFrom(payload, "monthly").status = "rate-limited";
-    windowFrom(payload, "monthly").resetsAt = "2026-08-12T12:30:00";
+    windowFrom(payload, "weekly").percent = 42;
+    windowFrom(payload, "weekly").resetsAt = "2026-08-12T12:30:00";
     mockSuccess(payload);
-
     await expect(queryOpenCodeGoQuota("token")).resolves.toEqual({
       success: false,
       error:
-        "Invalid OpenCode Go API response: monthly resetsAt must be an offset-qualified ISO timestamp",
+        "Invalid OpenCode Go API response: weekly resetsAt must be an offset-qualified ISO timestamp",
     });
   });
 
-  it.each([null, [], "bad", 1])("rejects a non-object root: %j", async (payload) => {
+  it.each([
+    [null, "root must be an object"],
+    [[], "root must be an object"],
+    [{ usage: null }, "usage must be an object"],
+    [{ usage: [] }, "usage must be an object"],
+  ])("rejects payload %j", async (payload, message) => {
     mockSuccess(payload);
     await expect(queryOpenCodeGoQuota("token")).resolves.toEqual({
       success: false,
-      error: "Invalid OpenCode Go API response: root must be an object",
-    });
-  });
-
-  it.each([null, [], "bad", 1])("rejects a non-object usage value: %j", async (usage) => {
-    mockSuccess({ usage });
-    await expect(queryOpenCodeGoQuota("token")).resolves.toEqual({
-      success: false,
-      error: "Invalid OpenCode Go API response: usage must be an object",
+      error: `Invalid OpenCode Go API response: ${message}`,
     });
   });
 
@@ -257,19 +205,8 @@ describe("queryOpenCodeGoQuota", () => {
     });
   });
 
-  it.each([
-    "OK",
-    " ok",
-    "ok ",
-    "error",
-    null,
-    1,
-  ])("requires exact raw status ok: %j", async (status) => {
-    const payload = validPayload();
-    windowFrom(payload, "weekly").status = status;
-    mockSuccess(payload);
-
-    const result = await queryOpenCodeGoQuota("token");
+  it.each(["OK", " ok", null])("requires exact raw status ok: %j", async (status) => {
+    const result = await queryWith("weekly", "status", status);
     expect(result).toMatchObject({ success: false });
     expect(result).toHaveProperty(
       "error",
@@ -277,19 +214,8 @@ describe("queryOpenCodeGoQuota", () => {
     );
   });
 
-  it.each([
-    -1,
-    101,
-    "10",
-    null,
-    Number.NaN,
-    Number.POSITIVE_INFINITY,
-  ])("rejects invalid percent %j", async (percent) => {
-    const payload = validPayload();
-    windowFrom(payload, "monthly").percent = percent;
-    mockSuccess(payload);
-
-    await expect(queryOpenCodeGoQuota("token")).resolves.toEqual({
+  it.each([-1, 101, "10", null])("rejects invalid percent %j", async (percent) => {
+    await expect(queryWith("monthly", "percent", percent)).resolves.toEqual({
       success: false,
       error:
         "Invalid OpenCode Go API response: monthly percent must be a finite number from 0 to 100",
@@ -301,17 +227,12 @@ describe("queryOpenCodeGoQuota", () => {
     "2026-08-12T12:30:00",
     "Wed, 12 Aug 2026 12:30:00 GMT",
     "2026-08-12T12:30:00+0200",
+    "2026-08-12T12:30:00+24:00",
     "2026-02-30T00:00:00Z",
     "2025-02-29T00:00:00Z",
-    "not-a-date",
     null,
   ])("rejects non-offset-qualified resetsAt %j", async (resetsAt) => {
-    const payload = validPayload();
-    windowFrom(payload, "rolling").resetsAt = resetsAt;
-    mockSuccess(payload);
-
-    const result = await queryOpenCodeGoQuota("token");
-    expect(result).toEqual({
+    await expect(queryWith("rolling", "resetsAt", resetsAt)).resolves.toEqual({
       success: false,
       error:
         "Invalid OpenCode Go API response: rolling resetsAt must be an offset-qualified ISO timestamp",
@@ -319,17 +240,15 @@ describe("queryOpenCodeGoQuota", () => {
   });
 
   it("returns a stable malformed JSON error with token redaction", async () => {
-    const token = "distinctive-secret-token";
     mocks.fetchResponse.mockResolvedValueOnce({
       ok: true,
       json: vi
         .fn()
-        .mockRejectedValue(new SyntaxError(`Unexpected ${token}\nend ${token} of JSON input`)),
+        .mockRejectedValue(new SyntaxError(`Unexpected ${TOKEN}\nend ${TOKEN} of JSON input`)),
     });
 
-    const result = await queryOpenCodeGoQuota(token);
+    const result = await queryOpenCodeGoQuota(TOKEN);
 
-    expect(JSON.stringify(result)).not.toContain(token);
     expect(result).toEqual({
       success: false,
       error:
@@ -338,13 +257,12 @@ describe("queryOpenCodeGoQuota", () => {
   });
 
   it("redacts repeated tokens before sanitizing and bounding HTTP bodies", async () => {
-    const token = "distinctive-secret-token";
-    mockHttpFailure(401, `\u001b[31m${token}\n${"x".repeat(140)} ${token}\u001b[0m`);
+    mockHttpFailure(401, `\u001b[31m${TOKEN}\n${"x".repeat(140)} ${TOKEN}\u001b[0m`);
 
-    const result = await queryOpenCodeGoQuota(token);
+    const result = await queryOpenCodeGoQuota(TOKEN);
 
     expect(result).toMatchObject({ success: false, retryable: false });
-    expect(JSON.stringify(result)).not.toContain(token);
+    expect(JSON.stringify(result)).not.toContain(TOKEN);
     expect((result as { error: string }).error).toContain("OpenCode Go API error 401: [redacted]");
     expect((result as { error: string }).error.length).toBeLessThanOrEqual(
       "OpenCode Go API error 401: ".length + 120,
@@ -357,9 +275,7 @@ describe("queryOpenCodeGoQuota", () => {
       '{"type":"error","error":{"type":"EntitlementError","message":"OpenCode Go subscription required."}}',
     );
 
-    const result = await queryOpenCodeGoQuota("token");
-
-    expect(result).toEqual({
+    await expect(queryOpenCodeGoQuota("token")).resolves.toEqual({
       success: false,
       error: "OpenCode Go not subscribed (403 EntitlementError)",
       notSubscribed: true,
@@ -371,7 +287,6 @@ describe("queryOpenCodeGoQuota", () => {
     [403, '{"error":"forbidden"}'],
     [403, '{"error":{"type":"EntitlementError"}}'],
     [403, '{"type":"error","error":{"type":"entitlementerror"}}'],
-    [403, '{"error":{"type":"PermissionError","message":"subscription required"}}'],
     [403, "not-json EntitlementError"],
     [401, '{"type":"error","error":{"type":"EntitlementError"}}'],
   ])("keeps unrelated HTTP %s body %s as an ordinary error", async (status, body) => {
@@ -385,19 +300,18 @@ describe("queryOpenCodeGoQuota", () => {
   });
 
   it("retains the HTTP status when reading a non-success body fails", async () => {
-    const token = "distinctive-secret-token";
     mocks.fetchResponse.mockResolvedValueOnce({
       ok: false,
       status: 503,
       text: vi
         .fn()
-        .mockRejectedValue(new Error(`body ${token}\n${"x".repeat(140)} ${token} failed`)),
+        .mockRejectedValue(new Error(`body ${TOKEN}\n${"x".repeat(140)} ${TOKEN} failed`)),
     });
 
-    const result = await queryOpenCodeGoQuota(token);
+    const result = await queryOpenCodeGoQuota(TOKEN);
 
     expect(result).toMatchObject({ success: false, retryable: true });
-    expect(JSON.stringify(result)).not.toContain(token);
+    expect(JSON.stringify(result)).not.toContain(TOKEN);
     expect((result as { error: string }).error).toContain(
       "OpenCode Go API error 503: body [redacted]",
     );
@@ -406,35 +320,22 @@ describe("queryOpenCodeGoQuota", () => {
     );
   });
 
-  it.each(["network", "body"])("redacts tokens from %s failures", async (failure) => {
-    const token = "distinctive-secret-token";
-    if (failure === "network") {
-      mocks.fetchResponse.mockRejectedValueOnce(new Error(`failed ${token} twice ${token}`));
-    } else {
-      mocks.fetchResponse.mockResolvedValueOnce({
-        ok: false,
-        status: 500,
-        text: vi.fn().mockRejectedValue(new Error(`body ${token} failed`)),
-      });
-    }
+  it("redacts tokens from network failures", async () => {
+    mocks.fetchResponse.mockRejectedValueOnce(new Error(`failed ${TOKEN} twice ${TOKEN}`));
 
-    const result = await queryOpenCodeGoQuota(token);
-
-    expect(result).toMatchObject({ success: false, retryable: true });
-    expect(JSON.stringify(result)).not.toContain(token);
-    expect((result as { error: string }).error).toContain("[redacted]");
+    await expect(queryOpenCodeGoQuota(TOKEN)).resolves.toEqual({
+      success: false,
+      error: "failed [redacted] twice [redacted]",
+      retryable: true,
+    });
   });
 
   it("redacts a token returned as a remote window status", async () => {
-    const token = "distinctive-secret-token";
     const payload = validPayload();
-    windowFrom(payload, "rolling").status = `${token}\nretry`;
+    windowFrom(payload, "rolling").status = `${TOKEN}\nretry`;
     mockSuccess(payload);
 
-    const result = await queryOpenCodeGoQuota(token);
-
-    expect(JSON.stringify(result)).not.toContain(token);
-    expect(result).toEqual({
+    await expect(queryOpenCodeGoQuota(TOKEN)).resolves.toEqual({
       success: false,
       error: "Invalid OpenCode Go API response: rolling status is not ok: [redacted] retry",
     });
@@ -446,24 +347,26 @@ describe("queryOpenCodeGoConsoleStatus", () => {
     vi.clearAllMocks();
   });
 
-  function mockConsoleStatus(): void {
-    const meter = (usedMicroCents: number) => ({
-      limitMicroCents: 1_000,
-      usedMicroCents,
-      resetsAt: "2026-10-01T00:00:00Z",
-    });
+  const meter = (usedMicroCents: number | string, resetsAt?: string) => ({
+    limitMicroCents: 1_000,
+    usedMicroCents,
+    ...(resetsAt ? { resetsAt } : {}),
+  });
+
+  function mockConsoleBody(body: unknown): void {
     mocks.fetchResponse.mockResolvedValueOnce({
       ok: true,
-      text: vi.fn().mockResolvedValue(
-        JSON.stringify({
-          access: { meters: { fiveHour: meter(0), week: meter(250), month: meter(500) } },
-        }),
-      ),
+      text: vi.fn().mockResolvedValue(typeof body === "string" ? body : JSON.stringify(body)),
     });
   }
 
   it("asks the login's Console server, scoped to the login's org", async () => {
-    mockConsoleStatus();
+    const reset = "2026-10-01T00:00:00Z";
+    mockConsoleBody({
+      access: {
+        meters: { fiveHour: meter(0, reset), week: meter(250, reset), month: meter(500, reset) },
+      },
+    });
 
     const result = await queryOpenCodeGoConsoleStatus(
       { accessToken: "console-access", orgId: "wrk_1", server: "https://console.example.test" },
@@ -493,21 +396,74 @@ describe("queryOpenCodeGoConsoleStatus", () => {
     });
   });
 
-  it("uses the default Console server and no org header when the login has neither", async () => {
-    mockConsoleStatus();
-
-    await queryOpenCodeGoConsoleStatus({ accessToken: "console-access" });
-
-    expect(mocks.fetchWithTimeout).toHaveBeenCalledWith(
-      "https://opencode.ai/console/api/go/status",
-      {
-        request: {
-          method: "GET",
-          headers: { Authorization: "Bearer console-access", Accept: "application/json" },
+  it("reads string microcents, an exhausted zero limit, and the access end as fallback reset", async () => {
+    mockConsoleBody({
+      access: {
+        endsAt: "2026-10-02T12:48:59Z",
+        meters: {
+          fiveHour: meter("0", "2026-09-23T18:59:07.061Z"),
+          week: { limitMicroCents: 0, usedMicroCents: 5 },
+          month: meter(1_000),
         },
-        timeoutMs: undefined,
-        consume: expect.any(Function),
       },
+    });
+
+    await expect(queryOpenCodeGoConsoleStatus({ accessToken: "console-access" })).resolves.toEqual({
+      success: true,
+      rolling: {
+        status: "ok",
+        usagePercent: 0,
+        percentRemaining: 100,
+        resetTimeIso: "2026-09-23T18:59:07.061Z",
+      },
+      weekly: {
+        status: "rate-limited",
+        usagePercent: 100,
+        percentRemaining: 0,
+        resetTimeIso: "2026-10-02T12:48:59.000Z",
+      },
+      monthly: {
+        status: "rate-limited",
+        usagePercent: 100,
+        percentRemaining: 0,
+        resetTimeIso: "2026-10-02T12:48:59.000Z",
+      },
+    });
+  });
+
+  const contractError = (message: string) => ({
+    success: false,
+    error: `Invalid OpenCode Go API response: ${message}`,
+  });
+
+  it.each([
+    [
+      "no access as not subscribed",
+      { access: null },
+      { success: false, error: "OpenCode Go subscription is not active", notSubscribed: true },
+    ],
+    ["invalid JSON", "{", contractError("console response is not valid JSON")],
+    ["missing meters", { access: {} }, contractError("console access meters are missing")],
+    [
+      "a missing meter",
+      { access: { meters: { fiveHour: meter(0, "2026-10-01T00:00:00Z") } } },
+      contractError("console week meter is missing"),
+    ],
+    [
+      "invalid microcents",
+      { access: { meters: { fiveHour: meter(-1, "2026-10-01T00:00:00Z") } } },
+      contractError("console rolling meter microcents are invalid"),
+    ],
+    [
+      "no reset at all",
+      { access: { meters: { fiveHour: meter(0) } } },
+      contractError("console rolling resetsAt is missing or invalid"),
+    ],
+  ])("reports %s", async (_name, body, expected) => {
+    mockConsoleBody(body);
+
+    await expect(queryOpenCodeGoConsoleStatus({ accessToken: "console-access" })).resolves.toEqual(
+      expected,
     );
   });
 

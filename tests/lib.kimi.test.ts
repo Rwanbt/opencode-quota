@@ -1,125 +1,77 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const fetchMocks = vi.hoisted(() => {
-  const fetchResponse = vi.fn();
-  return {
-    fetchResponse,
-    fetchWithTimeout: vi.fn(
-      async (
-        _url: string,
-        options: {
-          consume: (response: Response, signal: AbortSignal) => Promise<unknown> | unknown;
-        },
-      ) => {
-        const response = await fetchResponse();
-        return await options.consume(response, new AbortController().signal);
-      },
-    ),
-  };
-});
-
-vi.mock("../src/lib/http.js", () => ({
-  fetchWithTimeout: fetchMocks.fetchWithTimeout,
-}));
+const fetchWithTimeout = vi.hoisted(() => vi.fn());
+vi.mock("../src/lib/http.js", () => ({ fetchWithTimeout }));
 
 import { queryKimiQuota } from "../src/lib/kimi.js";
 
-function queryCn(apiKey = "cn-test-key", requestTimeoutMs?: number) {
-  return queryKimiQuota({ apiKey, endpoint: "cn", requestTimeoutMs });
+function queryCn() {
+  return queryKimiQuota({ apiKey: "cn-test-key", endpoint: "cn" });
 }
 
-function mockKimiHttpSuccess(payload: unknown) {
-  fetchMocks.fetchResponse.mockResolvedValueOnce({
-    ok: true,
-    json: async () => payload,
-  });
+function mockResponse(response: { ok: boolean; status?: number; json?: unknown; text?: string }) {
+  fetchWithTimeout.mockImplementationOnce(async (_url, options) =>
+    options.consume({
+      ...response,
+      json: async () => response.json,
+      text: async () => response.text,
+    }),
+  );
 }
 
-function mockKimiHttpFailure(status: number, text: string) {
-  fetchMocks.fetchResponse.mockResolvedValueOnce({
-    ok: false,
-    status,
-    text: async () => text,
-  });
-}
-
-const usagePayload = {
-  usage: {
-    limit: "100",
-    used: "10",
-    remaining: "90",
-  },
-};
+const usagePayload = { usage: { limit: "100", used: "10", remaining: "90" } };
 
 describe("queryKimiQuota", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
-  it("binds the Global key to the Global endpoint and forwards timeout", async () => {
-    mockKimiHttpSuccess(usagePayload);
+  it.each([
+    ["global", "https://api.kimi.ai/coding/v1/usages", "Kimi Code"],
+    ["cn", "https://api.kimi.com/coding/v1/usages", "Kimi Code (CN)"],
+  ] as const)("binds the %s key to its own endpoint and forwards the timeout", async (endpoint, url, label) => {
+    mockResponse({ ok: true, json: usagePayload });
 
-    const result = await queryKimiQuota({
-      apiKey: "global-secret",
-      endpoint: "global",
-      requestTimeoutMs: 4321,
-    });
+    const result = await queryKimiQuota({ apiKey: "secret", endpoint, requestTimeoutMs: 4321 });
 
-    expect(fetchMocks.fetchWithTimeout).toHaveBeenCalledTimes(1);
-    expect(fetchMocks.fetchWithTimeout).toHaveBeenCalledWith(
-      "https://api.kimi.ai/coding/v1/usages",
+    expect(fetchWithTimeout).toHaveBeenCalledWith(
+      url,
       expect.objectContaining({
         request: expect.objectContaining({
-          headers: expect.objectContaining({ Authorization: "Bearer global-secret" }),
+          headers: expect.objectContaining({ Authorization: "Bearer secret" }),
         }),
         timeoutMs: 4321,
       }),
     );
-    expect(result).toMatchObject({ success: true, label: "Kimi Code" });
-  });
-
-  it("binds the CN key to the CN endpoint", async () => {
-    mockKimiHttpSuccess(usagePayload);
-
-    const result = await queryCn("cn-secret");
-
-    expect(fetchMocks.fetchWithTimeout).toHaveBeenCalledTimes(1);
-    expect(fetchMocks.fetchWithTimeout).toHaveBeenCalledWith(
-      "https://api.kimi.com/coding/v1/usages",
-      expect.objectContaining({
-        request: expect.objectContaining({
-          headers: expect.objectContaining({ Authorization: "Bearer cn-secret" }),
-        }),
-      }),
-    );
-    expect(result).toMatchObject({ success: true, label: "Kimi Code (CN)" });
+    expect(result).toMatchObject({ success: true, label });
   });
 
   it("parses string numbers from the existing API shape", async () => {
-    mockKimiHttpSuccess({
-      usage: {
-        limit: "100",
-        used: "45",
-        remaining: "55",
-        resetTime: "2026-04-16T15:36:21.718434Z",
-      },
-      limits: [
-        {
-          window: { duration: 300, timeUnit: "TIME_UNIT_MINUTE" },
-          detail: {
-            limit: "100",
-            used: "22",
-            remaining: "78",
-            resetTime: "2026-04-16T16:36:21.718434Z",
-          },
+    mockResponse({
+      ok: true,
+      json: {
+        usage: {
+          limit: "100",
+          used: "45",
+          remaining: "55",
+          resetTime: "2026-04-16T15:36:21.718434Z",
         },
-      ],
-      parallel: { limit: "20" },
+        limits: [
+          {
+            window: { duration: 300, timeUnit: "TIME_UNIT_MINUTE" },
+            detail: {
+              limit: "100",
+              used: "22",
+              remaining: "78",
+              resetTime: "2026-04-16T16:36:21.718434Z",
+            },
+          },
+        ],
+        parallel: { limit: "20" },
+      },
     });
 
-    const result = await queryCn();
-
-    expect(result).toMatchObject({
+    await expect(queryCn()).resolves.toMatchObject({
       success: true,
       label: "Kimi Code (CN)",
       windows: [
@@ -142,7 +94,7 @@ describe("queryKimiQuota", () => {
   });
 
   it("computes used from remaining when used is absent", async () => {
-    mockKimiHttpSuccess({ usage: { limit: "100", remaining: "30" } });
+    mockResponse({ ok: true, json: { usage: { limit: "100", remaining: "30" } } });
 
     await expect(queryCn()).resolves.toMatchObject({
       success: true,
@@ -151,43 +103,30 @@ describe("queryKimiQuota", () => {
   });
 
   it.each([
-    [401, "Unauthorized"],
-    [403, "Forbidden access"],
-  ])("returns a sanitized HTTP %s error without trying the other host", async (status, body) => {
-    mockKimiHttpFailure(status, body);
+    [
+      "an HTTP error",
+      () => mockResponse({ ok: false, status: 401, text: "Unauthorized" }),
+      "Kimi API error 401: Unauthorized",
+    ],
+    [
+      "an empty usable payload",
+      () => mockResponse({ ok: true, json: { message: "hello", code: 0 } }),
+      "Unexpected response structure (keys: message, code)",
+    ],
+    [
+      "a thrown error",
+      () => fetchWithTimeout.mockRejectedValueOnce(new Error("network\u001b[31m error")),
+      "network error",
+    ],
+  ])("returns a sanitized error for %s without trying the other host", async (_name, mock, error) => {
+    mock();
 
-    await expect(queryCn()).resolves.toEqual({
-      success: false,
-      error: `Kimi API error ${status}: ${body}`,
-    });
-    expect(fetchMocks.fetchWithTimeout).toHaveBeenCalledTimes(1);
-    expect(fetchMocks.fetchWithTimeout.mock.calls[0]?.[0]).toBe(
-      "https://api.kimi.com/coding/v1/usages",
-    );
-  });
-
-  it("returns an error for an empty usable payload without trying the other host", async () => {
-    mockKimiHttpSuccess({ message: "hello", code: 0 });
-
-    await expect(queryCn()).resolves.toEqual({
-      success: false,
-      error: "Unexpected response structure (keys: message, code)",
-    });
-    expect(fetchMocks.fetchWithTimeout).toHaveBeenCalledTimes(1);
-  });
-
-  it("sanitizes thrown errors without trying the other host", async () => {
-    fetchMocks.fetchResponse.mockRejectedValue(new Error("network\u001b[31m error"));
-
-    await expect(queryCn()).resolves.toEqual({
-      success: false,
-      error: "network error",
-    });
-    expect(fetchMocks.fetchWithTimeout).toHaveBeenCalledTimes(1);
+    await expect(queryCn()).resolves.toEqual({ success: false, error });
+    expect(fetchWithTimeout).toHaveBeenCalledTimes(1);
   });
 
   it("preserves an explicit regional label", async () => {
-    mockKimiHttpSuccess(usagePayload);
+    mockResponse({ ok: true, json: usagePayload });
 
     await expect(
       queryKimiQuota({ apiKey: "key", endpoint: "global", label: "Custom Kimi" }),

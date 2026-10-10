@@ -2,10 +2,10 @@
 
 # Manual install
 
-The guided installer is easier and safer:
+The easy way is one command:
 
 ```bash
-npx @slkiser/opencode-quota@latest init
+opencode plugin add @slkiser/opencode-quota
 ```
 
 Use this page only if you want to edit OpenCode files yourself.
@@ -64,4 +64,4 @@ The TUI shows the `Quota` panel in the session sidebar, a status line under the 
 - If the AI is busy, the report appears after it finishes. A new session whose first message is a report keeps its default title.
 - The AI can call the `quota_status` tool to check your setup.
 
-To update later, see [Updating safely](updating.md).
+To update later, see [Updating](updating.md).

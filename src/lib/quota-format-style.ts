@@ -15,7 +15,6 @@ export type QuotaFormatSessionTokens = "summary" | "detailed";
 export type QuotaFormatStyleDefinition = {
   id: CanonicalQuotaFormatStyle;
   aliases: readonly QuotaFormatStyle[];
-  label: string;
   projection: QuotaFormatProjection;
   renderer: QuotaFormatRenderer;
   sessionTokens: QuotaFormatSessionTokens;
@@ -25,7 +24,6 @@ const QUOTA_FORMAT_STYLE_DEFINITIONS = {
   [SINGLE_WINDOW_PER_PROVIDER_FORMAT_STYLE]: {
     id: SINGLE_WINDOW_PER_PROVIDER_FORMAT_STYLE,
     aliases: [SINGLE_WINDOW_PER_PROVIDER_FORMAT_STYLE, "classic"],
-    label: "Single window",
     projection: "singleWindowPerProvider",
     renderer: "classic",
     sessionTokens: "summary",
@@ -33,7 +31,6 @@ const QUOTA_FORMAT_STYLE_DEFINITIONS = {
   [ALL_WINDOWS_FORMAT_STYLE]: {
     id: ALL_WINDOWS_FORMAT_STYLE,
     aliases: [ALL_WINDOWS_FORMAT_STYLE, "grouped"],
-    label: "All windows",
     projection: "allWindows",
     renderer: "grouped",
     sessionTokens: "detailed",
@@ -60,8 +57,4 @@ export function resolveQuotaFormatStyle(value: unknown): CanonicalQuotaFormatSty
 
 export function getQuotaFormatStyleDefinition(value: unknown): QuotaFormatStyleDefinition {
   return QUOTA_FORMAT_STYLE_DEFINITIONS[resolveQuotaFormatStyle(value)];
-}
-
-export function getQuotaFormatStyleLabel(value: unknown): string {
-  return getQuotaFormatStyleDefinition(value).label;
 }

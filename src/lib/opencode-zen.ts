@@ -1,5 +1,6 @@
 import { sanitizeDisplayText } from "./display-sanitize.js";
 import { fetchWithTimeout } from "./http.js";
+import { asRecord } from "./json-guards.js";
 import {
   consoleBaseUrl,
   consoleHeaders,
@@ -55,12 +56,6 @@ type ConsoleRoute =
 
 type ConsoleRouteResult<T> = { success: true; data: T } | { success: false; error: string };
 
-function asRecord(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : null;
-}
-
 /** Console micro-cent amounts arrive as decimal strings; numbers are accepted too. */
 function parseMicroCents(value: unknown): number | null {
   if (typeof value === "number") return Number.isFinite(value) ? value : null;
@@ -81,6 +76,13 @@ function parseDollars(value: unknown): number | null {
   return invalidResponse();
 }
 
+/** A nullable micro-cent field: null stays null; a missing or malformed value is invalid. */
+function parseNullableMicroCents(value: unknown): number | null {
+  if (value === null) return null;
+  const parsed = parseMicroCents(value);
+  return parsed === null ? invalidResponse() : parsed;
+}
+
 function parseBalance(json: unknown): number {
   const balance = parseMicroCents(asRecord(json)?.balanceMicroCents);
   return balance === null ? invalidResponse() : Math.max(0, balance);
@@ -88,11 +90,8 @@ function parseBalance(json: unknown): number {
 
 /** Returns the credit limit in USD, or null when the account has no limit. */
 function parseCreditLimit(json: unknown): number | null {
-  const value = asRecord(json)?.creditLimitMicroCents;
-  if (value === null) return null;
-
-  const limit = parseMicroCents(value);
-  return limit === null ? invalidResponse() : limit / OPENCODE_ZEN_BILLING_UNITS_PER_DOLLAR;
+  const limit = parseNullableMicroCents(asRecord(json)?.creditLimitMicroCents);
+  return limit === null ? null : limit / OPENCODE_ZEN_BILLING_UNITS_PER_DOLLAR;
 }
 
 function parseAutoRecharge(
@@ -128,36 +127,26 @@ function parseMonthlyUsage(json: unknown, now: Date): number {
 }
 
 /**
- * Parses the org budget. The org has no budget configured when the Console returns
- * `null`, an empty body, `{}`, or a null limit.
+ * Parses the org budget; null when the org has no usable budget. The org has no
+ * budget configured when the Console returns `null`, an empty body, `{}`, or a null
+ * limit; without a positive limit and non-negative spend, Zen falls back to the
+ * credit limit.
  */
-function parseOrgBudget(json: unknown): {
-  limitMicroCents: number | null;
-  spentMicroCents: number | null;
-  resetsAt: string | null;
-} {
-  if (json === null) return { limitMicroCents: null, spentMicroCents: null, resetsAt: null };
+function parseOrgBudget(
+  json: unknown,
+): { limitMicroCents: number; spentMicroCents: number; resetsAt: string | null } | null {
+  if (json === null) return null;
   const budget = asRecord(json);
   if (!budget) return invalidResponse();
-  if (Object.keys(budget).length === 0) {
-    return { limitMicroCents: null, spentMicroCents: null, resetsAt: null };
-  }
+  if (Object.keys(budget).length === 0) return null;
 
-  const limitValue = budget.limitMicroCents;
-  if (limitValue === undefined) return invalidResponse();
-  const limit = limitValue === null ? null : parseMicroCents(limitValue);
-  if (limitValue !== null && limit === null) return invalidResponse();
-
-  const spentValue = budget.spentMicroCents;
-  if (spentValue === undefined) return invalidResponse();
-  const spent = spentValue === null ? null : parseMicroCents(spentValue);
-  if (spentValue !== null && spent === null) return invalidResponse();
-
-  const resetsAt = budget.resetsAt;
+  const { resetsAt } = budget;
   if (resetsAt !== null && resetsAt !== undefined && typeof resetsAt !== "string") {
     return invalidResponse();
   }
-
+  const limit = parseNullableMicroCents(budget.limitMicroCents);
+  const spent = parseNullableMicroCents(budget.spentMicroCents);
+  if (limit === null || limit <= 0 || spent === null || spent < 0) return null;
   return {
     limitMicroCents: limit,
     spentMicroCents: spent,
@@ -165,16 +154,15 @@ function parseOrgBudget(json: unknown): {
   };
 }
 
-function sanitizeMessage(
-  text: string,
-  secrets: Array<string | undefined> = [],
-  maxLength = 120,
-): string {
-  let sanitized = sanitizeDisplayText(text).replace(/\s+/g, " ").trim();
-  for (const secret of secrets) {
-    if (secret) sanitized = sanitized.split(secret).join("[redacted]");
+/** Single-line error text with the token and org id redacted. */
+function redactedErrorText(error: unknown, credential: OpenCodeConsoleCredential): string {
+  let text = sanitizeDisplayText(error instanceof Error ? error.message : String(error))
+    .replace(/\s+/g, " ")
+    .trim();
+  for (const secret of [credential.accessToken, credential.orgId]) {
+    if (secret) text = text.split(secret).join("[redacted]");
   }
-  return (sanitized || "unknown").slice(0, maxLength);
+  return (text || "unknown").slice(0, 120);
 }
 
 async function fetchConsoleRoute<T>(params: {
@@ -221,11 +209,10 @@ async function fetchConsoleRoute<T>(params: {
       },
     });
   } catch (error) {
-    const message = sanitizeMessage(error instanceof Error ? error.message : String(error), [
-      params.credential.accessToken,
-      params.credential.orgId,
-    ]);
-    return { success: false, error: `OpenCode Console ${params.route} request failed: ${message}` };
+    return {
+      success: false,
+      error: `OpenCode Console ${params.route} request failed: ${redactedErrorText(error, params.credential)}`,
+    };
   }
 }
 
@@ -256,28 +243,20 @@ export async function queryOpenCodeZenQuota(
   }
   if (!balance.success) return balance;
 
-  // Prefer the org budget when it supplies a positive limit and usable spend;
-  // otherwise fall back to the credit limit plus this month's usage costs.
+  // Prefer the org budget; otherwise fall back to the credit limit plus this month's usage costs.
   let monthlyLimit = creditLimit.success ? creditLimit.data : null;
   let usage = monthlyUsage.success ? monthlyUsage.data : null;
   let budgetResetIso: string | null = null;
   let budgetSource: OpenCodeZenBudgetSource = "credit_limit";
-  if (orgBudget.success) {
-    const { limitMicroCents, spentMicroCents, resetsAt } = orgBudget.data;
-    if (
-      limitMicroCents !== null &&
-      limitMicroCents > 0 &&
-      spentMicroCents !== null &&
-      spentMicroCents >= 0
-    ) {
-      monthlyLimit = limitMicroCents / OPENCODE_ZEN_BILLING_UNITS_PER_DOLLAR;
-      usage = spentMicroCents;
-      budgetSource = "org_budget";
-      // Normalize to canonical ISO so downstream result validation never sees a
-      // parseable-but-non-ISO reset (e.g. "0") and drops the whole result.
-      const resetTimeMs = resetsAt === null ? Number.NaN : Date.parse(resetsAt);
-      budgetResetIso = Number.isFinite(resetTimeMs) ? new Date(resetTimeMs).toISOString() : null;
-    }
+  const budget = orgBudget.success ? orgBudget.data : null;
+  if (budget) {
+    monthlyLimit = budget.limitMicroCents / OPENCODE_ZEN_BILLING_UNITS_PER_DOLLAR;
+    usage = budget.spentMicroCents;
+    budgetSource = "org_budget";
+    // Normalize to canonical ISO so downstream result validation never sees a
+    // parseable-but-non-ISO reset (e.g. "0") and drops the whole result.
+    const resetTimeMs = budget.resetsAt === null ? Number.NaN : Date.parse(budget.resetsAt);
+    budgetResetIso = Number.isFinite(resetTimeMs) ? new Date(resetTimeMs).toISOString() : null;
   }
 
   return {

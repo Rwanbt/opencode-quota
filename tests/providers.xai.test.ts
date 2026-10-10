@@ -1,217 +1,168 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import type { QuotaProviderContext } from "../src/lib/entries.js";
+import { readCredentialRows } from "../src/lib/opencode-auth.js";
+import { hasXaiOAuthCached, queryXaiQuota } from "../src/lib/xai.js";
 import { xaiProvider } from "../src/providers/xai.js";
-import {
-  expectAttemptedWithErrorLabel,
-  expectAttemptedWithNoErrors,
-  expectNotAttempted,
-  visibleEntries,
-} from "./helpers/provider-assertions.js";
+import { expectNotAttempted } from "./helpers/provider-assertions.js";
 import { createProviderAvailabilityContext } from "./helpers/provider-test-harness.js";
 
-vi.mock("../src/lib/xai.js", () => ({
-  DEFAULT_XAI_AUTH_CACHE_MAX_AGE_MS: 5_000,
+vi.mock("../src/lib/xai.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/lib/xai.js")>()),
   hasXaiOAuthCached: vi.fn(),
-  periodKindLabel: vi.fn((kind: string) => {
-    if (kind === "weekly") return "Weekly";
-    if (kind === "monthly") return "Monthly";
-    if (kind === "daily") return "Daily";
-    return "Period";
-  }),
   queryXaiQuota: vi.fn(),
-  resolveXaiOAuth: vi.fn(),
 }));
 
 vi.mock("../src/lib/opencode-auth.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/lib/opencode-auth.js")>()),
-  readCredentialRows: vi.fn().mockResolvedValue([]),
+  readCredentialRows: vi.fn(),
 }));
+
+const actualXai = await vi.importActual<typeof import("../src/lib/xai.js")>("../src/lib/xai.js");
+
+const FIXED_WINDOW = {
+  kind: "fixed_window",
+  startedAtIso: "2026-07-13T02:24:00.983Z",
+  observedAtIso: "2026-07-15T00:00:00.000Z",
+  endsAtIso: "2026-07-20T02:24:00.983Z",
+  fullReset: true,
+} as const;
+const WEEKLY = {
+  percentRemaining: 95,
+  resetTimeIso: "2026-07-20T02:24:00.983Z",
+  fixedWindow: FIXED_WINDOW,
+  kind: "weekly",
+} as const;
+function context(config: Record<string, unknown> = {}): QuotaProviderContext {
+  return { config } as unknown as QuotaProviderContext;
+}
+
+const ACCOUNTING = {
+  resultType: "quota",
+  acquisitionMethod: "remote_api",
+  ownership: "maintained",
+  authority: "provider_reported",
+};
 
 describe("xai provider", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-  });
-
-  it("passes configured requestTimeoutMs to the query", async () => {
-    const { queryXaiQuota } = await import("../src/lib/xai.js");
-    (queryXaiQuota as any).mockResolvedValueOnce(null);
-
-    await xaiProvider.fetch({ config: { requestTimeoutMs: 12_000 } } as any);
-
-    expect(queryXaiQuota).toHaveBeenCalledWith({ requestTimeoutMs: 12_000 });
-  });
-
-  it("returns attempted:false when OAuth is not configured", async () => {
-    const { queryXaiQuota } = await import("../src/lib/xai.js");
-    (queryXaiQuota as any).mockResolvedValueOnce(null);
-
-    const output = await xaiProvider.fetch({} as any);
-    expectNotAttempted(output);
-  });
-
-  it("maps exactly one shared weekly quota row with accounting metadata", async () => {
-    const { queryXaiQuota } = await import("../src/lib/xai.js");
-    (queryXaiQuota as any).mockResolvedValueOnce({
-      success: true,
-      label: "xAI SuperGrok",
-      window: {
-        percentRemaining: 95,
-        resetTimeIso: "2026-07-20T02:24:00.983Z",
-        kind: "weekly",
-      },
-    });
-
-    const output = await xaiProvider.fetch({ config: {} } as any);
-    expectAttemptedWithNoErrors(output);
-    expect(visibleEntries(output.entries)).toEqual([
-      {
-        name: "xAI SuperGrok Weekly",
-        group: "xAI SuperGrok",
-        label: "Weekly:",
-        percentRemaining: 95,
-        resetTimeIso: "2026-07-20T02:24:00.983Z",
-      },
-    ]);
-    expect(output.entries[0]?.accounting).toEqual({
-      resultType: "quota",
-      acquisitionMethod: "remote_api",
-      ownership: "maintained",
-      authority: "provider_reported",
-    });
-    expect(output.presentation).toEqual({ singleWindowDisplayName: "xAI SuperGrok" });
+    vi.mocked(readCredentialRows).mockResolvedValue([]);
   });
 
   it.each([
+    "xAI SuperGrok",
     "xAI Lite",
     "xAI Heavy",
-  ])("projects the %s label through provider grouping and presentation", async (label) => {
-    const { queryXaiQuota } = await import("../src/lib/xai.js");
-    (queryXaiQuota as any).mockResolvedValueOnce({
-      success: true,
-      label,
-      window: {
-        percentRemaining: 95,
-        resetTimeIso: "2026-07-20T02:24:00.983Z",
-        kind: "weekly",
-      },
-    });
+  ] as const)("maps exactly one shared weekly %s row from the active login", async (label) => {
+    vi.mocked(queryXaiQuota).mockResolvedValueOnce({ success: true, label, window: WEEKLY });
 
-    const output = await xaiProvider.fetch({ config: {} } as any);
-    expectAttemptedWithNoErrors(output);
-    expect(visibleEntries(output.entries)).toEqual([
+    const output = await xaiProvider.fetch(context({ requestTimeoutMs: 12_000 }));
+
+    expect(queryXaiQuota).toHaveBeenCalledWith({ requestTimeoutMs: 12_000 });
+    expect(output).toEqual({
+      attempted: true,
+      entries: [
+        {
+          accounting: ACCOUNTING,
+          name: `${label} Weekly`,
+          group: label,
+          label: "Weekly:",
+          percentRemaining: 95,
+          resetTimeIso: "2026-07-20T02:24:00.983Z",
+          fixedWindow: FIXED_WINDOW,
+        },
+      ],
+      errors: [],
+      presentation: { singleWindowDisplayName: label },
+    });
+  });
+
+  it("is not attempted without OAuth and labels a failed query xAI", async () => {
+    vi.mocked(queryXaiQuota)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ success: false, error: "Token expired" });
+
+    expectNotAttempted(await xaiProvider.fetch(context()));
+    await expect(xaiProvider.fetch(context())).resolves.toEqual({
+      attempted: true,
+      entries: [],
+      errors: [{ label: "xAI", message: "Token expired" }],
+    });
+  });
+
+  it("shows one row per OAuth login, and a login OpenCode could not return as its own error row", async () => {
+    vi.mocked(readCredentialRows).mockResolvedValueOnce([
       {
-        name: `${label} Weekly`,
-        group: label,
-        label: "Weekly:",
-        percentRemaining: 95,
-        resetTimeIso: "2026-07-20T02:24:00.983Z",
+        id: "row-1",
+        integrationId: "xai",
+        label: "personal",
+        active: true,
+        value: { type: "oauth", access: "token-1" },
       },
-    ]);
-    expect(output.presentation).toEqual({ singleWindowDisplayName: label });
-  });
-
-  it("maps attempted query errors without exposing provider internals", async () => {
-    const { queryXaiQuota } = await import("../src/lib/xai.js");
-    (queryXaiQuota as any).mockResolvedValueOnce({
-      success: false,
-      error: "Token expired",
-    });
-
-    const output = await xaiProvider.fetch({} as any);
-    expectAttemptedWithErrorLabel(output, "xAI");
-    expect(output.errors).toEqual([{ label: "xAI", message: "Token expired" }]);
-  });
-
-  it("shows a login OpenCode could not return as its own error row", async () => {
-    const { readCredentialRows } = await import("../src/lib/opencode-auth.js");
-    const { queryXaiQuota, resolveXaiOAuth } = await import("../src/lib/xai.js");
-    const actual = await vi.importActual<typeof import("../src/lib/xai.js")>("../src/lib/xai.js");
-    (readCredentialRows as any).mockResolvedValueOnce([
       {
         id: "xai-id",
         integrationId: "xai",
         label: "default",
-        active: true,
+        active: false,
         value: { type: "oauth" },
         resolveError: "refresh_failed: HTTP 401",
       },
     ]);
-    (resolveXaiOAuth as any).mockImplementationOnce(actual.resolveXaiOAuth);
-    (queryXaiQuota as any).mockImplementationOnce(actual.queryXaiQuota);
+    vi.mocked(queryXaiQuota).mockImplementation(async (options) =>
+      options?.auth?.state === "configured"
+        ? { success: true, label: "xAI SuperGrok", window: WEEKLY }
+        : actualXai.queryXaiQuota(options),
+    );
 
-    const output = await xaiProvider.fetch({ config: {} } as any);
+    const output = await xaiProvider.fetch(context());
 
     expect(readCredentialRows).toHaveBeenCalledWith(["xai"], { methods: ["oauth"] });
-    expect(output.attempted).toBe(true);
-    expect(output.entries).toEqual([]);
-    expect(output.errors).toEqual([
-      {
-        label: "[xAI]",
-        message:
-          "xAI sign-in could not be refreshed: refresh_failed: HTTP 401. Run `opencode auth login xai`.",
-      },
-    ]);
+    expect(output).toEqual({
+      attempted: true,
+      entries: [
+        {
+          accounting: { ...ACCOUNTING, sourceId: "row-1" },
+          name: "[xAI personal] (SuperGrok) (active) Weekly",
+          group: "[xAI personal] (SuperGrok) (active)",
+          label: "Weekly:",
+          percentRemaining: 95,
+          resetTimeIso: "2026-07-20T02:24:00.983Z",
+        },
+      ],
+      errors: [
+        {
+          label: "[xAI]",
+          message:
+            "xAI sign-in could not be refreshed: refresh_failed: HTTP 401. Run `opencode auth login xai`.",
+        },
+      ],
+    });
   });
 
-  it("uses currentProviderID to distinguish direct xAI from Copilot Grok models", () => {
+  it.each([
+    ["grok-4", "xai", true],
+    ["grok-code-fast-1", "github-copilot", false],
+    ["grok-4", "grok", false],
+    ["xai/grok-4", undefined, true],
+    ["grok/grok-4", undefined, false],
+    ["openai/grok-4", undefined, false],
+  ])("matches %s with current provider %s -> %s", (model, currentProviderID, expected) => {
     expect(
-      xaiProvider.matchesCurrentModel?.("grok-4", {
-        enabledProviders: "auto",
-        currentProviderID: "xai",
-      }),
-    ).toBe(true);
-    expect(
-      xaiProvider.matchesCurrentModel?.("grok-code-fast-1", {
-        enabledProviders: "auto",
-        currentProviderID: "github-copilot",
-      }),
-    ).toBe(false);
-    expect(
-      xaiProvider.matchesCurrentModel?.("grok-4", {
-        enabledProviders: "auto",
-        currentProviderID: "grok",
-      }),
-    ).toBe(false);
-    expect(xaiProvider.matchesCurrentModel?.("xai/grok-4", { enabledProviders: "auto" })).toBe(
-      true,
-    );
-    expect(xaiProvider.matchesCurrentModel?.("grok/grok-4", { enabledProviders: "auto" })).toBe(
-      false,
-    );
-    expect(xaiProvider.matchesCurrentModel?.("openai/grok-4", { enabledProviders: "auto" })).toBe(
-      false,
-    );
+      xaiProvider.matchesCurrentModel?.(model, { enabledProviders: "auto", currentProviderID }),
+    ).toBe(expected);
   });
 
-  it("requires OAuth even when the xai runtime provider exists", async () => {
-    const { hasXaiOAuthCached } = await import("../src/lib/xai.js");
-    (hasXaiOAuthCached as any).mockResolvedValueOnce(false);
+  it.each([
+    ["the xai runtime provider exists", { providerIds: ["xai"] }, false, 0],
+    ["runtime provider lookup is empty", { providerIds: [] }, true, 5_000],
+    ["runtime provider lookup fails", { providersError: new Error("unavailable") }, true, 5_000],
+  ])("requires the OAuth login when %s", async (_name, availability, hasOAuth, maxAgeMs) => {
+    vi.mocked(hasXaiOAuthCached).mockResolvedValueOnce(hasOAuth);
 
     await expect(
-      xaiProvider.isAvailable(createProviderAvailabilityContext({ providerIds: ["xai"] })),
-    ).resolves.toBe(false);
-    expect(hasXaiOAuthCached).toHaveBeenCalledWith({ maxAgeMs: 0 });
-  });
-
-  it("is available from the exact OAuth entry even when runtime provider lookup is empty", async () => {
-    const { hasXaiOAuthCached } = await import("../src/lib/xai.js");
-    (hasXaiOAuthCached as any).mockResolvedValueOnce(true);
-
-    await expect(
-      xaiProvider.isAvailable(createProviderAvailabilityContext({ providerIds: [] })),
-    ).resolves.toBe(true);
-    expect(hasXaiOAuthCached).toHaveBeenCalledWith({ maxAgeMs: 5_000 });
-  });
-
-  it("falls back to the cached OAuth check when runtime provider lookup fails", async () => {
-    const { hasXaiOAuthCached } = await import("../src/lib/xai.js");
-    (hasXaiOAuthCached as any).mockResolvedValueOnce(true);
-
-    await expect(
-      xaiProvider.isAvailable(
-        createProviderAvailabilityContext({ providersError: new Error("unavailable") }),
-      ),
-    ).resolves.toBe(true);
-    expect(hasXaiOAuthCached).toHaveBeenCalledWith({ maxAgeMs: 5_000 });
+      xaiProvider.isAvailable(createProviderAvailabilityContext(availability)),
+    ).resolves.toBe(hasOAuth);
+    expect(hasXaiOAuthCached).toHaveBeenCalledWith({ maxAgeMs });
   });
 });

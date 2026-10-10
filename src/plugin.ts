@@ -13,10 +13,15 @@ import {
 } from "./core/provider-source.js";
 import { createSnapshotPublisher } from "./core/snapshot-publisher.js";
 import { createQuotaStore } from "./core/store.js";
-import type { QuotaSnapshot } from "./core/types.js";
+import type { QuotaSnapshot, SessionModel } from "./core/types.js";
+import { usageReport } from "./core/usage.js";
 import { resolveOpenCodeLocationRoots } from "./lib/config-file-utils.js";
 import { sanitizeDisplayText } from "./lib/display-sanitize.js";
 import { homeNoticeLine } from "./lib/maintainer-home-notice.js";
+import {
+  setPricingSnapshotAutoRefresh,
+  setPricingSnapshotSelection,
+} from "./lib/modelsdev-pricing.js";
 import {
   bindCredentialSource,
   createIntegrationCredentialSource,
@@ -29,7 +34,7 @@ import {
   QUOTA_DIALOG_COMMANDS,
   type QuotaDialogCommandId,
 } from "./lib/quota-dialog-command-specs.js";
-import { buildQuotaDialogCommandOutput } from "./lib/quota-dialog-commands.js";
+import { buildQuotaDialogCommandOutput, kickPricingRefresh } from "./lib/quota-dialog-commands.js";
 import {
   containsQuotaReport,
   formatQuotaReportMessage,
@@ -160,40 +165,30 @@ export const QuotaToastPlugin = Plugin.define({
     });
     // With a session, a snapshot also names the providers serving its current model and the
     // tokens the session used so far.
-    const forSession = async (
+    const sessionModel = async (sessionID: string | undefined): Promise<SessionModel> => {
+      const meta = sessionID ? await resolveSessionMeta(sessionID) : {};
+      return { id: meta.modelID, providerID: meta.providerID };
+    };
+    const withSessionTokens = async (
       snapshot: QuotaSnapshot,
       sessionID: string | undefined,
     ): Promise<{ snapshot: QuotaSnapshot }> => {
       if (!sessionID) return { snapshot };
-      const [model, settings] = await Promise.all([
-        resolveSessionMeta(sessionID),
-        loadServerSettings(sourceHost),
-      ]);
-      const shown = new Set(snapshot.providers.map((provider) => provider.providerId));
-      const currentModelProviderIds =
-        model.modelID || model.providerID
-          ? settings
-              .providerIdsForModel({ id: model.modelID, providerID: model.providerID })
-              .filter((id) => shown.has(id))
-          : undefined;
+      const settings = await loadServerSettings(sourceHost);
       const { sessionTokens } = await fetchSessionTokensForDisplay({
         enabled: true,
         sessionID,
         scope: settings.sessionTokenScope,
       });
+      if (!sessionTokens) return { snapshot };
       return {
         snapshot: {
           ...snapshot,
-          ...(currentModelProviderIds ? { currentModelProviderIds } : {}),
-          ...(sessionTokens
-            ? {
-                sessionTokens: {
-                  input: sessionTokens.totalInput,
-                  cachedInput: sessionTokens.totalCachedInput ?? 0,
-                  output: sessionTokens.totalOutput,
-                },
-              }
-            : {}),
+          sessionTokens: {
+            input: sessionTokens.totalInput,
+            cachedInput: sessionTokens.totalCachedInput ?? 0,
+            output: sessionTokens.totalOutput,
+          },
         },
       };
     };
@@ -223,11 +218,32 @@ export const QuotaToastPlugin = Plugin.define({
         }
       },
       snapshot: (input) =>
-        logRpcFailure("snapshot", async () => forSession(await store.snapshot(), input.sessionID)),
+        logRpcFailure("snapshot", async () =>
+          withSessionTokens(
+            await store.snapshot({ model: await sessionModel(input.sessionID) }),
+            input.sessionID,
+          ),
+        ),
       refresh: (input) =>
         logRpcFailure("refresh", async () => {
-          const options = { reason: input.reason, providerIds: input.providerIds };
-          return forSession(await store.refresh(options), input.sessionID);
+          const model = await sessionModel(input.sessionID);
+          const options = { reason: input.reason, providerIds: input.providerIds, model };
+          return withSessionTokens(await store.refresh(options), input.sessionID);
+        }),
+      usage: (input) =>
+        logRpcFailure("usage", async () => {
+          // Use the configured price list. As the token reports do, give a due price
+          // download up to 0.75 s to finish first.
+          const { pricing } = await loadServerSettings(sourceHost);
+          setPricingSnapshotAutoRefresh(pricing.autoRefresh);
+          setPricingSnapshotSelection(pricing.source);
+          await kickPricingRefresh({
+            reason: "tokens",
+            maxWaitMs: 750,
+            snapshotSelection: pricing.source,
+          });
+          const { range, sessionID, from, to } = input;
+          return { report: await usageReport({ range, sessionID, from, to }) };
         }),
       // A notice can target the users of some providers: the enabled and available ones,
       // found without asking any provider for quota.
@@ -372,10 +388,12 @@ export const QuotaToastPlugin = Plugin.define({
       console.warn(`[opencode-quota] credential event subscription stopped: ${logReason(error)}`);
     });
 
-    return () => {
+    // Running fetches still read logins, so the store is drained before the binding goes.
+    return async () => {
       credentialEvents.abort();
       unsubscribeStore();
       publisher.dispose();
+      await store.dispose();
       unbindCredentialSource();
     };
   },

@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const TEST_RUNTIME_ROOT = "/tmp/opencode-quota-resolved-auth-identity-tests";
 const TEST_SYMLINK_TARGET = `${TEST_RUNTIME_ROOT}-symlink-target`;
+const RESOLVED_AUTH_IDENTITY_PATTERN = /^rai1_[A-Za-z0-9_-]{43}$/u;
 const POSIX_IDENTITY_STORAGE = process.platform !== "win32" && typeof process.getuid === "function";
 
 vi.mock("../src/lib/opencode-runtime-paths.js", () => ({
@@ -53,7 +54,7 @@ describe("resolved-auth identity", () => {
         principal: { kind: "credential", value: "account-one-secret" },
       });
 
-      expect(identity.isResolvedAuthIdentity(first)).toBe(true);
+      expect(first).toMatch(RESOLVED_AUTH_IDENTITY_PATTERN);
       expect(first).toBe(repeat);
       expect(changedAccount).not.toBe(first);
       expect(changedProvider).not.toBe(first);
@@ -172,7 +173,7 @@ describe("resolved-auth identity", () => {
       await writeFile(keyPath, publishedKey, { mode: 0o600 });
       const resolved = await resolving;
 
-      expect(identity.isResolvedAuthIdentity(resolved)).toBe(true);
+      expect(resolved).toMatch(RESOLVED_AUTH_IDENTITY_PATTERN);
       expect(await readFile(keyPath, "utf8")).toBe(publishedKey);
       expect(
         await identity.deriveResolvedAuthIdentity({
@@ -244,7 +245,7 @@ describe("resolved-auth identity", () => {
         providerId: "zai",
         principal: { kind: "credential", value: "must-not-be-hashed-with-fallback" },
       });
-      expect(identity.isResolvedAuthIdentity(recovered)).toBe(true);
+      expect(recovered).toMatch(RESOLVED_AUTH_IDENTITY_PATTERN);
     }
   });
 });

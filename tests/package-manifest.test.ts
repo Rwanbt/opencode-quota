@@ -280,13 +280,12 @@ describe("package manifest compatibility", () => {
     expect(pkg.scripts?.["release:check"]).toBe("pnpm verify && pnpm run verify:release-version");
   });
 
-  it("ships explicit server, tui, and init bin entrypoints for OpenCode", () => {
+  it("ships explicit server and tui entrypoints and the show/status bin", () => {
     expect(pkg.main).toBe("./dist/index.js");
     expect(pkg.bin).toEqual({
       "opencode-quota": "./dist/bin/opencode-quota.js",
     });
     expect(pkg["oc-plugin"]).toBeUndefined();
-    expect(pkg.dependencies?.["@clack/prompts"]).toBeTruthy();
     expect(pkg.exports?.["."]).toEqual({
       default: "./dist/index.js",
       types: "./dist/index.d.ts",
@@ -299,19 +298,6 @@ describe("package manifest compatibility", () => {
       default: "./dist/tui.js",
       types: "./dist/tui.d.ts",
     });
-  });
-
-  it("keeps the legacy MiniMax result types in generated public declarations", async () => {
-    const [indexDeclarations, typesDeclarations] = await Promise.all([
-      readFile(new URL("../dist/index.d.ts", import.meta.url), "utf8"),
-      readFile(new URL("../dist/lib/types.d.ts", import.meta.url), "utf8"),
-    ]);
-
-    expect(indexDeclarations).toMatch(/MiniMaxResult[\s\S]*MiniMaxResultEntry/u);
-    expect(typesDeclarations).toContain("export interface MiniMaxResultEntry {");
-    expect(typesDeclarations).toContain('window: "five_hour" | "weekly";');
-    expect(typesDeclarations).toContain("export type MiniMaxResult = {");
-    expect(typesDeclarations).toContain("entries: MiniMaxResultEntry[];");
   });
 
   it("does not leave stale Crof generated artifacts in active dist", async () => {
@@ -417,9 +403,10 @@ describe("package manifest compatibility", () => {
   it("smoke-tests public imports, CLI commands, and the compiled TUI export", () => {
     expect(packedSmoke).toContain('await import("@slkiser/opencode-quota");');
     expect(packedSmoke).toContain('await import("@slkiser/opencode-quota/server");');
-    expect(packedSmoke).toContain('"opencode-quota init"');
     expect(packedSmoke).toContain('"opencode-quota show"');
-    expect(packedSmoke).toContain('"opencode-quota update"');
+    expect(packedSmoke).toContain('"opencode-quota status"');
+    expect(packedSmoke).not.toContain('"opencode-quota init"');
+    expect(packedSmoke).not.toContain('"opencode-quota update"');
     expect(packedSmoke).toContain("@slkiser/opencode-quota/tui");
     expect(packedSmoke).toContain('import.meta.resolve("@slkiser/opencode-quota/tui")');
     expect(packedSmoke).toContain('readFile(tuiExportPath, "utf8")');

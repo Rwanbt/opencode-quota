@@ -7,14 +7,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const commandMocks = vi.hoisted(() => ({
-  runInitInstaller: vi.fn(),
   runCliShowCommand: vi.fn(),
   runCliStatusCommand: vi.fn(),
-  runScopedUpdateCommand: vi.fn(),
-}));
-
-vi.mock("../src/lib/init-installer.js", () => ({
-  runInitInstaller: commandMocks.runInitInstaller,
 }));
 
 vi.mock("../src/lib/cli-show.js", () => ({
@@ -25,49 +19,11 @@ vi.mock("../src/lib/cli-status.js", () => ({
   runCliStatusCommand: commandMocks.runCliStatusCommand,
 }));
 
-vi.mock("../src/lib/scoped-update.js", () => ({
-  runScopedUpdateCommand: commandMocks.runScopedUpdateCommand,
-}));
-
 describe("opencode-quota bin", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    commandMocks.runInitInstaller.mockResolvedValue(0);
     commandMocks.runCliShowCommand.mockResolvedValue(0);
     commandMocks.runCliStatusCommand.mockResolvedValue(0);
-    commandMocks.runScopedUpdateCommand.mockResolvedValue(0);
-  });
-
-  it("dispatches init to the interactive installer", async () => {
-    const { main } = await import("../src/bin/opencode-quota.js");
-
-    const code = await main(["init"]);
-
-    expect(code).toBe(0);
-    expect(commandMocks.runInitInstaller).toHaveBeenCalledOnce();
-    expect(commandMocks.runCliShowCommand).not.toHaveBeenCalled();
-  });
-
-  it("passes the legacy config sync option to init", async () => {
-    const { main } = await import("../src/bin/opencode-quota.js");
-
-    const code = await main(["init", "--sync-legacy-config"]);
-
-    expect(code).toBe(0);
-    expect(commandMocks.runInitInstaller).toHaveBeenCalledWith({ syncLegacyConfig: true });
-    expect(commandMocks.runCliShowCommand).not.toHaveBeenCalled();
-  });
-
-  it("passes init dry-run and legacy sync flags in either order", async () => {
-    const { main } = await import("../src/bin/opencode-quota.js");
-
-    const code = await main(["init", "--sync-legacy-config", "--dry-run"]);
-
-    expect(code).toBe(0);
-    expect(commandMocks.runInitInstaller).toHaveBeenCalledWith({
-      dryRun: true,
-      syncLegacyConfig: true,
-    });
   });
 
   it("dispatches show to the quota CLI command", async () => {
@@ -77,7 +33,7 @@ describe("opencode-quota bin", () => {
 
     expect(code).toBe(0);
     expect(commandMocks.runCliShowCommand).toHaveBeenCalledWith({ argv: [] });
-    expect(commandMocks.runInitInstaller).not.toHaveBeenCalled();
+    expect(commandMocks.runCliStatusCommand).not.toHaveBeenCalled();
   });
 
   it("passes show provider args through to the quota CLI command", async () => {
@@ -88,17 +44,6 @@ describe("opencode-quota bin", () => {
     expect(code).toBe(0);
     expect(commandMocks.runCliShowCommand).toHaveBeenCalledWith({
       argv: ["--provider", "copilot"],
-    });
-  });
-
-  it("dispatches update args to the scoped updater", async () => {
-    const { main } = await import("../src/bin/opencode-quota.js");
-
-    const code = await main(["update", "--dry-run", "--yes"]);
-
-    expect(code).toBe(0);
-    expect(commandMocks.runScopedUpdateCommand).toHaveBeenCalledWith({
-      argv: ["--dry-run", "--yes"],
     });
   });
 
@@ -133,17 +78,10 @@ describe("opencode-quota bin", () => {
     expect(log).toHaveBeenCalledWith(expect.stringContaining("Usage:"));
     expect(log).toHaveBeenCalledWith(expect.stringContaining("opencode-quota show"));
     expect(log).toHaveBeenCalledWith(expect.stringContaining("opencode-quota status"));
-    expect(log).toHaveBeenCalledWith(expect.stringContaining("responsible preview"));
-    expect(log).toHaveBeenCalledWith(
-      expect.stringContaining("Credential-specific audit sources and values are not read"),
-    );
-    expect(log).toHaveBeenCalledWith(
-      expect.stringContaining(
-        "Values encountered in normal config parsing are never printed, copied, or modified",
-      ),
-    );
-    expect(log).toHaveBeenCalledWith(expect.stringContaining("safe setting/package-cache changes"));
-    expect(log).toHaveBeenCalledWith(expect.stringContaining("Apply only safe setting/cache work"));
+    const help = String(log.mock.calls[0]?.[0]);
+    for (const removed of ["opencode-quota init", "opencode-quota update", "provider add"]) {
+      expect(help).not.toContain(removed);
+    }
     log.mockRestore();
   });
 
@@ -159,15 +97,22 @@ describe("opencode-quota bin", () => {
     log.mockRestore();
   });
 
-  it("prints usage and exits non-zero for unknown commands", async () => {
+  it.each([
+    ["an unknown command", ["wat"]],
+    ["the removed init command", ["init"]],
+    ["the removed update command", ["update", "--dry-run"]],
+    ["the removed provider add command", ["provider", "add"]],
+  ])("prints usage and exits non-zero for %s", async (_name, argv) => {
     const { main } = await import("../src/bin/opencode-quota.js");
     const log = vi.spyOn(console, "log").mockImplementation(() => {});
 
-    const code = await main(["wat"]);
+    const code = await main(argv);
 
     expect(code).toBe(1);
     expect(log).toHaveBeenCalledWith(expect.stringContaining("Usage:"));
     expect(log).toHaveBeenCalledWith(expect.stringContaining("opencode-quota status"));
+    expect(commandMocks.runCliShowCommand).not.toHaveBeenCalled();
+    expect(commandMocks.runCliStatusCommand).not.toHaveBeenCalled();
     log.mockRestore();
   });
 

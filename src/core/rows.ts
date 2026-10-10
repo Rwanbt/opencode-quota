@@ -6,7 +6,6 @@
  * usage, local runtime accounting is a local estimation.
  */
 
-import { sanitizeSingleLineDisplaySnippet } from "../lib/display-sanitize.js";
 import type {
   AccountingAcquisitionMethod,
   AccountingQuantity,
@@ -14,9 +13,19 @@ import type {
   QuotaProviderResult,
   QuotaToastEntry,
 } from "../lib/entries.js";
+import { customRowKey } from "../lib/quota-providers.js";
 import { classifyError } from "./errors.js";
+import { safeDebugValue, safeDetail } from "./redact.js";
 import type { ProviderFetch } from "./store.js";
-import type { Amount, DebugDetail, QuotaWindow, RowMethod, RowType } from "./types.js";
+import type {
+  Amount,
+  AmountUnit,
+  DebugDetail,
+  QuotaRow,
+  QuotaWindow,
+  RowMethod,
+  RowType,
+} from "./types.js";
 import { validateRows } from "./validate.js";
 import { classifyWindow } from "./windows.js";
 
@@ -221,13 +230,18 @@ const xiaomiKey: KeyRule = (entry) => {
   })(entry);
 };
 
-/** Custom sources: `custom.<definition id>.<window or mapping>`; the source label is the account. */
+/**
+ * Custom sources: `custom.<definition id>.<window id or mapping name>`; the source label is the
+ * account. The adapters bring the key (`rowKey`: a local window's id, a json-v1 mapping's
+ * name), so renaming a window keeps it and two windows with one label stay apart; quota-v1
+ * entries are keyed by their name the same way.
+ */
 const customKey: KeyRule = (entry) => {
-  const definitionId = slug(entry.accounting.sourceId ?? "");
+  const definitionId = entry.accounting.sourceId ?? "";
   const group = entry.group ?? "";
   const rest =
     group && entry.name.startsWith(`${group} `) ? entry.name.slice(group.length + 1) : "";
-  const part = slug(rest);
+  const part = entry.rowKey ?? (rest ? customRowKey(rest) : "");
   if (!definitionId || !part) return undefined;
   const label = legacyLabel(entry) || rest;
   const window = classifyWindow(rest);
@@ -371,20 +385,48 @@ function canonicalDecimal(text: string): string | undefined {
   return decimals ? `${whole}.${decimals}` : whole;
 }
 
-/** Used and limit from a compact "26/100" or "$2.00/$10.00"; nothing when unclear. */
-function usedAndLimitFromRight(right: string | undefined): { used?: Amount; limit?: Amount } {
+const REQUESTS: AmountUnit = { kind: "count", unit: "request" };
+const USD: AmountUnit = { kind: "currency", code: "USD" };
+
+const COPILOT_PAIR_UNITS: Readonly<Record<string, AmountUnit>> = {
+  "Copilot AI Credits": { kind: "count", unit: "credit" },
+  "Copilot Premium Interactions": { kind: "count", unit: "interaction" },
+  "Copilot Premium Requests": REQUESTS,
+  "Copilot Additional Usage": USD,
+};
+
+/**
+ * The unit of a compact "used/limit" summary, only for rows whose adapter is known to write
+ * used before limit. Others give no amounts: custom remote mappings may write
+ * "remaining/limit", and Kimi and Synthetic don't name the unit or round the numbers.
+ */
+function pairUnit(providerId: string, entry: QuotaToastEntry): AmountUnit | undefined {
+  if (providerId === "alibaba-coding-plan") return REQUESTS;
+  if (providerId === "copilot") return COPILOT_PAIR_UNITS[entry.name];
+  if (
+    providerId === "quota-providers" &&
+    entry.accounting.acquisitionMethod === "local_estimation"
+  ) {
+    return entry.accounting.resultType === "budget" ? USD : REQUESTS;
+  }
+  return undefined;
+}
+
+/** Used and limit from a compact "26/100" or "$2.00/$10.00" in `unit`; nothing when unclear. */
+function usedAndLimitFromRight(
+  right: string | undefined,
+  unit: AmountUnit | undefined,
+): { used?: Amount; limit?: Amount } {
   const match = /^(\$?)([\d,]+(?:\.\d+)?)\/(\$?)([\d,]+(?:\.\d+)?)$/u.exec(right?.trim() ?? "");
-  if (!match || match[1] !== match[3]) return {};
+  if (!unit || !match || match[1] !== match[3]) return {};
+  if ((match[1] === "$") !== (unit.kind === "currency")) return {};
   const used = canonicalDecimal(match[2] ?? "");
   const limit = canonicalDecimal(match[4] ?? "");
   if (used === undefined || limit === undefined) return {};
-  const unit: Amount["unit"] = match[1]
-    ? { kind: "currency", code: "USD" }
-    : { kind: "count", unit: "unit" };
   return { used: { decimal: used, unit }, limit: { decimal: limit, unit } };
 }
 
-function valueFields(entry: QuotaToastEntry): Record<string, unknown> {
+function valueFields(providerId: string, entry: QuotaToastEntry): Record<string, unknown> {
   switch (entry.kind) {
     case "value":
       return { text: entry.value };
@@ -400,7 +442,7 @@ function valueFields(entry: QuotaToastEntry): Record<string, unknown> {
             ...(basis.limit ? { limit: toAmount(basis.limit.quantity) } : {}),
             ...(basis.remaining ? { remaining: toAmount(basis.remaining.quantity) } : {}),
           }
-        : usedAndLimitFromRight(entry.right);
+        : usedAndLimitFromRight(entry.right, pairUnit(providerId, entry));
       return {
         percentRemaining: entry.percentRemaining,
         ...amounts,
@@ -431,52 +473,40 @@ function candidateRow(
     authority: entry.accounting.authority,
     ...(window ? { window } : {}),
     prominence: entry.semantic?.prominence ?? "primary",
-    ...valueFields(entry),
+    ...valueFields(providerId, entry),
     ...(entry.resetTimeIso ? { resetsAt: entry.resetTimeIso } : {}),
   };
 }
 
+/** A candidate row and the login it came from ("" when the provider has one login). */
+type Candidate = { row: Record<string, unknown>; login: string };
+
 /**
- * Two logins without a name share one account text; the later one (by source id) gets " 2"
- * ("Account 2" when there is no text). A row repeated for the same login is dropped.
+ * Drops a row repeated for one login (same id and account). Logins that share an account text
+ * keep it here; the store tells them apart, as it also sees logins that failed this time.
  */
-function separateAccounts(
-  candidates: ReadonlyArray<{ row: Record<string, unknown>; sourceId?: string }>,
-  debug: DebugDetail[],
-): Record<string, unknown>[] {
-  const owners = new Map<string, string | undefined>();
-  const rows: Record<string, unknown>[] = [];
-  for (const { row, sourceId } of candidates) {
-    const id = String(row.id);
-    const base = typeof row.account === "string" ? row.account : undefined;
-    let account = base;
-    let repeated = false;
-    for (let number = 2; ; number++) {
-      const slot = `${id}\u001f${account ?? ""}`;
-      if (!owners.has(slot)) {
-        owners.set(slot, sourceId);
-        break;
-      }
-      if (owners.get(slot) === sourceId) {
-        repeated = true;
-        break;
-      }
-      account = base ? `${base} ${number}` : `Account ${number}`;
+function dropRepeatedRows(candidates: readonly Candidate[], debug: DebugDetail[]): Candidate[] {
+  const seen = new Set<string>();
+  return candidates.filter(({ row, login }) => {
+    const slot = `${String(row.id)}\u001f${String(row.account ?? "")}\u001f${login}`;
+    if (!seen.has(slot)) {
+      seen.add(slot);
+      return true;
     }
-    if (repeated) {
-      debug.push({ key: "dropped_row", value: `${id}: repeated row` });
-      continue;
-    }
-    rows.push(account === base ? row : { ...row, account });
-  }
-  return rows;
+    debug.push({ key: "dropped_row", value: `${String(row.id)}: repeated row` });
+    return false;
+  });
 }
 
+/** Debug details are kept for /quota_status: scrubbed, and redacted where they name a secret. */
 function detail(key: string, value: string): DebugDetail {
-  return { key, value: sanitizeSingleLineDisplaySnippet(value, DEBUG_VALUE_MAX_LENGTH) };
+  return { key: safeDetail(key, 64), value: safeDebugValue(key, value, DEBUG_VALUE_MAX_LENGTH) };
 }
 
-/** Today's provider result as v6 rows, the error to show, and the debug details. */
+/**
+ * Today's provider result as v6 rows, the error to show, and the debug details. `rowLogins`
+ * holds source ids here; the provider source keys them before the store gets them.
+ */
 export function rowsFromLegacyResult(
   providerId: string,
   result: QuotaProviderResult,
@@ -486,21 +516,31 @@ export function rowsFromLegacyResult(
     ...(result.statusDetails ?? []).map((item) => detail(item.key, item.value)),
     ...(result.rawDetails ?? []).map((item) => detail(item.key, item.value)),
   ];
-  const candidates: Array<{ row: Record<string, unknown>; sourceId?: string }> = [];
+  const candidates: Candidate[] = [];
   result.entries.forEach((entry, index) => {
     try {
       const row = candidateRow(providerId, entry);
       if (typeof row === "string") {
         debug.push(detail("dropped_row", `${entry.name || `row ${index + 1}`}: ${row}`));
       } else {
-        candidates.push({ row, sourceId: entry.accounting.sourceId });
+        candidates.push({ row, login: entry.accounting.sourceId ?? "" });
       }
     } catch {
       debug.push(detail("dropped_row", `row ${index + 1}: unreadable`));
     }
   });
-  const checked = validateRows(providerId, separateAccounts(candidates, debug));
-  debug.push(...checked.dropped);
+  // Each row is checked on its own, so it keeps its login.
+  const rows: QuotaRow[] = [];
+  const rowLogins: string[] = [];
+  for (const { row, login } of dropRepeatedRows(candidates, debug)) {
+    const checked = validateRows(providerId, [row]);
+    debug.push(...checked.dropped);
+    for (const clean of checked.rows) {
+      rows.push(clean);
+      rowLogins.push(login);
+    }
+  }
+  const logins = rowLogins.some(Boolean) ? { rowLogins } : {};
 
   for (const error of result.errors) {
     const key = error.kind === "intentional-filter" ? "note" : "error";
@@ -508,10 +548,10 @@ export function rowsFromLegacyResult(
   }
   const firstError = result.errors.find((error) => error.kind !== "intentional-filter");
   if (firstError) {
-    return { rows: checked.rows, error: classifyError(firstError.message, nowMs), debug };
+    return { rows, ...logins, error: classifyError(firstError.message, nowMs), debug };
   }
-  if (!result.attempted && checked.rows.length === 0) {
+  if (!result.attempted && rows.length === 0) {
     return { rows: [], error: { code: "not_configured" }, debug };
   }
-  return { rows: checked.rows, debug };
+  return { rows, ...logins, debug };
 }

@@ -1,7 +1,3 @@
-/**
- * OpenRouter provider wrapper.
- */
-
 import type { QuotaProvider, QuotaProviderContext, QuotaProviderResult } from "../lib/entries.js";
 import {
   hasOpenRouterApiKeyConfigured,

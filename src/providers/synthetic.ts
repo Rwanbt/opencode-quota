@@ -1,7 +1,4 @@
-/**
- * Synthetic provider wrapper.
- */
-
+import { API_KEY_VENDORS, getApiKeyDiagnostics, hasApiKey } from "../lib/api-key-resolver.js";
 import type {
   QuotaProvider,
   QuotaProviderContext,
@@ -10,33 +7,21 @@ import type {
 } from "../lib/entries.js";
 import { isCanonicalProviderAvailable } from "../lib/provider-availability.js";
 import { modelProviderIncludesAny } from "../lib/provider-model-matching.js";
-import {
-  getSyntheticKeyDiagnostics,
-  hasSyntheticApiKeyConfigured,
-  querySyntheticQuota,
-} from "../lib/synthetic.js";
+import { querySyntheticQuota } from "../lib/synthetic.js";
 import type { SyntheticQuotaWindow } from "../lib/types.js";
 import { attemptedResult, mapNullableProviderResult, withStatusDetails } from "./result-helpers.js";
 
-function formatSyntheticRoundedValue(value: number): string {
+function roundedAmount(value: number): string {
   if (!Number.isFinite(value)) return "0";
   return String(Math.max(0, Math.round(value)));
 }
 
-function formatSyntheticSummary(window: SyntheticQuotaWindow, currency = false): string {
-  const used = formatSyntheticRoundedValue(window.used);
-  const limit = formatSyntheticRoundedValue(window.limit);
-  return currency ? `$${used}/$${limit}` : `${used}/${limit}`;
-}
-
-function toSyntheticEntry(params: {
-  window: SyntheticQuotaWindow;
-  suffix: "5h" | "Weekly";
-  label: "5h:" | "Weekly:";
-  currency?: boolean;
-}): QuotaToastEntry {
-  const right = formatSyntheticSummary(params.window, params.currency);
-
+/** `currencySign` is "$" for the weekly credit window and "" for the 5h request window. */
+function toSyntheticEntry(
+  window: SyntheticQuotaWindow,
+  suffix: "5h" | "Weekly",
+  currencySign: "" | "$",
+): QuotaToastEntry {
   return {
     accounting: {
       resultType: "quota",
@@ -44,12 +29,12 @@ function toSyntheticEntry(params: {
       ownership: "maintained",
       authority: "provider_reported",
     },
-    name: `Synthetic ${params.suffix}`,
+    name: `Synthetic ${suffix}`,
     group: "Synthetic",
-    label: params.label,
-    percentRemaining: params.window.percentRemaining,
-    right,
-    resetTimeIso: params.window.resetTimeIso,
+    label: `${suffix}:`,
+    percentRemaining: window.percentRemaining,
+    right: `${currencySign}${roundedAmount(window.used)}/${currencySign}${roundedAmount(window.limit)}`,
+    resetTimeIso: window.resetTimeIso,
   };
 }
 
@@ -64,7 +49,7 @@ export const syntheticProvider: QuotaProvider = {
     });
     if (providerAvailable) return true;
 
-    return await hasSyntheticApiKeyConfigured();
+    return await hasApiKey(API_KEY_VENDORS.synthetic);
   },
 
   matchesCurrentModel(model: string): boolean {
@@ -72,7 +57,7 @@ export const syntheticProvider: QuotaProvider = {
   },
 
   async fetch(ctx: QuotaProviderContext): Promise<QuotaProviderResult> {
-    const diagnostics = await getSyntheticKeyDiagnostics().catch(() => ({
+    const diagnostics = await getApiKeyDiagnostics(API_KEY_VENDORS.synthetic).catch(() => ({
       configured: false,
       source: null,
       checkedPaths: [],
@@ -83,22 +68,11 @@ export const syntheticProvider: QuotaProvider = {
       onSuccess: (result) =>
         attemptedResult(
           [
-            toSyntheticEntry({
-              window: result.windows.fiveHour,
-              suffix: "5h",
-              label: "5h:",
-            }),
-            toSyntheticEntry({
-              window: result.windows.weekly,
-              suffix: "Weekly",
-              label: "Weekly:",
-              currency: true,
-            }),
+            toSyntheticEntry(result.windows.fiveHour, "5h", ""),
+            toSyntheticEntry(result.windows.weekly, "Weekly", "$"),
           ],
           [],
-          {
-            singleWindowShowRight: true,
-          },
+          { singleWindowShowRight: true },
         ),
     });
     const detail = `configured=${diagnostics.configured ? "true" : "false"}${diagnostics.source ? ` source=${diagnostics.source}` : ""}${diagnostics.checkedPaths.length > 0 ? ` checked=${diagnostics.checkedPaths.join(" | ")}` : ""}`;

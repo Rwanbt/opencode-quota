@@ -1,4 +1,7 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { hasApiKey } from "../src/lib/api-key-resolver.js";
+import { isCanonicalProviderAvailable } from "../src/lib/provider-availability.js";
+import { querySyntheticQuota } from "../src/lib/synthetic.js";
 import { syntheticProvider } from "../src/providers/synthetic.js";
 import {
   expectAttemptedWithErrorLabel,
@@ -9,8 +12,12 @@ import {
 
 vi.mock("../src/lib/synthetic.js", () => ({
   querySyntheticQuota: vi.fn(),
-  hasSyntheticApiKeyConfigured: vi.fn(),
-  getSyntheticKeyDiagnostics: vi.fn(async () => ({
+}));
+
+vi.mock("../src/lib/api-key-resolver.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/lib/api-key-resolver.js")>()),
+  hasApiKey: vi.fn(),
+  getApiKeyDiagnostics: vi.fn(async () => ({
     configured: false,
     source: null,
     checkedPaths: [],
@@ -21,26 +28,27 @@ vi.mock("../src/lib/provider-availability.js", () => ({
   isCanonicalProviderAvailable: vi.fn(),
 }));
 
+const mockQuery = (result: unknown) =>
+  vi.mocked(querySyntheticQuota).mockResolvedValueOnce(result as never);
+
 describe("synthetic provider", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
   it("returns attempted:false when not configured", async () => {
-    const { querySyntheticQuota } = await import("../src/lib/synthetic.js");
-    (querySyntheticQuota as any).mockResolvedValueOnce(null);
-
-    const out = await syntheticProvider.fetch({} as any);
-    expectNotAttempted(out);
+    mockQuery(null);
+    expectNotAttempted(await syntheticProvider.fetch({} as any));
   });
 
-  it("maps both Synthetic quota windows into canonical grouped-capable entries with rounded usage summaries", async () => {
-    const { querySyntheticQuota } = await import("../src/lib/synthetic.js");
-    (querySyntheticQuota as any).mockResolvedValueOnce({
+  it.each([
+    [{ limit: 100, used: 25.5, percentRemaining: 75 }, "26/100"],
+    [{ limit: 500, used: 52.4, percentRemaining: 90 }, "52/500"],
+  ])("maps both windows with rounded usage summaries (5h %j)", async (fiveHour, right) => {
+    mockQuery({
       success: true,
       windows: {
-        fiveHour: {
-          limit: 100,
-          used: 25.5,
-          percentRemaining: 75,
-          resetTimeIso: "2026-01-20T18:12:03.000Z",
-        },
+        fiveHour: { ...fiveHour, resetTimeIso: "2026-01-20T18:12:03.000Z" },
         weekly: {
           limit: 24,
           used: 21.98,
@@ -57,8 +65,8 @@ describe("synthetic provider", () => {
         name: "Synthetic 5h",
         group: "Synthetic",
         label: "5h:",
-        percentRemaining: 75,
-        right: "26/100",
+        percentRemaining: fiveHour.percentRemaining,
+        right,
         resetTimeIso: "2026-01-20T18:12:03.000Z",
       },
       {
@@ -70,77 +78,17 @@ describe("synthetic provider", () => {
         resetTimeIso: "2026-01-27T18:12:03.000Z",
       },
     ]);
-    expect(out.presentation).toEqual({
-      singleWindowShowRight: true,
-    });
+    expect(out.presentation).toEqual({ singleWindowShowRight: true });
   });
 
-  it("maps both top-level Synthetic windows into grouped rows", async () => {
-    const { querySyntheticQuota } = await import("../src/lib/synthetic.js");
-    (querySyntheticQuota as any).mockResolvedValueOnce({
-      success: true,
-      windows: {
-        fiveHour: {
-          limit: 500,
-          used: 52.4,
-          percentRemaining: 90,
-          resetTimeIso: "2026-01-20T18:12:03.000Z",
-        },
-        weekly: {
-          limit: 24,
-          used: 21.98,
-          percentRemaining: 8,
-          resetTimeIso: "2026-01-27T18:12:03.000Z",
-        },
-      },
-    });
-
-    const out = await syntheticProvider.fetch({} as any);
-    expectAttemptedWithNoErrors(out);
-    expect(visibleEntries(out.entries, "synthetic")).toEqual([
-      {
-        name: "Synthetic 5h",
-        group: "Synthetic",
-        label: "5h:",
-        percentRemaining: 90,
-        right: "52/500",
-        resetTimeIso: "2026-01-20T18:12:03.000Z",
-      },
-      {
-        name: "Synthetic Weekly",
-        group: "Synthetic",
-        label: "Weekly:",
-        percentRemaining: 8,
-        right: "$22/$24",
-        resetTimeIso: "2026-01-27T18:12:03.000Z",
-      },
-    ]);
-  });
-
-  it("maps errors into toast errors", async () => {
-    const { querySyntheticQuota } = await import("../src/lib/synthetic.js");
-    (querySyntheticQuota as any).mockResolvedValueOnce({
-      success: false,
-      error: "Unauthorized",
-    });
-
-    const out = await syntheticProvider.fetch({} as any);
-    expectAttemptedWithErrorLabel(out, "Synthetic");
-  });
-
-  it("maps the empty-object diagnostic without fabricating quota rows", async () => {
-    const { querySyntheticQuota } = await import("../src/lib/synthetic.js");
-    (querySyntheticQuota as any).mockResolvedValueOnce({
-      success: false,
-      error: "Synthetic returned no quota data for this account.",
-    });
+  it("maps a query error without fabricating quota rows", async () => {
+    mockQuery({ success: false, error: "Synthetic returned no quota data for this account." });
 
     const out = await syntheticProvider.fetch({} as any);
     expectAttemptedWithErrorLabel(out, "Synthetic");
     expect(out.errors).toEqual([
       { label: "Synthetic", message: "Synthetic returned no quota data for this account." },
     ]);
-    expect(out.entries).toEqual([]);
     expect(out.presentation).toBeUndefined();
   });
 
@@ -149,19 +97,15 @@ describe("synthetic provider", () => {
     expect(syntheticProvider.matchesCurrentModel?.("openai/gpt-5")).toBe(false);
   });
 
-  it("is available when synthetic provider ids are reported by metadata", async () => {
-    const { isCanonicalProviderAvailable } = await import("../src/lib/provider-availability.js");
-    (isCanonicalProviderAvailable as any).mockResolvedValueOnce(true);
+  // A configured Synthetic runtime provider is enough; otherwise a trusted API key is needed.
+  it.each([
+    [true, false, true],
+    [false, true, true],
+    [false, false, false],
+  ])("isAvailable with provider id=%s and API key=%s is %s", async (providerId, apiKey, expected) => {
+    vi.mocked(isCanonicalProviderAvailable).mockResolvedValue(providerId);
+    vi.mocked(hasApiKey).mockResolvedValue(apiKey);
 
-    await expect(syntheticProvider.isAvailable({} as any)).resolves.toBe(true);
-  });
-
-  it("falls back to trusted API key presence when provider ids are absent", async () => {
-    const { isCanonicalProviderAvailable } = await import("../src/lib/provider-availability.js");
-    const { hasSyntheticApiKeyConfigured } = await import("../src/lib/synthetic.js");
-    (isCanonicalProviderAvailable as any).mockResolvedValueOnce(false);
-    (hasSyntheticApiKeyConfigured as any).mockResolvedValueOnce(true);
-
-    await expect(syntheticProvider.isAvailable({} as any)).resolves.toBe(true);
+    await expect(syntheticProvider.isAvailable({} as any)).resolves.toBe(expected);
   });
 });

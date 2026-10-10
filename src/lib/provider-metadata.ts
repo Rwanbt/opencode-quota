@@ -122,10 +122,6 @@ export const QUOTA_PROVIDER_RUNTIME_IDS: QuotaProviderRuntimeIds = completeCatal
   catalogKeys().map((id) => [id, QUOTA_PROVIDER_CATALOG[id].runtimeIds] as const),
 );
 
-export const QUOTA_PROVIDER_SHAPES: readonly QuotaProviderShape[] = catalogKeys().map(
-  (id) => QUOTA_PROVIDER_CATALOG[id].shape,
-);
-
 const LIVE_LOCAL_USAGE_PROVIDER_ID_SET = new Set<string>(
   catalogKeys().filter((id) => {
     const source = providerRegistration(id);

@@ -139,6 +139,8 @@ export interface GroupedQuotaEntryMeta {
   right?: string;
   /** Optional stable row priority within a group; lower values render first. */
   sortPriority?: number;
+  /** Optional stable row key from configured ids (custom local windows), for v6 row ids. */
+  rowKey?: string;
 }
 
 type SemanticGroupedQuotaEntryMeta = Omit<GroupedQuotaEntryMeta, "semantic"> & {

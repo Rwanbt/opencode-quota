@@ -5,11 +5,13 @@
  * OpenCode package and no server code.
  *
  * Methods: `snapshot` (the last known quota, instantly), `refresh`, `notices` (the Home
- * notice line), and `command` (the report dialogs, until the v6 window replaces them); the
- * `changed` event carries every new snapshot.
+ * notice line), `usage` (tokens and cost from OpenCode's history for one range), and `command`
+ * (the report dialogs); the `changed` event carries every new snapshot.
  */
 import type { Rpc } from "@opencode/plugin";
 import type { QuotaSnapshot } from "./core/types.js";
+import type { UsageQuery, UsageRange, UsageReport } from "./core/usage.js";
+import { parseCalendarDate } from "./lib/calendar-date.js";
 import {
   isQuotaDialogCommand,
   type QuotaDialogCommandId,
@@ -36,6 +38,8 @@ export type QuotaRpcSnapshotOutput = { snapshot: QuotaSnapshot };
 export type QuotaRpcNoticesInput = Record<string, never>;
 /** The maintainer notice line for the bottom of Home; "" when there is none to show now. */
 export type QuotaRpcNoticesOutput = { homeLine: string };
+export type QuotaRpcUsageInput = UsageQuery;
+export type QuotaRpcUsageOutput = { report: UsageReport };
 
 type StandardValueSchema = Extract<Rpc.PortableValueSchema, { "~standard": unknown }>;
 type StandardEventSchema = Extract<Rpc.PortableEventDefinition["schema"], { "~standard": unknown }>;
@@ -95,6 +99,37 @@ function checkSnapshotOutput(value: unknown): string | null {
 }
 
 const REFRESH_REASONS: readonly QuotaRpcRefreshReason[] = ["poll", "turn", "manual"];
+/** What each usage range needs besides itself. */
+const USAGE_RANGE_NEEDS: Record<UsageRange, "nothing" | "sessionID" | "dates"> = {
+  today: "nothing",
+  "7d": "nothing",
+  "30d": "nothing",
+  "90d": "nothing",
+  all: "nothing",
+  session: "sessionID",
+  session_tree: "sessionID",
+  between: "dates",
+};
+
+function checkUsageInput(value: unknown): string | null {
+  if (!isObject(value)) return "input must be an object";
+  const range = value.range;
+  if (typeof range !== "string" || !Object.hasOwn(USAGE_RANGE_NEEDS, range)) {
+    return `range must be one of ${Object.keys(USAGE_RANGE_NEEDS).join(", ")}`;
+  }
+  const typeIssue =
+    checkOptionalString(value, "sessionID") ??
+    checkOptionalString(value, "from") ??
+    checkOptionalString(value, "to");
+  if (typeIssue) return typeIssue;
+  const needs = USAGE_RANGE_NEEDS[range as UsageRange];
+  if (needs === "sessionID" && !value.sessionID) return `sessionID is required for range ${range}`;
+  if (needs !== "dates") return null;
+  for (const field of ["from", "to"]) {
+    if (!parseCalendarDate(value[field])) return `${field} must be a date like 2026-01-31`;
+  }
+  return (value.from as string) > (value.to as string) ? "to must not be before from" : null;
+}
 
 export const QuotaRpc = {
   id: QUOTA_RPC_ID,
@@ -143,6 +178,12 @@ export const QuotaRpc = {
         isObject(value) && typeof value.homeLine === "string"
           ? null
           : "output must carry a homeLine string",
+      ),
+    },
+    usage: {
+      input: schema<QuotaRpcUsageInput>(checkUsageInput),
+      output: schema<QuotaRpcUsageOutput>((value) =>
+        isObject(value) && isObject(value.report) ? null : "output must carry a report",
       ),
     },
   },

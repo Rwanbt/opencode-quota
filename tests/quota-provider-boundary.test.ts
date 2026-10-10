@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { listProviders as listModelsDevProviders } from "../src/lib/modelsdev-pricing.js";
-import { QUOTA_PROVIDER_CATALOG, QUOTA_PROVIDER_SHAPES } from "../src/lib/provider-metadata.js";
+import { QUOTA_PROVIDER_CATALOG } from "../src/lib/provider-metadata.js";
 import { QUOTA_PROVIDER_REGISTRATION_SOURCE } from "../src/lib/provider-registration.js";
 import { getProviders } from "../src/providers/registry.js";
 import { PROVIDER_ACCOUNTING_LEDGER } from "./helpers/provider-assertions.js";
@@ -11,7 +11,9 @@ describe("quota provider boundary", () => {
     const registrationIds = QUOTA_PROVIDER_REGISTRATION_SOURCE.map(({ id }) => id);
     const quotaProviders = getProviders().map((p) => p.id);
     expect(Object.keys(QUOTA_PROVIDER_CATALOG)).toEqual(registrationIds);
-    expect(QUOTA_PROVIDER_SHAPES.map((shape) => shape.id)).toEqual(registrationIds);
+    expect(Object.values(QUOTA_PROVIDER_CATALOG).map((entry) => entry.shape.id)).toEqual(
+      registrationIds,
+    );
     expect(quotaProviders).toEqual(registrationIds);
     expect(quotaProviders).toContain("synthetic");
     expect(quotaProviders).toContain("xiaomi");

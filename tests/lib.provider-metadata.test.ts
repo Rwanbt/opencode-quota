@@ -10,13 +10,12 @@ import {
   QUOTA_PROVIDER_ID_SYNONYMS,
   QUOTA_PROVIDER_LABELS,
   QUOTA_PROVIDER_RUNTIME_IDS,
-  QUOTA_PROVIDER_SHAPES,
 } from "../src/lib/provider-metadata.js";
 import { QUOTA_PROVIDER_REGISTRATION_SOURCE } from "../src/lib/provider-registration.js";
 
 describe("provider-metadata", () => {
   it("defines the canonical provider setup catalog", () => {
-    expect(QUOTA_PROVIDER_SHAPES).toEqual([
+    expect(Object.values(QUOTA_PROVIDER_CATALOG).map((entry) => entry.shape)).toEqual([
       {
         id: "anthropic",
         autoSetup: "needs_quick_setup",
@@ -214,11 +213,10 @@ describe("provider-metadata", () => {
   it("derives public metadata views from the ordered registration source", () => {
     const registrationIds = QUOTA_PROVIDER_REGISTRATION_SOURCE.map(({ id }) => id);
     expect(Object.keys(QUOTA_PROVIDER_CATALOG)).toEqual(registrationIds);
-    expect(QUOTA_PROVIDER_SHAPES.map((shape) => shape.id)).toEqual(registrationIds);
     for (const [id, entry] of Object.entries(QUOTA_PROVIDER_CATALOG)) {
       expect(entry.shape.id).toBe(id);
+      expect(getQuotaProviderShape(id)).toBe(entry.shape);
       expect(QUOTA_PROVIDER_LABELS[id]).toBe(entry.label);
-      expect(QUOTA_PROVIDER_SHAPES.find((shape) => shape.id === id)).toBe(entry.shape);
       expect(QUOTA_PROVIDER_RUNTIME_IDS[id as keyof typeof QUOTA_PROVIDER_RUNTIME_IDS]).toEqual(
         entry.runtimeIds,
       );
@@ -238,7 +236,7 @@ describe("provider-metadata", () => {
   });
 
   it("keeps canonical provider setup ids unique", () => {
-    const ids = QUOTA_PROVIDER_SHAPES.map((shape) => shape.id);
+    const ids = QUOTA_PROVIDER_REGISTRATION_SOURCE.map(({ id }) => id);
     expect(new Set(ids).size).toBe(ids.length);
   });
 

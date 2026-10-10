@@ -12,6 +12,7 @@ import {
 import { getCurrentCursorUsageSummary } from "../lib/cursor-usage.js";
 import type {
   AccountingMetadata,
+  AccountingQuantity,
   QuotaProvider,
   QuotaProviderContext,
   QuotaProviderResult,
@@ -39,8 +40,12 @@ const SPEND_ACCOUNTING: AccountingMetadata = {
 };
 const USD_UNIT = { kind: "currency", code: "USD" } as const;
 
-function buildCursorGroup(plan: string | null): string {
-  return plan ? `Cursor (${plan})` : "Cursor";
+function usdQuantity(amount: number): AccountingQuantity {
+  return { decimal: accountingDecimalFromNumber(amount), unit: USD_UNIT };
+}
+
+function formatUsage(bucket: { costUsd: number; messageCount: number }): string {
+  return `${fmtUsdAmount(bucket.costUsd)} across ${bucket.messageCount.toLocaleString("en-US")} messages`;
 }
 
 export const cursorProvider: QuotaProvider = {
@@ -66,7 +71,7 @@ export const cursorProvider: QuotaProvider = {
 
   async fetch(ctx: QuotaProviderContext): Promise<QuotaProviderResult> {
     const planLabel = getCursorPlanDisplayName(ctx.config.cursorPlan);
-    const group = buildCursorGroup(planLabel);
+    const group = planLabel ? `Cursor (${planLabel})` : "Cursor";
     const includedApiUsd = getEffectiveCursorIncludedApiUsd({
       plan: ctx.config.cursorPlan,
       overrideUsd: ctx.config.cursorIncludedApiUsd,
@@ -78,8 +83,6 @@ export const cursorProvider: QuotaProvider = {
       inspectCursorAuthPresence(),
       inspectCursorOpenCodeIntegration(),
     ]);
-    const formatUsage = (costUsd: number, messageCount: number): string =>
-      `${fmtUsdAmount(costUsd)} across ${Math.trunc(messageCount).toLocaleString("en-US")} messages`;
     const statusDetails = statusDetailsFromRecord({
       plan: planLabel ?? "none",
       included_api_usd:
@@ -100,10 +103,10 @@ export const cursorProvider: QuotaProvider = {
       config_checked_paths: integration.checkedPaths.join(" | ") || "(none)",
       cycle_source: usage.window.source,
       cycle_reset_at: usage.window.resetTimeIso,
-      api_usage: formatUsage(usage.api.costUsd, usage.api.messageCount),
-      auto_composer_usage: formatUsage(usage.autoComposer.costUsd, usage.autoComposer.messageCount),
-      total_cursor_usage: formatUsage(usage.total.costUsd, usage.total.messageCount),
-      unknown_cursor_models: Math.trunc(usage.unknownModels.length).toLocaleString("en-US"),
+      api_usage: formatUsage(usage.api),
+      auto_composer_usage: formatUsage(usage.autoComposer),
+      total_cursor_usage: formatUsage(usage.total),
+      unknown_cursor_models: usage.unknownModels.length.toLocaleString("en-US"),
     });
 
     if (usage.total.messageCount === 0 && includedApiUsd === undefined) {
@@ -149,28 +152,13 @@ export const cursorProvider: QuotaProvider = {
           prominence: "primary",
         },
         basis: {
-          used: {
-            quantity: {
-              decimal: accountingDecimalFromNumber(usage.api.costUsd),
-              unit: USD_UNIT,
-            },
-            authority: "locally_derived",
-          },
+          used: { quantity: usdQuantity(usage.api.costUsd), authority: "locally_derived" },
           limit: {
-            quantity: {
-              decimal: accountingDecimalFromNumber(includedApiUsd),
-              unit: USD_UNIT,
-            },
+            quantity: usdQuantity(includedApiUsd),
             authority:
               ctx.config.cursorIncludedApiUsd === undefined ? "locally_derived" : "user_configured",
           },
-          remaining: {
-            quantity: {
-              decimal: accountingDecimalFromNumber(remainingUsd),
-              unit: USD_UNIT,
-            },
-            authority: "locally_derived",
-          },
+          remaining: { quantity: usdQuantity(remainingUsd), authority: "locally_derived" },
         },
       });
     } else {
@@ -185,10 +173,7 @@ export const cursorProvider: QuotaProvider = {
           metric: { kind: "named", name: metricName },
           prominence: "primary",
         },
-        quantity: {
-          decimal: accountingDecimalFromNumber(usage.api.costUsd),
-          unit: USD_UNIT,
-        },
+        quantity: usdQuantity(usage.api.costUsd),
       });
     }
 
@@ -203,10 +188,7 @@ export const cursorProvider: QuotaProvider = {
           metric: { kind: "named", name: "Auto+Composer" },
           prominence: "supplementary",
         },
-        quantity: {
-          decimal: accountingDecimalFromNumber(usage.autoComposer.costUsd),
-          unit: USD_UNIT,
-        },
+        quantity: usdQuantity(usage.autoComposer.costUsd),
       });
     }
 

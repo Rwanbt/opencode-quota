@@ -1,7 +1,4 @@
-/**
- * Kilo Gateway provider wrapper.
- */
-
+import { API_KEY_VENDORS, getApiKeyDiagnostics, hasApiKey } from "../lib/api-key-resolver.js";
 import type {
   AccountingMetadata,
   QuotaProvider,
@@ -11,10 +8,10 @@ import type {
 } from "../lib/entries.js";
 import { fmtUsdAmount } from "../lib/format-utils.js";
 import { type KiloQuotaResult, queryKiloQuota } from "../lib/kilo.js";
-import { getKiloKeyDiagnostics, hasKiloApiKey } from "../lib/kilo-config.js";
 import { modelProviderMatchesRuntimeId } from "../lib/provider-model-matching.js";
 import { accountingDecimalFromNumber } from "./accounting-decimal.js";
 import {
+  attemptedErrorResult,
   attemptedResult,
   notAttemptedResult,
   simpleApiKeyStatusDetails,
@@ -42,12 +39,15 @@ type KiloBalanceSuccess = Extract<
   { success: true; mode: "gateway_balance" }
 >;
 
-function buildKiloPassEntries(state: KiloPassSuccess): QuotaToastEntry[] {
-  const totalCreditsUsd = state.baseCreditsUsd + state.bonusCreditsUsd;
-  const quantity = (value: number) => ({
+function usdQuantity(value: number) {
+  return {
     decimal: accountingDecimalFromNumber(value),
     unit: { kind: "currency", code: "USD" } as const,
-  });
+  };
+}
+
+function buildKiloPassEntries(state: KiloPassSuccess): QuotaToastEntry[] {
+  const totalCreditsUsd = state.baseCreditsUsd + state.bonusCreditsUsd;
 
   if (totalCreditsUsd > 0) {
     return [
@@ -65,15 +65,15 @@ function buildKiloPassEntries(state: KiloPassSuccess): QuotaToastEntry[] {
         },
         basis: {
           used: {
-            quantity: quantity(state.usageUsd),
+            quantity: usdQuantity(state.usageUsd),
             authority: "provider_reported",
           },
           limit: {
-            quantity: quantity(totalCreditsUsd),
+            quantity: usdQuantity(totalCreditsUsd),
             authority: "locally_derived",
           },
           remaining: {
-            quantity: quantity(state.remainingUsd),
+            quantity: usdQuantity(state.remainingUsd),
             authority: "locally_derived",
           },
         },
@@ -92,7 +92,7 @@ function buildKiloPassEntries(state: KiloPassSuccess): QuotaToastEntry[] {
         metric: { kind: "component", component: "remaining_credits" },
         prominence: "primary",
       },
-      quantity: quantity(state.remainingUsd),
+      quantity: usdQuantity(state.remainingUsd),
       ...(state.resetTimeIso ? { resetTimeIso: state.resetTimeIso } : {}),
     },
   ];
@@ -129,10 +129,7 @@ function mapKiloBalanceSuccess(state: KiloBalanceSuccess): QuotaProviderResult {
           metric: { kind: "component", component: "total_balance" },
           prominence: "primary",
         },
-        quantity: {
-          decimal: accountingDecimalFromNumber(state.balanceUsd),
-          unit: { kind: "currency", code: "USD" },
-        },
+        quantity: usdQuantity(state.balanceUsd),
       },
     ]),
     statusDetailsFromRecord({
@@ -146,7 +143,7 @@ export const kiloProvider: QuotaProvider = {
   id: "kilo",
 
   async isAvailable(_ctx: QuotaProviderContext): Promise<boolean> {
-    return await hasKiloApiKey();
+    return await hasApiKey(API_KEY_VENDORS.kilo);
   },
 
   matchesCurrentModel(model: string): boolean {
@@ -154,7 +151,7 @@ export const kiloProvider: QuotaProvider = {
   },
 
   async fetch(ctx: QuotaProviderContext): Promise<QuotaProviderResult> {
-    const diagnostics = await getKiloKeyDiagnostics().catch(() => ({
+    const diagnostics = await getApiKeyDiagnostics(API_KEY_VENDORS.kilo).catch(() => ({
       configured: false,
       source: null,
       checkedPaths: [],
@@ -170,11 +167,7 @@ export const kiloProvider: QuotaProvider = {
     }
     if (!stateResult.success) {
       return withStatusDetails(
-        {
-          attempted: true,
-          entries: [],
-          errors: [{ label: "Kilo Gateway", message: stateResult.error }],
-        },
+        attemptedErrorResult("Kilo Gateway", stateResult.error),
         keyStatusDetails,
       );
     }

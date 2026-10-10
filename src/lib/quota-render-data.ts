@@ -1,3 +1,4 @@
+import { matchesQuotaProviderCurrentSelection } from "../core/selection.js";
 import { getAnthropicNoDataMessage } from "../providers/anthropic.js";
 import { getProviders } from "../providers/registry.js";
 import type { LoadConfigMeta } from "./config.js";
@@ -10,11 +11,7 @@ import type {
   SessionTokensData,
 } from "./entries.js";
 import { cloneQuotaToastEntry } from "./entries.js";
-import {
-  getQuotaProviderDisplayLabel,
-  getQuotaProviderIdsForRuntimeId,
-  getQuotaProviderShape,
-} from "./provider-metadata.js";
+import { getQuotaProviderDisplayLabel } from "./provider-metadata.js";
 import { projectQuotaProviderResults } from "./quota-accounting-projection.js";
 import type { QuotaFormatStyle } from "./quota-format-style.js";
 import { createQuotaProviderRuntimeContext } from "./quota-runtime-context.js";
@@ -110,62 +107,12 @@ export type CollectQuotaRenderDataResult = {
   sessionTokenError?: SessionTokenError;
 };
 
+export { matchesQuotaProviderCurrentSelection };
+
 export type QuotaStatusLiveProbe = {
   providerId: string;
   result: QuotaProviderResult;
 };
-
-export function matchesQuotaProviderCurrentSelection(params: {
-  provider: QuotaProvider;
-  currentModel?: string;
-  currentProviderID?: string;
-  enabledProviders?: string[] | "auto";
-  quotaProviders?: QuotaToastConfig["quotaProviders"];
-}): boolean {
-  const matchesCurrentModel = (model: string): boolean =>
-    params.provider.matchesCurrentModel
-      ? params.provider.matchesCurrentModel(model, {
-          enabledProviders: params.enabledProviders ?? "auto",
-          ...(params.quotaProviders ? { quotaProviders: params.quotaProviders } : {}),
-          ...(params.currentProviderID ? { currentProviderID: params.currentProviderID } : {}),
-        })
-      : true;
-
-  if (params.provider.id === "quota-providers") {
-    if (params.currentModel) return matchesCurrentModel(params.currentModel);
-    if (!params.currentProviderID) return false;
-
-    return Boolean(
-      params.quotaProviders?.some(
-        (source) => source.providerId === params.currentProviderID && source.modelIds === undefined,
-      ),
-    );
-  }
-
-  if (params.currentProviderID) {
-    const explicitId = params.currentProviderID.trim().toLowerCase();
-    const catalogShape = getQuotaProviderShape(explicitId);
-    if (catalogShape?.id === explicitId) return params.provider.id === catalogShape.id;
-
-    const runtimeCandidates = getQuotaProviderIdsForRuntimeId(explicitId);
-    if (runtimeCandidates.length === 1) return params.provider.id === runtimeCandidates[0];
-    if (runtimeCandidates.length > 1) {
-      if (!runtimeCandidates.some((candidate) => candidate === params.provider.id)) {
-        return false;
-      }
-      if (!params.currentModel || !params.provider.matchesCurrentModel) return false;
-
-      const qualifiedModel = params.currentModel.toLowerCase().startsWith(`${explicitId}/`)
-        ? params.currentModel
-        : `${explicitId}/${params.currentModel}`;
-      return matchesCurrentModel(qualifiedModel);
-    }
-
-    return false;
-  }
-
-  return params.currentModel ? matchesCurrentModel(params.currentModel) : false;
-}
 
 function hasCurrentQuotaSelection(params: {
   currentModel?: string;

@@ -1,16 +1,15 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 import type { OpenCodeMessage } from "../src/lib/opencode-storage.js";
 import type { LocalEstimateQuotaProviderDefinition } from "../src/lib/quota-providers.js";
 import {
-  __resetLocalQuotaProviderStateForTests,
   computeLocalQuotaProviderEstimate,
   getLocalQuotaProviderStatePath,
   inspectLocalQuotaProviderState,
-  QUOTA_PROVIDER_LOCAL_STATE_VERSION,
+  type LocalQuotaProviderStateV1,
   syncLocalQuotaProviderState,
 } from "../src/lib/quota-providers-local.js";
 
@@ -26,20 +25,8 @@ function definition(
     label: "Private Gateway",
     mode: "local-estimate",
     windows: [
-      {
-        id: "daily",
-        label: "Daily",
-        type: "utc-day",
-        requestLimit: 10,
-        usdBudget: 5,
-      },
-      {
-        id: "rolling",
-        label: "Rolling",
-        type: "rolling",
-        durationMinutes: 60,
-        requestLimit: 5,
-      },
+      { id: "daily", label: "Daily", type: "utc-day", requestLimit: 10, usdBudget: 5 },
+      { id: "rolling", label: "Rolling", type: "rolling", durationMinutes: 60, requestLimit: 5 },
     ],
     ...overrides,
   };
@@ -57,13 +44,27 @@ function message(
     providerID: "private-gateway",
     modelID: "private-model",
     time: { created: atMs, completed: atMs },
-    tokens: {
-      input: 100,
-      output: 50,
-      reasoning: 0,
-      cache: { read: 0, write: 0 },
-    },
+    tokens: { input: 100, output: 50, reasoning: 0, cache: { read: 0, write: 0 } },
     ...overrides,
+  };
+}
+
+function state(
+  def: LocalEstimateQuotaProviderDefinition,
+  messages: Array<{ id: string; atMs: number; modelId: string; input: number; output: number }>,
+): LocalQuotaProviderStateV1 {
+  return {
+    version: 1,
+    definitionId: def.id,
+    providerId: def.providerId,
+    updatedAt: NOW,
+    messages: messages.map(({ id, atMs, modelId, input, output }) => ({
+      id,
+      atMs,
+      providerId: def.providerId,
+      modelId,
+      tokens: { input, output, reasoning: 0, cache_read: 0, cache_write: 0 },
+    })),
   };
 }
 
@@ -79,7 +80,6 @@ async function runtimeDirs() {
 }
 
 afterEach(async () => {
-  __resetLocalQuotaProviderStateForTests();
   await Promise.all(created.splice(0).map((path) => rm(path, { recursive: true, force: true })));
 });
 
@@ -100,7 +100,7 @@ describe("local quota provider state", () => {
 
     const raw = JSON.parse(await readFile(path, "utf8"));
     expect(raw).toMatchObject({
-      version: QUOTA_PROVIDER_LOCAL_STATE_VERSION,
+      version: 1,
       definitionId: "private-gateway",
       providerId: "private-gateway",
       updatedAt: NOW,
@@ -110,40 +110,63 @@ describe("local quota provider state", () => {
       path,
       exists: true,
       health: "healthy",
-      version: QUOTA_PROVIDER_LOCAL_STATE_VERSION,
+      version: 1,
       lastUpdatedAt: NOW,
     });
   });
 
-  it("deduplicates message ids and prunes records outside the longest declared window", async () => {
+  it.each([
+    ["missing", null, { exists: false, health: "missing", version: null }],
+    ["unparseable", "{not-json", { exists: true, health: "malformed", version: null }],
+    ["other-version", { version: 2 }, { exists: true, health: "version_mismatch", version: 2 }],
+    [
+      "other-definition",
+      {
+        version: 1,
+        definitionId: "other",
+        providerId: "private-gateway",
+        updatedAt: 1,
+        messages: [],
+      },
+      { exists: true, health: "malformed", version: 1 },
+    ],
+    [
+      "bad-message",
+      {
+        version: 1,
+        definitionId: "private-gateway",
+        providerId: "private-gateway",
+        updatedAt: 1,
+        messages: [{ id: "", atMs: 1, providerId: "p", modelId: "m", tokens: {} }],
+      },
+      { exists: true, health: "malformed", version: 1 },
+    ],
+  ] as const)("reports %s state files", async (_name, content, expected) => {
     const dirs = await runtimeDirs();
-    const def = definition();
-    const state = await syncLocalQuotaProviderState(def, {
-      nowMs: NOW,
+    const diagnostic = await inspectLocalQuotaProviderState(definition(), {
       runtimeDirs: dirs,
+      readText: async () => {
+        if (content === null) throw Object.assign(new Error("missing"), { code: "ENOENT" });
+        return typeof content === "string" ? content : JSON.stringify(content);
+      },
+    });
+    // No file exists on disk, so an unhealthy state has no modification time either.
+    expect(diagnostic).toEqual({ ...expected, path: diagnostic.path, lastUpdatedAt: null });
+  });
+
+  it("keeps the latest copy of each id, only for this provider, within the longest window", async () => {
+    const state = await syncLocalQuotaProviderState(definition(), {
+      nowMs: NOW,
+      runtimeDirs: await runtimeDirs(),
       readMessages: async () => [
         message("duplicate", NOW - 1000),
         message("duplicate", NOW - 500),
         message("old", NOW - 2 * 24 * 60 * 60 * 1000),
         message("other-provider", NOW - 100, { providerID: "other" }),
+        message("unfinished", NOW - 50, { time: { created: NOW - 50 } }),
       ],
     });
-    expect(state.messages.map((item) => item.id)).toEqual(["duplicate"]);
-    expect(state.messages[0]?.atMs).toBe(NOW - 500);
-  });
-
-  it("never counts an unfinished assistant row", async () => {
-    const dirs = await runtimeDirs();
-    const state = await syncLocalQuotaProviderState(definition(), {
-      nowMs: NOW,
-      runtimeDirs: dirs,
-      readMessages: async () => [
-        message("complete", NOW - 1_000),
-        message("unfinished", NOW - 500, { time: { created: NOW - 500 } }),
-      ],
-    });
-
-    expect(state.messages.map((item) => item.id)).toEqual(["complete"]);
+    expect(state.messages.map((item) => [item.id, item.atMs])).toEqual([["duplicate", NOW - 500]]);
   });
 
   it("uses completion time for UTC and rolling windows across creation cutoffs", async () => {
@@ -173,15 +196,11 @@ describe("local quota provider state", () => {
       state,
       nowMs: NOW,
     });
-    expect(result.entries.filter((entry) => entry.accounting.resultType === "rate_limit")).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ label: "Daily:", right: "1/10" }),
-        expect.objectContaining({ label: "Rolling:", right: "1/5" }),
-      ]),
-    );
     const dailyEntry = result.entries.find((entry) => entry.label === "Daily:");
     const rollingEntry = result.entries.find((entry) => entry.label === "Rolling:");
     expect(dailyEntry).toMatchObject({
+      right: "1/10",
+      resetTimeIso: "2026-07-17T00:00:00.000Z",
       fixedWindow: {
         kind: "fixed_window",
         startedAtIso: "2026-07-16T00:00:00.000Z",
@@ -190,10 +209,14 @@ describe("local quota provider state", () => {
         fullReset: true,
       },
     });
+    expect(rollingEntry).toMatchObject({
+      right: "1/5",
+      resetTimeIso: new Date(NOW - 30_000 + 60 * 60 * 1000).toISOString(),
+    });
     expect(rollingEntry).not.toHaveProperty("fixedWindow");
   });
 
-  it("derives concurrent-session completions from the authoritative storage snapshot", async () => {
+  it("writes the same complete snapshot when two sessions sync at once", async () => {
     const dirs = await runtimeDirs();
     const def = definition();
     const readMessages = async () => [
@@ -202,16 +225,8 @@ describe("local quota provider state", () => {
     ];
 
     const states = await Promise.all([
-      syncLocalQuotaProviderState(def, {
-        nowMs: NOW,
-        runtimeDirs: dirs,
-        readMessages,
-      }),
-      syncLocalQuotaProviderState(def, {
-        nowMs: NOW,
-        runtimeDirs: dirs,
-        readMessages,
-      }),
+      syncLocalQuotaProviderState(def, { nowMs: NOW, runtimeDirs: dirs, readMessages }),
+      syncLocalQuotaProviderState(def, { nowMs: NOW, runtimeDirs: dirs, readMessages }),
     ]);
 
     expect(states.map((state) => state.messages.map((item) => item.id))).toEqual([
@@ -246,17 +261,16 @@ describe("local quota provider state", () => {
     expect(await readFile(path, "utf8")).toBe(before);
   });
 
-  it("recovers malformed state by rebuilding it from read-only OpenCode messages", async () => {
+  it("rebuilds a malformed state file from read-only OpenCode messages", async () => {
     const dirs = await runtimeDirs();
     const def = definition();
     const path = getLocalQuotaProviderStatePath(def.id, dirs);
-    await writeFile(path, "{not-json", { encoding: "utf8", flag: "w" }).catch(async () => {
-      await syncLocalQuotaProviderState(def, {
-        nowMs: NOW,
-        runtimeDirs: dirs,
-        readMessages: async () => [],
-      });
-      await writeFile(path, "{not-json", "utf8");
+    await mkdir(dirname(path), { recursive: true });
+    await writeFile(path, JSON.stringify({ version: 1 }), "utf8");
+    // A readable but unhealthy file reports when it was last written.
+    expect(await inspectLocalQuotaProviderState(def, { runtimeDirs: dirs })).toMatchObject({
+      health: "malformed",
+      lastUpdatedAt: expect.any(Number),
     });
 
     const state = await syncLocalQuotaProviderState(def, {
@@ -276,29 +290,13 @@ describe("local quota provider state", () => {
       providerId: "openai",
       pricingModelMap: { "gpt-4o": "anthropic/claude-sonnet-4-5" },
     });
-    const state = {
-      version: QUOTA_PROVIDER_LOCAL_STATE_VERSION,
-      definitionId: def.id,
-      providerId: def.providerId,
-      updatedAt: NOW,
-      messages: [
-        {
-          id: "priced",
-          atMs: NOW - 1000,
-          providerId: "openai",
-          modelId: "gpt-4o",
-          tokens: {
-            input: 1_000_000,
-            output: 0,
-            reasoning: 0,
-            cache_read: 0,
-            cache_write: 0,
-          },
-        },
-      ],
-    } as const;
-
-    const result = computeLocalQuotaProviderEstimate({ definition: def, state, nowMs: NOW });
+    const result = computeLocalQuotaProviderEstimate({
+      definition: def,
+      state: state(def, [
+        { id: "priced", atMs: NOW - 1000, modelId: "gpt-4o", input: 1_000_000, output: 0 },
+      ]),
+      nowMs: NOW,
+    });
     const budget = result.entries.find((entry) => entry.accounting.resultType === "budget");
     expect(budget?.kind).toBe("percent");
     expect(result.unpricedMessageCount).toBe(0);
@@ -306,29 +304,19 @@ describe("local quota provider state", () => {
 
   it("keeps request counts but never emits a budget percentage for unpriced usage", () => {
     const def = definition();
-    const state = {
-      version: QUOTA_PROVIDER_LOCAL_STATE_VERSION,
-      definitionId: def.id,
-      providerId: def.providerId,
-      updatedAt: NOW,
-      messages: [
+    const result = computeLocalQuotaProviderEstimate({
+      definition: def,
+      state: state(def, [
         {
           id: "unpriced",
           atMs: NOW - 1000,
-          providerId: def.providerId,
           modelId: "unknown-private-model",
-          tokens: {
-            input: 10,
-            output: 5,
-            reasoning: 0,
-            cache_read: 0,
-            cache_write: 0,
-          },
+          input: 10,
+          output: 5,
         },
-      ],
-    } as const;
-
-    const result = computeLocalQuotaProviderEstimate({ definition: def, state, nowMs: NOW });
+      ]),
+      nowMs: NOW,
+    });
     const request = result.entries.find((entry) => entry.accounting.resultType === "rate_limit");
     const budget = result.entries.find((entry) => entry.accounting.resultType === "budget");
     expect(request).toMatchObject({ kind: "percent", right: "1/10" });
@@ -343,36 +331,23 @@ describe("local quota provider state", () => {
     const def = definition({
       pricingModelMap: { "private-model": "openai/gpt-4o" },
       windows: [
-        {
-          id: "daily",
-          label: "Daily",
-          type: "utc-day",
-          requestLimit: 1,
-          usdBudget: 0.000001,
-        },
+        { id: "daily", label: "Daily", type: "utc-day", requestLimit: 1, usdBudget: 0.000001 },
       ],
     });
-    const state = {
-      version: QUOTA_PROVIDER_LOCAL_STATE_VERSION,
-      definitionId: def.id,
-      providerId: def.providerId,
-      updatedAt: NOW,
-      messages: ["one", "two"].map((id, index) => ({
-        id,
-        atMs: NOW - (2 - index) * 1_000,
-        providerId: def.providerId,
-        modelId: "private-model",
-        tokens: {
+    const result = computeLocalQuotaProviderEstimate({
+      definition: def,
+      state: state(
+        def,
+        ["one", "two"].map((id, index) => ({
+          id,
+          atMs: NOW - (2 - index) * 1_000,
+          modelId: "private-model",
           input: 1_000,
           output: 1_000,
-          reasoning: 0,
-          cache_read: 0,
-          cache_write: 0,
-        },
-      })),
-    };
-
-    const result = computeLocalQuotaProviderEstimate({ definition: def, state, nowMs: NOW });
+        })),
+      ),
+      nowMs: NOW,
+    });
     expect(result.entries).toEqual(
       expect.arrayContaining([
         expect.objectContaining({

@@ -6,6 +6,7 @@
 import type { ServerSettings } from "../core/provider-source.js";
 import type { QuotaStore } from "../core/store.js";
 import type { QuotaRow } from "../core/types.js";
+import { QUOTA_PROVIDERS_AGGREGATE_ID } from "./quota-providers.js";
 
 /** Extra wait after the reset time, so the provider has reset the window when the retry runs. */
 export const QUOTA_RESET_RETRY_BUFFER_MS = 60_000;
@@ -56,9 +57,21 @@ export function getQuotaResetRetryDelayMs(
 }
 
 /**
+ * True when `row` belongs to the model: custom sources all come from one provider, so their
+ * rows count only for the definitions that serve the model.
+ */
+function servesModel(row: QuotaRow, customDefinitionIds: readonly string[]): boolean {
+  if (row.providerId !== QUOTA_PROVIDERS_AGGREGATE_ID) return true;
+  return customDefinitionIds.some((id) =>
+    row.id.startsWith(`${QUOTA_PROVIDERS_AGGREGATE_ID}.custom.${id}.`),
+  );
+}
+
+/**
  * The retry delay for a limit error on `event.model`, or undefined to keep OpenCode's decision.
  * The store asks the model's providers again at once (a retry refresh has no minimum interval):
- * the limit error itself shows the quota changed, so only rows read for this retry count.
+ * the limit error itself shows the quota changed, so only rows read for this retry count. A
+ * provider with an error counts not at all: the rows it kept for a failed login are old.
  */
 export async function resolveQuotaResetRetryDelayMs(
   host: QuotaRetryHost,
@@ -69,13 +82,17 @@ export async function resolveQuotaResetRetryDelayMs(
   if (!settings.waitForQuotaReset) return undefined;
   const providerIds = settings.providerIdsForModel(event.model);
   if (providerIds.length === 0) return undefined;
+  const customDefinitionIds = settings.customDefinitionIdsForModel(event.model);
   const startedAtMs = Date.now();
   const snapshot = await host.store.refresh({ reason: "retry", providerIds });
   const freshRows = snapshot.providers
     .filter(
       (provider) =>
-        providerIds.includes(provider.providerId) && (provider.okAtMs ?? 0) >= startedAtMs,
+        providerIds.includes(provider.providerId) &&
+        (provider.okAtMs ?? 0) >= startedAtMs &&
+        provider.error === undefined,
     )
-    .flatMap((provider) => provider.rows);
+    .flatMap((provider) => provider.rows)
+    .filter((row) => servesModel(row, customDefinitionIds));
   return getQuotaResetRetryDelayMs(freshRows, Date.now());
 }

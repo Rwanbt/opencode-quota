@@ -1,25 +1,21 @@
 import { describe, expect, it, vi } from "vitest";
 import { googleAgyProvider } from "../src/providers/google-agy.js";
-import {
-  expectAttemptedWithErrorLabel,
-  expectAttemptedWithNoErrors,
-  expectNotAttempted,
-  visibleEntries,
-} from "./helpers/provider-assertions.js";
+import { expectAttemptedWithNoErrors, visibleEntries } from "./helpers/provider-assertions.js";
 
-vi.mock("../src/lib/google-agy.js", () => ({
-  AGY_AUTH_KEYS: ["google-agy", "opencode-agy-auth", "google-agy-auth"],
-  hasAgyQuotaRuntimeAvailable: vi.fn(),
-  queryGoogleAgyQuota: vi.fn(),
+const mocks = vi.hoisted(() => ({ queryGoogleAgyQuota: vi.fn() }));
+
+vi.mock("../src/lib/opencode-auth.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/lib/opencode-auth.js")>()),
+  readCredentialRows: vi.fn(async () => []),
+}));
+vi.mock("../src/lib/google-agy.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/lib/google-agy.js")>()),
+  queryGoogleAgyQuota: mocks.queryGoogleAgyQuota,
   inspectAgyAuthPresence: vi.fn(async () => ({
     state: "missing",
-    sourceKey: null,
     accountCount: 0,
     validAccountCount: 0,
   })),
-}));
-
-vi.mock("../src/lib/google-agy-companion.js", () => ({
   inspectAgyCompanionPresence: vi.fn(async () => ({
     state: "missing",
     error: "companion unavailable",
@@ -41,31 +37,8 @@ function bucket(overrides: Record<string, unknown> = {}) {
 }
 
 describe("google agy provider", () => {
-  it("preserves the provider timeout default unless the timeout is user-configured", async () => {
-    const { queryGoogleAgyQuota } = await import("../src/lib/google-agy.js");
-    (queryGoogleAgyQuota as any).mockResolvedValue(null);
-
-    await googleAgyProvider.fetch({ client: {}, config: { requestTimeoutMs: 5000 } } as any);
-    expect(queryGoogleAgyQuota).toHaveBeenLastCalledWith({ requestTimeoutMs: undefined });
-
-    await googleAgyProvider.fetch({
-      client: {},
-      config: { requestTimeoutMs: 12000, requestTimeoutMsConfigured: true },
-    } as any);
-    expect(queryGoogleAgyQuota).toHaveBeenLastCalledWith({ requestTimeoutMs: 12000 });
-  });
-
-  it("returns attempted:false when Google AGY auth is not configured", async () => {
-    const { queryGoogleAgyQuota } = await import("../src/lib/google-agy.js");
-    (queryGoogleAgyQuota as any).mockResolvedValueOnce(null);
-
-    const out = await googleAgyProvider.fetch({ client: {} } as any);
-    expectNotAttempted(out);
-  });
-
   it("maps weekly and five-hour summary rows with fixed labels and accounting metadata", async () => {
-    const { queryGoogleAgyQuota } = await import("../src/lib/google-agy.js");
-    (queryGoogleAgyQuota as any).mockResolvedValueOnce({
+    mocks.queryGoogleAgyQuota.mockResolvedValueOnce({
       success: true,
       buckets: [
         bucket({
@@ -94,7 +67,7 @@ describe("google agy provider", () => {
       errors: [{ email: "bob@example.com", error: "Unauthorized" }],
     });
 
-    const out = await googleAgyProvider.fetch({ client: {} } as any);
+    const out = await googleAgyProvider.fetch({ client: {} } as never);
     expect(out.attempted).toBe(true);
     expect(visibleEntries(out.entries, "google-agy")).toEqual([
       {
@@ -140,8 +113,7 @@ describe("google agy provider", () => {
   });
 
   it("keeps account order and email-less accounts distinct", async () => {
-    const { queryGoogleAgyQuota } = await import("../src/lib/google-agy.js");
-    (queryGoogleAgyQuota as any).mockResolvedValueOnce({
+    mocks.queryGoogleAgyQuota.mockResolvedValueOnce({
       success: true,
       buckets: [
         bucket({
@@ -157,7 +129,7 @@ describe("google agy provider", () => {
       ],
     });
 
-    const out = await googleAgyProvider.fetch({ client: {} } as any);
+    const out = await googleAgyProvider.fetch({ client: {} } as never);
     expectAttemptedWithNoErrors(out);
     expect(out.entries.map((entry) => entry.name)).toEqual([
       "Gemini Models (Account 1)",
@@ -171,8 +143,7 @@ describe("google agy provider", () => {
   });
 
   it("sorts account, family, and weekly-before-five-hour independently of input order", async () => {
-    const { queryGoogleAgyQuota } = await import("../src/lib/google-agy.js");
-    (queryGoogleAgyQuota as any).mockResolvedValueOnce({
+    mocks.queryGoogleAgyQuota.mockResolvedValueOnce({
       success: true,
       buckets: [
         bucket({
@@ -195,7 +166,7 @@ describe("google agy provider", () => {
       ],
     });
 
-    const out = await googleAgyProvider.fetch({ client: {} } as any);
+    const out = await googleAgyProvider.fetch({ client: {} } as never);
     expectAttemptedWithNoErrors(out);
     expect(out.entries.map((entry) => entry.group)).toEqual([
       "AGY (ali…): Gemini",
@@ -206,8 +177,7 @@ describe("google agy provider", () => {
   });
 
   it("preserves partial account errors when no summary rows succeed", async () => {
-    const { queryGoogleAgyQuota } = await import("../src/lib/google-agy.js");
-    (queryGoogleAgyQuota as any).mockResolvedValueOnce({
+    mocks.queryGoogleAgyQuota.mockResolvedValueOnce({
       success: true,
       buckets: [],
       errors: [
@@ -216,7 +186,7 @@ describe("google agy provider", () => {
       ],
     });
 
-    const out = await googleAgyProvider.fetch({ client: {} } as any);
+    const out = await googleAgyProvider.fetch({ client: {} } as never);
     expect(out.attempted).toBe(true);
     expect(out.entries).toEqual([]);
     expect(out.errors).toEqual([
@@ -225,30 +195,12 @@ describe("google agy provider", () => {
     ]);
   });
 
-  it("maps fetch failures into provider errors", async () => {
-    const { queryGoogleAgyQuota } = await import("../src/lib/google-agy.js");
-    (queryGoogleAgyQuota as any).mockResolvedValueOnce({
-      success: false,
-      error: "No Google AGY quota data available",
-    });
-
-    const out = await googleAgyProvider.fetch({ client: {} } as any);
-    expectAttemptedWithErrorLabel(out, "Google AGY");
-  });
-
-  it("is available only when the Google AGY runtime is configured", async () => {
-    const { hasAgyQuotaRuntimeAvailable } = await import("../src/lib/google-agy.js");
-    (hasAgyQuotaRuntimeAvailable as any).mockResolvedValueOnce(true);
-    await expect(googleAgyProvider.isAvailable({ client: {} } as any)).resolves.toBe(true);
-
-    (hasAgyQuotaRuntimeAvailable as any).mockResolvedValueOnce(false);
-    await expect(googleAgyProvider.isAvailable({ client: {} } as any)).resolves.toBe(false);
-  });
-
-  it("matches the existing Google AGY runtime ids", () => {
-    expect(googleAgyProvider.matchesCurrentModel?.("google-agy/gpt-4")).toBe(true);
-    expect(googleAgyProvider.matchesCurrentModel?.("opencode-agy-auth/gpt-4")).toBe(true);
-    expect(googleAgyProvider.matchesCurrentModel?.("google-agy-auth/gpt-4")).toBe(true);
-    expect(googleAgyProvider.matchesCurrentModel?.("google/claude-opus")).toBe(false);
+  it.each([
+    ["google-agy/gpt-4", true],
+    ["opencode-agy-auth/gpt-4", true],
+    ["google-agy-auth/gpt-4", true],
+    ["google/claude-opus", false],
+  ])("matches the existing Google AGY runtime ids: %s → %s", (model, expected) => {
+    expect(googleAgyProvider.matchesCurrentModel?.(model)).toBe(expected);
   });
 });

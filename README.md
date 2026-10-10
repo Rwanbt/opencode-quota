@@ -23,13 +23,13 @@
 ## Quick start
 
 ```bash
-npx @slkiser/opencode-quota init
+opencode plugin add @slkiser/opencode-quota
 ```
 
 Then restart OpenCode and type `/quota`.
 
 > [!IMPORTANT]
-> You need OpenCode `2.0.16+` and Node.js `22.13+` or `23.4+`. Still on OpenCode 1? Run `npx @slkiser/opencode-quota@4 init` instead.
+> You need OpenCode `2.0.16+`; the terminal commands also need Node.js `22.13+` or `23.4+`. Still on OpenCode 1? Run `npx @slkiser/opencode-quota@4 init` instead.
 
 Upgrading from 4.x? Read [what changed in 5.0](#breaking-changes-in-500).
 
@@ -56,19 +56,16 @@ Also:
 
 ## Updating
 
-Close OpenCode, then preview and apply the update:
-
 ```bash
-npx @slkiser/opencode-quota@latest update --dry-run
-npx @slkiser/opencode-quota@latest update
+opencode plugin update
 ```
 
-Restart OpenCode. The updater never moves or deletes secrets. See [Updating safely](docs/readme/updating.md).
+Restart OpenCode. Coming from 5.x? See [Updating](docs/readme/updating.md).
 
 ### Breaking changes in 5.0.0
 
 > [!WARNING]
-> - OpenCode 1 is no longer supported. `init` and `update` keep OpenCode 1 users on 4.x (`@slkiser/opencode-quota@4`).
+> - OpenCode 1 is no longer supported. OpenCode 1 users stay on 4.x (`@slkiser/opencode-quota@4`).
 > - Logins come from OpenCode 2, never from `auth.json`. If a provider is missing, log in again.
 > - Web and Desktop get the slash commands, but no toasts or panels.
 > - TUI reports open in a popup. To keep them in the chat, set `tuiCommandDisplay: "inline"`.
@@ -99,13 +96,10 @@ Type these in OpenCode. Add dates after the command, like `/tokens_between 2026-
 
 ### CLI commands
 
-| Command                                           | What it does                      |
-| ------------------------------------------------- | --------------------------------- |
-| `npx @slkiser/opencode-quota@latest init`         | Set up OpenCode Quota             |
-| `npx @slkiser/opencode-quota@latest provider add` | Add or update a custom provider   |
-| `npx @slkiser/opencode-quota@latest show`         | Show current quota                |
-| `npx @slkiser/opencode-quota@latest status`       | Check setup and provider problems |
-| `npx @slkiser/opencode-quota@latest update`       | Update an existing installation   |
+| Command                                     | What it does                      |
+| ------------------------------------------- | --------------------------------- |
+| `npx @slkiser/opencode-quota@latest show`   | Show current quota                |
+| `npx @slkiser/opencode-quota@latest status` | Check setup and provider problems |
 
 `show` and `status` work with OpenCode closed ([how they differ](docs/readme/troubleshooting.md#terminal-commands)). Add `--help` to see all options.
 
@@ -197,13 +191,7 @@ These show only your own member API key's usage, not the whole organization's.
 
 ### Custom providers
 
-Track a provider that is not listed, from its quota API or from a local estimate:
-
-```bash
-npx @slkiser/opencode-quota@latest provider add
-```
-
-It previews the change before saving. See the [custom-provider guide](docs/readme/providers.md#custom-providers).
+Track a provider that is not listed, from its quota API or from a local estimate. Ask your agent to add a custom provider: follow [docs/readme/providers.md#custom-providers](docs/readme/providers.md#custom-providers) (it has a copy-paste prompt).
 
 ## Troubleshooting
 
@@ -217,7 +205,7 @@ More fixes: [Troubleshooting](docs/readme/troubleshooting.md).
 
 ## Reference
 
-Guides: [Manual install](docs/readme/manual-install.md) · [Configuration](docs/readme/configuration.md) · [Providers](docs/readme/providers.md) · [Troubleshooting](docs/readme/troubleshooting.md) · [External integration](docs/readme/external-integration.md) · [Updating safely](docs/readme/updating.md)
+Guides: [Manual install](docs/readme/manual-install.md) · [Configuration](docs/readme/configuration.md) · [Providers](docs/readme/providers.md) · [Troubleshooting](docs/readme/troubleshooting.md) · [External integration](docs/readme/external-integration.md) · [Updating](docs/readme/updating.md)
 
 Outside links: [OpenCode docs](https://opencode.ai/docs/) · [OpenCode config](https://opencode.ai/docs/config/) · [OpenCode plugins](https://opencode.ai/docs/plugins/) · [OpenCode TUI](https://opencode.ai/docs/tui/) · [models.dev pricing data](https://models.dev/) · [Node.js downloads](https://nodejs.org/en/download)
 

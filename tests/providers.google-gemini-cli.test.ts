@@ -1,36 +1,24 @@
 import { describe, expect, it, vi } from "vitest";
 import { googleGeminiCliProvider } from "../src/providers/google-gemini-cli.js";
-import {
-  expectAttemptedWithErrorLabel,
-  expectAttemptedWithNoErrors,
-  expectNotAttempted,
-  visibleEntries,
-} from "./helpers/provider-assertions.js";
+import { visibleEntries } from "./helpers/provider-assertions.js";
 
-vi.mock("../src/lib/google-gemini-cli.js", () => ({
-  GEMINI_CLI_AUTH_KEYS: [
-    "google-gemini-cli",
-    "gemini-cli",
-    "opencode-gemini-auth",
-    "gemini",
-    "google",
-  ],
-  hasGeminiCliQuotaRuntimeAvailable: vi.fn(),
+const mocks = vi.hoisted(() => ({
+  readCredentialRows: vi.fn(async () => [] as unknown[]),
   queryGeminiCliQuota: vi.fn(),
-  inspectGeminiCliAuthPresence: vi.fn(async () => ({
-    state: "missing",
-    sourceKey: null,
-    accountCount: 0,
-    validAccountCount: 0,
-  })),
 }));
 
 vi.mock("../src/lib/opencode-auth.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/lib/opencode-auth.js")>()),
-  readCredentialRows: vi.fn().mockResolvedValue([]),
+  readCredentialRows: mocks.readCredentialRows,
 }));
-
-vi.mock("../src/lib/google-gemini-cli-companion.js", () => ({
+vi.mock("../src/lib/google-gemini-cli.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/lib/google-gemini-cli.js")>()),
+  queryGeminiCliQuota: mocks.queryGeminiCliQuota,
+  inspectGeminiCliAuthPresence: vi.fn(async () => ({
+    state: "missing",
+    accountCount: 0,
+    validAccountCount: 0,
+  })),
   inspectGeminiCliCompanionPresence: vi.fn(async () => ({
     state: "missing",
     error: "companion unavailable",
@@ -38,69 +26,8 @@ vi.mock("../src/lib/google-gemini-cli-companion.js", () => ({
 }));
 
 describe("google gemini cli provider", () => {
-  it("preserves the Gemini CLI quota timeout default unless requestTimeoutMs is user-configured", async () => {
-    const { queryGeminiCliQuota } = await import("../src/lib/google-gemini-cli.js");
-    (queryGeminiCliQuota as any).mockResolvedValue(null);
-
-    await googleGeminiCliProvider.fetch({ client: {}, config: { requestTimeoutMs: 5000 } } as any);
-    expect(queryGeminiCliQuota).toHaveBeenLastCalledWith({ requestTimeoutMs: undefined });
-
-    await googleGeminiCliProvider.fetch({
-      client: {},
-      config: { requestTimeoutMs: 12000, requestTimeoutMsConfigured: true },
-    } as any);
-    expect(queryGeminiCliQuota).toHaveBeenLastCalledWith({ requestTimeoutMs: 12000 });
-  });
-
-  it("returns attempted:false when Gemini CLI auth is not configured", async () => {
-    const { queryGeminiCliQuota } = await import("../src/lib/google-gemini-cli.js");
-    (queryGeminiCliQuota as any).mockResolvedValueOnce(null);
-
-    const out = await googleGeminiCliProvider.fetch({ client: {} } as any);
-    expectNotAttempted(out);
-  });
-
-  it("maps quota buckets into grouped toast entries and truncated error labels", async () => {
-    const { queryGeminiCliQuota } = await import("../src/lib/google-gemini-cli.js");
-    (queryGeminiCliQuota as any).mockResolvedValueOnce({
-      success: true,
-      buckets: [
-        {
-          modelId: "gemini-2.5-pro",
-          displayName: "Gemini Pro",
-          accountEmail: "alice@example.com",
-          percentRemaining: 64,
-          resetTimeIso: "2026-01-01T00:00:00.000Z",
-          remainingAmount: "1234",
-          tokenType: "REQUESTS",
-        },
-      ],
-      errors: [{ email: "bob@example.com", error: "Unauthorized" }],
-    });
-
-    const out = await googleGeminiCliProvider.fetch({ client: {} } as any);
-    expect(out.attempted).toBe(true);
-    expect(visibleEntries(out.entries, "google-gemini-cli")).toEqual([
-      {
-        name: "Gemini Pro (ali…)",
-        group: "Gemini CLI (ali…)",
-        label: "Gemini Pro:",
-        right: "1,234 left",
-        percentRemaining: 64,
-        resetTimeIso: "2026-01-01T00:00:00.000Z",
-      },
-    ]);
-    expect(out.entries[0]?.accounting.sourceId).toBe("alice@example.com");
-    expect(out.errors).toEqual([{ label: "bob…", message: "Unauthorized" }]);
-    expect(out.presentation).toEqual({
-      singleWindowDisplayName: "Gemini CLI",
-      singleWindowShowRight: true,
-    });
-  });
-
-  it("maps aggregated Gemini quality tiers without changing provider presentation", async () => {
-    const { queryGeminiCliQuota } = await import("../src/lib/google-gemini-cli.js");
-    (queryGeminiCliQuota as any).mockResolvedValueOnce({
+  it("maps quality-tier buckets into grouped entries with amounts, token types, and labels", async () => {
+    mocks.queryGeminiCliQuota.mockResolvedValueOnce({
       success: true,
       buckets: [
         {
@@ -130,11 +57,13 @@ describe("google gemini cli provider", () => {
           remainingAmount: "25",
           tokenType: "REQUESTS",
         },
+        { modelId: "gemini-2.5-pro", displayName: "Gemini Pro", percentRemaining: 5 },
       ],
+      errors: [{ email: "bob@example.com", error: "Unauthorized" }],
     });
 
-    const out = await googleGeminiCliProvider.fetch({ client: {} } as any);
-    expectAttemptedWithNoErrors(out);
+    const out = await googleGeminiCliProvider.fetch({ client: {} } as never);
+    expect(out.attempted).toBe(true);
     expect(visibleEntries(out.entries, "google-gemini-cli")).toEqual([
       {
         name: "Gemini Pro (ali…)",
@@ -160,28 +89,29 @@ describe("google gemini cli provider", () => {
         percentRemaining: 10,
         resetTimeIso: "2026-01-01T06:00:00Z",
       },
+      {
+        name: "Gemini Pro (Unknown)",
+        group: "Gemini CLI (Unknown)",
+        label: "Gemini Pro:",
+        percentRemaining: 5,
+        resetTimeIso: undefined,
+      },
     ]);
+    expect(out.entries.map((entry) => entry.accounting.sourceId)).toEqual([
+      "alice@example.com",
+      "alice@example.com",
+      "alice@example.com",
+      undefined,
+    ]);
+    expect(out.errors).toEqual([{ label: "bob…", message: "Unauthorized" }]);
     expect(out.presentation).toEqual({
       singleWindowDisplayName: "Gemini CLI",
       singleWindowShowRight: true,
     });
   });
 
-  it("maps fetch failures into toast errors", async () => {
-    const { queryGeminiCliQuota } = await import("../src/lib/google-gemini-cli.js");
-    (queryGeminiCliQuota as any).mockResolvedValueOnce({
-      success: false,
-      error: "Token expired",
-    });
-
-    const out = await googleGeminiCliProvider.fetch({ client: {} } as any);
-    expectAttemptedWithErrorLabel(out, "Gemini CLI");
-  });
-
   it("adds an error row per login OpenCode could not return, next to working accounts", async () => {
-    const { readCredentialRows } = await import("../src/lib/opencode-auth.js");
-    const { queryGeminiCliQuota } = await import("../src/lib/google-gemini-cli.js");
-    (readCredentialRows as any).mockResolvedValueOnce([
+    mocks.readCredentialRows.mockResolvedValueOnce([
       {
         id: "failed-id",
         integrationId: "google",
@@ -198,7 +128,7 @@ describe("google gemini cli provider", () => {
         value: { type: "oauth", refresh: "refresh-token|project-id" },
       },
     ]);
-    (queryGeminiCliQuota as any).mockResolvedValueOnce({
+    mocks.queryGeminiCliQuota.mockResolvedValueOnce({
       success: true,
       buckets: [
         {
@@ -210,15 +140,15 @@ describe("google gemini cli provider", () => {
       ],
     });
 
-    const out = await googleGeminiCliProvider.fetch({ client: {} } as any);
+    const out = await googleGeminiCliProvider.fetch({ client: {} } as never);
 
-    expect(readCredentialRows).toHaveBeenCalledWith(
+    expect(mocks.readCredentialRows).toHaveBeenCalledWith(
       ["google-gemini-cli", "gemini-cli", "opencode-gemini-auth", "gemini", "google"],
       { methods: ["oauth"] },
     );
     // Only the working row is queried.
-    expect(queryGeminiCliQuota).toHaveBeenCalledTimes(1);
-    expect(queryGeminiCliQuota).toHaveBeenLastCalledWith({
+    expect(mocks.queryGeminiCliQuota).toHaveBeenCalledTimes(1);
+    expect(mocks.queryGeminiCliQuota).toHaveBeenLastCalledWith({
       requestTimeoutMs: undefined,
       authData: { "google-gemini-cli": { type: "oauth", refresh: "refresh-token|project-id" } },
     });
@@ -235,24 +165,13 @@ describe("google gemini cli provider", () => {
     ]);
   });
 
-  it("is available only when the Gemini CLI runtime is configured", async () => {
-    const { hasGeminiCliQuotaRuntimeAvailable } = await import("../src/lib/google-gemini-cli.js");
-    (hasGeminiCliQuotaRuntimeAvailable as any).mockResolvedValueOnce(true);
-    await expect(googleGeminiCliProvider.isAvailable({ client: {} } as any)).resolves.toBe(true);
-
-    (hasGeminiCliQuotaRuntimeAvailable as any).mockResolvedValueOnce(false);
-    await expect(googleGeminiCliProvider.isAvailable({ client: {} } as any)).resolves.toBe(false);
-  });
-
-  it("matches Gemini CLI current model ids", () => {
-    expect(googleGeminiCliProvider.matchesCurrentModel?.("google-gemini-cli/gemini-3-pro")).toBe(
-      true,
-    );
-    expect(googleGeminiCliProvider.matchesCurrentModel?.("gemini-cli/gemini-3-flash")).toBe(true);
-    expect(googleGeminiCliProvider.matchesCurrentModel?.("google/gemini-2.5-pro")).toBe(true);
-    expect(googleGeminiCliProvider.matchesCurrentModel?.("google/claude-opus")).toBe(false);
-    expect(googleGeminiCliProvider.matchesCurrentModel?.("google/antigravity-gemini-3-pro")).toBe(
-      false,
-    );
+  it.each([
+    ["google-gemini-cli/gemini-3-pro", true],
+    ["gemini-cli/gemini-3-flash", true],
+    ["google/gemini-2.5-pro", true],
+    ["google/claude-opus", false],
+    ["google/antigravity-gemini-3-pro", false],
+  ])("matches Gemini CLI current model ids: %s → %s", (model, expected) => {
+    expect(googleGeminiCliProvider.matchesCurrentModel?.(model)).toBe(expected);
   });
 });

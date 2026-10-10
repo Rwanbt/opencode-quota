@@ -5,19 +5,14 @@
  * Ollama Cloud usage endpoint.
  */
 
+import { API_KEY_VENDORS, resolveApiKey } from "./api-key-resolver.js";
 import { sanitizeSingleLineDisplayText } from "./display-sanitize.js";
 import { fetchWithTimeout } from "./http.js";
-import { resolveOllamaCloudApiKey } from "./ollama-cloud-config.js";
+import { isRecord } from "./json-guards.js";
 import type { OllamaCloudResult, OllamaCloudWindow } from "./types.js";
 
 const OLLAMA_CLOUD_USAGE_URL = "https://ollama.com/api/usage";
 const MAX_RESPONSE_BYTES = 256 * 1024;
-
-type JsonRecord = Record<string, unknown>;
-
-function isRecord(value: unknown): value is JsonRecord {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
 
 function sanitizeRemoteSingleLineText(text: string): string {
   return sanitizeSingleLineDisplayText(text).replace(/\p{Cf}/gu, "");
@@ -80,6 +75,12 @@ function parseWindow(value: unknown): OllamaCloudWindow | undefined {
   };
 }
 
+const OLLAMA_CLOUD_WINDOWS = [
+  ["session", "Session"],
+  ["weekly", "Weekly"],
+  ["monthly", "Monthly"],
+] as const;
+
 function parseOllamaCloudUsage(payload: unknown): OllamaCloudResult {
   if (!isRecord(payload)) {
     return {
@@ -88,26 +89,16 @@ function parseOllamaCloudUsage(payload: unknown): OllamaCloudResult {
     };
   }
 
+  const limits = isRecord(payload.limits) ? payload.limits : {};
+  const windows: Partial<Record<"session" | "weekly" | "monthly", OllamaCloudWindow>> = {};
   const rowErrors: string[] = [];
-  const limits = isRecord(payload.limits) ? payload.limits : undefined;
-  const session = parseWindow(limits?.session);
-  const weekly = parseWindow(limits?.weekly);
-  const monthly = parseWindow(limits?.monthly);
-
-  if (limits?.session !== undefined && !session) {
-    rowErrors.push("Session: ignored invalid usage fraction");
-  }
-  if (limits?.weekly !== undefined && !weekly) {
-    rowErrors.push("Weekly: ignored invalid usage fraction");
-  }
-  if (limits?.monthly !== undefined && !monthly) {
-    rowErrors.push("Monthly: ignored invalid usage fraction");
-  }
-  if (!limits) {
-    rowErrors.push("Limits: expected an object");
+  for (const [key, name] of OLLAMA_CLOUD_WINDOWS) {
+    const window = parseWindow(limits[key]);
+    if (window) windows[key] = window;
+    else if (limits[key] !== undefined) rowErrors.push(`${name}: ignored invalid usage fraction`);
   }
 
-  if (!session && !weekly && !monthly) {
+  if (!windows.session && !windows.weekly && !windows.monthly) {
     return {
       success: false,
       error: "Ollama Cloud usage API returned no usable usage data",
@@ -116,9 +107,7 @@ function parseOllamaCloudUsage(payload: unknown): OllamaCloudResult {
 
   return {
     success: true,
-    ...(session ? { session } : {}),
-    ...(weekly ? { weekly } : {}),
-    ...(monthly ? { monthly } : {}),
+    ...windows,
     ...(rowErrors.length > 0 ? { rowErrors } : {}),
   };
 }
@@ -126,7 +115,7 @@ function parseOllamaCloudUsage(payload: unknown): OllamaCloudResult {
 export async function queryOllamaCloudQuota(
   options: { requestTimeoutMs?: number } = {},
 ): Promise<OllamaCloudResult> {
-  const resolved = await resolveOllamaCloudApiKey();
+  const resolved = await resolveApiKey(API_KEY_VENDORS["ollama-cloud"]);
   if (!resolved) return null;
 
   try {
@@ -160,5 +149,3 @@ export async function queryOllamaCloudQuota(
     };
   }
 }
-
-export { parseOllamaCloudUsage as _parseOllamaCloudUsage };

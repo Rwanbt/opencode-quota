@@ -11,7 +11,7 @@
 
 import type { Plugin } from "@opencode/plugin";
 
-import { sanitizeSingleLineDisplayText } from "./display-sanitize.js";
+import { safeDetail } from "../core/redact.js";
 import { getOpenCodeDbPath } from "./opencode-db-path.js";
 
 import type { AuthData } from "./types.js";
@@ -91,14 +91,7 @@ export type CredentialSourceDiagnostics = (
   | { state: "unbound" }
 ) & {
   lastListError?: { at: number; detail: string };
-  failures: Array<{
-    integrationId: string;
-    connectionId: string;
-    label: string;
-    category: CredentialFailureCategory;
-    detail: string;
-    at: number;
-  }>;
+  failures: Array<CredentialFailure & { connectionId: string }>;
 };
 
 /** A failed login is resolved again at most this often. */
@@ -154,7 +147,7 @@ export function formatCredentialDisplayNames(
       .trim()
       .replace(/^\((.*)\)$/u, "$1")
       .trim();
-    const aliasKey = aliases[index]!;
+    const aliasKey = aliases[index];
     const shouldNumber = Boolean(aliasKey) || numberUnnamed;
     let duplicate = shouldNumber ? (counts.get(aliasKey) ?? 0) + 1 : 1;
     let numberedAlias = duplicate === 1 ? aliasKey : `${aliasKey} ${duplicate}`.trim();
@@ -233,10 +226,7 @@ export function getCredentialSourceDiagnostics(): CredentialSourceDiagnostics {
  */
 export function scrubCredentialErrorText(message: string): string {
   // Redact before cutting to length, so a token cut at the limit cannot leave a readable part.
-  return sanitizeSingleLineDisplayText(message)
-    .replace(/eyJ[A-Za-z0-9_-]{10,}(\.[A-Za-z0-9_-]+)*/gu, "[redacted]")
-    .replace(/[A-Za-z0-9_-]{32,}/gu, "[redacted]")
-    .slice(0, 120);
+  return safeDetail(message, 120);
 }
 
 function credentialErrorDetail(error: unknown): string {
@@ -272,18 +262,6 @@ async function activeConnectionSlots(
   }
 }
 
-/** The listed rows of the requested ids, plus per id the connection `active()` reports. */
-type ListedConnectionSlots = {
-  slots: ConnectionSlot[];
-  /**
-   * Per id: the stored connection `active()` reports, when it read one. For an
-   * id `list()` does not show this is its fallback row itself; for a listed id
-   * it is looked up separately, and a failed lookup or an active env connection
-   * marks none of that id's listed rows.
-   */
-  activeConnections: Map<string, CredentialConnection>;
-};
-
 /**
  * The stored connection `active()` reports for a listed id, without recording
  * anything: a failed lookup or an active env connection only leaves every
@@ -303,13 +281,15 @@ async function activeListedConnection(
 
 /**
  * Every connection of the requested ids: all of them for ids `list()` shows
- * (registered integrations), the active one for any other id. For listed ids,
- * `active()` also says which of them OpenCode uses.
+ * (registered integrations), the active one for any other id. Per id,
+ * `activeConnections` holds the stored connection `active()` reports: for an
+ * unlisted id its one row itself; for a listed id a separate lookup, where a
+ * failed lookup or an active env connection marks none of its rows.
  */
 async function listedConnectionSlots(
   integration: CredentialIntegration,
   integrationIds: readonly string[],
-): Promise<ListedConnectionSlots> {
+): Promise<{ slots: ConnectionSlot[]; activeConnections: Map<string, CredentialConnection> }> {
   let listed: Map<string, readonly Connection[]> | undefined;
   try {
     const { data } = await integration.list();
@@ -331,17 +311,13 @@ async function listedConnectionSlots(
       }
       continue;
     }
-    let listedCredentials = 0;
-    for (const connection of connections) {
-      if (connection.type === "credential") {
-        slots.push({ integrationId, connection });
-        listedCredentials += 1;
-      }
-    }
-    if (listedCredentials > 0) {
-      const active = await activeListedConnection(integration, integrationId);
-      if (active) activeConnections.set(integrationId, active);
-    }
+    const credentials = connections.filter(
+      (connection): connection is CredentialConnection => connection.type === "credential",
+    );
+    if (credentials.length === 0) continue;
+    for (const connection of credentials) slots.push({ integrationId, connection });
+    const active = await activeListedConnection(integration, integrationId);
+    if (active) activeConnections.set(integrationId, active);
   }
   return { slots, activeConnections };
 }
@@ -425,23 +401,19 @@ async function credentialRowForSlot(
 
   const { connection } = slot;
   const outcome = await resolveCredentialConnection(integration, slot.integrationId, connection);
-  if ("value" in outcome) {
-    return {
-      id: connection.id,
-      integrationId: slot.integrationId,
-      label: connection.label,
-      active: false,
-      value: credentialRowValue(outcome.value),
-    };
-  }
-  return {
+  const row = {
     id: connection.id,
     integrationId: slot.integrationId,
     label: connection.label,
     active: false,
-    value: { type: connection.method === "key" ? "api" : "oauth" },
-    resolveError: `${outcome.failure.category}: ${outcome.failure.detail}`,
   };
+  return "value" in outcome
+    ? { ...row, value: credentialRowValue(outcome.value) }
+    : {
+        ...row,
+        value: { type: connection.method === "key" ? "api" : "oauth" },
+        resolveError: `${outcome.failure.category}: ${outcome.failure.detail}`,
+      };
 }
 
 /**
@@ -460,17 +432,16 @@ async function credentialRowsForSlots(
   const wanted = slots.filter(
     (slot) => !methods || !("connection" in slot) || methods.includes(slot.connection.method),
   );
-  const pairs = await Promise.all(
-    wanted.map(async (slot) => ({
-      slot,
-      row: await credentialRowForSlot(integration, slot, methods),
-    })),
+  return Promise.all(
+    wanted.map(async (slot, index) => {
+      const row = await credentialRowForSlot(integration, slot, methods);
+      const active = activeConnections
+        ? "connection" in slot &&
+          slot.connection.id === activeConnections.get(slot.integrationId)?.id
+        : index === 0;
+      return { ...row, active };
+    }),
   );
-  return pairs.map(({ slot, row }, index) => {
-    if (!activeConnections) return { ...row, active: index === 0 };
-    const activeConnection = activeConnections.get(slot.integrationId);
-    return { ...row, active: "connection" in slot && slot.connection.id === activeConnection?.id };
-  });
 }
 
 /** The credential source backed by the server plugin's `ctx.integration`. */
@@ -548,19 +519,19 @@ export async function readCredentialRows(
   return source.readRows({ integrationIds, ...options });
 }
 
+/** JSON-like text of `value` with object keys sorted, so key order does not matter. */
 function canonicalCredentialValueKey(value: unknown): string {
   if (Array.isArray(value)) {
     return `[${value.map((item) => canonicalCredentialValueKey(item)).join(",")}]`;
   }
   if (value !== null && typeof value === "object") {
-    const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) =>
-      a < b ? -1 : a > b ? 1 : 0,
-    );
-    return `{${entries
-      .map(([key, nested]) => `${JSON.stringify(key)}:${canonicalCredentialValueKey(nested)}`)
+    const record = value as Record<string, unknown>;
+    return `{${Object.keys(record)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${canonicalCredentialValueKey(record[key])}`)
       .join(",")}}`;
   }
-  return value === undefined ? "undefined" : JSON.stringify(value);
+  return JSON.stringify(value) ?? "undefined";
 }
 
 /**

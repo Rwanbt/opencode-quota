@@ -1,4 +1,6 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { hasApiKey } from "../src/lib/api-key-resolver.js";
+import { queryNanoGptQuota } from "../src/lib/nanogpt.js";
 import { nanoGptProvider } from "../src/providers/nanogpt.js";
 import {
   expectAttemptedWithErrorLabel,
@@ -6,11 +8,16 @@ import {
   expectNotAttempted,
   visibleEntries,
 } from "./helpers/provider-assertions.js";
+import { createProviderAvailabilityContext } from "./helpers/provider-test-harness.js";
 
 vi.mock("../src/lib/nanogpt.js", () => ({
   queryNanoGptQuota: vi.fn(),
-  hasNanoGptApiKeyConfigured: vi.fn(),
-  getNanoGptKeyDiagnostics: vi.fn(async () => ({
+}));
+
+vi.mock("../src/lib/api-key-resolver.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/lib/api-key-resolver.js")>()),
+  hasApiKey: vi.fn(),
+  getApiKeyDiagnostics: vi.fn(async () => ({
     configured: false,
     source: null,
     checkedPaths: [],
@@ -18,18 +25,51 @@ vi.mock("../src/lib/nanogpt.js", () => ({
   })),
 }));
 
-describe("nanogpt provider", () => {
-  it("returns attempted:false when not configured", async () => {
-    const { queryNanoGptQuota } = await import("../src/lib/nanogpt.js");
-    (queryNanoGptQuota as any).mockResolvedValueOnce(null);
+const mockQuery = (result: unknown) =>
+  vi.mocked(queryNanoGptQuota).mockResolvedValueOnce(result as never);
 
-    const out = await nanoGptProvider.fetch({} as any);
-    expectNotAttempted(out);
+function requests(decimal: string) {
+  return {
+    quantity: { decimal, unit: { kind: "count", unit: "request" } },
+    authority: "provider_reported",
+  };
+}
+
+function quotaEntry(window: "day" | "month", percentRemaining: number, resetTimeIso: string) {
+  return {
+    name: `nanogpt-${window}-quota`,
+    group: "NanoGPT",
+    percentRemaining,
+    resetTimeIso,
+    semantic: { metric: { kind: "window", window }, prominence: "primary" },
+  };
+}
+
+function balanceEntry(quantity: { decimal: string; unit: Record<string, string> }) {
+  return {
+    kind: "quantity",
+    name: "nanogpt-current-balance",
+    group: "NanoGPT",
+    semantic: {
+      metric: { kind: "component", component: "current_balance" },
+      prominence: "primary",
+    },
+    quantity,
+  };
+}
+
+describe("nanogpt provider", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("returns attempted:false when not configured", async () => {
+    mockQuery(null);
+    expectNotAttempted(await nanoGptProvider.fetch({} as any));
   });
 
   it("maps canonical grouped-capable rows for daily, monthly, and balance", async () => {
-    const { queryNanoGptQuota } = await import("../src/lib/nanogpt.js");
-    (queryNanoGptQuota as any).mockResolvedValueOnce({
+    mockQuery({
       success: true,
       subscription: {
         active: true,
@@ -52,80 +92,27 @@ describe("nanogpt provider", () => {
           reportedBasis: { used: 50, limit: 60000, remaining: 59950 },
         },
       },
-      balance: {
-        usdBalanceRaw: "12.3400",
-        nanoBalanceRaw: "99.5",
-      },
+      balance: { usdBalanceRaw: "12.3400", nanoBalanceRaw: "99.5" },
     });
 
     const out = await nanoGptProvider.fetch({ config: {} } as any);
     expectAttemptedWithNoErrors(out);
     expect(visibleEntries(out.entries, "nanogpt")).toEqual([
       {
-        name: "nanogpt-day-quota",
-        group: "NanoGPT",
-        percentRemaining: 100,
-        resetTimeIso: "2026-01-02T00:00:00.000Z",
-        semantic: {
-          metric: { kind: "window", window: "day" },
-          prominence: "primary",
-        },
-        basis: {
-          used: {
-            quantity: { decimal: "5", unit: { kind: "count", unit: "request" } },
-            authority: "provider_reported",
-          },
-          limit: {
-            quantity: { decimal: "5000", unit: { kind: "count", unit: "request" } },
-            authority: "provider_reported",
-          },
-          remaining: {
-            quantity: { decimal: "4995", unit: { kind: "count", unit: "request" } },
-            authority: "provider_reported",
-          },
-        },
+        ...quotaEntry("day", 100, "2026-01-02T00:00:00.000Z"),
+        basis: { used: requests("5"), limit: requests("5000"), remaining: requests("4995") },
       },
       {
-        name: "nanogpt-month-quota",
-        group: "NanoGPT",
-        percentRemaining: 100,
-        resetTimeIso: "2026-02-01T00:00:00.000Z",
-        semantic: {
-          metric: { kind: "window", window: "month" },
-          prominence: "primary",
-        },
-        basis: {
-          used: {
-            quantity: { decimal: "50", unit: { kind: "count", unit: "request" } },
-            authority: "provider_reported",
-          },
-          limit: {
-            quantity: { decimal: "60000", unit: { kind: "count", unit: "request" } },
-            authority: "provider_reported",
-          },
-          remaining: {
-            quantity: { decimal: "59950", unit: { kind: "count", unit: "request" } },
-            authority: "provider_reported",
-          },
-        },
+        ...quotaEntry("month", 100, "2026-02-01T00:00:00.000Z"),
+        basis: { used: requests("50"), limit: requests("60000"), remaining: requests("59950") },
       },
-      {
-        kind: "quantity",
-        name: "nanogpt-current-balance",
-        group: "NanoGPT",
-        semantic: {
-          metric: { kind: "component", component: "current_balance" },
-          prominence: "primary",
-        },
-        quantity: { decimal: "12.3400", unit: { kind: "currency", code: "USD" } },
-      },
+      balanceEntry({ decimal: "12.3400", unit: { kind: "currency", code: "USD" } }),
     ]);
     expect(out.presentation).toBeUndefined();
   });
 
   it("omits locally derived fallback values from provider-reported basis", async () => {
-    const { queryNanoGptQuota } = await import("../src/lib/nanogpt.js");
-    (queryNanoGptQuota as any).mockResolvedValueOnce({
+    mockQuery({
       success: true,
       subscription: {
         active: true,
@@ -143,21 +130,11 @@ describe("nanogpt provider", () => {
 
     const out = await nanoGptProvider.fetch({ config: {} } as any);
 
-    expect(visibleEntries(out.entries, "nanogpt")[0]).toMatchObject({
-      basis: {
-        limit: {
-          quantity: { decimal: "100", unit: { kind: "count", unit: "request" } },
-          authority: "provider_reported",
-        },
-      },
-    });
-    expect(out.entries[0]).not.toHaveProperty("basis.used");
-    expect(out.entries[0]).not.toHaveProperty("basis.remaining");
+    expect(visibleEntries(out.entries, "nanogpt")[0]?.basis).toEqual({ limit: requests("100") });
   });
 
   it("maps partial endpoint errors and non-active subscription state", async () => {
-    const { queryNanoGptQuota } = await import("../src/lib/nanogpt.js");
-    (queryNanoGptQuota as any).mockResolvedValueOnce({
+    mockQuery({
       success: true,
       subscription: {
         active: false,
@@ -172,114 +149,48 @@ describe("nanogpt provider", () => {
           reportedBasis: { used: 100, limit: 100, remaining: 0 },
         },
       },
-      endpointErrors: [
-        {
-          endpoint: "balance",
-          message: "NanoGPT API error 401: Unauthorized",
-        },
-      ],
+      endpointErrors: [{ endpoint: "balance", message: "NanoGPT API error 401: Unauthorized" }],
     });
 
     const out = await nanoGptProvider.fetch({ config: {} } as any);
     expect(out.attempted).toBe(true);
     expect(visibleEntries(out.entries, "nanogpt")).toEqual([
       {
-        name: "nanogpt-day-quota",
-        group: "NanoGPT",
-        percentRemaining: 0,
-        resetTimeIso: "2026-01-02T00:00:00.000Z",
-        semantic: {
-          metric: { kind: "window", window: "day" },
-          prominence: "primary",
-        },
-        basis: {
-          used: {
-            quantity: { decimal: "100", unit: { kind: "count", unit: "request" } },
-            authority: "provider_reported",
-          },
-          limit: {
-            quantity: { decimal: "100", unit: { kind: "count", unit: "request" } },
-            authority: "provider_reported",
-          },
-          remaining: {
-            quantity: { decimal: "0", unit: { kind: "count", unit: "request" } },
-            authority: "provider_reported",
-          },
-        },
+        ...quotaEntry("day", 0, "2026-01-02T00:00:00.000Z"),
+        basis: { used: requests("100"), limit: requests("100"), remaining: requests("0") },
       },
     ]);
     expect(out.errors).toEqual([
-      {
-        label: "NanoGPT Balance",
-        message: "NanoGPT API error 401: Unauthorized",
-      },
-      {
-        label: "NanoGPT",
-        message: "Subscription state: grace",
-      },
+      { label: "NanoGPT Balance", message: "NanoGPT API error 401: Unauthorized" },
+      { label: "NanoGPT", message: "Subscription state: grace" },
     ]);
   });
 
   it("falls back to valid NANO and preserves its malformed USD sibling as a partial error", async () => {
-    const { queryNanoGptQuota } = await import("../src/lib/nanogpt.js");
-    (queryNanoGptQuota as any).mockResolvedValueOnce({
+    const message = "NanoGPT balance response returned an invalid usd_balance decimal";
+    mockQuery({
       success: true,
       balance: { nanoBalanceRaw: "26.71801147" },
-      endpointErrors: [
-        {
-          endpoint: "balance",
-          message: "NanoGPT balance response returned an invalid usd_balance decimal",
-        },
-      ],
+      endpointErrors: [{ endpoint: "balance", message }],
     });
 
     const out = await nanoGptProvider.fetch({ config: {} } as any);
 
     expect(visibleEntries(out.entries, "nanogpt")).toEqual([
-      {
-        kind: "quantity",
-        name: "nanogpt-current-balance",
-        group: "NanoGPT",
-        semantic: {
-          metric: { kind: "component", component: "current_balance" },
-          prominence: "primary",
-        },
-        quantity: { decimal: "26.71801147", unit: { kind: "custom", symbol: "NANO" } },
-      },
+      balanceEntry({ decimal: "26.71801147", unit: { kind: "custom", symbol: "NANO" } }),
     ]);
-    expect(out.errors).toEqual([
-      {
-        label: "NanoGPT Balance",
-        message: "NanoGPT balance response returned an invalid usd_balance decimal",
-      },
-    ]);
+    expect(out.errors).toEqual([{ label: "NanoGPT Balance", message }]);
   });
 
-  it("maps hard failures into toast errors", async () => {
-    const { queryNanoGptQuota } = await import("../src/lib/nanogpt.js");
-    (queryNanoGptQuota as any).mockResolvedValueOnce({
-      success: false,
-      error: "Usage: Unauthorized; Balance: Unauthorized",
-    });
-
-    const out = await nanoGptProvider.fetch({} as any);
-    expectAttemptedWithErrorLabel(out, "NanoGPT");
-  });
-
-  it("reports missing usable data as an error", async () => {
-    const { queryNanoGptQuota } = await import("../src/lib/nanogpt.js");
-    (queryNanoGptQuota as any).mockResolvedValueOnce({
-      success: true,
-      subscription: {
-        active: true,
-        state: "active",
-        enforceDailyLimit: true,
-      },
-    });
-
-    const out = await nanoGptProvider.fetch({ config: {} } as any);
-    expectAttemptedWithErrorLabel(out, "NanoGPT");
-    expect(visibleEntries(out.entries, "nanogpt")).toEqual([]);
+  it.each([
+    ["hard failures", { success: false, error: "Usage: Unauthorized; Balance: Unauthorized" }],
+    [
+      "missing usable data",
+      { success: true, subscription: { active: true, state: "active", enforceDailyLimit: true } },
+    ],
+  ])("maps %s into a NanoGPT error", async (_name, result) => {
+    mockQuery(result);
+    expectAttemptedWithErrorLabel(await nanoGptProvider.fetch({ config: {} } as any), "NanoGPT");
   });
 
   it("matches NanoGPT model ids", () => {
@@ -288,61 +199,17 @@ describe("nanogpt provider", () => {
     expect(nanoGptProvider.matchesCurrentModel?.("openai/gpt-5")).toBe(false);
   });
 
-  it("is available when a trusted API key is configured", async () => {
-    const { hasNanoGptApiKeyConfigured } = await import("../src/lib/nanogpt.js");
-    (hasNanoGptApiKeyConfigured as any).mockResolvedValue(true);
+  // Only a trusted API key counts; the runtime provider list does not.
+  it.each([
+    [{ providerIds: ["nanogpt"] }, true, true],
+    [{ providerIds: ["openai"] }, true, true],
+    [{ providerIds: ["nanogpt"] }, false, false],
+    [{ providersError: new Error("boom") }, false, false],
+  ])("isAvailable with providers %j and an API key=%s is %s", async (ctx, keyConfigured, expected) => {
+    vi.mocked(hasApiKey).mockResolvedValueOnce(keyConfigured);
 
-    const withProvider = {
-      client: {
-        config: {
-          providers: vi.fn().mockResolvedValue({ data: { providers: [{ id: "nanogpt" }] } }),
-          get: vi.fn(),
-        },
-      },
-    } as any;
-
-    const fallback = {
-      client: {
-        config: {
-          providers: vi.fn().mockResolvedValue({ data: { providers: [{ id: "openai" }] } }),
-          get: vi.fn(),
-        },
-      },
-    } as any;
-
-    await expect(nanoGptProvider.isAvailable(withProvider)).resolves.toBe(true);
-    await expect(nanoGptProvider.isAvailable(fallback)).resolves.toBe(true);
-  });
-
-  it("is not available when the provider id exists but no trusted API key is configured", async () => {
-    const { hasNanoGptApiKeyConfigured } = await import("../src/lib/nanogpt.js");
-    (hasNanoGptApiKeyConfigured as any).mockResolvedValue(false);
-
-    const withProvider = {
-      client: {
-        config: {
-          providers: vi.fn().mockResolvedValue({ data: { providers: [{ id: "nanogpt" }] } }),
-          get: vi.fn(),
-        },
-      },
-    } as any;
-
-    await expect(nanoGptProvider.isAvailable(withProvider)).resolves.toBe(false);
-  });
-
-  it("is not available when provider ids are absent and no API key exists", async () => {
-    const { hasNanoGptApiKeyConfigured } = await import("../src/lib/nanogpt.js");
-    (hasNanoGptApiKeyConfigured as any).mockResolvedValue(false);
-
-    const ctx = {
-      client: {
-        config: {
-          providers: vi.fn().mockRejectedValue(new Error("boom")),
-          get: vi.fn(),
-        },
-      },
-    } as any;
-
-    await expect(nanoGptProvider.isAvailable(ctx)).resolves.toBe(false);
+    await expect(nanoGptProvider.isAvailable(createProviderAvailabilityContext(ctx))).resolves.toBe(
+      expected,
+    );
   });
 });

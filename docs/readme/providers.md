@@ -102,13 +102,13 @@ These show only your own member API key's usage, not the whole organization's.
 
 ## Custom providers
 
-Custom providers can report quota, rate limit, usage, spend, budget, balance, or status. Run the guided setup:
+Custom providers can report quota, rate limit, usage, spend, budget, balance, or status. Ask your agent to add a custom provider: paste this into OpenCode and replace `<provider>`:
 
-```bash
-npx @slkiser/opencode-quota@latest provider add
+```text
+Add a custom OpenCode Quota provider for <provider>. Follow docs/readme/providers.md#custom-providers in https://github.com/slkiser/opencode-quota, put the definition in quotaProviders in my global quota settings, never put a key or other secret in it, then run the quota_status tool and fix what it reports.
 ```
 
-It asks how the provider works, previews the exact global config change, and asks before writing. It never asks for a response body, credential, or secret value.
+To edit it yourself, put definitions in `quotaProviders` in the global `opencode-quota/quota-toast.jsonc` (or `.json`); without that file, use `experimental.quotaToast.quotaProviders` in the global OpenCode config. Restart OpenCode after editing.
 
 - **Remote API:** real quota data from a supported endpoint (formats below).
 - **Local estimate:** counts matching completed OpenCode requests in 1–16 windows, with optional spend estimates. `utc-day` resets at UTC midnight; `rolling` uses `durationMinutes` (up to 366 days). Every window needs `requestLimit`; `usdBudget` is optional.
@@ -205,7 +205,7 @@ A `quota-v1` response looks like this:
 }
 ```
 
-For `json-v1`, the guided command builds the adapter one field at a time: literal property segments, compatible metric sources, and optional units and timestamps. This saved-config example maps `remaining`, `limit`, and `status` from one response object:
+A `json-v1` adapter is built from literal property segments, compatible metric sources, and optional units and timestamps. This example maps `remaining`, `limit`, and `status` from one response object:
 
 ```json
 {
@@ -226,6 +226,7 @@ For `json-v1`, the guided command builds the adapter one field at a time: litera
 Adapter rules:
 
 - **Rows:** optional `rowsPath` and 1–16 `mappings`. Without `rowsPath`, an object is one row and an array holds the rows. Selected arrays hold 1–100 rows, responses allow at most 32 container levels, and at most 1,600 row/mapping candidates are checked.
+- **Mapping names:** each name keys its rows, so names must still differ when spaces count as `_` (`Daily limit` and `Daily_limit` clash; `Daily-limit` is fine).
 - **Paths:** 1–8 literal own-property segments of 1–64 Unicode code points. Dots and brackets mean nothing special; array indexes and the segments `__proto__`, `prototype`, and `constructor` are rejected.
 - **Size:** adapter input is limited to 8 container levels, 128 objects, 384 object properties, and 640 array elements. Names and labels are 1–80 code points, units 1–32, and status/display output (including a provider-prefixed entry name) at most 160.
 - **Metrics:** `percentage`, `used-limit`, `remaining-limit`, `spend-budget`, `remaining-budget`, `value`, and `status`. Calculations are fixed; no formulas or fallback parsing.
@@ -260,7 +261,7 @@ Pair denominators (`limit` and pair-form `budget`) must be greater than zero. Re
 
 `unit` and `unitPosition` must appear together. Units are forbidden for `percentage` and `status`; prefix units render like `$2/$10`, while suffix units render like `2/10 tokens`.
 
-**Never put secrets in adapter display configuration.** Static `name`, `label`, and `unit` fields and every `literal` can appear in the provider-add preview, written configuration, cache identity, rendered quota rows, or exports.
+**Never put secrets in adapter display configuration.** Static `name`, `label`, and `unit` fields and every `literal` can appear in written configuration, cache identity, rendered quota rows, or exports.
 
 OpenCode Quota sends a fixed authenticated `GET`. The URL must use HTTPS, except for loopback testing. Redirects and URLs containing credentials, queries, or fragments are rejected. Responses must be JSON and are limited to 256 KiB. Standard envelopes and selected `json-v1` row arrays are limited to 100 rows.
 
@@ -573,7 +574,7 @@ API key order:
 - If the Console reports no Go subscription (for example HTTP 404), no Go rows appear.
 - A window with API status `rate-limited` is shown as used up (0% left) with its reset time. Other windows stay visible.
 - `opencodeGoWindows` picks which of **Five-hour**, **Weekly**, and **Monthly** appear everywhere. The collapsed sidebar shows the window with the least left.
-- Old workspace/cookie setups cannot be converted to an API key. See [OpenCode Go findings](updating.md#opencode-go-findings).
+- Old workspace/cookie setups (`OPENCODE_GO_WORKSPACE_ID`, `OPENCODE_GO_AUTH_COOKIE`, and the global `opencode-quota/opencode-go.json` file) are not read and cannot be converted to an API key. Remove them once Go works.
 
 <a id="opencode-zen"></a>
 
@@ -592,5 +593,5 @@ Zen uses your OpenCode Console sign-in from OpenCode 2; no cookie or workspace I
 - **Balance:** always required. It is supplementary when a budget percentage exists, and primary otherwise (next to a **Monthly spend** row when this month's usage is known).
 - **Auto-reload:** a supplementary enabled/disabled row. Its amount and trigger stay in diagnostics.
 - If a non-balance route fails, Zen still shows the balance, hides only the rows that need the failed data, and lists the failed route as an error.
-- `accountingDetail: "detailed"` shows the supplementary balance and auto-reload rows. The old `opencodeZenDisplay` setting is gone; see [What can change automatically](updating.md#what-can-change-automatically).
-- The old `opencode-quota/opencode.json` file and `OPENCODE_WORKSPACE_ID` / `OPENCODE_AUTH_COOKIE` variables are no longer read. See [OpenCode Zen findings](updating.md#opencode-zen-findings).
+- `accountingDetail: "detailed"` shows the supplementary balance and auto-reload rows. The old `opencodeZenDisplay` setting is gone and is ignored; use `accountingDetail` instead.
+- The old `opencode-quota/opencode.json` file and `OPENCODE_WORKSPACE_ID` / `OPENCODE_AUTH_COOKIE` variables are no longer read. Remove the file after Zen works. The variables may also belong to OpenCode's workspace feature, so remove them only if they held Zen credentials.

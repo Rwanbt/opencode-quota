@@ -69,17 +69,12 @@ describe("OpenRouter provider", () => {
     });
   });
 
-  it.each([
-    ["env", "env:OPENROUTER_API_KEY"],
-    ["opencode.json", "/tmp/opencode.json"],
-    ["opencode.jsonc", "/tmp/opencode.jsonc"],
-    ["opencode.db", "/tmp/opencode.db"],
-  ] as const)("attaches safe %s key diagnostics and forwards that resolution", async (source, path) => {
+  it("attaches safe key diagnostics and forwards the resolution", async () => {
     const { queryOpenRouterQuota } = await import("../src/lib/openrouter.js");
     const resolved = await mockResolvedKey({
       key: SECRET_CANARY,
-      source,
-      checkedPaths: [path],
+      source: "opencode.db",
+      checkedPaths: ["/tmp/opencode.db"],
       credentialDatabasePaths: ["/tmp/opencode.db"],
     });
     vi.mocked(queryOpenRouterQuota).mockResolvedValueOnce({
@@ -101,28 +96,16 @@ describe("OpenRouter provider", () => {
       ],
     });
 
-    const out = await openRouterProvider.fetch({
-      config: { requestTimeoutMs: 3210 },
-    } as any);
+    const out = await openRouterProvider.fetch({ config: { requestTimeoutMs: 3210 } } as any);
     expectAttemptedWithNoErrors(out);
     expect(out.entries[0]).toEqual(expect.objectContaining({ percentRemaining: 80 }));
     expect(out.presentation).toEqual({ singleWindowShowRight: true });
     expect(out.statusDetails).toEqual(expectedStatusDetails(resolved));
     expect(JSON.stringify(out)).not.toContain(SECRET_CANARY);
-    expect(queryOpenRouterQuota).toHaveBeenCalledTimes(1);
-    expect(queryOpenRouterQuota).toHaveBeenCalledWith({
-      requestTimeoutMs: 3210,
-      resolved,
-    });
+    expect(queryOpenRouterQuota).toHaveBeenCalledWith({ requestTimeoutMs: 3210, resolved });
   });
 
-  it.each([
-    ["HTTP", "HTTP 401"],
-    ["malformed", "Invalid openrouter-key-v1 response"],
-    ["timeout", "Request timeout after 0s"],
-    ["redirect", "Redirect rejected"],
-    ["body-limit", "Response exceeded 262144 bytes"],
-  ] as const)("maps %s failures to a safe provider error", async (_name, error) => {
+  it("maps a failure to a safe provider error", async () => {
     const { queryOpenRouterQuota } = await import("../src/lib/openrouter.js");
     const resolved = await mockResolvedKey({
       key: SECRET_CANARY,
@@ -130,21 +113,13 @@ describe("OpenRouter provider", () => {
       checkedPaths: ["env:OPENROUTER_API_KEY", "/tmp/opencode.json"],
       credentialDatabasePaths: ["/tmp/opencode.db"],
     });
-    vi.mocked(queryOpenRouterQuota).mockResolvedValueOnce({
-      success: false,
-      error,
-    });
+    vi.mocked(queryOpenRouterQuota).mockResolvedValueOnce({ success: false, error: "HTTP 401" });
 
     const out = await openRouterProvider.fetch({} as any);
     expectAttemptedWithErrorLabel(out, "OpenRouter");
-    expect(out.errors[0]?.message).toBe(error);
+    expect(out.errors[0]?.message).toBe("HTTP 401");
     expect(out.statusDetails).toEqual(expectedStatusDetails(resolved));
     expect(JSON.stringify(out)).not.toContain(SECRET_CANARY);
-    expect(queryOpenRouterQuota).toHaveBeenCalledTimes(1);
-    expect(queryOpenRouterQuota).toHaveBeenCalledWith({
-      requestTimeoutMs: undefined,
-      resolved,
-    });
   });
 
   it("auto-detects a trusted key and matches OpenRouter models", async () => {

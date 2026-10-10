@@ -53,7 +53,7 @@ Even then, it needs a reasonable maintenance cost.
 | You want to… | Use |
 | --- | --- |
 | Use an OpenAI-compatible model service OpenCode doesn't include | an OpenCode custom provider |
-| Track quota for a provider OpenCode already exposes (request estimates or one fixed quota endpoint) | an OpenCode Quota custom provider (`provider add`); its `providerId` must match OpenCode's |
+| Track quota for a provider OpenCode already exposes (request estimates or one fixed quota endpoint) | an OpenCode Quota custom provider ([ask your agent](docs/readme/providers.md#custom-providers)); its `providerId` must match OpenCode's |
 | Anything the custom path can't do, and the policy above is met | a built-in provider |
 
 **Building one:** for API-key or token providers, start from `contributing/provider-template/` (see its README), replace every example name, and add tests for every auth source. Use the README setup label that matches reality: `Automatic` or `Needs setup`.

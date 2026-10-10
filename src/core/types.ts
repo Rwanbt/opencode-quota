@@ -144,6 +144,9 @@ export type Words = {
   sessionTokens: "current" | "tree";
 };
 
+/** A session's model: its id and OpenCode's provider id. */
+export type SessionModel = { id?: string; providerID?: string };
+
 export type QuotaSnapshot = {
   version: 6;
   /** Enabled and available providers, in registration order. */

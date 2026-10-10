@@ -10,7 +10,7 @@ import {
   type QuotaStore,
   type StoreProvider,
 } from "../src/core/store.js";
-import type { QuotaRow, QuotaSnapshot } from "../src/core/types.js";
+import type { QuotaRow, QuotaSnapshot, SessionModel } from "../src/core/types.js";
 
 const START_MS = Date.parse("2026-10-10T12:00:00.000Z");
 const SECOND = 1000;
@@ -73,9 +73,14 @@ describe("quota store", () => {
     providers: StoreProvider[],
     minIntervalMs = 5 * MINUTE,
     path: string | null = file,
+    providerIdsForModel?: (model: SessionModel) => string[],
   ) {
     const store = createQuotaStore({
-      source: async () => ({ providers, minIntervalMs }),
+      source: async () => ({
+        providers,
+        minIntervalMs,
+        ...(providerIdsForModel ? { providerIdsForModel } : {}),
+      }),
       file: path,
       now: () => clock,
       log: () => {},
@@ -90,7 +95,9 @@ describe("quota store", () => {
     return provider;
   }
 
-  async function savedFile(): Promise<{ entries: Record<string, { rows: QuotaRow[] }> }> {
+  async function savedFile(): Promise<{
+    entries: Record<string, { rows: Array<{ login: string; row: QuotaRow }> }>;
+  }> {
     return JSON.parse(await readFile(file, "utf8"));
   }
 
@@ -101,10 +108,8 @@ describe("quota store", () => {
   });
 
   afterEach(async () => {
-    // A store may still be writing after a snapshot() call; let it finish before the folder goes.
-    await Promise.all(
-      stores.splice(0).map((store) => store.refresh({ reason: "poll", providerIds: [] })),
-    );
+    // A store may still be fetching or writing; let it finish before the folder goes.
+    await Promise.all(stores.splice(0).map((store) => store.dispose()));
     await rm(dir, { recursive: true, force: true });
   });
 
@@ -346,7 +351,7 @@ describe("quota store", () => {
       ok([row("weekly", 100, { resetsAt: nextResetsAt, account: "pro" })]),
     );
     const notice = {
-      id: `copilot.weekly|pro|${resetsAt}`,
+      id: `copilot.weekly|pro||${resetsAt}`,
       rowId: "copilot.weekly",
       providerId: "copilot",
       account: "pro",
@@ -429,7 +434,7 @@ describe("quota store", () => {
     const saved = await savedFile();
     const [key] = Object.keys(saved.entries);
     if (!key) throw new Error("nothing saved");
-    saved.entries[key]?.rows.push({ ...row("bad", 1), id: "openai.stolen" });
+    saved.entries[key]?.rows.push({ login: "", row: { ...row("bad", 1), id: "openai.stolen" } });
     await writeFile(file, JSON.stringify(saved));
     const restarted = only(await makeStore([copilot.provider], HOUR).snapshot());
     expect(restarted.rows).toEqual([row("allowance", 50)]);
@@ -437,6 +442,379 @@ describe("quota store", () => {
     await writeFile(file, "{ not json");
     const fresh = only(await makeStore([copilot.provider], HOUR).snapshot());
     expect(fresh.rows).toEqual([]);
+  });
+
+  it("keeps a failing login's last rows and backs off when another login answers", async () => {
+    const copilot = fakeProvider();
+    copilot.fetch.mockResolvedValue({
+      ...ok([row("allowance", 50, { account: "Home" }), row("allowance", 40, { account: "Work" })]),
+      rowLogins: ["home-login", "work-login"],
+    });
+    const store = makeStore([copilot.provider], 0);
+    await store.refresh({ reason: "poll" });
+
+    clock += MINUTE;
+    copilot.fetch.mockResolvedValue({
+      rows: [row("allowance", 30, { account: "Home" })],
+      rowLogins: ["home-login"],
+      error: { code: "login_expired", detail: "Work: token expired" },
+      debug: [],
+    });
+    const partial = only(await store.refresh({ reason: "poll" }));
+    expect(partial.rows).toEqual([
+      row("allowance", 30, { account: "Home" }),
+      row("allowance", 40, { account: "Work" }),
+    ]);
+    expect(partial).toMatchObject({ okAtMs: START_MS + MINUTE, error: { code: "login_expired" } });
+
+    clock += 30 * SECOND;
+    await store.refresh({ reason: "poll" });
+    expect(copilot.fetch).toHaveBeenCalledTimes(2);
+    clock += 30 * SECOND;
+    await store.refresh({ reason: "poll" });
+    expect(copilot.fetch).toHaveBeenCalledTimes(3);
+  });
+
+  it("redacts credentials from a thrown error before it is shown or saved", async () => {
+    const copilot = fakeProvider();
+    copilot.fetch.mockRejectedValue(
+      new Error("HTTP 401 Authorization: Bearer CANARYtoken0value0123 api_key=CANARYkey0value"),
+    );
+    const snapshot = await makeStore([copilot.provider]).refresh({ reason: "manual" });
+    expect(only(snapshot).error).toMatchObject({ code: "login_expired" });
+    expect(JSON.stringify(snapshot)).not.toContain("CANARY");
+    expect(await readFile(file, "utf8")).not.toContain("CANARY");
+  });
+
+  it("keeps reset notices with the account that saw them", async () => {
+    const resetsAt = new Date(START_MS + HOUR).toISOString();
+    const nextResetsAt = new Date(START_MS + 8 * 24 * HOUR).toISOString();
+    const copilot = fakeProvider();
+    copilot.fetch.mockResolvedValue(ok([row("weekly", 5, { resetsAt })]));
+    const store = makeStore([copilot.provider], 0);
+    await store.refresh({ reason: "poll" });
+    clock += 2 * HOUR;
+    copilot.fetch.mockResolvedValue(ok([row("weekly", 100, { resetsAt: nextResetsAt })]));
+    expect((await store.refresh({ reason: "poll" })).resetNotices).toHaveLength(1);
+
+    // Bob never sees Alice's notice, nor does a process where the provider is off.
+    copilot.signInAs("bob");
+    expect((await makeStore([copilot.provider], HOUR).snapshot()).resetNotices).toEqual([]);
+    expect((await makeStore([], HOUR).snapshot()).resetNotices).toEqual([]);
+    copilot.signInAs("alice");
+    expect((await makeStore([copilot.provider], HOUR).snapshot()).resetNotices).toHaveLength(1);
+  });
+
+  it("keeps a memory-only login's reset notices out of the file", async () => {
+    const resetsAt = new Date(START_MS + HOUR).toISOString();
+    const nextResetsAt = new Date(START_MS + 8 * 24 * HOUR).toISOString();
+    const copilot = fakeProvider();
+    copilot.signInAs("settings-only", false);
+    copilot.fetch.mockResolvedValue(ok([row("weekly", 5, { resetsAt })]));
+    const store = makeStore([copilot.provider], 0);
+    await store.refresh({ reason: "poll" });
+    clock += 2 * HOUR;
+    copilot.fetch.mockResolvedValue(ok([row("weekly", 100, { resetsAt: nextResetsAt })]));
+    expect((await store.refresh({ reason: "poll" })).resetNotices).toHaveLength(1);
+    await makeStore([fakeProvider("openai").provider]).refresh({ reason: "manual" });
+    expect(await readFile(file, "utf8")).not.toContain("copilot.weekly");
+
+    store.invalidateIdentity();
+    expect((await store.snapshot()).resetNotices).toEqual([]);
+  });
+
+  it("notices a reset that a provider reports only after repeating the old reset time", async () => {
+    const resetsAt = new Date(START_MS + HOUR).toISOString();
+    const nextResetsAt = new Date(START_MS + 8 * 24 * HOUR).toISOString();
+    const copilot = fakeProvider();
+    copilot.fetch.mockResolvedValue(ok([row("weekly", 5, { resetsAt })]));
+    const store = makeStore([copilot.provider], 0);
+    await store.refresh({ reason: "poll" });
+
+    // The provider's data lags: after the reset time it still reports the old window.
+    clock += 2 * HOUR;
+    expect((await store.refresh({ reason: "poll" })).resetNotices).toEqual([]);
+    clock += HOUR;
+    copilot.fetch.mockResolvedValue(ok([row("weekly", 100, { resetsAt: nextResetsAt })]));
+    const { resetNotices } = await store.refresh({ reason: "poll" });
+    expect(resetNotices.map((notice) => notice.id)).toEqual([`copilot.weekly|||${resetsAt}`]);
+  });
+
+  it("drops a memory-only fetch that ran across a login change and shows that at once", async () => {
+    const copilot = fakeProvider();
+    copilot.signInAs("settings-only", false);
+    const store = makeStore([copilot.provider]);
+    await store.refresh({ reason: "manual" });
+
+    const oldAccount = deferred<ProviderFetch>();
+    copilot.fetch.mockReturnValueOnce(oldAccount.promise);
+    copilot.fetch.mockResolvedValue(ok([row("allowance", 70)]));
+    const running = store.refresh({ reason: "manual" });
+    await vi.waitFor(() => expect(copilot.fetch).toHaveBeenCalledTimes(2));
+
+    const listener = vi.fn();
+    store.subscribe(listener);
+    store.invalidateIdentity();
+    // Cleared rows first, before any fetch answers; then the new login's rows.
+    await vi.waitFor(() => expect(listener).toHaveBeenCalled());
+    expect(only(listener.mock.calls[0]?.[0]).rows).toEqual([]);
+    await vi.waitFor(() =>
+      expect(only(listener.mock.lastCall?.[0]).rows).toEqual([row("allowance", 70)]),
+    );
+    expect(copilot.fetch).toHaveBeenCalledTimes(3);
+
+    oldAccount.resolve(ok([row("allowance", 10)]));
+    // The refresh started for the old login: whose rows it would show is unknown now.
+    expect(only(await running).rows).toEqual([]);
+    expect(only(await store.snapshot()).rows).toEqual([row("allowance", 70)]);
+    const seen = listener.mock.calls.flatMap(([snapshot]) => only(snapshot).rows);
+    expect(seen).not.toContainEqual(row("allowance", 10));
+  });
+
+  it("waits for running fetches and the last write when disposed", async () => {
+    const copilot = fakeProvider();
+    const pending = deferred<ProviderFetch>();
+    copilot.fetch.mockReturnValueOnce(pending.promise);
+    const store = makeStore([copilot.provider]);
+    await store.snapshot();
+    let disposed = false;
+    const disposing = store.dispose().then(() => {
+      disposed = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(disposed).toBe(false);
+
+    pending.resolve(ok([row("allowance", 30)]));
+    await disposing;
+    expect(Object.values((await savedFile()).entries).map((entry) => entry.rows)).toEqual([
+      [{ login: "", row: row("allowance", 30) }],
+    ]);
+    // A disposed store refuses new work.
+    await expect(store.snapshot()).rejects.toThrow("disposed");
+    expect(copilot.fetch).toHaveBeenCalledOnce();
+  });
+
+  it("keeps both entries when two stores write the same file at once", async () => {
+    const copilot = fakeProvider("copilot");
+    const openai = fakeProvider("openai");
+    const one = makeStore([copilot.provider]);
+    const two = makeStore([openai.provider]);
+    await Promise.all([one.refresh({ reason: "manual" }), two.refresh({ reason: "manual" })]);
+    const saved = await savedFile();
+    expect(
+      Object.keys(saved.entries)
+        .map((key) => key.split("|")[0])
+        .sort(),
+    ).toEqual(["copilot", "openai"]);
+  });
+
+  it("names the providers serving the session's model, from the same settings read", async () => {
+    const copilot = fakeProvider("copilot");
+    const openai = fakeProvider("openai");
+    const forModel = vi.fn((model: SessionModel) =>
+      model.providerID === "openai" ? ["openai", "azure"] : [],
+    );
+    const store = makeStore([copilot.provider, openai.provider], HOUR, file, forModel);
+    const snapshot = await store.snapshot({ model: { id: "gpt-5", providerID: "openai" } });
+    expect(snapshot.currentModelProviderIds).toEqual(["openai"]);
+    expect(await store.snapshot()).not.toHaveProperty("currentModelProviderIds");
+    expect(await store.snapshot({ model: {} })).not.toHaveProperty("currentModelProviderIds");
+  });
+
+  it("never answers a refresh with the old login's rows after a login change", async () => {
+    const copilot = fakeProvider();
+    const identity = vi.fn(
+      async (): Promise<ProviderIdentity> => ({ key: "alice", persist: true }),
+    );
+    copilot.provider.identity = identity;
+    const store = makeStore([copilot.provider]);
+    await store.refresh({ reason: "manual" });
+
+    // The check after the next fetch is slow; Bob signs in meanwhile.
+    const aliceLookup = deferred<ProviderIdentity>();
+    identity
+      .mockImplementationOnce(async () => ({ key: "alice", persist: true }))
+      .mockImplementationOnce(() => aliceLookup.promise)
+      .mockImplementation(async () => ({ key: "bob", persist: true }));
+    copilot.fetch.mockResolvedValue(ok([row("allowance", 40)]));
+    const running = store.refresh({ reason: "manual" });
+    await vi.waitFor(() => expect(identity).toHaveBeenCalledTimes(4));
+    const listener = vi.fn();
+    store.subscribe(listener);
+    store.invalidateIdentity();
+    await vi.waitFor(() => expect(copilot.fetch).toHaveBeenCalledTimes(3));
+    await vi.waitFor(() =>
+      expect(only(listener.mock.lastCall?.[0]).rows).toEqual([row("allowance", 40)]),
+    );
+
+    aliceLookup.resolve({ key: "alice", persist: true });
+    const answer = only(await running);
+    expect(answer.rows).toEqual([]);
+    expect(answer).not.toHaveProperty("okAtMs");
+    // Later answers are Bob's.
+    copilot.fetch.mockResolvedValue(ok([row("allowance", 99)]));
+    expect(only(await store.refresh({ reason: "manual" })).rows).toEqual([row("allowance", 99)]);
+  });
+
+  it("waits for a refresh still reading its providers and refuses work after dispose", async () => {
+    const copilot = fakeProvider();
+    const providersRead = deferred<void>();
+    const store = createQuotaStore({
+      source: async () => {
+        await providersRead.promise;
+        return { providers: [copilot.provider], minIntervalMs: 0 };
+      },
+      file,
+      now: () => clock,
+      log: () => {},
+    });
+    stores.push(store);
+    const refreshing = store.refresh({ reason: "manual" });
+    const disposing = store.dispose();
+    providersRead.resolve();
+    await disposing;
+
+    await expect(refreshing).resolves.toBeDefined();
+    expect(copilot.fetch).not.toHaveBeenCalled();
+    await expect(readFile(file)).rejects.toThrow();
+    await expect(store.refresh({ reason: "manual" })).rejects.toThrow("disposed");
+    await expect(store.snapshot()).rejects.toThrow("disposed");
+  });
+
+  it(
+    "gives up on a login, provider list or fetch that never answers",
+    { timeout: 2000 },
+    async () => {
+      const never = () => new Promise<never>(() => {});
+      const stuck: StoreProvider = {
+        id: "copilot",
+        label: "Copilot",
+        identity: never,
+        fetch: never,
+      };
+      const timeouts = { readMs: 20, fetchMs: 20 };
+      const store = createQuotaStore({
+        source: async () => ({ providers: [stuck], minIntervalMs: 0 }),
+        file,
+        now: () => clock,
+        log: () => {},
+        timeouts,
+      });
+      const snapshot = await store.refresh({ reason: "manual" });
+      expect(only(snapshot).error).toMatchObject({ code: "timeout" });
+      await store.dispose();
+
+      const noProviders = createQuotaStore({ source: never, file, now: () => clock, timeouts });
+      await expect(noProviders.refresh({ reason: "manual" })).rejects.toThrow("timed out");
+      await noProviders.dispose();
+    },
+  );
+
+  it("numbers logins that share a name by login, so one failing keeps its number", async () => {
+    const copilot = fakeProvider();
+    copilot.fetch.mockResolvedValue({
+      ...ok([row("allowance", 50, { account: "Pro" }), row("allowance", 40, { account: "Pro" })]),
+      rowLogins: ["first", "second"],
+    });
+    const store = makeStore([copilot.provider], 0);
+    const before = only(await store.refresh({ reason: "poll" })).rows;
+    const accountOf = (rows: QuotaRow[], percent: number) =>
+      rows.find((item) => item.percentRemaining === percent)?.account;
+    expect([accountOf(before, 50), accountOf(before, 40)].sort()).toEqual(["Pro", "Pro 2"]);
+
+    // The first login fails; the second answers alone.
+    clock += MINUTE;
+    copilot.fetch.mockResolvedValue({
+      rows: [row("allowance", 30, { account: "Pro" })],
+      rowLogins: ["second"],
+      error: { code: "login_expired", detail: "first: token expired" },
+      debug: [],
+    });
+    const after = only(await store.refresh({ reason: "poll" })).rows;
+    expect(after).toHaveLength(2);
+    expect(accountOf(after, 50)).toBe(accountOf(before, 50));
+    expect(accountOf(after, 30)).toBe(accountOf(before, 40));
+  });
+
+  it("numbers logins around names rows already have and gives each login its own notice", async () => {
+    const resetsAt = new Date(START_MS + HOUR).toISOString();
+    const nextResetsAt = new Date(START_MS + HOUR + 7 * 24 * HOUR).toISOString();
+    const copilot = fakeProvider();
+    // Two logins without a name and one named "Account 2", all on the same window.
+    const answer = (percent: number, at: string): ProviderFetch => ({
+      rows: [
+        row("weekly", percent, { resetsAt: at }),
+        row("weekly", percent, { resetsAt: at }),
+        row("weekly", percent, { resetsAt: at, account: "Account 2" }),
+      ],
+      rowLogins: ["first", "second", "third"],
+      debug: [],
+    });
+    const accounts = (items: Array<{ account?: string }>) =>
+      items.map((item) => item.account ?? "(none)").sort();
+    copilot.fetch.mockResolvedValue(answer(5, resetsAt));
+    const store = makeStore([copilot.provider], 0);
+    const before = only(await store.refresh({ reason: "poll" })).rows;
+    expect(accounts(before)).toEqual(["(none)", "Account 2", "Account 3"]);
+    expect(before[2]?.account).toBe("Account 2");
+
+    // All three reset at once: three notices.
+    clock += 2 * HOUR;
+    copilot.fetch.mockResolvedValue(answer(100, nextResetsAt));
+    const { resetNotices } = await store.refresh({ reason: "poll" });
+    expect(accounts(resetNotices)).toEqual(["(none)", "Account 2", "Account 3"]);
+    expect(new Set(resetNotices.map((notice) => notice.id)).size).toBe(3);
+  });
+
+  it("still fetches after a login change when an older refresh finishes reading with it", async () => {
+    const copilot = fakeProvider();
+    const identityRead = deferred<ProviderIdentity>();
+    const identity = vi.fn(() => identityRead.promise);
+    copilot.provider.identity = identity;
+    const store = makeStore([copilot.provider], 0);
+    const listener = vi.fn();
+    store.subscribe(listener);
+    const old = store.refresh({ reason: "manual" });
+    await vi.waitFor(() => expect(identity).toHaveBeenCalledTimes(1));
+    store.invalidateIdentity();
+    await vi.waitFor(() => expect(identity).toHaveBeenCalledTimes(2));
+
+    // Both operations read who is signed in from the same answer, in the same tick.
+    identityRead.resolve({ key: "bob", persist: true });
+    expect(only(await old).rows).toEqual([]);
+    await vi.waitFor(() => expect(copilot.fetch).toHaveBeenCalledOnce());
+    await vi.waitFor(() =>
+      expect(only(listener.mock.lastCall?.[0]).rows).toEqual([row("allowance", 50)]),
+    );
+  });
+
+  it("treats a snapshot file of another version exactly like no file", async () => {
+    const copilot = fakeProvider();
+    async function firstLook() {
+      const store = makeStore([copilot.provider]);
+      const snapshot = await store.snapshot();
+      await store.dispose();
+      return { snapshot, saved: await readFile(file, "utf8") };
+    }
+    const withoutFile = await firstLook();
+    const [key] = Object.keys((await savedFile()).entries);
+    if (!key) throw new Error("nothing saved");
+    // A recent entry: had it been read, the store would show it and not fetch.
+    const entry = {
+      providerId: "copilot",
+      rows: [row("old", 10)],
+      okAtMs: clock,
+      checkedAtMs: clock,
+      failures: 0,
+      debug: [],
+      notices: [],
+      resetSeenAtMs: {},
+    };
+    for (const version of [1, 3]) {
+      await writeFile(file, JSON.stringify({ version, entries: { [key]: entry } }));
+      expect(await firstLook()).toEqual(withoutFile);
+    }
+    expect(copilot.fetch).toHaveBeenCalledTimes(3);
   });
 
   it("works without a file", async () => {

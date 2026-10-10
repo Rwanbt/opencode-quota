@@ -7,14 +7,30 @@
  * - Refreshes are single-flight per provider and keep a minimum interval (30 s after a turn,
  *   none for a manual or retry refresh); failures back off from 1 to 15 minutes, or until the
  *   provider's own retry time.
- * - A failed refresh keeps the last good rows and records the error.
- * - Rows belong to an identity (account plus provider settings). Rows of another identity are
- *   never shown; rows whose identity can't be saved stay in memory and go on a login change.
+ * - Every snapshot, refresh and login-change pass is one operation: it reads the providers and
+ *   who each one is signed in as once, and keeps both to its end. A login change starts a new
+ *   generation; an operation of an older one stores nothing and shows no rows.
+ * - Rows and reset notices belong to an identity (account plus provider settings). Those of
+ *   another identity are never shown; those whose identity can't be saved stay in memory and
+ *   go on a login change.
+ * - Rows also carry their login. A failed refresh keeps the last good rows and records the
+ *   error; when one of several logins fails, that login keeps its last rows. Logins that share
+ *   an account name are numbered here ("Pro", "Pro 2"), by login, so the numbers stay put;
+ *   numbers skip names other rows already have.
  * - When a quota window resets between two checks, a reset notice is recorded once.
+ * - Reads from OpenCode and provider fetches have time limits, so `dispose` always ends.
  */
 import { createHash } from "node:crypto";
 import { classifyError } from "./errors.js";
-import { readSavedState, type SavedEntry, type SavedState, writeSavedState } from "./persist.js";
+import {
+  joinNotices,
+  type LoginRow,
+  readSavedState,
+  rowSlot,
+  type SavedEntry,
+  type SavedState,
+  writeSavedState,
+} from "./persist.js";
 import type {
   DebugDetail,
   ProviderSnapshot,
@@ -22,6 +38,7 @@ import type {
   QuotaRow,
   QuotaSnapshot,
   ResetNotice,
+  SessionModel,
 } from "./types.js";
 import { WINDOWS } from "./windows.js";
 
@@ -32,9 +49,22 @@ const BACKOFF_MAX_MS = 15 * 60_000;
 const RESET_NOTICE_KEEP_MS = 60 * 60_000;
 /** A window that reset longer ago than this when we noticed gets no notice. */
 const RESET_NOTICE_MAX_LATENESS_MS = 24 * 60 * 60_000;
+/** Reading the providers or a login from OpenCode. */
+const READ_TIMEOUT_MS = 15_000;
+/** One provider fetch; the TUI waits up to 60 s for an RPC answer. */
+const FETCH_TIMEOUT_MS = 60_000;
 
 /** One provider fetch, already turned into rows. */
-export type ProviderFetch = { rows: QuotaRow[]; error?: QuotaError; debug: DebugDetail[] };
+export type ProviderFetch = {
+  rows: QuotaRow[];
+  /**
+   * The login each row came from, in the order of `rows`; omitted for one login. An opaque id
+   * keyed with the install's secret (`keyedLogins`), never a source id such as an email.
+   */
+  rowLogins?: string[];
+  error?: QuotaError;
+  debug: DebugDetail[];
+};
 
 /** Whose rows a fetch returns. */
 export type ProviderIdentity = {
@@ -55,10 +85,20 @@ export type StoreProvider = {
 };
 
 /** The providers to show and refresh now (enabled and available, in registration order). */
-export type StoreSource = { providers: StoreProvider[]; minIntervalMs: number };
+export type StoreSource = {
+  providers: StoreProvider[];
+  minIntervalMs: number;
+  /** The providers serving a session's model, from the same settings read as `providers`. */
+  providerIdsForModel?: (model: SessionModel) => string[];
+};
 
 export type RefreshReason = "poll" | "turn" | "manual" | "retry";
-export type RefreshOptions = { reason: RefreshReason; providerIds?: readonly string[] };
+/** With a model, the snapshot also names the providers serving it. */
+export type SnapshotOptions = { model?: SessionModel };
+export type RefreshOptions = SnapshotOptions & {
+  reason: RefreshReason;
+  providerIds?: readonly string[];
+};
 
 export type QuotaStoreDeps = {
   source: () => Promise<StoreSource>;
@@ -66,15 +106,19 @@ export type QuotaStoreDeps = {
   file: string | null;
   now?: () => number;
   log?: (message: string) => void;
+  /** Time limits for reading providers and logins, and for one fetch (tests shorten them). */
+  timeouts?: { readMs: number; fetchMs: number };
 };
 
 export type QuotaStore = {
-  snapshot(): Promise<QuotaSnapshot>;
+  snapshot(options?: SnapshotOptions): Promise<QuotaSnapshot>;
   /** Refreshes the due providers (all, or `providerIds`) and answers when they are done. */
   refresh(options: RefreshOptions): Promise<QuotaSnapshot>;
   subscribe(listener: (snapshot: QuotaSnapshot) => void): () => void;
   /** A login changed: identities are resolved again and memory-only rows are dropped. */
   invalidateIdentity(): void;
+  /** Refuses new work and waits for running operations and the last file write. */
+  dispose(): Promise<void>;
 };
 
 type Entry = SavedEntry & { persist: boolean };
@@ -82,12 +126,32 @@ type Entry = SavedEntry & { persist: boolean };
 /** Where a provider's rows live for its current identity. */
 type ResolvedKey = { key: string; persist: boolean };
 
+/** One snapshot, refresh or login-change pass: its generation, providers and identities. */
+type Operation = {
+  generation: number;
+  source: StoreSource;
+  keys: Map<string, ResolvedKey>;
+};
+
+function hashText(text: string, length: number): string {
+  return createHash("sha256").update(text).digest("hex").slice(0, length);
+}
+
 function resolvedKey(providerId: string, identity: ProviderIdentity): ResolvedKey {
-  const hash = createHash("sha256").update(identity.key).digest("hex").slice(0, 32);
+  const hash = hashText(identity.key, 32);
   return {
     key: `${providerId}|${identity.persist ? hash : `memory-${hash}`}`,
     persist: identity.persist,
   };
+}
+
+/** `promise`, or a rejection with `message` once `ms` have passed. */
+function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
 function backoffMs(failures: number): number {
@@ -102,25 +166,70 @@ function isDue(
 ): boolean {
   if (reason === "manual" || reason === "retry") return true;
   if (entry?.checkedAtMs === undefined || entry.checkedAtMs > nowMs) return true;
+  // The one exception to the configured minimum: a model turn just used quota, so it may
+  // refresh 30 s after the last check even when `minIntervalMs` is longer.
   let waitMs = reason === "turn" ? Math.min(minIntervalMs, TURN_MIN_INTERVAL_MS) : minIntervalMs;
   if (entry.failures > 0) waitMs = Math.max(waitMs, backoffMs(entry.failures));
   if (nowMs - entry.checkedAtMs < waitMs) return false;
   return entry.error?.retryAtMs === undefined || nowMs >= entry.error.retryAtMs;
 }
 
-/** Rows by id and account; an id that appears twice for one account can't be matched. */
-function rowsByAccount(rows: readonly QuotaRow[]): Map<string, QuotaRow | null> {
-  const byKey = new Map<string, QuotaRow | null>();
-  for (const row of rows) {
-    const key = `${row.id}\u001f${row.account ?? ""}`;
-    byKey.set(key, byKey.has(key) ? null : row);
-  }
-  return byKey;
+/** Each fetched row with its login, shortened to a hash of the keyed id it arrives as. */
+function loginRows(result: ProviderFetch): LoginRow[] {
+  return result.rows.map((row, index) => {
+    const login = result.rowLogins?.[index] ?? "";
+    return { login: login ? hashText(login, 16) : "", row };
+  });
 }
 
 /**
- * True when `before` (seen at `observedAtMs`, before its reset time) has reset by now: the
- * reset time passed less than a day ago and the new row has a later reset and more left.
+ * The rows as shown. Logins that share an account name (or have none) are told apart: each
+ * login after the first (by login key) gets " 2", " 3"... on all its rows ("Account 2" without
+ * a name), skipping names that rows already have or got. Numbering by login keeps a login's
+ * number while another login fails.
+ */
+function shownRows(rows: readonly LoginRow[]): QuotaRow[] {
+  const loginsByAccount = new Map<string, string[]>();
+  for (const { login, row } of rows) {
+    const logins = loginsByAccount.get(row.account ?? "") ?? [];
+    if (!logins.includes(login)) logins.push(login);
+    loginsByAccount.set(row.account ?? "", logins);
+  }
+  const taken = new Set(loginsByAccount.keys());
+  /** The shown account per `${account}\u001f${login}`. */
+  const shown = new Map<string, string>();
+  for (const [account, logins] of [...loginsByAccount].sort(([a], [b]) => (a < b ? -1 : 1))) {
+    let number = 1;
+    for (const login of logins.sort().slice(1)) {
+      let name: string;
+      do {
+        number += 1;
+        name = account ? `${account} ${number}` : `Account ${number}`;
+      } while (taken.has(name));
+      taken.add(name);
+      shown.set(`${account}\u001f${login}`, name);
+    }
+  }
+  return rows.map(({ login, row }) => {
+    const account = shown.get(`${row.account ?? ""}\u001f${login}`);
+    return account === undefined ? row : { ...row, account };
+  });
+}
+
+/** Rows by slot (id, account, login); a slot that appears twice can't be matched. */
+function rowsBySlot(rows: readonly LoginRow[]): Map<string, LoginRow | null> {
+  const bySlot = new Map<string, LoginRow | null>();
+  for (const row of rows) {
+    const slot = rowSlot(row);
+    bySlot.set(slot, bySlot.has(slot) ? null : row);
+  }
+  return bySlot;
+}
+
+/**
+ * True when `before` (its reset time first seen at `observedAtMs`, before that time) has reset
+ * by now: the reset time passed less than a day ago and the new row has a later reset and more
+ * left.
  */
 function didReset(before: QuotaRow, after: QuotaRow, observedAtMs: number, nowMs: number): boolean {
   const resetMs = Date.parse(before.resetsAt ?? "");
@@ -139,28 +248,57 @@ function didReset(before: QuotaRow, after: QuotaRow, observedAtMs: number, nowMs
   );
 }
 
-function findResets(previous: Entry, rows: readonly QuotaRow[], nowMs: number): ResetNotice[] {
-  if (previous.okAtMs === undefined) return [];
-  const before = rowsByAccount(previous.rows);
+/**
+ * Reset notices for `rows` (the new rows of `previous`'s entry), with their shown accounts.
+ * A notice's id names its row's slot (id, account, login), so each login's reset is one notice.
+ */
+function findResets(previous: Entry, rows: readonly LoginRow[], nowMs: number): ResetNotice[] {
+  const before = rowsBySlot(previous.rows);
+  const after = rowsBySlot(rows);
+  const shown = shownRows(rows);
   const notices: ResetNotice[] = [];
-  for (const [key, row] of rowsByAccount(rows)) {
-    const old = before.get(key);
-    if (!row || !old || row.type !== "quota" || !row.window || !WINDOWS[row.window].resets) {
-      continue;
-    }
-    if (!didReset(old, row, previous.okAtMs, nowMs)) continue;
+  rows.forEach((current, index) => {
+    const slot = rowSlot(current);
+    const old = before.get(slot)?.row;
+    const { row } = current;
+    if (!old || after.get(slot) === null) return;
+    if (row.type !== "quota" || !row.window || !WINDOWS[row.window].resets) return;
+    const observedAtMs = previous.resetSeenAtMs[slot] ?? previous.okAtMs;
+    if (observedAtMs === undefined || !didReset(old, row, observedAtMs, nowMs)) return;
+    const account = shown[index]?.account;
     notices.push({
-      id: `${row.id}|${row.account ?? ""}|${old.resetsAt}`,
+      id: `${row.id}|${row.account ?? ""}|${current.login}|${old.resetsAt}`,
       rowId: row.id,
       providerId: row.providerId,
-      ...(row.account === undefined ? {} : { account: row.account }),
+      ...(account === undefined ? {} : { account }),
       label: row.label,
       window: row.window,
       percentRemaining: row.percentRemaining as number,
       atMs: nowMs,
     });
-  }
+  });
   return notices;
+}
+
+/**
+ * When each row's reset time was first seen. A provider that repeats a reset time already past
+ * keeps the earlier observation, so the refill it reports later still counts as a reset.
+ */
+function resetSeenTimes(
+  previous: Entry | undefined,
+  rows: readonly LoginRow[],
+  nowMs: number,
+): Record<string, number> {
+  const before = rowsBySlot(previous?.rows ?? []);
+  const seen: Record<string, number> = {};
+  for (const current of rows) {
+    if (!current.row.resetsAt) continue;
+    const slot = rowSlot(current);
+    const earlier = previous?.resetSeenAtMs[slot];
+    const sameReset = before.get(slot)?.row.resetsAt === current.row.resetsAt;
+    seen[slot] = earlier !== undefined && sameReset ? earlier : nowMs;
+  }
+  return seen;
 }
 
 function errorMessage(error: unknown): string {
@@ -170,26 +308,50 @@ function errorMessage(error: unknown): string {
 export function createQuotaStore(deps: QuotaStoreDeps): QuotaStore {
   const now = deps.now ?? Date.now;
   const log = deps.log ?? ((message: string) => console.warn(`[opencode-quota] ${message}`));
+  const timeouts = deps.timeouts ?? { readMs: READ_TIMEOUT_MS, fetchMs: FETCH_TIMEOUT_MS };
   const entries = new Map<string, Entry>();
-  /** Each provider's identity as last resolved; every snapshot and refresh resolves it again. */
-  const currentKeys = new Map<string, ResolvedKey>();
   const inFlight = new Map<string, Promise<void>>();
-  const fetching = new Set<string>();
+  /** Running fetches per provider (an old one may still run after a login change). */
+  const fetching = new Map<string, number>();
   const listeners = new Set<(snapshot: QuotaSnapshot) => void>();
-  let notices: ResetNotice[] = [];
+  /** Running operations and background refreshes; `dispose` waits for them. */
+  const tasks = new Set<Promise<unknown>>();
+  /** Bumped on every login change; operations of an older generation are stale. */
+  let generation = 0;
+  let disposed = false;
   let loaded: Promise<void> | undefined;
   let writing: Promise<void> | undefined;
   let writeAgain = false;
+
+  function track<T>(promise: Promise<T>): Promise<T> {
+    tasks.add(promise);
+    promise
+      .finally(() => {
+        tasks.delete(promise);
+      })
+      .catch(() => {});
+    return promise;
+  }
+
+  /** Runs one operation as a tracked task, from before its first read; none after dispose. */
+  function start<T>(work: () => Promise<T>): Promise<T> {
+    if (disposed) return Promise.reject(new Error("the quota store is disposed"));
+    return track(work());
+  }
+
+  function isCurrent(operation: Operation): boolean {
+    return operation.generation === generation;
+  }
 
   function adopt(saved: SavedState): void {
     for (const [key, entry] of saved.entries) {
       const ours = entries.get(key);
       if (!ours || (ours.checkedAtMs ?? 0) < (entry.checkedAtMs ?? 0)) {
         entries.set(key, { ...entry, persist: true });
+      } else {
+        ours.notices = joinNotices(ours.notices, entry.notices);
       }
     }
-    const known = new Set(notices.map((notice) => notice.id));
-    notices.push(...saved.notices.filter((notice) => !known.has(notice.id)));
   }
 
   function load(): Promise<void> {
@@ -202,10 +364,9 @@ export function createQuotaStore(deps: QuotaStoreDeps): QuotaStore {
     for (const [key, { persist: keep, ...entry }] of entries) {
       if (keep) saved.set(key, entry);
     }
-    const state: SavedState = { entries: saved, notices };
     try {
       const options = { nowMs: now(), noticeMaxAgeMs: RESET_NOTICE_KEEP_MS };
-      adopt(await writeSavedState(file, state, options));
+      adopt(await writeSavedState(file, { entries: saved }, options));
     } catch (error) {
       log(`could not save the quota snapshot: ${errorMessage(error)}`);
     }
@@ -232,36 +393,49 @@ export function createQuotaStore(deps: QuotaStoreDeps): QuotaStore {
     while (writing) await writing;
   }
 
+  /** Who `provider` is signed in as now; unknown (memory only) when that can't be read. */
   async function resolveKey(provider: StoreProvider): Promise<ResolvedKey> {
-    let identity: ProviderIdentity;
     try {
-      identity = await provider.identity();
+      const message = `reading the ${provider.id} login timed out`;
+      return resolvedKey(
+        provider.id,
+        await withTimeout(provider.identity(), timeouts.readMs, message),
+      );
     } catch {
-      identity = { key: "unknown", persist: false };
+      return resolvedKey(provider.id, { key: "unknown", persist: false });
     }
-    const resolved = resolvedKey(provider.id, identity);
-    currentKeys.set(provider.id, resolved);
-    return resolved;
   }
 
-  /** Loads the file once, reads the providers and resolves who each one is signed in as. */
-  async function prepare(): Promise<StoreSource> {
+  /** Starts an operation: loads the file once, reads the providers and who each one is. */
+  async function prepare(): Promise<Operation> {
+    const startedIn = generation;
     await load();
-    const source = await deps.source();
-    await Promise.all(source.providers.map(resolveKey));
-    return source;
+    const message = "reading the quota providers timed out";
+    const source = await withTimeout(deps.source(), timeouts.readMs, message);
+    const keys = new Map<string, ResolvedKey>();
+    await Promise.all(
+      source.providers.map(async (provider) => {
+        keys.set(provider.id, await resolveKey(provider));
+      }),
+    );
+    return { generation: startedIn, source, keys };
   }
 
-  function buildSnapshot(source: StoreSource): QuotaSnapshot {
+  /** The snapshot an operation sees; a stale one shows no rows (whose they are is unknown). */
+  function buildSnapshot(operation: Operation, model?: SessionModel): QuotaSnapshot {
     const nowMs = now();
-    notices = notices.filter((notice) => nowMs - notice.atMs <= RESET_NOTICE_KEEP_MS);
-    const providers = source.providers.map((provider): ProviderSnapshot => {
-      const key = currentKeys.get(provider.id)?.key;
+    const current = isCurrent(operation);
+    const resetNotices: ResetNotice[] = [];
+    const providers = operation.source.providers.map((provider): ProviderSnapshot => {
+      const key = current ? operation.keys.get(provider.id)?.key : undefined;
       const entry = key === undefined ? undefined : entries.get(key);
+      for (const notice of entry?.notices ?? []) {
+        if (nowMs - notice.atMs <= RESET_NOTICE_KEEP_MS) resetNotices.push(notice);
+      }
       return {
         providerId: provider.id,
         label: provider.label,
-        rows: entry?.rows ?? [],
+        rows: shownRows(entry?.rows ?? []),
         ...(entry?.okAtMs === undefined ? {} : { okAtMs: entry.okAtMs }),
         ...(entry?.checkedAtMs === undefined ? {} : { checkedAtMs: entry.checkedAtMs }),
         ...(entry?.error === undefined ? {} : { error: entry.error }),
@@ -269,12 +443,18 @@ export function createQuotaStore(deps: QuotaStoreDeps): QuotaStore {
         debug: entry?.debug ?? [],
       };
     });
-    return { version: 6, providers, resetNotices: [...notices], generatedAtMs: nowMs };
+    const snapshot: QuotaSnapshot = { version: 6, providers, resetNotices, generatedAtMs: nowMs };
+    const providerIdsForModel = operation.source.providerIdsForModel;
+    if (model && (model.id || model.providerID) && providerIdsForModel) {
+      const shown = new Set(providers.map((provider) => provider.providerId));
+      snapshot.currentModelProviderIds = providerIdsForModel(model).filter((id) => shown.has(id));
+    }
+    return snapshot;
   }
 
-  function emit(source: StoreSource): void {
-    if (listeners.size === 0) return;
-    const snapshot = buildSnapshot(source);
+  function emit(operation: Operation): void {
+    if (listeners.size === 0 || !isCurrent(operation)) return;
+    const snapshot = buildSnapshot(operation);
     for (const listener of listeners) {
       try {
         listener(snapshot);
@@ -287,89 +467,122 @@ export function createQuotaStore(deps: QuotaStoreDeps): QuotaStore {
   function record(provider: StoreProvider, where: ResolvedKey, result: ProviderFetch): void {
     const nowMs = now();
     const previous = entries.get(where.key);
-    const gotRows = result.rows.length > 0;
+    const fresh = loginRows(result);
+    const gotRows = fresh.length > 0;
     const error = result.error ?? (gotRows ? undefined : ({ code: "no_data" } as const));
-    if (gotRows && previous) notices.push(...findResets(previous, result.rows, nowMs));
+    // With an error, the logins that did not answer keep their last rows.
+    const answered = new Set(fresh.map((row) => row.login));
+    const kept =
+      gotRows && result.error
+        ? (previous?.rows ?? []).filter((row) => !answered.has(row.login))
+        : [];
+    const rows = gotRows ? [...fresh, ...kept] : (previous?.rows ?? []);
+    const found = gotRows && previous ? findResets(previous, rows, nowMs) : [];
+    const notices = joinNotices(
+      (previous?.notices ?? []).filter((notice) => nowMs - notice.atMs <= RESET_NOTICE_KEEP_MS),
+      found,
+    );
     const okAtMs = gotRows ? nowMs : previous?.okAtMs;
     entries.set(where.key, {
       providerId: provider.id,
       persist: where.persist,
-      rows: gotRows ? result.rows : (previous?.rows ?? []),
+      rows,
       ...(okAtMs === undefined ? {} : { okAtMs }),
       checkedAtMs: nowMs,
       ...(error === undefined ? {} : { error }),
-      failures: gotRows ? 0 : (previous?.failures ?? 0) + 1,
+      // Any error backs off, also when only one of several logins failed.
+      failures: error === undefined ? 0 : (previous?.failures ?? 0) + 1,
       debug: result.debug,
+      notices,
+      resetSeenAtMs: gotRows
+        ? resetSeenTimes(previous, rows, nowMs)
+        : (previous?.resetSeenAtMs ?? {}),
     });
     persist();
   }
 
   async function fetchProvider(provider: StoreProvider): Promise<ProviderFetch> {
-    fetching.add(provider.id);
+    fetching.set(provider.id, (fetching.get(provider.id) ?? 0) + 1);
     try {
-      return await provider.fetch();
+      const message = `Request timeout after ${Math.round(timeouts.fetchMs / 1000)}s`;
+      return await withTimeout(provider.fetch(), timeouts.fetchMs, message);
     } catch (error) {
       return { rows: [], error: classifyError(errorMessage(error), now()), debug: [] };
     } finally {
-      fetching.delete(provider.id);
+      const left = (fetching.get(provider.id) ?? 1) - 1;
+      if (left > 0) fetching.set(provider.id, left);
+      else fetching.delete(provider.id);
     }
   }
 
   async function refreshProviderNow(
+    operation: Operation,
     provider: StoreProvider,
     reason: RefreshReason,
-    source: StoreSource,
   ): Promise<void> {
-    const minIntervalMs = provider.minIntervalMs ?? source.minIntervalMs;
-    const where = currentKeys.get(provider.id) ?? (await resolveKey(provider));
+    const where = operation.keys.get(provider.id);
+    if (!where) return;
+    const minIntervalMs = provider.minIntervalMs ?? operation.source.minIntervalMs;
     if (!isDue(entries.get(where.key), reason, minIntervalMs, now())) return;
     const result = await fetchProvider(provider);
-    // A fetch is stored only under the account it read: if the login changed meanwhile, drop it.
-    if ((await resolveKey(provider)).key !== where.key) return;
+    // A fetch is stored only under the account it read. A login change (new generation) or
+    // another account now (same generation) drops its answer.
+    if (!isCurrent(operation)) return;
+    const after = await resolveKey(provider);
+    if (!isCurrent(operation)) return;
+    if (after.key !== where.key) {
+      operation.keys.set(provider.id, after);
+      return;
+    }
     record(provider, where, result);
-    emit(source);
+    emit(operation);
   }
 
   function refreshProvider(
+    operation: Operation,
     provider: StoreProvider,
     reason: RefreshReason,
-    source: StoreSource,
   ): Promise<void> {
+    // A stale operation never joins or starts a refresh: one of the new generation would join
+    // its run, which fetches nothing.
+    if (disposed || !isCurrent(operation)) return Promise.resolve();
     const running = inFlight.get(provider.id);
     if (running) return running;
-    const run = refreshProviderNow(provider, reason, source).finally(() => {
-      inFlight.delete(provider.id);
+    const run: Promise<void> = refreshProviderNow(operation, provider, reason).finally(() => {
+      if (inFlight.get(provider.id) === run) inFlight.delete(provider.id);
     });
     inFlight.set(provider.id, run);
     return run;
   }
 
-  async function runRefresh(source: StoreSource, options: RefreshOptions): Promise<void> {
+  async function runRefresh(operation: Operation, options: RefreshOptions): Promise<void> {
     const providers = options.providerIds
-      ? source.providers.filter((provider) => options.providerIds?.includes(provider.id))
-      : source.providers;
+      ? operation.source.providers.filter((provider) => options.providerIds?.includes(provider.id))
+      : operation.source.providers;
     await Promise.all(
-      providers.map((provider) => refreshProvider(provider, options.reason, source)),
+      providers.map((provider) => refreshProvider(operation, provider, options.reason)),
     );
   }
 
-  async function refresh(options: RefreshOptions): Promise<QuotaSnapshot> {
-    const source = await prepare();
-    await runRefresh(source, options);
-    await flush();
-    return buildSnapshot(source);
-  }
-
   return {
-    async snapshot() {
-      const source = await prepare();
-      runRefresh(source, { reason: "poll" }).catch((error) => {
-        log(`background quota refresh failed: ${errorMessage(error)}`);
+    snapshot(options = {}) {
+      return start(async () => {
+        const operation = await prepare();
+        track(runRefresh(operation, { reason: "poll" })).catch((error) => {
+          log(`background quota refresh failed: ${errorMessage(error)}`);
+        });
+        return buildSnapshot(operation, options.model);
       });
-      return buildSnapshot(source);
     },
 
-    refresh,
+    refresh(options) {
+      return start(async () => {
+        const operation = await prepare();
+        await runRefresh(operation, options);
+        await flush();
+        return buildSnapshot(operation, options.model);
+      });
+    },
 
     subscribe(listener) {
       listeners.add(listener);
@@ -379,19 +592,27 @@ export function createQuotaStore(deps: QuotaStoreDeps): QuotaStore {
     },
 
     invalidateIdentity() {
-      currentKeys.clear();
+      if (disposed) return;
+      generation += 1;
+      inFlight.clear();
       for (const [key, entry] of entries) {
         if (!entry.persist) entries.delete(key);
       }
-      // Subscribers get the new account's rows (or none) even when nothing needs a fetch.
-      prepare()
-        .then(async (source) => {
-          await runRefresh(source, { reason: "poll" });
-          emit(source);
-        })
-        .catch((error) => {
-          log(`quota refresh after a login change failed: ${errorMessage(error)}`);
-        });
+      // Subscribers see the new account's rows (or none) before any fetch, then fresh ones.
+      start(async () => {
+        const operation = await prepare();
+        emit(operation);
+        await runRefresh(operation, { reason: "poll" });
+      }).catch((error) => {
+        log(`quota refresh after a login change failed: ${errorMessage(error)}`);
+      });
+    },
+
+    async dispose() {
+      disposed = true;
+      listeners.clear();
+      while (tasks.size > 0) await Promise.allSettled([...tasks]);
+      await flush();
     },
   };
 }
