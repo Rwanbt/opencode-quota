@@ -4,8 +4,13 @@
  * session sidebar, the status line under the message box (and on Home when turned on), the
  * toasts, the `/quota` quick look (`quick-look.tsx`), and the quota window that
  * `/quota_usage`, `/quota_status` and `/quota_settings` open above the message box (`window/`).
- * It reads only the quota RPC and the display settings in OpenCode's plugin storage. The quota
- * slash commands typed in the prompt run through `legacy-dialogs.tsx`.
+ * It reads only the quota RPC and the display settings in OpenCode's plugin storage.
+ *
+ * The quota slash commands typed in the prompt run in the TUI: on Enter, before OpenCode submits
+ * the prompt, a prompt that starts with /quota, /quota_usage, /quota_status or /quota_settings is
+ * cleared and runs its TUI action with the rest of the prompt as its arguments. So no report
+ * shows in the chat, and on Home no session is created for one. The "/" list names each once:
+ * the server lists /quota, /quota_usage and /quota_status, the TUI /quota_settings.
  */
 import { Plugin } from "@opencode/plugin/tui";
 import type { JSX } from "@opentui/solid";
@@ -14,7 +19,6 @@ import type { QuotaSnapshot } from "../core/types.js";
 import { parseUsageArguments } from "../core/usage-ranges.js";
 import { type ClientHost, createQuotaClient, reportFailure } from "./client.js";
 import { applyDisplayImport, createDisplayStore, type DisplayStorage } from "./display.js";
-import { registerTypedQuotaCommands, type TypedCommandHost } from "./legacy-dialogs.js";
 import { createQuickLook, type QuickLookHost } from "./quick-look.js";
 import { SidebarPanel, type SurfaceHost } from "./sidebar.js";
 import { HomeFooter, StatusLine } from "./status-line.js";
@@ -26,9 +30,8 @@ import { createQuotaWindow, type WindowHost } from "./window/shell.js";
 type SidebarState = { open: boolean };
 type TuiEvent = { data?: Record<string, unknown> };
 
-/** What the plugin needs from OpenCode's TUI context, besides the window's and typed commands' needs. */
-type TuiContext = TypedCommandHost &
-  WindowHost &
+/** What the plugin needs from OpenCode's TUI context, besides the window's needs. */
+type TuiContext = WindowHost &
   QuickLookHost &
   ClientHost & {
     theme: Theme & WindowHost["theme"] & QuickLookHost["theme"];
@@ -199,7 +202,27 @@ const plugin = Plugin.define({
             },
           ],
         }));
-        registerTypedQuotaCommands(api, quotaCommands);
+        // The typed quota commands. Above OpenCode's textarea layer, which submits the prompt on
+        // Enter; without a mode, so it is off while the "/" list or a dialog is open.
+        api.keymap.layer(() => ({
+          priority: 1,
+          commands: [
+            {
+              bind: "return",
+              // Synchronous on purpose: a returned promise counts as handled.
+              run: () => {
+                const editor = api.renderer.currentFocusedEditor;
+                const trimmed = editor?.plainText.trim() ?? "";
+                if (!editor || !trimmed.startsWith("/")) return false;
+                // As in OpenCode, the command name ends at the first whitespace.
+                const name = trimmed.slice(1).split(/\s/, 1)[0] ?? "";
+                if (!Object.hasOwn(quotaCommands, name)) return false;
+                editor.clear();
+                quotaCommands[name](trimmed.slice(1 + name.length).trim());
+              },
+            },
+          ],
+        }));
         const afterTurn = (event: TuiEvent, trigger: TurnEnd) => {
           const sessionID = eventSessionID(event);
           if (sessionID) void toasts.afterTurn(trigger, sessionID).catch(reportFailure);

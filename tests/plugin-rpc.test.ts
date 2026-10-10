@@ -197,12 +197,25 @@ describe("server quota RPC", () => {
     expect(existsSync(SNAPSHOT_FILE)).toBe(false);
   });
 
-  it("reports usage from OpenCode's history over the usage method", async () => {
+  // The clock is pinned on both sides of local midnight: the two messages came 60 s and 30 s
+  // before it, so after midnight they are yesterday's.
+  it.each([
+    {
+      clock: "23:59:59",
+      now: new Date(2026, 9, 10, 23, 59, 59),
+      today: [
+        ["claude-sonnet-4-5", true],
+        ["mystery-1", false],
+      ],
+    },
+    { clock: "00:00:01", now: new Date(2026, 9, 11, 0, 0, 1), today: [] },
+  ])("reports usage from OpenCode's history over the usage method at $clock", async (clock) => {
+    vi.setSystemTime(clock.now);
     const databaseDir = await mkdtemp(join(tmpdir(), "opencode-quota-usage-rpc-"));
     onTestFinished(() => rm(databaseDir, { recursive: true, force: true }));
     const databasePath = join(databaseDir, "opencode.db");
     vi.stubEnv("OPENCODE_DB", databasePath);
-    const now = Date.now();
+    const now = clock.now.getTime();
     writeSessionDatabase(databasePath, {
       sessions: [
         { id: "ses_root", created: now - 120_000 },
@@ -232,14 +245,18 @@ describe("server quota RPC", () => {
     useSettings({ pricing: { source: "bundled", autoRefreshDays: 3 } });
     const { call } = await setupServer();
 
+    // Today starts at local midnight; the last 24 hours roll.
     const today = (await call("usage", { range: "today" })) as { report: UsageReport };
+    const day = (await call("usage", { range: "24h" })) as { report: UsageReport };
     // The report used the configured price list.
     const pricing = await import("../src/lib/modelsdev-pricing.js");
     expect(pricing.getPricingSnapshotSelection()).toBe("bundled");
     expect(pricing.getPricingRefreshPolicy().maxAgeMs).toBe(3 * 24 * 60 * 60 * 1000);
-    expect(today.report.totals).toMatchObject({ sessions: 1, unpricedTokens: 500 });
-    expect(today.report.totals.costUsd).toBeGreaterThan(0);
-    expect(today.report.models.map((model) => [model.modelID, model.priced])).toEqual([
+    expect(today.report.sinceMs).toBe(new Date(2026, 9, clock.now.getDate()).getTime());
+    expect(today.report.models.map((model) => [model.modelID, model.priced])).toEqual(clock.today);
+    expect(day.report.totals).toMatchObject({ sessions: 1, unpricedTokens: 500 });
+    expect(day.report.totals.costUsd).toBeGreaterThan(0);
+    expect(day.report.models.map((model) => [model.modelID, model.priced])).toEqual([
       ["claude-sonnet-4-5", true],
       ["mystery-1", false],
     ]);

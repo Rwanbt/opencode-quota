@@ -16,6 +16,7 @@ import {
   readConfigCandidate,
 } from "./lib/api-key-resolver.js";
 import { resolveEnvTemplate } from "./lib/env-template.js";
+import { isRecord } from "./lib/json-guards.js";
 import { readCredentialRows } from "./lib/opencode-auth.js";
 import {
   describeQuotaProviderRequest,
@@ -126,10 +127,6 @@ const KEY_VARIABLE_NAME = /API_?KEY|TOKEN|SECRET|PASSW|COOKIE|CREDENTIAL/i;
 
 /** Keys this long are replaced anywhere; shorter ones only as a whole token, so no word is cut. */
 const LONG_KEY_LENGTH = 8;
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 /**
  * True when a run of 20+ letters and digits switches between letters, digits and case so often

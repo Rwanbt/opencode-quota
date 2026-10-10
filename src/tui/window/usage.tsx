@@ -23,6 +23,7 @@ import type { UsageModelRow, UsageQuery, UsageReport } from "../../core/usage.js
 import { DEFAULT_USAGE_RANGE, USAGE_RANGES, type UsageRange } from "../../core/usage-ranges.js";
 import { parseCalendarDate } from "../../lib/calendar-date.js";
 import { sanitizeDisplayText } from "../../lib/display-sanitize.js";
+import { QuotaRpc } from "../../rpc.js";
 import {
   breakdownModels,
   modelDetailTitle,
@@ -33,8 +34,8 @@ import {
   type UsageRole,
   usageView,
 } from "../../view/usage.js";
-import { rpcErrorMessage } from "../client.js";
-import type { CallOptions, WindowHost, WindowKey, WindowRpc, WindowTheme } from "./shell.js";
+import { errorToast, quotaCallOptions, rpcErrorMessage } from "../client.js";
+import type { WindowHost, WindowKey, WindowTheme } from "./shell.js";
 
 /** OpenCode's theme also has categorical hue scales, for things told apart by color. */
 type UsageTheme = WindowTheme & { categorical?: ReadonlyArray<Record<number, RGBA>> };
@@ -110,8 +111,8 @@ function UsageLineText(props: {
   );
 }
 
-/** A choice in a row of choices: bold and underlined when it is the current one. */
-function Choice(props: {
+/** A choice in a row of choices (a tab, a range): bold and underlined when it is the current one. */
+export function Choice(props: {
   label: string;
   active: boolean;
   theme: UsageTheme;
@@ -202,13 +203,10 @@ export type UsageTab = {
   View(props: { width: number; keyTarget: () => Renderable | undefined }): JSX.Element;
 };
 
+/** `scroll`: the window's scrollbox, which keeps the picked model in view. */
 export function createUsageTab(
   api: WindowHost,
-  calls: {
-    rpc: () => WindowRpc;
-    options: () => CallOptions;
-    scroll: () => ScrollBoxRenderable | undefined;
-  },
+  scroll: () => ScrollBoxRenderable | undefined,
 ): UsageTab {
   const [range, setRange] = createSignal<UsageRange>(DEFAULT_USAGE_RANGE);
   const [mode, setMode] = createSignal<UsageMode>("cost");
@@ -238,7 +236,7 @@ export function createUsageTab(
     setResult({ state: "loading" });
     setSelected(-1);
     try {
-      const { report } = await calls.rpc().usage(query, calls.options());
+      const { report } = await api.client.rpc(QuotaRpc).usage(query, quotaCallOptions(api));
       if (question === latestQuestion) setResult({ state: "ready", report });
     } catch (error) {
       if (question !== latestQuestion) return;
@@ -285,7 +283,7 @@ export function createUsageTab(
     if (downloading()) return;
     setDownloading(true);
     try {
-      const answer = await calls.rpc().downloadPrices({}, calls.options());
+      const answer = await api.client.rpc(QuotaRpc).downloadPrices({}, quotaCallOptions(api));
       api.ui.toast.show({
         variant: answer.ok ? "success" : "error",
         title: "Prices",
@@ -294,11 +292,7 @@ export function createUsageTab(
       });
       if (answer.ok) void load();
     } catch (error) {
-      api.ui.toast.show({
-        variant: "error",
-        title: "Prices",
-        message: sanitizeDisplayText(rpcErrorMessage(error)),
-      });
+      api.ui.toast.show(errorToast(error, "Prices"));
     } finally {
       setDownloading(false);
     }
@@ -337,7 +331,7 @@ export function createUsageTab(
     }
     if (next >= breakdownModels(report, mode()).length) return false;
     setSelected(next);
-    calls.scroll()?.scrollChildIntoView(`${MODEL_ROW_ID}${next}`);
+    scroll()?.scrollChildIntoView(`${MODEL_ROW_ID}${next}`);
   }
 
   /** The breakdown's order follows the mode, so the picked model is dropped. */

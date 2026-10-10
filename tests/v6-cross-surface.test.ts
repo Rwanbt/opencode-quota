@@ -18,6 +18,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ProviderRow } from "../src/providers/contract.js";
 import { answer, percentRow } from "./helpers/fake-answers.js";
 import { createFakeIntegration } from "./helpers/fake-integration.js";
+import { findAll, type Node, THEME, textLines } from "./helpers/jsx-tree.js";
 import {
   createAlibabaAuthModuleMock,
   createPricingModuleMock,
@@ -134,40 +135,15 @@ function httpFetch(url: string, init?: RequestInit): Response {
   throw new Error(`unexpected URL: ${url}`);
 }
 
-type Node = { type: unknown; props: Record<string, any> };
 type Listener = (event: { data: Record<string, unknown> }) => void;
 type ServerCommand = {
   name: string;
   execute(invocation: { sessionID: string; prompt: { text: string } }): Promise<void>;
 };
 
-/** Every `text` node of a JSX tree as one line, its spans joined. */
-function textLines(node: unknown): string[] {
-  const strings = (child: unknown): string =>
-    Array.isArray(child)
-      ? child.map(strings).join("")
-      : typeof child === "string" || typeof child === "number"
-        ? String(child)
-        : child && typeof child === "object"
-          ? strings((child as Node).props?.children)
-          : "";
-  if (Array.isArray(node)) return node.flatMap(textLines);
-  if (!node || typeof node !== "object") return [];
-  const element = node as Node;
-  if (element.type === "text") return [strings(element.props.children)];
-  return textLines(element.props?.children);
-}
-
 /** The text lines with runs of spaces as one space, so layout tweaks don't break the checks. */
 function words(node: unknown): string[] {
   return textLines(node).map((line) => line.replace(/\s+/gu, " ").trim());
-}
-
-function findAll(node: unknown, match: (node: Node) => boolean): Node[] {
-  if (Array.isArray(node)) return node.flatMap((child) => findAll(child, match));
-  if (!node || typeof node !== "object") return [];
-  const element = node as Node;
-  return [...(match(element) ? [element] : []), ...findAll(element.props?.children, match)];
 }
 
 /** The labels of the active choices: the tab, Cost or Tokens, the range, Model or Day. */
@@ -296,27 +272,6 @@ function expectNoCanary(...outputs: unknown[]): void {
   const text = JSON.stringify(outputs);
   for (const canary of Object.values(CANARIES)) expect(text).not.toContain(canary);
 }
-
-const THEME = {
-  text: {
-    base: "text",
-    muted: "muted",
-    action: { primary: { focused: "action", selected: "selected" } },
-    feedback: {
-      success: { base: "green" },
-      warning: { base: "yellow" },
-      error: { base: "red" },
-      info: { base: "blue" },
-    },
-  },
-  hue: { accent: { 500: "accent" } },
-  background: { action: { primary: { focused: "action-bg" } }, raised: { high: "raised" } },
-  border: { base: "border" },
-  surface: () => ({
-    text: { base: "text", muted: "muted", action: { primary: { focused: "action" } } },
-    background: { action: { primary: { focused: "action-bg" } } },
-  }),
-};
 
 type KeyLayer = {
   mode?: string;

@@ -11,15 +11,11 @@
  */
 import { createSignal } from "solid-js";
 import type { QuotaSnapshot } from "../core/types.js";
+import { sanitizeDisplayText } from "../lib/display-sanitize.js";
 import {
   QuotaRpc,
-  type QuotaRpcAcknowledgeInput,
-  type QuotaRpcAcknowledgeOutput,
-  type QuotaRpcNoticesInput,
-  type QuotaRpcNoticesOutput,
   type QuotaRpcRefreshInput,
   type QuotaRpcRefreshReason,
-  type QuotaRpcSnapshotInput,
   type QuotaRpcSnapshotOutput,
 } from "../rpc.js";
 
@@ -28,24 +24,21 @@ const RPC_TIMEOUT_MS = 60_000;
 
 export type QuotaRpcCallOptions = { location: { directory: string }; signal: AbortSignal };
 
-/** The quota RPC as OpenCode's TUI client offers it. */
+type Methods = (typeof QuotaRpc)["methods"];
+/** The type a method's schema carries for TypeScript (`schema<T>` in `rpc.ts`). */
+type Carried<Schema> = Schema extends { "~standard": { types?: infer Types } }
+  ? NonNullable<Types> extends { output: infer T }
+    ? T
+    : never
+  : never;
+
+/** The quota RPC as OpenCode's TUI client offers it: every method of `QuotaRpc`, and its event. */
 export type QuotaRpcClient = {
-  snapshot(
-    input: QuotaRpcSnapshotInput,
+  [Name in keyof Methods]: (
+    input: Carried<Methods[Name]["input"]>,
     options: QuotaRpcCallOptions,
-  ): Promise<QuotaRpcSnapshotOutput>;
-  refresh(
-    input: QuotaRpcRefreshInput,
-    options: QuotaRpcCallOptions,
-  ): Promise<QuotaRpcSnapshotOutput>;
-  notices(
-    input: QuotaRpcNoticesInput,
-    options: QuotaRpcCallOptions,
-  ): Promise<QuotaRpcNoticesOutput>;
-  acknowledgeDisplayImport(
-    input: QuotaRpcAcknowledgeInput,
-    options: QuotaRpcCallOptions,
-  ): Promise<QuotaRpcAcknowledgeOutput>;
+  ) => Promise<Carried<Methods[Name]["output"]>>;
+} & {
   events: {
     on(
       name: "changed",
@@ -109,6 +102,12 @@ export function rpcErrorMessage(error: unknown): string {
     return String(error.message);
   }
   return String(error);
+}
+
+/** The toast for a failed call: its reason, cleaned for the terminal. */
+export function errorToast(error: unknown, title = "OpenCode Quota") {
+  const message = sanitizeDisplayText(rpcErrorMessage(error));
+  return { variant: "error", title, message } as const;
 }
 
 export function reportFailure(error: unknown): void {
