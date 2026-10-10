@@ -22,7 +22,7 @@
  *   change in which providers are on.
  * - Reads from OpenCode and provider fetches have time limits, so `dispose` always ends.
  */
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { classifyError } from "./errors.js";
 import {
   joinNotices,
@@ -324,7 +324,9 @@ export function createQuotaStore(deps: QuotaStoreDeps): QuotaStore {
   let loaded: Promise<void> | undefined;
   let writing: Promise<void> | undefined;
   let writeAgain = false;
-  /** The last snapshot's revision; the next is higher, and at least the clock in ms. */
+  /** Names this store in its snapshots, so a TUI can tell a restarted server apart. */
+  const serverId = randomUUID();
+  /** The last snapshot's revision; each next snapshot gets one more. */
   let revision = 0;
   /** The provider ids subscribers last heard of; undefined until the first snapshot. */
   let heardProviders: string | undefined;
@@ -452,12 +454,13 @@ export function createQuotaStore(deps: QuotaStoreDeps): QuotaStore {
         debug: entry?.debug ?? [],
       };
     });
-    revision = Math.max(revision + 1, nowMs);
+    revision += 1;
     const snapshot: QuotaSnapshot = {
       version: 6,
       providers,
       resetNotices,
       generatedAtMs: nowMs,
+      serverId,
       revision,
     };
     const providerIdsForModel = operation.source.providerIdsForModel;

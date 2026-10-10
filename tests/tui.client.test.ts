@@ -4,12 +4,13 @@ import { createQuotaClient } from "../src/tui/client.js";
 
 const NOW = Date.parse("2026-10-10T12:00:00.000Z");
 
-function snapshot(revision: number, input = 0): QuotaSnapshot {
+function snapshot(revision: number, input = 0, serverId = "server-1"): QuotaSnapshot {
   return {
     version: 6,
     providers: [],
     resetNotices: [],
     generatedAtMs: NOW,
+    serverId,
     revision,
     sessionTokens: { input, cachedInput: 0, output: 0 },
   };
@@ -61,6 +62,20 @@ describe("TUI quota client", () => {
     answer(0, snapshot(1));
     await settle();
     expect(client.snapshot()?.revision).toBe(2);
+    stop();
+  });
+
+  it("takes the snapshots of a restarted server, whose revisions start over", async () => {
+    const { client, changed } = fakeRpc();
+    const stop = client.start();
+    client.watch();
+    changed(snapshot(5));
+    changed(snapshot(1, 0, "server-2"));
+    await settle();
+    expect(client.snapshot()).toMatchObject({ serverId: "server-2", revision: 1 });
+    changed(snapshot(2, 0, "server-2"));
+    changed(snapshot(1, 0, "server-2"));
+    expect(client.snapshot()).toMatchObject({ serverId: "server-2", revision: 2 });
     stop();
   });
 

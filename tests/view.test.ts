@@ -82,6 +82,26 @@ const ZEN = provider("opencode", "OpenCode Zen", [
   }),
 ]);
 const ROUTER = provider("openrouter", "OpenRouter", [], { error: { code: "login_expired" } });
+/** Two accounts whose last check timed out, so both keep their rows from before. */
+const TWO_ACCOUNTS = provider(
+  "copilot",
+  "Copilot",
+  [
+    row("copilot.allowance", {
+      account: "work",
+      label: "Plan",
+      window: "month",
+      percentRemaining: 40,
+    }),
+    row("copilot.allowance", {
+      account: "home",
+      label: "Plan",
+      window: "month",
+      percentRemaining: 90,
+    }),
+  ],
+  { error: { code: "timeout" } },
+);
 
 function snapshot(providers: ProviderSnapshot[], extra: Partial<QuotaSnapshot> = {}) {
   return { version: 6, providers, resetNotices: [], generatedAtMs: NOW, ...extra } as const;
@@ -282,21 +302,11 @@ describe("view select", () => {
     ]);
   });
 
-  it("shows the error of a provider with several accounts once, after its accounts", () => {
-    const copilot = provider(
-      "copilot",
-      "Copilot",
-      [
-        row("copilot.allowance", { account: "work", label: "Plan", percentRemaining: 40 }),
-        row("copilot.allowance", { account: "home", label: "Plan", percentRemaining: 90 }),
-      ],
-      { error: { code: "timeout" } },
-    );
-    const groups = visibleGroups(snapshot([copilot]), settings(), "sidebar", words());
+  it("shows the error of a provider with several accounts once, on its first account", () => {
+    const groups = visibleGroups(snapshot([TWO_ACCOUNTS]), settings(), "sidebar", words());
     expect(groups.map((group) => [group.title, group.rows.length, group.error?.code])).toEqual([
-      ["Copilot (work)", 1, undefined],
+      ["Copilot (work)", 1, "timeout"],
       ["Copilot (home)", 1, undefined],
-      ["Copilot", 0, "timeout"],
     ]);
     expect(collapsedTitle(groups)).toBe("▶ Quota (1 provider, 1 error)");
   });
@@ -409,6 +419,18 @@ describe("view text", () => {
       ),
     ).toEqual(["Claude █░░░░ 12% Sign in again", "Claude 12% ⚠"]);
     expect(lineText(bigStatusLine(status)!)).toBe("Claude 7d █░░░░░░░░░ 12% left · Sign in again");
+  });
+
+  it("shows the error of a provider with several accounts on the big bar and the status line", () => {
+    const input = statusInput([TWO_ACCOUNTS]);
+    expect(lineText(bigStatusLine(input)!)).toBe(
+      "Copilot (work) 30d ████░░░░░░ 40% left · Timed out",
+    );
+    expect(statusLayout(input, 30, 0, "auto").shown.map(lineText)).toEqual([
+      "Copilot (work) 40% ⚠",
+    ]);
+    // Cut short, the line keeps the error's mark.
+    expect(statusLayout(input, 9, 0, "auto").shown.map(lineText)).toEqual(["C… ⚠"]);
   });
 
   it("cuts the first provider short when it does not fit, so the arrows stay", () => {

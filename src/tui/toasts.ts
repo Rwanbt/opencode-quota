@@ -5,7 +5,8 @@
  * plain text (OpenCode colors only their border).
  *
  * Reset notices that arrive together show as one toast. While a turn's toast is being made,
- * they wait and show after it, so the turn's toast does not replace them at once.
+ * they wait and show after it, so the turn's toast does not replace them at once. When the TUI
+ * leaves its server, waiting notices are dropped unshown, so a later snapshot can bring them.
  */
 import type { QuotaSnapshot, ResetNotice } from "../core/types.js";
 import { WINDOWS } from "../core/windows.js";
@@ -43,6 +44,8 @@ export type Toasts = {
   afterTurn(trigger: TurnEnd, sessionID: string): Promise<void>;
   /** Shows the reset notices of a snapshot that this TUI has not shown yet, in one toast. */
   showResetNotices(snapshot: QuotaSnapshot): void;
+  /** The TUI left its server: drops the notices still waiting, as not shown. */
+  cancel(): void;
 };
 
 function wantsTurnToast(display: DisplaySettings, trigger: TurnEnd, anyLow: boolean): boolean {
@@ -69,14 +72,14 @@ export function createToasts(host: ToastHost): Toasts {
   let allFailShown = false;
   /** Turns whose toast is being made; reset notices wait for them. */
   let turnsRunning = 0;
-  let waitingNotices: string[] = [];
+  let waitingNotices: Array<{ id: string; message: string }> = [];
 
   function showNotices(): void {
     if (turnsRunning > 0 || waitingNotices.length === 0) return;
     host.show({
       variant: "success",
       title: "Quota available",
-      message: waitingNotices.join("\n"),
+      message: waitingNotices.map((notice) => notice.message).join("\n"),
       duration: host.display().toast.seconds * 1000,
     });
     waitingNotices = [];
@@ -147,9 +150,14 @@ export function createToasts(host: ToastHost): Toasts {
           display.toast.resetNotice === "all" ||
           (display.toast.resetNotice === "weekly" && notice.window === "week");
         if (!wanted || !display.surfaces.toast.enabled || notice.atMs < startedAtMs) continue;
-        waitingNotices.push(resetMessage(notice, snapshot, display));
+        waitingNotices.push({ id: notice.id, message: resetMessage(notice, snapshot, display) });
       }
       showNotices();
+    },
+
+    cancel() {
+      for (const notice of waitingNotices) shownNotices.delete(notice.id);
+      waitingNotices = [];
     },
   };
 }

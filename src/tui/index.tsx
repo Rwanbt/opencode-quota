@@ -134,6 +134,7 @@ const plugin = Plugin.define({
           disposed = true;
           if (disposeMount === dispose) disposeMount = undefined;
           stopQuota();
+          toasts.cancel();
           for (const stop of listeners) stop();
           questionToolCalls.clear();
         };

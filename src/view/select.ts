@@ -63,47 +63,41 @@ function ordered<T>(items: readonly T[], idOf: (item: T) => string, order: reado
 }
 
 /**
- * A provider's rows, one group per account in the order the accounts first appear. With one
- * account, the provider's last error shows on its group; with several, it can't be told which
- * account it belongs to (a custom source that failed has none), so it shows once, on a line of
- * its own after the accounts.
+ * A provider's rows, one group per account in the order the accounts first appear. The
+ * provider's last error shows once, on its first shown group: the one the collapsed sidebar,
+ * the status line and the big bar show first. A failed check can't be told apart by account
+ * (a custom source that failed has none), so the other accounts keep their rows without it.
  */
 function groupsOf(provider: ProviderSnapshot, rows: VisibleRow[], hadRows: boolean): Group[] {
   const accounts = [...new Set(provider.rows.map((row) => row.account))];
   if (accounts.length === 0) accounts.push(undefined);
   const several = accounts.length > 1;
-  const ownError = !several && provider.error ? { error: provider.error } : {};
   const unchecked = provider.checkedAtMs === undefined && provider.rows.length === 0;
-  const groups = accounts.flatMap((account): Group[] => {
-    const own = rows.filter((item) => item.row.account === account);
-    // A provider whose rows are all hidden is left out, unless it has an error to show.
-    if (hadRows && own.length === 0 && !ownError.error) return [];
-    const title = account ? `${provider.label} (${account})` : provider.label;
-    return [
-      {
-        id: several ? `${provider.providerId} (${account ?? ""})` : provider.providerId,
-        providerId: provider.providerId,
-        title,
-        name: provider.label,
-        ...(account === undefined ? {} : { account }),
-        rows: own,
-        ...ownError,
-        unchecked,
-      },
-    ];
+  const group = (account: string | undefined, own: VisibleRow[]): Group => ({
+    id:
+      several && account !== undefined
+        ? `${provider.providerId} (${account})`
+        : provider.providerId,
+    providerId: provider.providerId,
+    title: account ? `${provider.label} (${account})` : provider.label,
+    name: provider.label,
+    ...(account === undefined ? {} : { account }),
+    rows: own,
+    unchecked,
   });
-  if (several && provider.error) {
-    groups.push({
-      id: `${provider.providerId} (error)`,
-      providerId: provider.providerId,
-      title: provider.label,
-      name: provider.label,
-      rows: [],
-      error: provider.error,
-      unchecked,
-    });
-  }
-  return groups;
+  const groups = accounts
+    .map((account) =>
+      group(
+        account,
+        rows.filter((item) => item.row.account === account),
+      ),
+    )
+    // An account whose rows are all hidden is left out.
+    .filter((item) => !hadRows || item.rows.length > 0);
+  if (!provider.error) return groups;
+  // Every row hidden: the error still shows, on a line of the provider's own.
+  const [first = group(several ? undefined : accounts[0], []), ...rest] = groups;
+  return [{ ...first, error: provider.error }, ...rest];
 }
 
 /** The providers and rows `surface` shows, in order, with your row names. */

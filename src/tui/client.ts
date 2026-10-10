@@ -4,8 +4,9 @@
  * shows, `refresh` after a turn), applies every `changed` event, and asks again every minute
  * in case an event was missed. Nothing reaches OpenCode until a surface shows or a turn ends.
  *
- * Answers can arrive out of order. The newest snapshot (highest `revision`) wins; what a
- * snapshot says about one session comes from the latest call that asked about it.
+ * Answers can arrive out of order. The newest snapshot (highest `revision`) wins; a snapshot
+ * from another server (a new `serverId`: OpenCode restarted it) always wins, as its revisions
+ * start over. What a snapshot says about one session comes from the latest call about it.
  */
 import { createSignal } from "solid-js";
 import type { QuotaSnapshot, SessionTokens } from "../core/types.js";
@@ -150,7 +151,9 @@ export function createQuotaClient(
     const { currentModelProviderIds, sessionTokens, ...shared } = snapshot;
     // An answer that left before a newer snapshot arrived must not undo it.
     const current = latest();
-    if (!current || current.revision < shared.revision) setLatest(shared);
+    if (!current || current.serverId !== shared.serverId || current.revision < shared.revision) {
+      setLatest(shared);
+    }
     if (session && session.call > (sessionCalls.get(session.id) ?? 0)) {
       sessionCalls.set(session.id, session.call);
       setSessions((all) => ({

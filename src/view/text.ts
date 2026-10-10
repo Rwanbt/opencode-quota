@@ -86,7 +86,7 @@ function groupState(group: Group, nowMs: number): Segment | undefined {
 const ERROR_MARK = "⚠";
 
 /** Cuts the segments so their text fits in `width` terminal columns. */
-function clip(segments: Segment[], width: number): Segment[] {
+function cut(segments: Segment[], width: number): Segment[] {
   const clipped: Segment[] = [];
   let room = width;
   for (const segment of segments) {
@@ -96,6 +96,21 @@ function clip(segments: Segment[], width: number): Segment[] {
     room -= columnsOf(text);
   }
   return clipped;
+}
+
+/**
+ * Cuts the segments so their text fits in `width` terminal columns. An error never goes
+ * away: when not even the start of its words fits, the line ends in " ⚠" instead.
+ */
+function clip(segments: Segment[], width: number): Segment[] {
+  const clipped = cut(segments, width);
+  const error = segments.find((segment) => segment.role === "error");
+  if (!error) return clipped;
+  const kept = clipped.find((segment) => segment.role === "error");
+  const mark = ` ${ERROR_MARK}`;
+  if ((kept && /[\p{L}\p{N}]|⚠/u.test(kept.text)) || width < columnsOf(mark)) return clipped;
+  const rest = segments.filter((segment) => segment !== error);
+  return [...cut(rest, width - columnsOf(mark)), { ...error, text: mark }];
 }
 
 export type SidebarInput = {

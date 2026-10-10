@@ -159,9 +159,8 @@ export type QuotaSnapshot = {
   words?: Words;
   resetNotices: ResetNotice[];
   generatedAtMs: number;
-  /**
-   * Grows with every snapshot the server builds, also across restarts (it starts from the
-   * clock). Of two snapshots, the one with the higher revision is newer.
-   */
+  /** Random for each server start; revisions compare only within one server. */
+  serverId: string;
+  /** Grows with every snapshot the server builds: of two, the higher revision is newer. */
   revision: number;
 };

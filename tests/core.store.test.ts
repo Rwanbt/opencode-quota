@@ -816,7 +816,8 @@ describe("quota store", () => {
     const copilot = fakeProvider();
     async function firstLook() {
       const store = makeStore([copilot.provider]);
-      const snapshot = await store.snapshot();
+      // Each store names itself with a new server id.
+      const snapshot = { ...(await store.snapshot()), serverId: "" };
       await store.dispose();
       return { snapshot, saved: await readFile(file, "utf8") };
     }

@@ -201,8 +201,9 @@ describe("quota toasts", () => {
     expect(show.mock.calls.map(([toast]) => toast.message)).toEqual(expected);
   });
 
-  it("shows a reset notice that comes during a turn after the turn's toast", async () => {
-    let answer: (snapshot: QuotaSnapshot) => void = () => {};
+  /** Reset notices turned on, and a compaction turn whose refresh the test answers. */
+  function turnWaitingForQuota() {
+    let answer: (snapshot: QuotaSnapshot | undefined) => void = () => {};
     const show = vi.fn();
     const toasts = createToasts({
       show,
@@ -213,7 +214,7 @@ describe("quota toasts", () => {
       },
       quota: {
         refresh: () =>
-          new Promise<QuotaSnapshot>((resolve) => {
+          new Promise<QuotaSnapshot | undefined>((resolve) => {
             answer = resolve;
           }),
       } as unknown as QuotaClient,
@@ -230,14 +231,31 @@ describe("quota toasts", () => {
       percentRemaining: 100,
       atMs: NOW,
     };
-    toasts.showResetNotices(snapshot([provider("Claude", 100)], [notice]));
-    expect(show).not.toHaveBeenCalled();
+    const withNotice = snapshot([provider("Claude", 100)], [notice]);
+    const titles = () => show.mock.calls.map(([toast]) => toast.title);
+    return { toasts, turn, answer: (value?: QuotaSnapshot) => answer(value), withNotice, titles };
+  }
+
+  it("shows a reset notice that comes during a turn after the turn's toast", async () => {
+    const { toasts, turn, answer, withNotice, titles } = turnWaitingForQuota();
+    toasts.showResetNotices(withNotice);
+    expect(titles()).toEqual([]);
     answer(OK);
     await turn;
-    expect(show.mock.calls.map(([toast]) => toast.title)).toEqual([
-      "OpenCode Quota",
-      "Quota available",
-    ]);
+    expect(titles()).toEqual(["OpenCode Quota", "Quota available"]);
+  });
+
+  it("drops the reset notices still waiting when the TUI leaves its server", async () => {
+    const { toasts, turn, answer, withNotice, titles } = turnWaitingForQuota();
+    toasts.showResetNotices(withNotice);
+    toasts.cancel();
+    // A stopped client answers nothing.
+    answer(undefined);
+    await turn;
+    expect(titles()).toEqual([]);
+    // Unshown, the notice shows when a snapshot brings it again.
+    toasts.showResetNotices(withNotice);
+    expect(titles()).toEqual(["Quota available"]);
   });
 });
 
