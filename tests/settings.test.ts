@@ -4,6 +4,7 @@ import {
   existsSync,
   lstatSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   renameSync,
   statSync,
@@ -352,6 +353,16 @@ describe("saveSettings", () => {
     expect(existsSync(lock) && readFileSync(lock, "utf8")).toBe(ok ? false : text);
   });
 
+  it("takes over a dead owner's lock with one rename, whatever a crashed takeover left", async () => {
+    const lock = `${writeSettings("{}")}.lock`;
+    writeFileSync(lock, JSON.stringify({ pid: spawnSync(process.execPath, ["-e", ""]).pid }));
+    writeFileSync(`${lock}.takeover`, "");
+
+    expect((await saveSettings({ words: { percent: "used" } })).ok).toBe(true);
+    expect(existsSync(lock)).toBe(false);
+    expect(readdirSync(dirname(lock)).filter((name) => name.includes(".stale-"))).toEqual([]);
+  });
+
   it("releases the lock only while it still holds its own token", async () => {
     const lock = `${writeSettings("{}")}.lock`;
     const theirs = JSON.stringify({ pid: process.pid, token: "theirs" });
@@ -401,6 +412,26 @@ describe("saveSettings", () => {
       expect(readFileSync(target, "utf8")).toContain("// from my dotfiles");
       expect(readFileSync(target, "utf8")).toContain('"reset": "short"');
       expect(statSync(target).mode & 0o777).toBe(0o600);
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "writes only the file it locked: a link moved mid-save fails the save, nothing written",
+    async () => {
+      const [first, second] = ["first.jsonc", "second.jsonc"].map((name) => join(root, name));
+      for (const file of [first, second]) writeFileSync(file, "{}\n");
+      mkdirSync(dirname(settingsPath()), { recursive: true });
+      symlinkSync(first, settingsPath());
+
+      const result = await editSettings(() => {
+        symlinkSync(second, `${settingsPath()}.new`);
+        renameSync(`${settingsPath()}.new`, settingsPath());
+        return { words: { percent: "used" } };
+      });
+
+      const message = `${settingsPath()} changed while saving; nothing was saved, try again`;
+      expect(result).toEqual({ ok: false, issues: [{ key: "$file", message }], diff: [] });
+      expect([readFileSync(first, "utf8"), readFileSync(second, "utf8")]).toEqual(["{}\n", "{}\n"]);
     },
   );
 });

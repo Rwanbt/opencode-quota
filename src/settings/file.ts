@@ -5,13 +5,13 @@
  */
 import { randomUUID } from "node:crypto";
 import { type FSWatcher, type Stats, unwatchFile, watch, watchFile } from "node:fs";
-import { chmod, lstat, mkdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { applyEdits, modify, type ParseError, parseTree, printParseErrorCode } from "jsonc-parser";
 import { writeTextAtomic } from "../lib/atomic-json.js";
 import {
-  assertSameConfigWriteTarget,
   type ConfigWriteTargetSnapshot,
+  configWriteTargetsEqual,
   NEW_CONFIG_DIRECTORY_MODE,
   NEW_CONFIG_FILE_MODE,
   resolveConfigWriteTarget,
@@ -195,15 +195,6 @@ const LOCK_WAIT_MS = 2_000;
 const LOCK_STALE_MS = 10_000;
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-/** The lock sits next to the file a save writes: a symlink's real target, else settings.jsonc. */
-async function settingsLockPath(path: string): Promise<string> {
-  const real = await realpath(path).catch(async () => {
-    await mkdir(dirname(path), { recursive: true, mode: NEW_CONFIG_DIRECTORY_MODE });
-    return join(await realpath(dirname(path)), basename(path));
-  });
-  return `${real}.lock`;
-}
-
 /** Creates `path` holding `text`; false when it already exists. */
 async function createExclusive(path: string, text: string): Promise<boolean> {
   try {
@@ -218,7 +209,7 @@ async function createExclusive(path: string, text: string): Promise<boolean> {
 type LockFile = { text: string; mtimeMs: number };
 
 async function readLock(path: string): Promise<LockFile | undefined> {
-  const stats = await stat(path).catch(() => undefined);
+  const stats = await lstat(path).catch(() => undefined);
   return stats && { text: await readFile(path, "utf8").catch(() => ""), mtimeMs: stats.mtimeMs };
 }
 
@@ -242,22 +233,20 @@ function isAbandoned(lock: LockFile): boolean {
 }
 
 /**
- * Removes an abandoned lock. One waiter at a time (a short-lived guard file), and only while it
- * is still the abandoned one, so a lock another waiter just took is never removed.
+ * Takes over an abandoned lock in one atomic step, a rename: only one waiter's rename finds it.
+ * A lock renamed that is not the one seen abandoned (another waiter just took it) goes back.
  */
-async function removeAbandoned(lock: string): Promise<void> {
+async function claimAbandoned(lock: string, token: string): Promise<void> {
   const seen = await readLock(lock);
   if (!seen || !isAbandoned(seen)) return;
-  const guard = `${lock}.takeover`;
-  const guardAge = Date.now() - ((await readLock(guard))?.mtimeMs ?? Date.now());
-  if (guardAge > LOCK_STALE_MS) await rm(guard, { force: true }); // left by a crash
-  if (!(await createExclusive(guard, ""))) return;
-  try {
-    const now = await readLock(lock);
-    if (now?.text === seen.text && now.mtimeMs === seen.mtimeMs) await rm(lock, { force: true });
-  } finally {
-    await rm(guard, { force: true });
+  const claimed = `${lock}.stale-${token}`;
+  const lost = await rename(lock, claimed).catch(() => true);
+  if (lost) return; // Another waiter renamed it first.
+  const got = await readLock(claimed);
+  if (got && (got.text !== seen.text || got.mtimeMs !== seen.mtimeMs)) {
+    await createExclusive(lock, got.text);
   }
+  await rm(claimed, { force: true });
 }
 
 /** Removes the lock only while it is still ours. */
@@ -266,27 +255,30 @@ async function releaseLock(lock: string, mine: string): Promise<void> {
 }
 
 /**
- * Runs `work` holding the settings lock (a file with our pid and a token), so saves, the
- * conversion and the display import never interleave. A live owner is never robbed: after
- * LOCK_WAIT_MS this fails as busy.
+ * Runs `work` on the file a save writes (a symlink's real target, else settings.jsonc), holding
+ * the lock next to it (a file with our pid and a token), so saves, the conversion and the display
+ * import never interleave. A live owner is never robbed: after LOCK_WAIT_MS this fails as busy.
  */
-async function withSettingsLock<T>(path: string, work: () => Promise<T>): Promise<T> {
-  const mine = JSON.stringify({ pid: process.pid, token: randomUUID() });
+async function withSettingsLock<T>(
+  work: (target: ConfigWriteTargetSnapshot) => Promise<T>,
+): Promise<T> {
+  const token = randomUUID();
+  const mine = JSON.stringify({ pid: process.pid, token });
   const start = Date.now();
   for (;;) {
-    const lock = await settingsLockPath(path);
+    const target = await resolveConfigWriteTarget(settingsPath());
+    const lock = `${target.writePath}.lock`;
+    await mkdir(dirname(lock), { recursive: true, mode: NEW_CONFIG_DIRECTORY_MODE });
     if (await createExclusive(lock, mine)) {
-      // A link moved while we waited: this lock no longer guards the file a save writes.
-      if ((await settingsLockPath(path)) === lock) {
-        try {
-          return await work();
-        } finally {
-          await releaseLock(lock, mine);
-        }
+      try {
+        // Another save created the file, or a link moved, while we waited: lock it again.
+        const now = await resolveConfigWriteTarget(target.configuredPath);
+        if (configWriteTargetsEqual(target, now)) return await work(target);
+      } finally {
+        await releaseLock(lock, mine);
       }
-      await releaseLock(lock, mine);
     } else {
-      await removeAbandoned(lock);
+      await claimAbandoned(lock, token);
     }
     if (Date.now() - start > LOCK_WAIT_MS) {
       throw new Error(`the settings file is busy: another save holds ${lock}; try again`);
@@ -324,7 +316,7 @@ export async function pendingDisplayImport(): Promise<PendingDisplayImport | und
 
 /** The TUI applied the looks with this id: forget them, but never a newer import. */
 export async function acknowledgeDisplayImport(id: string): Promise<void> {
-  await withSettingsLock(settingsPath(), async () => {
+  await withSettingsLock(async () => {
     if ((await pendingDisplayImport())?.id === id) await rm(displayImportPath(), { force: true });
   });
 }
@@ -353,8 +345,8 @@ export async function editSettings(
 ): Promise<SaveResult> {
   const path = settingsPath();
   try {
-    return await withSettingsLock(path, () =>
-      editLocked(path, edit, options.allowFileOnly === true),
+    return await withSettingsLock((target) =>
+      editLocked(target, edit, options.allowFileOnly === true),
     );
   } catch (error) {
     return failedSave(`could not save ${path}: ${errorMessage(error)}`);
@@ -369,8 +361,12 @@ function readTarget(target: ConfigWriteTargetSnapshot): Promise<string | undefin
   return target.terminalExisted ? readFile(target.writePath, "utf8") : Promise.resolve(undefined);
 }
 
-async function editLocked(path: string, edit: SettingsEdit, allowFileOnly: boolean) {
-  const target = await resolveConfigWriteTarget(path);
+async function editLocked(
+  target: ConfigWriteTargetSnapshot,
+  edit: SettingsEdit,
+  allowFileOnly: boolean,
+) {
+  const path = target.configuredPath;
   const original = await readTarget(target);
   // A syntax error, or a key set twice or with a dot (an edit would change another one).
   const blocking = readSettingsText(original ?? "{}").issues.find(
@@ -396,14 +392,14 @@ async function editLocked(path: string, edit: SettingsEdit, allowFileOnly: boole
   const issues = (conversion?.notes ?? []).map((message) => ({ key: "$conversion", message }));
   if (updated === original) return { ok: true, issues, diff };
 
-  const latest = await resolveConfigWriteTarget(path);
-  assertSameConfigWriteTarget(target, latest);
-  if ((await readTarget(latest)) !== original) {
+  // Hand edits and link changes take no lock: write only over the file and text read.
+  const now = await resolveConfigWriteTarget(path);
+  if (!configWriteTargetsEqual(target, now) || (await readTarget(target)) !== original) {
     return failedSave(`${path} changed while saving; nothing was saved, try again`);
   }
   if (conversion) await keepDisplayImport(conversion.displayImport);
-  await writeResolvedConfigText(latest, updated);
-  await chmod(latest.writePath, NEW_CONFIG_FILE_MODE);
+  await writeResolvedConfigText(target, updated);
+  await chmod(target.writePath, NEW_CONFIG_FILE_MODE);
   return { ok: true, issues, diff };
 }
 
@@ -420,8 +416,7 @@ export async function convertV5(): Promise<V5Conversion | undefined> {
   const malformed = "an old settings file does not parse; converted in memory until it is fixed";
   if (conversion.malformed) return { ...conversion, notWrittenReason: malformed };
   try {
-    return await withSettingsLock(path, async () => {
-      const target = await resolveConfigWriteTarget(path);
+    return await withSettingsLock(async (target) => {
       // Another OpenCode process converted first.
       if (target.terminalExisted) return undefined;
       await keepDisplayImport(conversion.displayImport);
