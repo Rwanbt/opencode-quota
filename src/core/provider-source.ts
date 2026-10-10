@@ -13,7 +13,7 @@ import {
   getQuotaProviderDisplayLabel,
   isLiveLocalUsageProviderId,
 } from "../lib/provider-metadata.js";
-import { exportProviderFromResult } from "../lib/quota-export.js";
+import { exportProviderFromCheck } from "../lib/quota-export.js";
 import {
   cloneQuotaProviders,
   QUOTA_PROVIDERS_AGGREGATE_ID,
@@ -23,9 +23,9 @@ import { deriveResolvedAuthIdentity } from "../lib/resolved-auth-identity.js";
 import { createRuntimeProviderIdResolver } from "../lib/runtime-provider-ids.js";
 import { getProviders } from "../providers/registry.js";
 import type { LoadedSettings, Settings } from "../settings/index.js";
-import { rowsFromLegacyResult } from "./rows.js";
+import { rowsFromProviderResult } from "./rows.js";
 import { matchesQuotaProviderCurrentSelection } from "./selection.js";
-import type { ProviderIdentity, StoreProvider, StoreSource } from "./store.js";
+import type { CheckForExport, ProviderIdentity, StoreProvider, StoreSource } from "./store.js";
 import type { SessionModel } from "./types.js";
 
 export type ProviderSourceHost = {
@@ -202,15 +202,21 @@ function storeProvider(
     },
     async fetch() {
       const result = await provider.fetch(ctx, await cacheContextFor(provider, ctx));
-      const exportPart = exportProviderFromResult({
-        providerId: provider.id,
-        result,
-        checkedAtMs: Date.now(),
-        customDefinitions: ctx.config.quotaProviders ?? [],
-      });
-      const fetched = { ...rowsFromLegacyResult(provider.id, result), exportPart };
-      if (!fetched.rowLogins) return fetched;
-      return { ...fetched, rowLogins: await keyedLogins(provider.id, fetched.rowLogins) };
+      const fetched = rowsFromProviderResult(provider.id, result);
+      const buildExportPart = (check: CheckForExport) =>
+        exportProviderFromCheck({
+          ...check,
+          providerId: provider.id,
+          label: getQuotaProviderDisplayLabel(provider.id),
+          customDefinitions: ctx.config.quotaProviders ?? [],
+          accounts: result.accounts,
+        });
+      if (!fetched.rowLogins) return { ...fetched, buildExportPart };
+      return {
+        ...fetched,
+        rowLogins: await keyedLogins(provider.id, fetched.rowLogins),
+        buildExportPart,
+      };
     },
   };
 }

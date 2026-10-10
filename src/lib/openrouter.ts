@@ -47,21 +47,9 @@ export async function queryOpenRouterQuota(options: {
 }): Promise<RemoteQuotaProviderResult | null> {
   if (!options.resolved.key) return null;
 
-  const result = await fetchRemoteQuotaProvider(
+  return await fetchRemoteQuotaProvider(
     OPENROUTER_KEY_SOURCE,
     options.resolved.key,
     options.requestTimeoutMs,
   );
-  if (!result.success) return result;
-
-  return {
-    ...result,
-    entries: result.entries.map((entry) => ({
-      ...entry,
-      accounting: {
-        ...entry.accounting,
-        ownership: "maintained",
-      },
-    })),
-  };
 }

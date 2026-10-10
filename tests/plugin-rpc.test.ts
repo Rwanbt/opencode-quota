@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 
 import type { QuotaSnapshot } from "../src/core/types.js";
 import type { UsageReport } from "../src/core/usage.js";
 import { messageDocument } from "../src/lib/report-document.js";
+import { answer, percentRow } from "./helpers/fake-answers.js";
 import { createFakeIntegration } from "./helpers/fake-integration.js";
 import {
   createAlibabaAuthModuleMock,
@@ -21,12 +22,6 @@ import { writeSessionDatabase } from "./helpers/session-database.js";
 
 // A fresh folder per run, so test runs in sibling checkouts never share it.
 const TEST_RUNTIME_ROOT = mkdtempSync(join(tmpdir(), "opencode-quota-plugin-rpc-"));
-const TEST_ACCOUNTING = {
-  resultType: "quota",
-  acquisitionMethod: "remote_api",
-  ownership: "maintained",
-  authority: "provider_reported",
-} as const;
 
 const mocks = vi.hoisted(() => ({
   getProviders: vi.fn(),
@@ -150,11 +145,11 @@ describe("server quota RPC", () => {
       {
         id: "copilot",
         isAvailable: vi.fn().mockResolvedValue(true),
-        fetch: vi.fn().mockResolvedValue({
-          attempted: true,
-          entries: [{ accounting: TEST_ACCOUNTING, name: "Copilot", percentRemaining: 81 }],
-          errors: [],
-        }),
+        fetch: vi
+          .fn()
+          .mockResolvedValue(
+            answer({ name: "Copilot", rows: [percentRow("allowance", "Premium requests", 81)] }),
+          ),
       },
     ]);
     mocks.reconcileDetectedProvidersInGlobalConfig.mockResolvedValue({ changed: false });
@@ -267,21 +262,19 @@ describe("server quota RPC", () => {
         id: "copilot",
         cachePolicy: { kind: "account-neutral" },
         isAvailable: vi.fn().mockResolvedValue(true),
-        fetch: vi.fn().mockResolvedValue({
-          attempted: true,
-          entries: [
-            {
-              accounting: TEST_ACCOUNTING,
-              name: "Copilot Premium Requests",
-              group: "Copilot (pro)",
-              label: "Quota:",
-              right: "60/300",
-              percentRemaining: 80,
-              resetTimeIso: "2026-11-01T00:00:00.000Z",
-            },
-          ],
-          errors: [],
-        }),
+        fetch: vi.fn().mockResolvedValue(
+          answer({
+            name: "Copilot (pro)",
+            rows: [
+              percentRow("allowance", "Premium requests", 80, {
+                window: "month",
+                used: { decimal: "60", unit: { kind: "count", unit: "request" } },
+                limit: { decimal: "300", unit: { kind: "count", unit: "request" } },
+                resetsAt: "2026-11-01T00:00:00.000Z",
+              }),
+            ],
+          }),
+        ),
       },
     ]);
     const { call, emit } = await setupServer();
@@ -453,11 +446,9 @@ describe("server quota RPC", () => {
         id: "openai",
         cachePolicy: { kind: "account-neutral" },
         isAvailable: vi.fn().mockResolvedValue(true),
-        fetch: vi.fn().mockResolvedValue({
-          attempted: true,
-          entries: [{ accounting: TEST_ACCOUNTING, name: "OpenAI", percentRemaining: 60 }],
-          errors: [],
-        }),
+        fetch: vi
+          .fn()
+          .mockResolvedValue(answer({ name: "OpenAI", rows: [percentRow("five_hour", "5h", 60)] })),
       },
     ]);
     const { call, emit } = await setupServer();
@@ -473,11 +464,9 @@ describe("server quota RPC", () => {
 
     useSettings({ providers: { enabled: ["openai"] }, checking: { minIntervalMs: 60_000 } });
     await vi.waitFor(() => expect(emitted().at(-1)).toEqual(["openai"]), { timeout: 5_000 });
-    answerCopilot({
-      attempted: true,
-      entries: [{ accounting: TEST_ACCOUNTING, name: "Copilot", percentRemaining: 70 }],
-      errors: [],
-    });
+    answerCopilot(
+      answer({ name: "Copilot", rows: [percentRow("allowance", "Premium requests", 70)] }),
+    );
 
     // The refresh asked for before the change answers with the settings of now.
     expect(providerIds((await running).snapshot)).toEqual(["openai"]);
@@ -494,7 +483,7 @@ describe("server quota RPC", () => {
     const fetch = vi.fn(async () => {
       const days = pricing.getPricingRefreshPolicy().maxAgeMs / (24 * 60 * 60 * 1000);
       seen.push(`${pricing.getPricingSnapshotSelection()} ${days}`);
-      return { attempted: true, entries: [], errors: [] };
+      return answer();
     });
     mocks.getProviders.mockReturnValue([
       { id: "copilot", isAvailable: vi.fn().mockResolvedValue(true), fetch },
@@ -518,11 +507,7 @@ describe("server quota RPC", () => {
     const fetch = vi.fn(async (ctx: { config: Record<string, unknown> }) => {
       seen.push([ctx.config.requestTimeoutMs, ctx.config.requestTimeoutMsConfigured]);
       if (seen.length === 1) throw new Error("Request timeout after 5s");
-      return {
-        attempted: true,
-        entries: [{ accounting: TEST_ACCOUNTING, name: "Copilot", percentRemaining: 40 }],
-        errors: [],
-      };
+      return answer({ name: "Copilot", rows: [percentRow("allowance", "Premium requests", 40)] });
     });
     mocks.getProviders.mockReturnValue([
       {
@@ -551,11 +536,9 @@ describe("server quota RPC", () => {
 
   it("checks no provider again when the file lists the same check settings in another order", async () => {
     useSettings({ checking: { minIntervalMs: 60_000, requestTimeoutMs: 5_000 } });
-    const fetch = vi.fn(async () => ({
-      attempted: true,
-      entries: [{ accounting: TEST_ACCOUNTING, name: "Copilot", percentRemaining: 40 }],
-      errors: [],
-    }));
+    const fetch = vi.fn(async () =>
+      answer({ name: "Copilot", rows: [percentRow("premium", "Premium requests", 40)] }),
+    );
     mocks.getProviders.mockReturnValue([
       {
         id: "copilot",
@@ -619,7 +602,7 @@ describe("server quota RPC", () => {
       ["copilot", "openai"].map((id) => ({
         id,
         isAvailable: vi.fn().mockResolvedValue(true),
-        fetch: vi.fn().mockResolvedValue({ attempted: true, entries: [], errors: [] }),
+        fetch: vi.fn().mockResolvedValue(answer()),
       })),
     );
     const sessionGet = vi.fn().mockResolvedValue({
@@ -639,11 +622,11 @@ describe("server quota RPC", () => {
 
   it("waits for the store's running fetch and file write when the plugin is cleaned up", async () => {
     useSettings();
-    let answer: (result: unknown) => void = () => {};
+    let answerFetch: (result: unknown) => void = () => {};
     const fetch = vi.fn(
       () =>
         new Promise((resolve) => {
-          answer = resolve;
+          answerFetch = resolve;
         }),
     );
     mocks.getProviders.mockReturnValue([
@@ -664,11 +647,9 @@ describe("server quota RPC", () => {
     });
     await new Promise((resolve) => setTimeout(resolve, 10));
     expect(done).toBe(false);
-    answer({
-      attempted: true,
-      entries: [{ accounting: TEST_ACCOUNTING, name: "Copilot", percentRemaining: 70 }],
-      errors: [],
-    });
+    answerFetch(
+      answer({ name: "Copilot", rows: [percentRow("allowance", "Premium requests", 70)] }),
+    );
     await cleaning;
     expect(existsSync(SNAPSHOT_FILE)).toBe(true);
   });
@@ -676,19 +657,12 @@ describe("server quota RPC", () => {
   it("checks who each provider is signed in as after a login change", async () => {
     useSettings({ checking: { minIntervalMs: 60_000 } });
     let account = "alice";
-    const fetch = vi.fn(async () => ({
-      attempted: true,
-      entries: [
-        {
-          accounting: TEST_ACCOUNTING,
-          name: "Copilot Premium Requests",
-          group: `Copilot (${account})`,
-          label: "Quota:",
-          percentRemaining: 50,
-        },
-      ],
-      errors: [],
-    }));
+    const fetch = vi.fn(async () =>
+      answer({
+        name: `Copilot (${account})`,
+        rows: [percentRow("allowance", "Premium requests", 50)],
+      }),
+    );
     mocks.getProviders.mockReturnValue([
       {
         id: "copilot",
@@ -830,10 +804,15 @@ describe("server quota RPC", () => {
     // The snapshot before the check is written first; the check's own part follows.
     await vi.waitFor(async () => {
       expect(JSON.parse(await readFile(exportPath, "utf8"))).toMatchObject({
-        version: 2,
+        version: 3,
         fromCache: true,
         providers: {
-          copilot: { status: "ok", entries: [{ name: "Copilot", percentRemaining: 81 }] },
+          copilot: {
+            status: "ok",
+            entries: [
+              { id: "copilot.allowance", name: "Copilot Premium requests", percentRemaining: 81 },
+            ],
+          },
         },
       });
     });
@@ -917,7 +896,7 @@ describe("server quota RPC", () => {
       "[OpenCode Quota report]",
       "Quota · 7 days · $3.00 · 1.00M tokens",
       "● Anthropic  $3.00",
-      "● Copilot    Plan 81% left",
+      "● Copilot    Premium requests 81% left",
       "[End of OpenCode Quota report]",
     ]);
     expect(message.metadata.opencodeQuota?.command).toBe("quota");
@@ -945,11 +924,10 @@ describe("server quota RPC", () => {
         isAvailable: vi.fn().mockResolvedValue(true),
         fetch: vi.fn(async (ctx: { workspaceRoot: string }) => {
           workspaceRoots.push(ctx.workspaceRoot);
-          return {
-            attempted: true,
-            entries: [{ accounting: TEST_ACCOUNTING, name: "Copilot", percentRemaining: 81 }],
-            errors: [],
-          };
+          return answer({
+            name: "Copilot",
+            rows: [percentRow("allowance", "Premium requests", 81)],
+          });
         }),
       },
     ]);

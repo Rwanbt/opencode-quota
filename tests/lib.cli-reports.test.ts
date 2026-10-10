@@ -2,13 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-
-const TEST_ACCOUNTING = {
-  resultType: "quota",
-  acquisitionMethod: "remote_api",
-  ownership: "maintained",
-  authority: "provider_reported",
-} as const;
+import { answer, percentRow, textRow } from "./helpers/fake-answers.js";
 
 const { mockProviders, runtimeDirs } = vi.hoisted(() => ({
   mockProviders: [] as any[],
@@ -125,18 +119,11 @@ describe("CLI reports", () => {
         id: "synthetic",
         cachePolicy: { kind: "account-neutral" as const },
         isAvailable: vi.fn().mockResolvedValue(true),
-        fetch: vi.fn().mockResolvedValue({
-          attempted: true,
-          entries: [
-            {
-              accounting: TEST_ACCOUNTING,
-              name: "Synthetic Weekly",
-              label: "Weekly:",
-              percentRemaining: 75,
-            },
-          ],
-          errors: [],
-        }),
+        fetch: vi
+          .fn()
+          .mockResolvedValue(
+            answer({ name: "Synthetic", rows: [percentRow("weekly", "Weekly", 75)] }),
+          ),
       };
       mockProviders.push(provider);
       writeSettings({ providers: { enabled: ["synthetic"] } });
@@ -158,19 +145,17 @@ describe("CLI reports", () => {
         id: "synthetic",
         cachePolicy: { kind: "account-neutral" as const },
         isAvailable: vi.fn().mockResolvedValue(true),
-        fetch: vi.fn().mockResolvedValue({
-          attempted: true,
-          entries: [
-            {
-              accounting: TEST_ACCOUNTING,
-              name: "Synthetic Weekly",
-              label: "Weekly:",
-              percentRemaining: 81,
-              resetTimeIso: "2026-01-17T15:14:00.000Z",
-            },
-          ],
-          errors: [],
-        }),
+        fetch: vi.fn().mockResolvedValue(
+          answer({
+            name: "Synthetic",
+            rows: [
+              percentRow("weekly", "Weekly", 81, {
+                window: "week",
+                resetsAt: "2026-01-17T15:14:00.000Z",
+              }),
+            ],
+          }),
+        ),
       });
       writeSettings({ providers: { enabled: ["synthetic"] }, words: { percent: "used" } });
 
@@ -204,38 +189,18 @@ describe("CLI reports", () => {
         id: "copilot",
         cachePolicy: { kind: "account-neutral" as const },
         isAvailable: vi.fn().mockResolvedValue(true),
-        fetch: vi.fn().mockResolvedValue({
-          attempted: true,
-          entries: [
-            {
-              accounting: TEST_ACCOUNTING,
-              name: "Copilot",
-              group: "Copilot (personal)",
-              label: "Quota:",
-              right: "0/300",
-              percentRemaining: 100,
-            },
-          ],
-          errors: [],
-        }),
+        fetch: vi
+          .fn()
+          .mockResolvedValue(
+            answer({ name: "Copilot (personal)", rows: [percentRow("allowance", "Quota", 100)] }),
+          ),
       };
       const geminiCliProvider = {
         id: "google-gemini-cli",
         isAvailable: vi.fn().mockResolvedValue(true),
-        fetch: vi.fn().mockResolvedValue({
-          attempted: true,
-          entries: [
-            {
-              accounting: TEST_ACCOUNTING,
-              name: "Gemini Pro",
-              group: "Gemini CLI",
-              label: "Gemini Pro:",
-              right: "840 left",
-              percentRemaining: 84,
-            },
-          ],
-          errors: [],
-        }),
+        fetch: vi
+          .fn()
+          .mockResolvedValue(answer({ name: "Gemini CLI", rows: [percentRow("pro", "Pro", 84)] })),
       };
       mockProviders.push(copilotProvider, geminiCliProvider);
       writeSettings({ providers: { enabled: ["copilot", "google-gemini-cli"] } });
@@ -260,11 +225,11 @@ describe("CLI reports", () => {
             (item: { id: string }) => item.id === "github-copilot",
           );
         }),
-        fetch: vi.fn().mockResolvedValue({
-          attempted: true,
-          entries: [{ accounting: TEST_ACCOUNTING, name: "Copilot", percentRemaining: 88 }],
-          errors: [],
-        }),
+        fetch: vi
+          .fn()
+          .mockResolvedValue(
+            answer({ name: "Copilot", rows: [percentRow("allowance", "Premium requests", 88)] }),
+          ),
       };
       mockProviders.push(provider);
 
@@ -278,19 +243,21 @@ describe("CLI reports", () => {
   });
 
   describe("buildCliShowJson", () => {
-    function syntheticProvider(entries: unknown[], errors: unknown[] = [], id = "synthetic") {
+    /** A provider whose check answers with one account named after `name`. */
+    function fakeProvider(account: Parameters<typeof answer>[0], id = "synthetic") {
       return {
         id,
         cachePolicy: { kind: "account-neutral" as const },
         isAvailable: vi.fn().mockResolvedValue(true),
-        fetch: vi.fn().mockResolvedValue({ attempted: true, entries, errors }),
+        fetch: vi.fn().mockResolvedValue(answer(account)),
       };
     }
 
     it("outputs valid JSON with the quota OpenCode saved last", async () => {
-      const provider = syntheticProvider([
-        { accounting: TEST_ACCOUNTING, name: "Synthetic", label: "Weekly:", percentRemaining: 75 },
-      ]);
+      const provider = fakeProvider({
+        name: "Synthetic",
+        rows: [percentRow("weekly", "Weekly", 75)],
+      });
       mockProviders.push(provider);
       writeSettings({ providers: { enabled: ["synthetic"] } });
 
@@ -303,7 +270,7 @@ describe("CLI reports", () => {
       expect(report.stderr).toBe("");
       expect(report.stdout.endsWith("\n")).toBe(true);
       const parsed = JSON.parse(report.stdout);
-      expect(parsed).toHaveProperty("version", 2);
+      expect(parsed).toHaveProperty("version", 3);
       expect(parsed).toHaveProperty("exportedAt");
       expect(parsed).toHaveProperty("fromCache", true);
       expect(parsed).toHaveProperty("cacheAgeSeconds");
@@ -317,9 +284,10 @@ describe("CLI reports", () => {
     });
 
     it("asks no provider and returns unavailable when nothing was saved", async () => {
-      const provider = syntheticProvider([
-        { accounting: TEST_ACCOUNTING, name: "Synthetic", percentRemaining: 100 },
-      ]);
+      const provider = fakeProvider({
+        name: "Synthetic",
+        rows: [percentRow("weekly", "Weekly", 100)],
+      });
       mockProviders.push(provider);
       writeSettings({ providers: { enabled: ["synthetic"] } });
 
@@ -335,22 +303,18 @@ describe("CLI reports", () => {
       [80, 50, 0],
       [30, 50, 1],
     ])("--threshold uses percentage rows even when the first row is a quantity: %s vs %s", async (percentRemaining, threshold, expectedCode) => {
+      const balance = {
+        ...textRow("balance", "Balance", ""),
+        type: "balance" as const,
+        text: undefined,
+        amount: { decimal: "5", unit: { kind: "currency" as const, code: "USD" } },
+      };
       mockProviders.push(
-        syntheticProvider(
-          [
-            {
-              kind: "quantity",
-              accounting: { ...TEST_ACCOUNTING, resultType: "balance" },
-              semantic: {
-                metric: { kind: "component", component: "current_balance" },
-                prominence: "primary",
-              },
-              name: "kilo-gateway-total-balance",
-              quantity: { decimal: "5", unit: { kind: "currency", code: "USD" } },
-            },
-            { accounting: TEST_ACCOUNTING, name: "kilo-gateway-credits", percentRemaining },
-          ],
-          [],
+        fakeProvider(
+          {
+            name: "Kilo Gateway",
+            rows: [balance, percentRow("pass_credits", "Pass credits", percentRemaining)],
+          },
           "kilo",
         ),
       );
@@ -364,9 +328,7 @@ describe("CLI reports", () => {
 
     it("--threshold exits 2 when no provider is ok", async () => {
       mockProviders.push(
-        syntheticProvider([
-          { accounting: TEST_ACCOUNTING, name: "Synthetic", percentRemaining: 100 },
-        ]),
+        fakeProvider({ name: "Synthetic", rows: [percentRow("weekly", "Weekly", 100)] }),
       );
       writeSettings({ providers: { enabled: ["synthetic"] } });
 
@@ -377,15 +339,7 @@ describe("CLI reports", () => {
 
     it("--threshold exits 2 when saved ok providers have no percentRemaining values", async () => {
       mockProviders.push(
-        syntheticProvider([
-          {
-            accounting: TEST_ACCOUNTING,
-            name: "Synthetic",
-            kind: "value",
-            value: "$42",
-            label: "Usage:",
-          },
-        ]),
+        fakeProvider({ name: "Synthetic", rows: [textRow("usage", "Usage", "$42")] }),
       );
       writeSettings({ providers: { enabled: ["synthetic"] } });
 
@@ -397,10 +351,11 @@ describe("CLI reports", () => {
 
     it("--threshold exits 2 for partial saved results instead of passing incomplete data", async () => {
       mockProviders.push(
-        syntheticProvider(
-          [{ accounting: TEST_ACCOUNTING, name: "Synthetic", label: "5h:", percentRemaining: 80 }],
-          [{ label: "Synthetic secondary", message: "quota endpoint unavailable" }],
-        ),
+        fakeProvider({
+          name: "Synthetic",
+          rows: [percentRow("five_hour", "5h", 80)],
+          errors: ["quota endpoint unavailable"],
+        }),
       );
       writeSettings({ providers: { enabled: ["synthetic"] } });
 
@@ -420,17 +375,15 @@ describe("CLI reports", () => {
         id: "copilot",
         cachePolicy: { kind: "account-neutral" as const },
         isAvailable: vi.fn().mockResolvedValue(true),
-        fetch: vi.fn().mockResolvedValue({
-          attempted: true,
-          entries: [{ accounting: TEST_ACCOUNTING, name: "Copilot", percentRemaining: 90 }],
-          errors: [],
-        }),
+        fetch: vi
+          .fn()
+          .mockResolvedValue(
+            answer({ name: "Copilot", rows: [percentRow("allowance", "Premium requests", 90)] }),
+          ),
       };
       mockProviders.push(
         copilotProvider,
-        syntheticProvider([
-          { accounting: TEST_ACCOUNTING, name: "Synthetic", percentRemaining: 50 },
-        ]),
+        fakeProvider({ name: "Synthetic", rows: [percentRow("weekly", "Weekly", 50)] }),
       );
       writeSettings({ providers: { enabled: ["copilot", "synthetic"] } });
       await saveSnapshot();
@@ -446,23 +399,18 @@ describe("CLI reports", () => {
   });
 
   describe("buildCliStatus", () => {
-    /** Synthetic, enabled; its check answers with `entries` and `errors`. */
-    function useSynthetic(entries: object[], errors: object[] = []): void {
+    /** Synthetic, enabled; its check answers with `rows` and `errors`. */
+    function useSynthetic(rows: ReturnType<typeof percentRow>[], errors: string[] = []): void {
       mockProviders.push({
         id: "synthetic",
         cachePolicy: { kind: "account-neutral" as const },
         isAvailable: vi.fn().mockResolvedValue(true),
-        fetch: vi.fn().mockResolvedValue({ attempted: true, entries, errors }),
+        fetch: vi.fn().mockResolvedValue(answer({ name: "Synthetic", rows, errors })),
       });
       writeSettings({ providers: { enabled: ["synthetic"] } });
     }
-    const WEEKLY = {
-      accounting: TEST_ACCOUNTING,
-      name: "Synthetic Weekly",
-      label: "Weekly:",
-      percentRemaining: 75,
-    };
-    const FAILED = { label: "Synthetic", message: "quota endpoint unavailable" };
+    const WEEKLY = percentRow("weekly", "Weekly", 75);
+    const FAILED = "quota endpoint unavailable";
 
     it("prints a plain-text Quota Status report and returns zero", async () => {
       useSynthetic([WEEKLY]);

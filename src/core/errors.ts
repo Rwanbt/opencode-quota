@@ -26,7 +26,7 @@ const RULES: ReadonlyArray<readonly [QuotaErrorCode, RegExp]> = [
   ],
   [
     "login_expired",
-    /token (?:expired|revoked)|token refresh failed|sign-in could not be|session is missing or expired|requires login|could not read this login|\b401\b|unauthorized/i,
+    /token (?:expired|revoked)|token refresh failed|sign-in could not be|sign-in expired|session (?:is missing or )?expired|requires login|could not read this login|invalid api key|login fail|\b401\b|unauthorized/i,
   ],
   [
     "not_configured",
@@ -39,7 +39,7 @@ const RULES: ReadonlyArray<readonly [QuotaErrorCode, RegExp]> = [
   ["provider_error", /\b(?:http|api error|error|status)\s*\(?\d{3}\b|\(http \d{3}\)/i],
   [
     "bad_response",
-    /invalid|parse|valid json|unexpected response|exceeded \d+ bytes|redirect rejected|expected a json|did not match/i,
+    /invalid|parse|valid json|unexpected response|response missing|exceeded \d+ bytes|redirect rejected|expected a json|did not match/i,
   ],
   [
     "no_data",

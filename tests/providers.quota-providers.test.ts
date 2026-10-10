@@ -3,12 +3,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { QuotaProviderContext, QuotaToastEntry } from "../src/lib/entries.js";
+import type { QuotaProviderContext } from "../src/lib/entries.js";
 import type {
   QuotaProviderDefinition,
   RemoteApiQuotaProviderDefinition,
 } from "../src/lib/quota-providers.js";
 import { createRuntimeProviderIdResolver } from "../src/lib/runtime-provider-ids.js";
+import type { ProviderFetchResult, ProviderRow } from "../src/providers/contract.js";
 
 const runtimeMocks = vi.hoisted(() => ({
   root: "",
@@ -80,21 +81,26 @@ function local(id: string, label = id): QuotaProviderDefinition {
   };
 }
 
-function accounting(resultType: QuotaToastEntry["accounting"]["resultType"]) {
+/** A remote row; an adapter keys it by its name, the provider adds `custom.<definition id>.`. */
+function adapterRow(
+  key: string,
+  value: { percentRemaining: number } | { text: string },
+  label = key,
+) {
   return {
-    resultType,
-    acquisitionMethod: "remote_api",
-    ownership: "user_configured",
+    key,
+    label,
+    type: "quota",
+    method: "remote_api",
     authority: "provider_reported",
-  } as const;
+    prominence: "primary",
+    ...value,
+  } satisfies ProviderRow;
 }
 
-function percentEntry(name: string, percentRemaining = 50): QuotaToastEntry {
-  return { accounting: accounting("quota"), name, percentRemaining };
-}
-
-function valueEntry(name: string, value: string): QuotaToastEntry {
-  return { accounting: accounting("balance"), kind: "value", name, value };
+/** Each definition's check, as /quota_status shows it. */
+function checks(result: ProviderFetchResult): string[] {
+  return result.debug.map((item) => `${item.key}: ${item.value}`);
 }
 
 function context(
@@ -133,10 +139,10 @@ describe("quota-providers aggregate provider", () => {
     });
     runtimeMocks.fetchRemoteQuotaProvider.mockReset().mockResolvedValue({
       success: true,
-      entries: [],
+      rows: [],
     });
     runtimeMocks.collectLocalQuotaProviderEstimate.mockReset().mockResolvedValue({
-      entries: [],
+      rows: [],
       state: { version: 1, definitionId: "local", providerId: "local", updatedAt: 1, messages: [] },
       unpricedMessageCount: 0,
     });
@@ -231,7 +237,7 @@ describe("quota-providers aggregate provider", () => {
     const ctx = context([...definitions], [...ids], overrides);
     await expect(quotaProvidersProvider.isAvailable(ctx)).resolves.toBe(expected.length > 0);
     const result = await quotaProvidersProvider.fetch(ctx);
-    expect(result.diagnostics?.map((diagnostic) => diagnostic.sourceId) ?? []).toEqual(expected);
+    expect(result.accounts.map((account) => account.login)).toEqual(expected);
   });
 
   it("treats a slash-containing current model as opaque when matching the session", () => {
@@ -251,13 +257,14 @@ describe("quota-providers aggregate provider", () => {
     };
     await expect(quotaProvidersProvider.fetch(brokenCatalog)).resolves.toEqual({
       attempted: true,
-      entries: [],
-      errors: [
+      accounts: [
         {
-          label: "Quota providers",
-          message: "Failed to read exact runtime provider identities",
+          name: "Quota providers",
+          rows: [],
+          errors: [{ message: "Failed to read exact runtime provider identities" }],
         },
       ],
+      debug: [],
     });
   });
 
@@ -266,17 +273,19 @@ describe("quota-providers aggregate provider", () => {
     runtimeMocks.fetchRemoteQuotaProvider.mockImplementation(
       async (definition: RemoteApiQuotaProviderDefinition) => {
         if (definition.id === "first") await new Promise((resolve) => setTimeout(resolve, 10));
-        return { success: true, entries: [percentEntry(definition.id)] };
+        return { success: true, rows: [adapterRow("Monthly", { percentRemaining: 50 })] };
       },
     );
 
     const result = await quotaProvidersProvider.fetch(context(definitions, ["first", "second"]));
-    expect(result.entries.map((entry) => entry.name)).toEqual(["first", "second"]);
-    expect(result.diagnostics?.map((diagnostic) => diagnostic.sourceId)).toEqual([
-      "first",
-      "second",
+    expect(result.accounts.flatMap((account) => account.rows.map((row) => row.key))).toEqual([
+      "custom.first.Monthly",
+      "custom.second.Monthly",
     ]);
-    expect(result.statusDetails).toBeUndefined();
+    expect(result.debug.map((item) => item.key)).toEqual([
+      "custom_first_check",
+      "custom_second_check",
+    ]);
   });
 
   it("preserves successful entries when another definition fails", async () => {
@@ -284,34 +293,45 @@ describe("quota-providers aggregate provider", () => {
       async (definition: RemoteApiQuotaProviderDefinition) =>
         definition.id === "bad"
           ? { success: false, error: "HTTP 503" }
-          : { success: true, entries: [valueEntry("good", "$5.00")] },
+          : { success: true, rows: [adapterRow("Balance", { text: "$5.00" })] },
     );
 
     const result = await quotaProvidersProvider.fetch(
       context([remote("good"), remote("bad")], ["good", "bad"]),
     );
-    expect(result.entries).toHaveLength(1);
-    expect(result.errors).toEqual([{ label: "bad", message: "HTTP 503" }]);
-    expect(result.diagnostics?.map((diagnostic) => diagnostic.outcome)).toEqual([
-      "success",
-      "http_error",
+    expect(result.accounts).toEqual([
+      {
+        name: "good",
+        login: "good",
+        rows: [adapterRow("custom.good.Balance", { text: "$5.00" }, "Balance")],
+        errors: [],
+      },
+      { name: "bad", login: "bad", rows: [], errors: [{ message: "HTTP 503" }] },
+    ]);
+    expect(result.debug.map((item) => item.value.split(" ")[0])).toEqual([
+      "outcome=success",
+      "outcome=http_error",
     ]);
   });
 
   it.each([
-    ["HTTP 503", { outcome: "http_error", httpStatus: 503 }],
-    ["Redirect rejected", { outcome: "redirect_error" }],
-    ["Request timeout after 5s", { outcome: "timeout" }],
-    ["Response exceeded 262144 bytes", { outcome: "body_too_large" }],
-    ["Expected a JSON response", { outcome: "invalid_content_type" }],
-    ["Invalid JSON response", { outcome: "invalid_json" }],
-    ["Invalid quota-v1 response", { outcome: "invalid_response" }],
-    ["Failed to read accounting data", { outcome: "network_error" }],
-  ])("classifies the remote error %j in diagnostics", async (error, expected) => {
+    ["HTTP 503", "outcome=http_error http_status=503"],
+    ["Redirect rejected", "outcome=redirect_error"],
+    ["Request timeout after 5s", "outcome=timeout"],
+    ["Response exceeded 262144 bytes", "outcome=body_too_large"],
+    ["Expected a JSON response", "outcome=invalid_content_type"],
+    ["Invalid JSON response", "outcome=invalid_json"],
+    ["Invalid quota-v1 response", "outcome=invalid_response"],
+    ["Failed to read accounting data", "outcome=network_error"],
+  ])("classifies the remote error %j in the check", async (error, outcome) => {
     runtimeMocks.fetchRemoteQuotaProvider.mockResolvedValue({ success: false, error });
     const result = await quotaProvidersProvider.fetch(context([remote("bad")], ["bad"]));
-    expect(result.errors).toEqual([{ label: "bad", message: error }]);
-    expect(result.diagnostics?.[0]).toMatchObject({ attempted: true, entryCount: 0, ...expected });
+    expect(result.accounts).toEqual([
+      { name: "bad", login: "bad", rows: [], errors: [{ message: error }] },
+    ]);
+    expect(checks(result)).toEqual([
+      `custom_bad_check: ${outcome} credential_source=opencode_db checked_paths=/trusted/opencode.json | /trusted/opencode.db`,
+    ]);
   });
 
   it("reports a missing API key without calling the endpoint", async () => {
@@ -321,17 +341,14 @@ describe("quota-providers aggregate provider", () => {
       credentialDatabasePaths: [],
     });
     const result = await quotaProvidersProvider.fetch(context([remote("keyless")], ["keyless"]));
-    expect(result.errors).toEqual([{ label: "keyless", message: "API key not configured" }]);
-    expect(result.diagnostics?.[0]).toMatchObject({
-      attempted: false,
-      credentialSource: null,
-      outcome: "missing_credential",
-      checkedPaths: ["/trusted/opencode.json"],
-    });
+    expect(result.accounts[0]?.errors).toEqual([{ message: "API key not configured" }]);
+    expect(checks(result)).toEqual([
+      "custom_keyless_check: outcome=missing_credential credential_source=(none) checked_paths=/trusted/opencode.json",
+    ]);
     expect(runtimeMocks.fetchRemoteQuotaProvider).not.toHaveBeenCalled();
   });
 
-  it("propagates json-v1 row errors as partial output while keeping source diagnostics successful", async () => {
+  it("propagates json-v1 row errors as partial output while keeping the check successful", async () => {
     const definition: RemoteApiQuotaProviderDefinition = {
       ...remote("json-partial", "json-provider"),
       label: "JSON Partial",
@@ -348,25 +365,21 @@ describe("quota-providers aggregate provider", () => {
     };
     runtimeMocks.fetchRemoteQuotaProvider.mockResolvedValue({
       success: true,
-      entries: [valueEntry("JSON Partial Usage", "0")],
+      rows: [adapterRow("Usage", { text: "0" })],
       rowErrors: ["adapter.mappings[0].metric.value was null at row 1"],
     });
 
     const result = await quotaProvidersProvider.fetch(context([definition], ["json-provider"]));
 
-    expect(result.entries[0]?.accounting.sourceId).toBe("json-partial");
-    expect(result.errors).toEqual([
+    expect(result.accounts).toEqual([
       {
-        label: "JSON Partial",
-        message: "adapter.mappings[0].metric.value was null at row 1",
+        name: "JSON Partial",
+        login: "json-partial",
+        rows: [adapterRow("custom.json-partial.Usage", { text: "0" }, "Usage")],
+        errors: [{ message: "adapter.mappings[0].metric.value was null at row 1" }],
       },
     ]);
-    expect(result.diagnostics?.[0]).toMatchObject({
-      sourceId: "json-partial",
-      format: "json-v1",
-      outcome: "success",
-      entryCount: 1,
-    });
+    expect(checks(result)[0]).toMatch(/^custom_json-partial_check: outcome=success /u);
   });
 
   it.each([
@@ -374,7 +387,7 @@ describe("quota-providers aggregate provider", () => {
     ["opencode.json", "global_opencode_json"],
     ["opencode.jsonc", "global_opencode_jsonc"],
     ["env", "explicit_env"],
-  ])("reports stable diagnostic identity for a %s key without secret values", async (source, credentialSource) => {
+  ])("reports where a %s key came from without the key", async (source, credentialSource) => {
     runtimeMocks.resolveQuotaProviderApiKey.mockResolvedValue({
       key: "secret",
       source,
@@ -384,16 +397,10 @@ describe("quota-providers aggregate provider", () => {
     const result = await quotaProvidersProvider.fetch(
       context([remote("stable", "runtime-provider")], ["runtime-provider"]),
     );
-    expect(result.diagnostics?.[0]).toMatchObject({
-      sourceId: "stable",
-      providerId: "runtime-provider",
-      mode: "remote-api",
-      format: "quota-v1",
-      credentialSource,
-      checkedPaths: ["/trusted/opencode.json"],
-      credentialDatabasePaths: ["/trusted/opencode.db"],
-    });
-    expect(JSON.stringify(result.diagnostics)).not.toContain("secret");
+    expect(checks(result)).toEqual([
+      `custom_stable_check: outcome=success credential_source=${credentialSource} checked_paths=/trusted/opencode.json | /trusted/opencode.db`,
+    ]);
+    expect(JSON.stringify(result)).not.toContain("secret");
   });
 
   it("returns a local-state error without blocking other definitions", async () => {
@@ -402,13 +409,16 @@ describe("quota-providers aggregate provider", () => {
     const result = await quotaProvidersProvider.fetch(
       context([local("local", "Local")], ["local"]),
     );
-    expect(result.errors).toEqual([
-      { label: "Local", message: "Failed to update local accounting state" },
+    expect(result.accounts).toEqual([
+      {
+        name: "Local",
+        login: "local",
+        rows: [],
+        errors: [{ message: "Failed to update local accounting state" }],
+      },
     ]);
-    expect(result.diagnostics?.[0]).toMatchObject({
-      sourceId: "local",
-      outcome: "local_state_error",
-      statePath: "/state/local.json",
-    });
+    expect(checks(result)).toEqual([
+      "custom_local_check: outcome=local_state_error state_health=healthy state_version=1 state_last_update=1970-01-01T00:00:00.001Z",
+    ]);
   });
 });

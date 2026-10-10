@@ -58,17 +58,16 @@ Even then, it needs a reasonable maintenance cost.
 
 **Building one:** for API-key or token providers, start from `contributing/provider-template/` (see its README), replace every example name, and add tests for every auth source. Use the README setup label that matches reality: `Automatic` or `Needs setup`.
 
-**Every row** carries `AccountingMetadata`. Pick `resultType` by what the number means (`quota`, `rate_limit`, `usage`, `spend`, `budget`, `balance`, `status`), not by what's easiest to draw, and name the real source in `authority`. `user_configured` is only for a basis fact such as a user-set limit, never a row.
+**Every row** follows the row contract in `src/providers/contract.ts`. Pick `type` by what the number means (`quota`, `budget`, `usage`, `balance`, `status`), not by what's easiest to draw; `method` by how it was read (`remote_api`, `dashboard_scrape`, `local_cli`, `local_estimation`); and `authority` by who worked it out (`provider_reported` or `locally_derived`). A row's `key` is part of its id, which users' settings use, so it never changes once released.
 
 Rich providers (more than a percentage) also:
 
-- send numbers as typed `quantity` rows or percentage `basis` facts, and booleans as `boolean` rows; never pre-formatted money strings;
-- set `semantic` with an explicit `primary` or `supplementary` prominence;
+- send numbers as typed `used`, `limit`, `remaining` or `amount` values and yes/no as `flag`; never pre-formatted money strings;
+- set an explicit `primary` or `supplementary` prominence;
 - keep `used`, `limit`, and `remaining` literal;
-- keep labels short: the concept only, no values, units, or reset text;
-- format through the shared accounting formatter.
+- keep labels short: the concept only, no values, units, or reset text.
 
-A simple percentage-only provider may keep the plain percent row, with accurate `AccountingMetadata`.
+A simple percentage-only provider may keep the plain percent row (`quotaRow`).
 
 ## Fixes
 

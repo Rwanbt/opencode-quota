@@ -1,69 +1,17 @@
 import { API_KEY_VENDORS, getApiKeyDiagnostics, hasApiKey } from "../lib/api-key-resolver.js";
-import type {
-  QuotaProvider,
-  QuotaProviderContext,
-  QuotaProviderResult,
-  QuotaToastEntry,
-} from "../lib/entries.js";
+import type { QuotaProvider, QuotaProviderContext } from "../lib/entries.js";
 import { queryOllamaCloudQuota } from "../lib/ollama-cloud.js";
 import { modelProviderMatchesRuntimeId } from "../lib/provider-model-matching.js";
-import type { OllamaCloudResult } from "../lib/types.js";
-import {
-  attemptedResult,
-  mapNullableProviderResult,
-  simpleApiKeyStatusDetails,
-  statusDetailsFromRecord,
-  withStatusDetails,
-} from "./result-helpers.js";
+import { failedAccount, MONTHLY, type ProviderFetchResult, quotaRow, WEEKLY } from "./contract.js";
+import { simpleApiKeyStatusDetails, statusDetailsFromRecord } from "./result-helpers.js";
 
-const OLLAMA_CLOUD_PROVIDER_LABEL = "Ollama Cloud";
+const LABEL = "Ollama Cloud";
+const SESSION = { key: "session", label: "Session", window: "session" } as const;
 const OLLAMA_CLOUD_WINDOWS = [
-  ["session", "Session"],
-  ["weekly", "Weekly"],
-  ["monthly", "Monthly"],
+  ["session", SESSION],
+  ["weekly", WEEKLY],
+  ["monthly", MONTHLY],
 ] as const;
-
-type OllamaCloudSuccess = Extract<OllamaCloudResult, { success: true }>;
-
-function mapOllamaCloudSuccess(result: OllamaCloudSuccess): QuotaProviderResult {
-  const entries: QuotaToastEntry[] = OLLAMA_CLOUD_WINDOWS.flatMap(([key, name]) => {
-    const window = result[key];
-    if (!window) return [];
-    return [
-      {
-        accounting: {
-          resultType: "quota",
-          acquisitionMethod: "remote_api",
-          ownership: "maintained",
-          authority: "provider_reported",
-        },
-        name: `${OLLAMA_CLOUD_PROVIDER_LABEL} ${name}`,
-        group: OLLAMA_CLOUD_PROVIDER_LABEL,
-        label: `${name}:`,
-        percentRemaining: window.percentRemaining,
-      },
-    ];
-  });
-  const rowErrors = result.rowErrors ?? [];
-
-  return withStatusDetails(
-    attemptedResult(
-      entries,
-      rowErrors.map((message) => ({ label: OLLAMA_CLOUD_PROVIDER_LABEL, message })),
-    ),
-    [
-      ...statusDetailsFromRecord(
-        Object.fromEntries(
-          OLLAMA_CLOUD_WINDOWS.map(([key]) => [
-            `${key}_usage_fraction`,
-            result[key]?.usageFraction.toString(),
-          ]),
-        ),
-      ),
-      ...rowErrors.map((message, index) => ({ key: `live_error_${index + 1}`, value: message })),
-    ],
-  );
-}
 
 export const ollamaCloudProvider: QuotaProvider = {
   id: "ollama-cloud",
@@ -76,24 +24,43 @@ export const ollamaCloudProvider: QuotaProvider = {
     return modelProviderMatchesRuntimeId(model, "ollama-cloud");
   },
 
-  async fetch(ctx: QuotaProviderContext): Promise<QuotaProviderResult> {
+  async fetch(ctx: QuotaProviderContext): Promise<ProviderFetchResult> {
     const diagnostics = await getApiKeyDiagnostics(API_KEY_VENDORS["ollama-cloud"]).catch(() => ({
       configured: false,
       source: null,
       checkedPaths: [],
       credentialDatabasePaths: [],
     }));
+    const keyDetails = simpleApiKeyStatusDetails(diagnostics);
+
     const result = await queryOllamaCloudQuota({
       requestTimeoutMs: ctx.config?.requestTimeoutMs,
     });
-    const providerResult = mapNullableProviderResult(result, {
-      errorLabel: OLLAMA_CLOUD_PROVIDER_LABEL,
-      onSuccess: mapOllamaCloudSuccess,
-    });
+    if (!result) return { attempted: false, accounts: [], debug: keyDetails };
+    if (!result.success) {
+      return { attempted: true, accounts: [failedAccount(LABEL, result.error)], debug: keyDetails };
+    }
 
-    return withStatusDetails(providerResult, [
-      ...simpleApiKeyStatusDetails(diagnostics),
-      ...(providerResult.statusDetails ?? []),
-    ]);
+    const rows = OLLAMA_CLOUD_WINDOWS.flatMap(([field, slot]) => {
+      const window = result[field];
+      return window ? [quotaRow({ ...slot, percentRemaining: window.percentRemaining })] : [];
+    });
+    const rowErrors = result.rowErrors ?? [];
+    return {
+      attempted: true,
+      accounts: [{ name: LABEL, rows, errors: rowErrors.map((message) => ({ message })) }],
+      debug: [
+        ...keyDetails,
+        ...statusDetailsFromRecord(
+          Object.fromEntries(
+            OLLAMA_CLOUD_WINDOWS.map(([field]) => [
+              `${field}_usage_fraction`,
+              result[field]?.usageFraction.toString(),
+            ]),
+          ),
+        ),
+        ...rowErrors.map((message, index) => ({ key: `live_error_${index + 1}`, value: message })),
+      ],
+    };
   },
 };

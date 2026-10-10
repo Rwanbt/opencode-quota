@@ -1,92 +1,70 @@
-/**
- * DeepSeek provider wrapper.
- *
- * Queries the DeepSeek /user/balance endpoint and maps exact source decimals
- * into provider-neutral accounting rows.
- */
+/** DeepSeek: the exact balances /user/balance reports, per currency. */
 
 import { API_KEY_VENDORS, getApiKeyDiagnostics, hasApiKey } from "../lib/api-key-resolver.js";
 import { queryDeepSeekBalance } from "../lib/deepseek.js";
-import type {
-  AccountingMetadata,
-  QuotaProvider,
-  QuotaProviderContext,
-  QuotaProviderResult,
-  QuotaToastEntry,
-} from "../lib/entries.js";
+import type { QuotaProvider, QuotaProviderContext } from "../lib/entries.js";
 import { isCanonicalProviderAvailable } from "../lib/provider-availability.js";
 import { modelProviderIncludesAny } from "../lib/provider-model-matching.js";
 import {
-  attemptedResult,
-  mapNullableProviderResult,
-  simpleApiKeyStatusDetails,
-  withStatusDetails,
-} from "./result-helpers.js";
+  type AccountResult,
+  failedAccount,
+  keySlug,
+  type ProviderFetchResult,
+  type ProviderRow,
+} from "./contract.js";
+import { simpleApiKeyStatusDetails } from "./result-helpers.js";
 
-const DEEPSEEK_GROUP = "DeepSeek";
-const BALANCE_ACCOUNTING: AccountingMetadata = {
-  resultType: "balance",
-  acquisitionMethod: "remote_api",
-  ownership: "maintained",
-  authority: "provider_reported",
-};
-const STATUS_ACCOUNTING: AccountingMetadata = {
-  ...BALANCE_ACCOUNTING,
-  resultType: "status",
-};
+const LABEL = "DeepSeek";
+
+const BALANCE_COMPONENTS = [
+  ["total_balance", "totalBalance", "Balance", "primary"],
+  ["granted_balance", "grantedBalance", "Granted", "supplementary"],
+  ["topped_up_balance", "toppedUpBalance", "Topped up", "supplementary"],
+] as const;
 
 type DeepSeekBalanceSuccess = Extract<
   NonNullable<Awaited<ReturnType<typeof queryDeepSeekBalance>>>,
   { success: true }
 >;
 
-const BALANCE_COMPONENTS = [
-  ["total_balance", "totalBalance", "primary"],
-  ["granted_balance", "grantedBalance", "supplementary"],
-  ["topped_up_balance", "toppedUpBalance", "supplementary"],
-] as const;
-
-function buildDeepSeekResult(result: DeepSeekBalanceSuccess): QuotaProviderResult {
-  const entries: QuotaToastEntry[] = [];
-  let hasTotalBalance = false;
-
+function deepseekAccounts(result: DeepSeekBalanceSuccess): AccountResult[] {
+  const rows: ProviderRow[] = [];
   for (const info of result.balanceInfos) {
-    for (const [component, field, prominence] of BALANCE_COMPONENTS) {
+    for (const [component, field, label, prominence] of BALANCE_COMPONENTS) {
       const decimal = info[field];
       if (decimal === undefined) continue;
-      if (component === "total_balance") hasTotalBalance = true;
-      entries.push({
-        kind: "quantity",
-        accounting: BALANCE_ACCOUNTING,
-        name: `deepseek-${info.currency.toLowerCase()}-${component.replaceAll("_", "-")}`,
-        group: DEEPSEEK_GROUP,
-        semantic: { metric: { kind: "component", component }, prominence },
-        quantity: { decimal, unit: { kind: "currency", code: info.currency } },
+      rows.push({
+        key: `${component}.${keySlug(info.currency)}`,
+        label,
+        type: "balance",
+        method: "remote_api",
+        authority: "provider_reported",
+        prominence,
+        amount: { decimal, unit: { kind: "currency", code: info.currency } },
       });
     }
   }
 
+  // Without any total balance, the availability flag stands in for it.
+  const hasTotalBalance = result.balanceInfos.some((info) => info.totalBalance !== undefined);
   if (!hasTotalBalance && result.isAvailable !== undefined) {
-    entries.push({
-      kind: "boolean",
-      accounting: STATUS_ACCOUNTING,
-      name: "deepseek-availability",
-      group: DEEPSEEK_GROUP,
-      semantic: {
-        metric: { kind: "named", name: "Availability" },
-        prominence: "primary",
-      },
-      value: result.isAvailable,
+    rows.push({
+      key: "available",
+      label: "Available",
+      type: "status",
+      method: "remote_api",
+      authority: "provider_reported",
+      prominence: "primary",
+      flag: result.isAvailable,
     });
   }
 
-  return attemptedResult(
-    entries,
-    result.parseIssues.map((issue) => ({
-      label: `DeepSeek ${issue.currency}`,
-      message: `${issue.field} returned an invalid decimal`,
-    })),
-  );
+  return [
+    { name: LABEL, rows, errors: [] },
+    ...result.parseIssues.map((issue) =>
+      failedAccount(`${LABEL} ${issue.currency}`, `${issue.field} returned an invalid decimal`),
+    ),
+  ];
 }
 
 export const deepseekProvider: QuotaProvider = {
@@ -107,18 +85,20 @@ export const deepseekProvider: QuotaProvider = {
     return modelProviderIncludesAny(model, ["deepseek"]);
   },
 
-  async fetch(ctx: QuotaProviderContext): Promise<QuotaProviderResult> {
+  async fetch(ctx: QuotaProviderContext): Promise<ProviderFetchResult> {
     const diagnostics = await getApiKeyDiagnostics(API_KEY_VENDORS.deepseek).catch(() => ({
       configured: false,
       source: null,
       checkedPaths: [],
       credentialDatabasePaths: [],
     }));
+    const debug = simpleApiKeyStatusDetails(diagnostics);
+
     const result = await queryDeepSeekBalance({ requestTimeoutMs: ctx.config?.requestTimeoutMs });
-    const providerResult = mapNullableProviderResult(result, {
-      errorLabel: "DeepSeek",
-      onSuccess: buildDeepSeekResult,
-    });
-    return withStatusDetails(providerResult, simpleApiKeyStatusDetails(diagnostics));
+    if (!result) return { attempted: false, accounts: [], debug };
+    if (!result.success) {
+      return { attempted: true, accounts: [failedAccount(LABEL, result.error)], debug };
+    }
+    return { attempted: true, accounts: deepseekAccounts(result), debug };
   },
 };

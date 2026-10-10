@@ -77,7 +77,7 @@ describe("OpenRouter quota", () => {
       checkedPaths: ["source:opencode.db"],
       credentialDatabasePaths: ["/tmp/opencode.db"],
     });
-    vi.mocked(fetchRemoteQuotaProvider).mockResolvedValueOnce({ success: true, entries: [] });
+    vi.mocked(fetchRemoteQuotaProvider).mockResolvedValueOnce({ success: true, rows: [] });
 
     await queryOpenRouterQuota({ requestTimeoutMs: 1234, resolved });
 
@@ -108,37 +108,6 @@ describe("OpenRouter quota", () => {
     await expect(hasOpenRouterApiKeyConfigured()).resolves.toBe(false);
     await expect(resolveOpenRouterApiKey()).resolves.toEqual(resolvedAuth());
     expect(fetchRemoteQuotaProvider).not.toHaveBeenCalled();
-  });
-
-  it("marks reused OpenRouter mapping entries as maintained", async () => {
-    vi.mocked(fetchRemoteQuotaProvider).mockResolvedValue({
-      success: true,
-      entries: [
-        {
-          accounting: {
-            resultType: "budget",
-            acquisitionMethod: "remote_api",
-            ownership: "user_configured",
-            authority: "provider_reported",
-          },
-          name: "OpenRouter budget",
-          percentRemaining: 80,
-        },
-      ],
-    });
-
-    await expect(
-      queryOpenRouterQuota({
-        resolved: resolvedAuth({ key: "secret", source: "env" }),
-      }),
-    ).resolves.toEqual({
-      success: true,
-      entries: [
-        expect.objectContaining({
-          accounting: expect.objectContaining({ ownership: "maintained" }),
-        }),
-      ],
-    });
   });
 
   it("returns the safe remote error unchanged", async () => {

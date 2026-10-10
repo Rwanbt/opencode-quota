@@ -75,7 +75,7 @@ function periodKindFromType(value: unknown): XaiPeriodKind {
   const raw = nonEmptyString(value)?.toUpperCase() ?? "";
   if (raw.includes("WEEK")) return "weekly";
   if (raw.includes("MONTH")) return "monthly";
-  if (raw.includes("DAY")) return "daily";
+  if (raw.includes("DAY") || raw.includes("DAILY")) return "daily";
   return "period";
 }
 
@@ -147,13 +147,7 @@ function parseCreditsWindow(payload: unknown): XaiWindowValue | null {
     endsAtIso !== undefined &&
     Date.parse(startedAtIso) < observedAtMs &&
     observedAtMs < Date.parse(endsAtIso)
-      ? {
-          kind: "fixed_window",
-          startedAtIso,
-          observedAtIso: new Date(observedAtMs).toISOString(),
-          endsAtIso,
-          fullReset: true,
-        }
+      ? { startedAtIso }
       : undefined;
 
   return {

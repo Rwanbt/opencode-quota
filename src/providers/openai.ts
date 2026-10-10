@@ -2,7 +2,7 @@
  * OpenAI (Plus/Pro) provider wrapper.
  */
 
-import type { QuotaProvider, QuotaProviderContext, QuotaProviderResult } from "../lib/entries.js";
+import type { QuotaProvider, QuotaProviderContext } from "../lib/entries.js";
 import {
   hasOpenAIOAuthCached,
   OPENAI_AUTH_SOURCE_KEYS,
@@ -15,7 +15,6 @@ import {
 import {
   type CredentialRow,
   credentialRowAuthEntry,
-  formatCredentialDisplayNames,
   readCredentialRows,
 } from "../lib/opencode-auth.js";
 import { isCanonicalProviderAvailable } from "../lib/provider-availability.js";
@@ -23,13 +22,17 @@ import { modelProviderIncludesAny } from "../lib/provider-model-matching.js";
 import { resolveQuotaProviderSessionModelIdentity } from "../lib/quota-providers.js";
 import type { AuthData } from "../lib/types.js";
 import {
-  attemptedErrorResult,
-  attemptedResult,
-  groupedPercentWindowEntries,
-  notAttemptedResult,
-  statusDetailsFromRecord,
-  withStatusDetails,
-} from "./result-helpers.js";
+  type AccountResult,
+  FIVE_HOUR,
+  failedAccount,
+  fetchEachLogin,
+  MONTHLY,
+  type ProviderFetchResult,
+  type ProviderRow,
+  WEEKLY,
+  windowRows,
+} from "./contract.js";
+import { statusDetailsFromRecord } from "./result-helpers.js";
 
 /**
  * OpenCode 2's "Sign in with ChatGPT" login. Its token is scoped to
@@ -43,23 +46,15 @@ function isTokenSharingLogin(row: CredentialRow): boolean {
 }
 
 /** A row that says why a login has no ChatGPT quota number. */
-function statusValueEntry(
-  row: CredentialRow,
-  name: string,
-  value: string,
-): QuotaProviderResult["entries"][number] {
+function statusRow(text: string): ProviderRow {
   return {
-    kind: "value",
-    accounting: {
-      resultType: "status",
-      acquisitionMethod: "local_runtime_accounting",
-      ownership: "maintained",
-      authority: "locally_derived",
-      sourceId: row.id,
-    },
-    name,
-    group: name,
-    value,
+    key: "status",
+    label: "Status",
+    type: "status",
+    method: "local_estimation",
+    authority: "locally_derived",
+    prominence: "primary",
+    text,
   };
 }
 
@@ -125,27 +120,15 @@ function activeLoginStatusDetails(
   };
 }
 
-function quotaWindowEntries(
-  group: string,
-  result: Extract<OpenAIResult, { success: true }>,
-  sourceId: string | undefined,
-) {
-  return groupedPercentWindowEntries({
-    group,
-    accounting: {
-      resultType: "rate_limit",
-      acquisitionMethod: "remote_api",
-      ownership: "maintained",
-      authority: "provider_reported",
-      ...(sourceId ? { sourceId } : {}),
-    },
-    windows: [
-      { window: result.windows.hourly, suffix: "5h", label: "5h:" },
-      { window: result.windows.weekly, suffix: "Weekly", label: "Weekly:" },
-      { window: result.windows.monthly, suffix: "Monthly", label: "Monthly:" },
-      { window: result.windows.codeReview, suffix: "Code Review", label: "Code Review:" },
-    ],
-  });
+const CODE_REVIEW = { key: "code_review", label: "Code review", window: "code_review" } as const;
+
+function quotaWindowRows(result: Extract<OpenAIResult, { success: true }>): ProviderRow[] {
+  return windowRows([
+    { slot: FIVE_HOUR, value: result.windows.hourly },
+    { slot: WEEKLY, value: result.windows.weekly },
+    { slot: MONTHLY, value: result.windows.monthly },
+    { slot: CODE_REVIEW, value: result.windows.codeReview },
+  ]);
 }
 
 /**
@@ -154,16 +137,17 @@ function quotaWindowEntries(
  */
 async function fetchActiveLoginQuota(
   requestTimeoutMs: number | undefined,
-): Promise<QuotaProviderResult> {
+): Promise<{ attempted: boolean; accounts: AccountResult[] }> {
   const auth = await readOpenAIAuthCached();
-  if (auth.state === "none") return notAttemptedResult();
+  if (auth.state === "none") return { attempted: false, accounts: [] };
   const result = await queryOpenAIQuota({ requestTimeoutMs, auth });
   if (!result.success) {
-    return attemptedErrorResult("OpenAI", result.error, { retryable: result.retryable });
+    return { attempted: true, accounts: [failedAccount("OpenAI", result.error)] };
   }
-  return attemptedResult(quotaWindowEntries(result.label, result, undefined), [], {
-    singleWindowDisplayName: result.label,
-  });
+  return {
+    attempted: true,
+    accounts: [{ name: result.label, rows: quotaWindowRows(result), errors: [] }],
+  };
 }
 
 export const openaiProvider: QuotaProvider = {
@@ -188,7 +172,7 @@ export const openaiProvider: QuotaProvider = {
     return modelProviderIncludesAny(model, ["openai", "chatgpt", "codex"]);
   },
 
-  async fetch(ctx: QuotaProviderContext): Promise<QuotaProviderResult> {
+  async fetch(ctx: QuotaProviderContext): Promise<ProviderFetchResult> {
     const currentIntegrationId =
       ctx.config?.currentProviderID ??
       resolveQuotaProviderSessionModelIdentity({ currentModel: ctx.config?.currentModel ?? "" })
@@ -198,7 +182,7 @@ export const openaiProvider: QuotaProvider = {
       currentIntegrationId,
     );
 
-    // A login OpenCode could not return stays here, so it shows as its own error row.
+    // A login OpenCode could not return stays here, so it shows as its own error.
     const logins = new Map<CredentialRow, OpenAIOAuthLogin>();
     for (const row of rows) {
       if (row.value.type === "api") continue;
@@ -208,63 +192,43 @@ export const openaiProvider: QuotaProvider = {
       if (login.state !== "none") logins.set(row, login);
     }
     const requestTimeoutMs = ctx.config?.requestTimeoutMs;
-    const results = new Map<CredentialRow, OpenAIResult>();
-    await Promise.all(
-      [...logins]
-        .filter(([row]) => !isTokenSharingLogin(row))
-        .map(async ([row, auth]) => {
-          results.set(
-            row,
-            await queryOpenAIQuota({ requestTimeoutMs, auth, loginLabel: row.label }),
-          );
-        }),
-    );
     // Names span every stored account (OAuth and API key) so numbering and the
     // `(active)` marker match the accounts OpenCode actually holds.
-    const names = formatCredentialDisplayNames(
-      "OpenAI",
-      rows.map((row) => {
-        const result = results.get(row);
-        return {
-          row,
-          fallbackName: result?.success ? result.label : "OpenAI",
-          numberUnnamed: row.value.type === "api",
-        };
-      }),
-    );
-
-    const entries: QuotaProviderResult["entries"] = [];
-    const errors: QuotaProviderResult["errors"] = [];
-    rows.forEach((row, index) => {
-      const name = names[index];
-      const result = results.get(row);
-      if (isTokenSharingLogin(row)) {
-        entries.push(
-          statusValueEntry(row, name, "ChatGPT quota unavailable for Sign in with ChatGPT"),
-        );
-      } else if (row.value.type !== "api") {
-        if (result?.success === false) {
-          errors.push({ label: name, message: result.error });
-        } else if (result) {
-          entries.push(...quotaWindowEntries(name, result, row.id));
+    const accounts = await fetchEachLogin({
+      providerName: "OpenAI",
+      logins: rows.map((row) => ({ row, login: logins.get(row) })),
+      numberUnnamed: (row) => row.value.type === "api",
+      async fetchLogin({ row, login }) {
+        if (isTokenSharingLogin(row)) {
+          return {
+            rows: [statusRow("ChatGPT quota unavailable for Sign in with ChatGPT")],
+            errors: [],
+          };
         }
-      } else if (row.resolveError !== undefined) {
-        errors.push({
-          label: name,
-          message: `OpenAI API key could not be read: ${row.resolveError}`,
+        if (row.value.type === "api") {
+          if (row.resolveError !== undefined) {
+            return {
+              rows: [],
+              errors: [{ message: `OpenAI API key could not be read: ${row.resolveError}` }],
+            };
+          }
+          // ChatGPT's usage endpoint only accepts OAuth credentials, so an API-key
+          // account reports its lack of ChatGPT quota instead of a quota number.
+          return { rows: [statusRow("ChatGPT quota unavailable for API key")], errors: [] };
+        }
+        if (!login) return null;
+        const result = await queryOpenAIQuota({
+          requestTimeoutMs,
+          auth: login,
+          loginLabel: row.label,
         });
-      } else {
-        // ChatGPT's usage endpoint only accepts OAuth credentials, so an API-key
-        // account reports its lack of ChatGPT quota instead of a quota number.
-        entries.push(statusValueEntry(row, name, "ChatGPT quota unavailable for API key"));
-      }
+        if (!result.success) return { rows: [], errors: [{ message: result.error }] };
+        return { rows: quotaWindowRows(result), errors: [], fallbackName: result.label };
+      },
     });
 
-    return withStatusDetails(
-      entries.length > 0 || errors.length > 0
-        ? attemptedResult(entries, errors)
-        : await fetchActiveLoginQuota(requestTimeoutMs),
-      statusDetailsFromRecord(activeLoginStatusDetails(rows, logins)),
-    );
+    const debug = statusDetailsFromRecord(activeLoginStatusDetails(rows, logins));
+    if (accounts.length > 0) return { attempted: true, accounts, debug };
+    return { ...(await fetchActiveLoginQuota(requestTimeoutMs)), debug };
   },
 };

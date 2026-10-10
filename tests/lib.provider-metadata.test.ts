@@ -37,7 +37,6 @@ describe("provider-metadata", () => {
       autoSetup: "yes",
       authentication: "opencode_auth_api_key",
       authFallbacks: ["env_api_key", "global_opencode_config"],
-      quota: "local_estimation",
     });
     expect(getQuotaProviderShape("gemini-cli")?.recommendedReplacementId).toBe("google-agy");
   });

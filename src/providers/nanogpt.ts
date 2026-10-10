@@ -1,25 +1,28 @@
+import type { Amount } from "../core/types.js";
 import { API_KEY_VENDORS, getApiKeyDiagnostics, hasApiKey } from "../lib/api-key-resolver.js";
-import type {
-  AccountingPercentageBasis,
-  AccountingWindow,
-  QuotaProvider,
-  QuotaProviderContext,
-  QuotaProviderResult,
-  QuotaToastEntry,
-} from "../lib/entries.js";
+import type { QuotaProvider, QuotaProviderContext } from "../lib/entries.js";
 import { queryNanoGptQuota } from "../lib/nanogpt.js";
 import { modelProviderMatchesRuntimeId } from "../lib/provider-model-matching.js";
 import {
-  attemptedResult,
-  mapNullableProviderResult,
-  simpleApiKeyStatusDetails,
-  statusDetailsFromRecord,
-  withStatusDetails,
-} from "./result-helpers.js";
+  type AccountResult,
+  DAILY,
+  type FetchError,
+  failedAccount,
+  MONTHLY,
+  type ProviderFetchResult,
+  type ProviderRow,
+  quotaRow,
+} from "./contract.js";
+import { simpleApiKeyStatusDetails, statusDetailsFromRecord } from "./result-helpers.js";
 
+const LABEL = "NanoGPT";
 const REQUEST_UNIT = { kind: "count", unit: "request" } as const;
-const USD_UNIT = { kind: "currency", code: "USD" } as const;
-const NANO_UNIT = { kind: "custom", symbol: "NANO" } as const;
+
+type NanoGptQuotaSuccess = Extract<
+  NonNullable<Awaited<ReturnType<typeof queryNanoGptQuota>>>,
+  { success: true }
+>;
+type NanoGptWindow = NonNullable<NonNullable<NanoGptQuotaSuccess["subscription"]>["daily"]>;
 
 function canonicalNumberDecimal(value: number): string {
   if (!Number.isFinite(value)) throw new TypeError("NanoGPT usage value must be finite");
@@ -40,112 +43,75 @@ function canonicalNumberDecimal(value: number): string {
   return `${sign}${digits.slice(0, decimalIndex)}.${digits.slice(decimalIndex)}`;
 }
 
-function quotaBasis(window: {
-  reportedBasis: { used?: number; limit?: number; remaining?: number };
-}): AccountingPercentageBasis | undefined {
-  const basis: AccountingPercentageBasis = {};
+/** A daily or monthly request window with the counts NanoGPT reported. */
+function windowRow(window: NanoGptWindow, slot: typeof DAILY | typeof MONTHLY): ProviderRow {
+  const amounts: Partial<Record<"used" | "limit" | "remaining", Amount>> = {};
   for (const key of ["used", "limit", "remaining"] as const) {
     const value = window.reportedBasis[key];
     if (value === undefined) continue;
-    basis[key] = {
-      quantity: { decimal: canonicalNumberDecimal(value), unit: REQUEST_UNIT },
-      authority: "provider_reported",
-    };
+    amounts[key] = { decimal: canonicalNumberDecimal(value), unit: REQUEST_UNIT };
   }
-  return basis.used || basis.limit || basis.remaining ? basis : undefined;
+  return {
+    ...quotaRow({
+      ...slot,
+      percentRemaining: window.percentRemaining,
+      resetsAt: window.resetTimeIso,
+    }),
+    ...amounts,
+  };
 }
 
-type NanoGptQuotaSuccess = Extract<
-  NonNullable<Awaited<ReturnType<typeof queryNanoGptQuota>>>,
-  { success: true }
->;
-
-function pushQuotaEntry(
-  entries: QuotaToastEntry[],
-  window: NonNullable<NonNullable<NanoGptQuotaSuccess["subscription"]>["daily"]>,
-  accountingWindow: AccountingWindow,
-): void {
-  const basis = quotaBasis(window);
-  entries.push({
-    accounting: {
-      resultType: "quota",
-      acquisitionMethod: "remote_api",
-      ownership: "maintained",
-      authority: "provider_reported",
-    },
-    name: `nanogpt-${accountingWindow}-quota`,
-    group: "NanoGPT",
-    percentRemaining: window.percentRemaining,
-    resetTimeIso: window.resetTimeIso,
-    semantic: {
-      metric: { kind: "window", window: accountingWindow },
-      prominence: "primary",
-    },
-    ...(basis ? { basis } : {}),
-  });
-}
-
-function mapNanoGptSuccess(result: NanoGptQuotaSuccess): QuotaProviderResult {
-  const entries: QuotaToastEntry[] = [];
-  const errors =
-    result.endpointErrors?.map((entry) => ({
-      label: entry.endpoint === "usage" ? "NanoGPT Usage" : "NanoGPT Balance",
-      message: entry.message,
-    })) ?? [];
-
+function nanoGptAccounts(result: NanoGptQuotaSuccess): AccountResult[] {
+  const rows: ProviderRow[] = [];
   const subscription = result.subscription;
-  if (subscription?.daily) pushQuotaEntry(entries, subscription.daily, "day");
-  if (subscription?.monthly) pushQuotaEntry(entries, subscription.monthly, "month");
+  if (subscription?.daily) rows.push(windowRow(subscription.daily, DAILY));
+  if (subscription?.monthly) rows.push(windowRow(subscription.monthly, MONTHLY));
 
   const balance = result.balance;
   if (balance?.usdBalanceRaw || balance?.nanoBalanceRaw) {
-    entries.push({
-      kind: "quantity",
-      accounting: {
-        resultType: "balance",
-        acquisitionMethod: "remote_api",
-        ownership: "maintained",
-        authority: "provider_reported",
-      },
-      name: "nanogpt-current-balance",
-      group: "NanoGPT",
-      semantic: {
-        metric: { kind: "component", component: "current_balance" },
-        prominence: "primary",
-      },
-      quantity: balance.usdBalanceRaw
-        ? { decimal: balance.usdBalanceRaw, unit: USD_UNIT }
-        : { decimal: balance.nanoBalanceRaw as string, unit: NANO_UNIT },
+    rows.push({
+      key: balance.usdBalanceRaw ? "balance.usd" : "balance.nano",
+      label: "Balance",
+      type: "balance",
+      method: "remote_api",
+      authority: "provider_reported",
+      prominence: "primary",
+      amount: balance.usdBalanceRaw
+        ? { decimal: balance.usdBalanceRaw, unit: { kind: "currency", code: "USD" } }
+        : { decimal: balance.nanoBalanceRaw as string, unit: { kind: "custom", symbol: "NANO" } },
     });
   }
 
+  const errors: FetchError[] = [];
   if (subscription?.state && subscription.state.toLowerCase() !== "active") {
-    errors.push({
-      label: "NanoGPT",
-      message: `Subscription state: ${subscription.state}`,
-    });
+    errors.push({ message: `Subscription state: ${subscription.state}` });
   }
+  if (rows.length === 0) errors.push({ message: "No usable NanoGPT quota or balance data" });
 
-  if (entries.length === 0) {
-    errors.push({
-      label: "NanoGPT",
-      message: "No usable NanoGPT quota or balance data",
-    });
-  }
+  return [
+    ...(result.endpointErrors ?? []).map((entry) =>
+      failedAccount(
+        entry.endpoint === "usage" ? "NanoGPT Usage" : "NanoGPT Balance",
+        entry.message,
+      ),
+    ),
+    { name: LABEL, rows, errors },
+  ];
+}
 
-  const formatSubscriptionUsage = (
-    usage: NonNullable<typeof subscription>["daily"],
-  ): string | undefined =>
+function nanoGptDetails(result: NanoGptQuotaSuccess) {
+  const { subscription, balance } = result;
+  const formatUsage = (usage: NanoGptWindow | undefined): string | undefined =>
     usage
       ? `${canonicalNumberDecimal(usage.used)}/${canonicalNumberDecimal(usage.limit)} remaining=${canonicalNumberDecimal(usage.remaining)} percent_remaining=${usage.percentRemaining} reset_at=${usage.resetTimeIso ?? "(none)"}`
       : undefined;
-  const statusDetails = [
+  return [
     ...statusDetailsFromRecord({
       subscription_active: subscription ? String(subscription.active) : undefined,
       subscription_state: subscription?.state,
       enforce_daily_limit: subscription ? String(subscription.enforceDailyLimit) : undefined,
-      daily_usage: formatSubscriptionUsage(subscription?.daily),
-      monthly_usage: formatSubscriptionUsage(subscription?.monthly),
+      daily_usage: formatUsage(subscription?.daily),
+      monthly_usage: formatUsage(subscription?.monthly),
       billing_period_end: subscription ? (subscription.currentPeriodEndIso ?? "(none)") : undefined,
       grace_until: subscription?.graceUntilIso,
       balance_usd: balance?.usdBalanceRaw ?? "(none)",
@@ -156,8 +122,6 @@ function mapNanoGptSuccess(result: NanoGptQuotaSuccess): QuotaProviderResult {
       value: endpointError.message,
     })),
   ];
-
-  return withStatusDetails(attemptedResult(entries, errors), statusDetails);
 }
 
 export const nanoGptProvider: QuotaProvider = {
@@ -171,21 +135,25 @@ export const nanoGptProvider: QuotaProvider = {
     return modelProviderMatchesRuntimeId(model, "nanogpt");
   },
 
-  async fetch(ctx: QuotaProviderContext): Promise<QuotaProviderResult> {
+  async fetch(ctx: QuotaProviderContext): Promise<ProviderFetchResult> {
     const diagnostics = await getApiKeyDiagnostics(API_KEY_VENDORS.nanogpt).catch(() => ({
       configured: false,
       source: null,
       checkedPaths: [],
       credentialDatabasePaths: [],
     }));
+    const keyDetails = simpleApiKeyStatusDetails(diagnostics);
+
     const result = await queryNanoGptQuota({ requestTimeoutMs: ctx.config?.requestTimeoutMs });
-    const providerResult = mapNullableProviderResult(result, {
-      errorLabel: "NanoGPT",
-      onSuccess: mapNanoGptSuccess,
-    });
-    return withStatusDetails(providerResult, [
-      ...simpleApiKeyStatusDetails(diagnostics),
-      ...(providerResult.statusDetails ?? []),
-    ]);
+    if (!result) return { attempted: false, accounts: [], debug: keyDetails };
+    if (!result.success) {
+      return {
+        attempted: true,
+        accounts: [failedAccount(LABEL, result.error)],
+        debug: keyDetails,
+      };
+    }
+    const accounts = nanoGptAccounts(result);
+    return { attempted: true, accounts, debug: [...keyDetails, ...nanoGptDetails(result)] };
   },
 };

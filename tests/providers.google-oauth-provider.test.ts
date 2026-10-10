@@ -36,13 +36,10 @@ vi.mock("../src/lib/google-gemini-cli.js", async (importOriginal) => ({
   inspectGeminiCliCompanionPresence: mocks.gemini.inspectCompanion,
 }));
 
+import { rowsFromProviderResult } from "../src/core/rows.js";
+import type { ProviderFetchResult } from "../src/providers/contract.js";
 import { googleAgyProvider } from "../src/providers/google-agy.js";
 import { googleGeminiCliProvider } from "../src/providers/google-gemini-cli.js";
-import { createGoogleAccountLabelMap } from "../src/providers/google-oauth-provider.js";
-import {
-  expectAttemptedWithErrorLabel,
-  expectNotAttempted,
-} from "./helpers/provider-assertions.js";
 
 const PROVIDERS = [
   {
@@ -57,7 +54,7 @@ const PROVIDERS = [
       accountIndex: 0,
       percentRemaining: 70,
     },
-    loginEntryName: "Gemini Weekly",
+    rowId: "google-agy.gemini.weekly",
   },
   {
     name: "Gemini CLI",
@@ -65,9 +62,13 @@ const PROVIDERS = [
     provider: googleGeminiCliProvider,
     lib: mocks.gemini,
     bucket: { displayName: "Gemini 2.5", percentRemaining: 70 },
-    loginEntryName: "Gemini 2.5",
+    rowId: "google-gemini-cli.model.2_5",
   },
 ] as const;
+
+async function fetchRows(provider: (typeof PROVIDERS)[number]["provider"], config = {}) {
+  return rowsFromProviderResult(provider.id, await provider.fetch({ client: {}, config } as never));
+}
 
 beforeEach(() => {
   mocks.readCredentialRows.mockResolvedValue([]);
@@ -91,12 +92,20 @@ describe.each(PROVIDERS)("$name provider", ({ name, integrationId, provider, lib
     expect(lib.query).toHaveBeenLastCalledWith({ requestTimeoutMs: 12000 });
   });
 
-  it("returns attempted:false without a login and one error row when the query fails", async () => {
+  it("is not set up without a login and shows the error when the query fails", async () => {
     lib.query.mockResolvedValueOnce(null);
-    expectNotAttempted(await provider.fetch({ client: {} } as never));
+    expect(await fetchRows(provider)).toMatchObject({
+      rows: [],
+      error: { code: "not_configured" },
+    });
 
     lib.query.mockResolvedValueOnce({ success: false, error: `No ${name} quota data available` });
-    expectAttemptedWithErrorLabel(await provider.fetch({ client: {} } as never), name);
+    const failed = await fetchRows(provider);
+    expect(failed).toMatchObject({ rows: [], error: { code: "no_data" } });
+    expect(failed.debug).toContainEqual({
+      key: "error",
+      value: `${name}: No ${name} quota data available`,
+    });
   });
 
   it("is available only when the runtime check succeeds", async () => {
@@ -123,8 +132,8 @@ describe.each(PROVIDERS)("$name provider", ({ name, integrationId, provider, lib
       error: "incompatible",
     });
 
-    const out = await provider.fetch({ client: {} } as never);
-    expect(out.statusDetails).toEqual([
+    const { debug } = await fetchRows(provider);
+    expect(debug).toEqual([
       { key: "auth_state", value: "invalid" },
       { key: "auth_source", value: integrationId },
       { key: "account_count", value: "1" },
@@ -155,44 +164,90 @@ describe.each(PROVIDERS)("$name provider", ({ name, integrationId, provider, lib
     ]);
     lib.query.mockResolvedValue({ success: true, buckets: [flavor.bucket] });
 
-    const output = await provider.fetch({ client: {}, config: {} } as never);
+    const fetched = await fetchRows(provider);
 
     expect(lib.query).toHaveBeenCalledTimes(2);
     expect(lib.query).toHaveBeenCalledWith({
       requestTimeoutMs: undefined,
       authData: { [integrationId]: { type: "oauth", refresh: "two|project" } },
     });
-    expect(
-      output.entries.map((entry) => [entry.name, entry.group, entry.accounting.sourceId]),
-    ).toEqual([
-      [`[${name} Work] (active) ${flavor.loginEntryName}`, `[${name} Work] (active)`, "active-id"],
-      [`[${name} Work 2] ${flavor.loginEntryName}`, `[${name} Work 2]`, "other-id"],
+    expect(fetched.rows.map((row) => [row.id, row.account, row.percentRemaining])).toEqual([
+      [flavor.rowId, "Work", 70],
+      [flavor.rowId, "Work 2", 70],
     ]);
+    expect(fetched.rowLogins).toEqual(["active-id", "other-id"]);
   });
 });
 
-describe("google account labels", () => {
-  it("formats real ellipsis labels without repeating the domain", () => {
-    expect([
-      ...createGoogleAccountLabelMap([
-        "alice@example.com",
-        "bo@example.com",
-        "local-only",
-        undefined,
-      ]).values(),
-    ]).toEqual(["ali…", "bo…", "loc…"]);
+describe.each(PROVIDERS)("$name account labels", ({ provider, lib, bucket }) => {
+  it.each([
+    [
+      "short hints without the domain",
+      ["alice@example.com", "bo@example.com", "local-only"],
+      ["ali…", "bo…", "loc…"],
+    ],
+    [
+      "extended or numbered hints where they would collide",
+      ["alice@work.com", "alicia@example.com", "alice@personal.com"],
+      ["alice… 1", "alici…", "alice… 2"],
+    ],
+  ])("names accounts with %s", async (_name, emails, accounts) => {
+    lib.query.mockResolvedValueOnce({
+      success: true,
+      buckets: emails.map((accountEmail, accountIndex) => ({
+        ...bucket,
+        accountEmail,
+        accountIndex,
+      })),
+    });
+
+    const fetched = await fetchRows(provider);
+
+    expect(fetched.rows.map((row) => row.account)).toEqual(accounts);
   });
+});
 
-  it("extends or numbers colliding account hints without repeating domains", () => {
-    const labels = createGoogleAccountLabelMap([
-      "alice@work.com",
-      "alicia@example.com",
-      "alice@personal.com",
-    ]);
+const TOKENS = { kind: "count", unit: "token" } as const;
+const REQUESTS = { kind: "count", unit: "request" } as const;
+const PLAIN = { kind: "count", unit: "unit" } as const;
 
-    expect(labels.get("alice@work.com")).toBe("alice… 1");
-    expect(labels.get("alicia@example.com")).toBe("alici…");
-    expect(labels.get("alice@personal.com")).toBe("alice… 2");
-    expect(new Set(labels.values()).size).toBe(3);
+describe("google remaining counts", () => {
+  it.each([
+    ["Google AGY", { remainingAmount: "1200" }, { decimal: "1200", unit: PLAIN }],
+    ["Google AGY", {}, undefined],
+    [
+      "Gemini CLI",
+      { remainingAmount: "1200", tokenType: "TOKENS" },
+      { decimal: "1200", unit: TOKENS },
+    ],
+    [
+      "Gemini CLI",
+      { remainingAmount: "0042", tokenType: "requests" },
+      { decimal: "42", unit: REQUESTS },
+    ],
+    ["Gemini CLI", { remainingAmount: "1234567" }, { decimal: "1234567", unit: PLAIN }],
+    [
+      "Gemini CLI",
+      { remainingAmount: "12.5", tokenType: "TOKENS" },
+      { decimal: "12.5", unit: TOKENS },
+    ],
+    ["Google AGY", { remainingAmount: "007.250" }, { decimal: "7.25", unit: PLAIN }],
+    ["Gemini CLI", { tokenType: "TOKENS" }, undefined],
+  ])("%s %j keeps the count", async (name, fields, remaining) => {
+    const flavor = PROVIDERS.find((candidate) => candidate.name === name);
+    if (!flavor) throw new Error(`no provider ${name}`);
+    flavor.lib.query.mockResolvedValueOnce({
+      success: true,
+      buckets: [{ ...flavor.bucket, ...fields }],
+    });
+
+    const result = (await flavor.provider.fetch({
+      client: {},
+      config: {},
+    } as never)) as ProviderFetchResult;
+
+    expect(
+      rowsFromProviderResult(flavor.provider.id, result).rows.map((row) => row.remaining),
+    ).toEqual([remaining]);
   });
 });

@@ -93,7 +93,7 @@ It reads results already in memory and never starts its own refresh loop. If the
 <details>
 <summary><strong>Metric fields and privacy</strong></summary>
 
-`opencode.quota.consumed` uses percentage rows only. Its value is `(100 - percentRemaining) / 100`, limited to the range `0` to `1`. Quantity, boolean, legacy value, percentage-basis, and supplementary metadata do not create consumed gauges.
+`opencode.quota.consumed` uses percentage rows only. Its value is `(100 - percentRemaining) / 100`, limited to the range `0` to `1`. Rows without a percentage (amounts, yes/no values, text) create no consumed gauge.
 
 | Metric | Labels |
 | --- | --- |
@@ -104,7 +104,7 @@ Label values stay limited:
 
 - `quota.provider` is a maintained provider ID, `custom`, or `other`.
 - `quota.result_type` is `quota` (rate limits too), `usage` (spending too), `budget`, `balance`, or `status`.
-- `quota.window` is `rpm`, `five_hour`, `hour`, `day`, `week`, `month`, `year`, `mcp`, `code_review`, or `unknown`.
+- `quota.window` is `rpm`, `hour`, `five_hour`, `session`, `day`, `week`, `month`, `year`, `mcp`, `code_review`, or `unknown`.
 
 When several rows map to the same safe labels, OpenCode Quota reports the highest consumed ratio or oldest cache age. Display names, account IDs, configured source IDs, credentials, URLs, paths, errors, and raw responses are never labels.
 
@@ -139,7 +139,7 @@ export async function shutdownMetrics() {
 
 ## JSON basics
 
-The command and export file both use JSON schema version `2`. Every provider has a `status`, and the other fields depend on it:
+The command and export file both use JSON schema version `3`. Every provider has a `status`, and the other fields depend on it:
 
 | Status | Meaning | Fields |
 | --- | --- | --- |
@@ -148,16 +148,27 @@ The command and export file both use JSON schema version `2`. Every provider has
 | `error` | The provider failed | `fetchedAt`, a safe `error` message |
 | `unavailable` | No matching cached data exists | none required |
 
-A percentage entry uses `renderType: "percent"` and `percentRemaining`. A value entry uses `renderType: "value"` and `value`. Internally typed quantities flatten into formatted value strings (for example, `USD 12.50`), and booleans flatten to `Enabled` or `Disabled`.
+A percentage entry uses `renderType: "percent"` and `percentRemaining`. A value entry uses `renderType: "value"` and `value`: the value text the TUI shows (for example, `$12.50 left` or `$2.50/$10.00`), and `Enabled` or `Disabled` for a yes/no row.
 
 - Scripts must not assume the first row is a percentage or that a provider has only one row. Select `renderType`, `resultType`, and any other field you need.
 - The `words` settings never change JSON. It has every row, so supplementary rows can add more value entries.
-- Version 2 does not expose internal metrics, row prominence, used/limit/remaining basis facts, or per-fact authority.
+- Version 3 does not expose row prominence or separate used, limit, and remaining amounts.
 - Threshold checks use percentage rows only.
 
-The export file writes each provider's last check as the provider reported it. Optional entry fields include `window`, `resetAt`, `observedAt`, and `sourceId`. A provider can also include `rawDetails`: curated, safe provider facts that stay out of normal quota displays. Rows from `providers.custom` appear under `providers["quota-providers"]` with their `sourceId`, and that result has a `sources` list so tools can match each row to its definition.
+Every entry has these fields:
 
-`show --json` builds its entries from the quota OpenCode saved last, and so does the export file for a provider not checked since OpenCode's background service started: names read `Provider (account) Label`, `resultType` is `quota`, `usage`, `budget`, `balance`, or `status`, and there is no `observedAt`, `sourceId`, or `sources` list.
+| Field | Meaning |
+| --- | --- |
+| `id` | The row's stable id, `provider.key` (for example `copilot.allowance`), the same id the TUI's hide, rename and order settings use. The rows of two accounts of one provider share it; `account` tells them apart. |
+| `name` | `Provider (account) Label`, for example `Copilot (pro) Premium requests` |
+| `resultType` | `quota` (rate limits too), `usage` (spending too), `budget`, `balance`, or `status` |
+| `acquisitionMethod` | `remote_api`, `dashboard_scrape`, `local_cli`, or `local_estimation` |
+| `ownership` | `maintained`, or `user_configured` for rows from `providers.custom` |
+| `authority` | `provider_reported` or `locally_derived` |
+
+Optional entry fields are `account`, `window` (for example `5h`, `Weekly`, `Monthly`) and `resetAt` (Unix seconds). `account` is the account the TUI shows, for example `pro`; two logins with the same account get `pro` and `pro 2`, in the export file, `show --json` and the TUI alike. A provider's `error` (and each `errors` message) is the short error text the TUI shows, for example `Sign in again` or `Provider error 503`.
+
+The export file writes each provider's last check, a failed one too. `show --json`, and the export file for a provider not checked since OpenCode's background service started, write the quota OpenCode saved last. Rows from `providers.custom` appear under `providers["quota-providers"]`; after a check, that result also has a `sources` list with each definition's coarse status.
 
 Treat `status: "partial"` as incomplete.
 
@@ -166,11 +177,13 @@ Secrets, credentials, URLs, checked paths, and raw provider responses remain exc
 <details>
 <summary><strong>Configured source details</strong></summary>
 
-In the export file, rows from a `providers.custom` definition appear under `providers["quota-providers"]` and keep their stable `sourceId`:
+Rows from a `providers.custom` definition appear under `providers["quota-providers"]`. Their `id` is `quota-providers.custom.<definition id>.<key>`, so tools can match each row to its definition:
 
 ```json
 {
-  "sourceId": "openrouter-primary",
+  "id": "quota-providers.custom.openrouter-primary.Monthly",
+  "name": "Quota providers (OpenRouter primary) Monthly",
+  "account": "OpenRouter primary",
   "renderType": "percent",
   "percentRemaining": 40
 }
@@ -189,7 +202,7 @@ The provider also includes a summary for every configured source:
 ]
 ```
 
-Each summary is exactly `id`, effective `providerId`, coarse `status`, and `entryCount`, plus `"enabled": false` for a switched-off definition (its `status` is `unavailable`). A source can be `ok` after producing valid rows while failed mapping candidates can still make the aggregate provider `partial`.
+Each summary is exactly `id`, effective `providerId`, coarse `status`, and `entryCount`. A switched-off definition is never checked, so its summary has `"enabled": false` instead of a `status`, and `entryCount` is `0`. A source can be `ok` after producing valid rows while failed mapping candidates can still make the aggregate provider `partial`.
 
 </details>
 
@@ -198,7 +211,7 @@ Each summary is exactly `id`, effective `providerId`, coarse `status`, and `entr
 
 ```json
 {
-  "version": 2,
+  "version": 3,
   "exportedAt": 1748736000,
   "fromCache": true,
   "cacheAgeSeconds": 42,
@@ -208,7 +221,9 @@ Each summary is exactly `id`, effective `providerId`, coarse `status`, and `entr
       "fetchedAt": 1748735958,
       "entries": [
         {
-          "name": "Copilot Premium Requests",
+          "id": "copilot.allowance",
+          "name": "Copilot (pro) Premium requests",
+          "account": "pro",
           "resultType": "quota",
           "acquisitionMethod": "remote_api",
           "ownership": "maintained",

@@ -11,18 +11,11 @@ export type QuotaProviderAuthentication =
 
 export type QuotaProviderAuthFallback = "env_api_key" | "global_opencode_config";
 
-export type QuotaProviderQuotaSource =
-  | "remote_api"
-  | "local_estimation"
-  | "local_runtime_accounting"
-  | "local_cli_report";
-
 export interface QuotaProviderShapeSource {
   recommendedReplacementId?: string;
   autoSetup: QuotaProviderAutoSetup;
   authentication: QuotaProviderAuthentication;
   authFallbacks?: readonly QuotaProviderAuthFallback[];
-  quota: QuotaProviderQuotaSource;
   quickSetupAnchor?: string;
   notes?: string;
 }
@@ -46,7 +39,6 @@ export const QUOTA_PROVIDER_REGISTRATION_SOURCE = [
     shape: {
       autoSetup: "needs_quick_setup",
       authentication: "local_cli_auth",
-      quota: "local_cli_report",
       quickSetupAnchor: "anthropic-claude",
     },
   },
@@ -58,7 +50,6 @@ export const QUOTA_PROVIDER_REGISTRATION_SOURCE = [
     shape: {
       autoSetup: "usually",
       authentication: "github_oauth_or_pat",
-      quota: "remote_api",
       notes: "OAuth for personal flow; PAT for managed billing",
     },
   },
@@ -70,7 +61,6 @@ export const QUOTA_PROVIDER_REGISTRATION_SOURCE = [
     shape: {
       autoSetup: "yes",
       authentication: "opencode_auth_oauth_token",
-      quota: "remote_api",
     },
   },
   {
@@ -82,7 +72,6 @@ export const QUOTA_PROVIDER_REGISTRATION_SOURCE = [
       autoSetup: "yes",
       authentication: "opencode_auth_api_key",
       authFallbacks: ["env_api_key", "global_opencode_config"],
-      quota: "remote_api",
     },
   },
   {
@@ -94,7 +83,6 @@ export const QUOTA_PROVIDER_REGISTRATION_SOURCE = [
       autoSetup: "usually",
       authentication: "opencode_auth_api_key",
       authFallbacks: ["env_api_key", "global_opencode_config"],
-      quota: "remote_api",
       notes:
         "Queries Kilo Pass state first, then falls back to the documented personal Gateway balance when no active subscription exists",
     },
@@ -108,7 +96,6 @@ export const QUOTA_PROVIDER_REGISTRATION_SOURCE = [
     shape: {
       autoSetup: "needs_quick_setup",
       authentication: "companion_auth_oauth_token",
-      quota: "local_runtime_accounting",
       quickSetupAnchor: "cursor",
       notes: "companion runtime/plugin integration plus local usage accounting",
     },
@@ -123,7 +110,6 @@ export const QUOTA_PROVIDER_REGISTRATION_SOURCE = [
       autoSetup: "yes",
       authentication: "opencode_auth_api_key",
       authFallbacks: ["env_api_key", "global_opencode_config"],
-      quota: "local_estimation",
     },
   },
   {
@@ -134,7 +120,6 @@ export const QUOTA_PROVIDER_REGISTRATION_SOURCE = [
     shape: {
       autoSetup: "needs_quick_setup",
       authentication: "local_cli_auth",
-      quota: "local_cli_report",
       quickSetupAnchor: "alibaba-personal-token-plan",
     },
   },
@@ -147,7 +132,6 @@ export const QUOTA_PROVIDER_REGISTRATION_SOURCE = [
       autoSetup: "yes",
       authentication: "opencode_auth_api_key",
       authFallbacks: ["env_api_key", "global_opencode_config"],
-      quota: "remote_api",
     },
   },
   {
@@ -159,7 +143,6 @@ export const QUOTA_PROVIDER_REGISTRATION_SOURCE = [
       autoSetup: "usually",
       authentication: "opencode_auth_api_key",
       authFallbacks: ["env_api_key", "global_opencode_config"],
-      quota: "remote_api",
     },
   },
   {
@@ -171,7 +154,6 @@ export const QUOTA_PROVIDER_REGISTRATION_SOURCE = [
       recommendedReplacementId: "google-agy",
       autoSetup: "needs_quick_setup",
       authentication: "companion_auth_oauth_token",
-      quota: "remote_api",
       quickSetupAnchor: "gemini-cli",
     },
   },
@@ -183,7 +165,6 @@ export const QUOTA_PROVIDER_REGISTRATION_SOURCE = [
     shape: {
       autoSetup: "needs_quick_setup",
       authentication: "companion_auth_oauth_token",
-      quota: "remote_api",
       quickSetupAnchor: "google-agy-quick-setup",
     },
   },
@@ -196,7 +177,6 @@ export const QUOTA_PROVIDER_REGISTRATION_SOURCE = [
       autoSetup: "yes",
       authentication: "opencode_auth_api_key",
       authFallbacks: ["env_api_key", "global_opencode_config"],
-      quota: "remote_api",
     },
   },
   {
@@ -208,7 +188,6 @@ export const QUOTA_PROVIDER_REGISTRATION_SOURCE = [
       autoSetup: "yes",
       authentication: "opencode_auth_api_key",
       authFallbacks: ["env_api_key", "global_opencode_config"],
-      quota: "remote_api",
     },
   },
   {
@@ -220,7 +199,6 @@ export const QUOTA_PROVIDER_REGISTRATION_SOURCE = [
       autoSetup: "usually",
       authentication: "opencode_auth_api_key",
       authFallbacks: ["env_api_key", "global_opencode_config"],
-      quota: "remote_api",
     },
   },
   {
@@ -232,7 +210,6 @@ export const QUOTA_PROVIDER_REGISTRATION_SOURCE = [
       autoSetup: "yes",
       authentication: "opencode_auth_api_key",
       authFallbacks: ["env_api_key", "global_opencode_config"],
-      quota: "remote_api",
     },
   },
   {
@@ -250,7 +227,6 @@ export const QUOTA_PROVIDER_REGISTRATION_SOURCE = [
       autoSetup: "yes",
       authentication: "opencode_auth_api_key",
       authFallbacks: ["env_api_key", "global_opencode_config"],
-      quota: "remote_api",
     },
   },
   {
@@ -262,7 +238,6 @@ export const QUOTA_PROVIDER_REGISTRATION_SOURCE = [
       autoSetup: "yes",
       authentication: "opencode_auth_api_key",
       authFallbacks: ["env_api_key", "global_opencode_config"],
-      quota: "remote_api",
     },
   },
   {
@@ -275,7 +250,6 @@ export const QUOTA_PROVIDER_REGISTRATION_SOURCE = [
       autoSetup: "yes",
       authentication: "opencode_auth_api_key",
       authFallbacks: ["env_api_key", "global_opencode_config"],
-      quota: "remote_api",
     },
   },
   {
@@ -287,7 +261,6 @@ export const QUOTA_PROVIDER_REGISTRATION_SOURCE = [
       autoSetup: "yes",
       authentication: "opencode_auth_api_key",
       authFallbacks: ["env_api_key", "global_opencode_config"],
-      quota: "remote_api",
     },
   },
   {
@@ -298,7 +271,6 @@ export const QUOTA_PROVIDER_REGISTRATION_SOURCE = [
     shape: {
       autoSetup: "yes",
       authentication: "opencode_auth_oauth_token",
-      quota: "remote_api",
       notes: "SuperGrok OAuth via OpenCode /connect; shared weekly credit meter",
     },
   },
@@ -315,7 +287,6 @@ export const QUOTA_PROVIDER_REGISTRATION_SOURCE = [
     shape: {
       autoSetup: "needs_quick_setup",
       authentication: "state_only",
-      quota: "remote_api",
       quickSetupAnchor: "xiaomi-mimo",
       notes: "Reads the Xiaomi MiMo dashboard with a filtered trusted cookie",
     },
@@ -329,7 +300,6 @@ export const QUOTA_PROVIDER_REGISTRATION_SOURCE = [
       autoSetup: "yes",
       authentication: "opencode_auth_api_key",
       authFallbacks: ["env_api_key", "global_opencode_config"],
-      quota: "remote_api",
       notes: "Reads the official OpenCode Go usage API through standard Go API-key sources",
     },
   },
@@ -341,7 +311,6 @@ export const QUOTA_PROVIDER_REGISTRATION_SOURCE = [
     shape: {
       autoSetup: "yes",
       authentication: "opencode_auth_oauth_token",
-      quota: "remote_api",
       notes:
         "Reads the OpenCode Console billing, budget and usage APIs with your OpenCode Console sign-in",
     },
@@ -355,7 +324,6 @@ export const QUOTA_PROVIDER_REGISTRATION_SOURCE = [
       autoSetup: "usually",
       authentication: "opencode_auth_api_key",
       authFallbacks: ["env_api_key", "global_opencode_config"],
-      quota: "remote_api",
       notes:
         "Queries the Ollama Cloud usage API; reports session, weekly, or monthly usage fractions",
     },
@@ -369,7 +337,6 @@ export const QUOTA_PROVIDER_REGISTRATION_SOURCE = [
       autoSetup: "manual_env_config",
       authentication: "external_api_key",
       authFallbacks: ["env_api_key", "global_opencode_config"],
-      quota: "remote_api",
       notes: "Aggregates exact user-configured accounting sources",
     },
   },

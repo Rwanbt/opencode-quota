@@ -18,6 +18,7 @@ import { chutesProvider } from "./chutes.js";
 import { copilotProvider } from "./copilot.js";
 import { cursorProvider } from "./cursor.js";
 import { deepseekProvider } from "./deepseek.js";
+import { zaiProvider, zhipuProvider } from "./glm-coding-plan.js";
 import { googleAgyProvider } from "./google-agy.js";
 import { googleGeminiCliProvider } from "./google-gemini-cli.js";
 import { kiloProvider } from "./kilo.js";
@@ -36,8 +37,6 @@ import { openRouterProvider } from "./openrouter.js";
 import { quotaProvidersProvider } from "./quota-providers.js";
 import { syntheticProvider } from "./synthetic.js";
 import { xaiProvider } from "./xai.js";
-import { zaiProvider } from "./zai.js";
-import { zhipuProvider } from "./zhipu.js";
 
 const PROVIDERS_BY_ID = {
   anthropic: anthropicProvider,

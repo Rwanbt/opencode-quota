@@ -1,70 +1,126 @@
-import type {
-  QuotaProvider,
-  QuotaProviderContext,
-  QuotaProviderResult,
-  QuotaToastEntry,
-} from "../lib/entries.js";
-import { queryKimiQuota } from "../lib/kimi.js";
+/**
+ * Kimi Code quota (global and China endpoints): the weekly usage and each named limit. Each key
+ * stored in OpenCode is queried as its own account; without stored keys, the key the resolver
+ * finds is.
+ */
+
+import { classifyWindow } from "../core/windows.js";
 import {
-  DEFAULT_KIMI_AUTH_CACHE_MAX_AGE_MS,
-  type ResolvedKimiAuth,
-  type ResolvedKimiAuthWithDiagnostics,
-  resolveKimiCnAuth,
-  resolveKimiCnAuthCached,
-  resolveKimiCnAuthWithDiagnosticsCached,
-  resolveKimiGlobalAuth,
-  resolveKimiGlobalAuthCached,
-  resolveKimiGlobalAuthWithDiagnosticsCached,
-} from "../lib/kimi-auth.js";
+  API_KEY_LOGIN_CACHE_MAX_AGE_MS,
+  API_KEY_LOGIN_VENDORS,
+  type ApiKeyLoginSpec,
+  readKeyLogins,
+  resolveApiKeyLogin,
+  resolveApiKeyLoginWithDiagnostics,
+} from "../lib/api-key-resolver.js";
+import type { QuotaProvider, QuotaProviderContext } from "../lib/entries.js";
+import { queryKimiQuota } from "../lib/kimi.js";
 import { getKimiQuotaEndpoint, type KimiQuotaEndpointId } from "../lib/kimi-endpoints.js";
 import { isCanonicalProviderAvailable } from "../lib/provider-availability.js";
 import { normalizeQuotaProviderId } from "../lib/provider-metadata.js";
-import type { AuthData, KimiQuotaWindow } from "../lib/types.js";
-import { readKeyLoginRows } from "./key-login-rows.js";
+import type { KimiQuotaWindow } from "../lib/types.js";
 import {
-  apiKeyStatusDetails,
-  attemptedErrorResult,
-  attemptedResult,
-  notAttemptedResult,
-  statusDetailsFromRecord,
-  withStatusDetails,
-} from "./result-helpers.js";
+  failedAccount,
+  fetchKeyLogins,
+  keySlug,
+  type ProviderFetchResult,
+  type ProviderRow,
+  quotaRow,
+} from "./contract.js";
+import { apiKeyStatusDetails, statusDetailsFromRecord } from "./result-helpers.js";
 
-type KimiProviderSpec = {
+type KimiSpec = {
   id: "kimi-code-plan-global" | "kimi-code-plan-cn";
   label: string;
   endpoint: KimiQuotaEndpointId;
-  integrationIds: readonly string[];
-  parseAuth: (auth: AuthData) => ResolvedKimiAuth;
-  resolveAuthCached: (params?: { maxAgeMs?: number }) => Promise<ResolvedKimiAuth>;
-  resolveAuthWithDiagnosticsCached: (params?: {
-    maxAgeMs?: number;
-  }) => Promise<ResolvedKimiAuthWithDiagnostics>;
+  auth: ApiKeyLoginSpec;
 };
 
-function toKimiEntries(
-  windows: KimiQuotaWindow[],
-  group: string,
-  sourceId?: string,
-): QuotaToastEntry[] {
-  return windows.map((window) => ({
-    accounting: {
-      resultType: "quota",
-      acquisitionMethod: "remote_api",
-      ownership: "maintained",
-      authority: "provider_reported",
-      ...(sourceId === undefined ? {} : { sourceId }),
-    },
-    name: `${group} ${window.label}`,
-    group,
-    label: `${window.label}:`,
-    right: `${window.used}/${window.limit}`,
-    percentRemaining: window.percentRemaining,
-    resetTimeIso: window.resetTimeIso,
-  }));
+/** The weekly window keeps the key `weekly`; every other limit is `limit.<its name>`. */
+function kimiRows(windows: readonly KimiQuotaWindow[]): ProviderRow[] {
+  return windows.flatMap((window) => {
+    const name = window.label.replace(/:+$/u, "").trim();
+    const kind = classifyWindow(name);
+    const values = { percentRemaining: window.percentRemaining, resetsAt: window.resetTimeIso };
+    if (kind === "week") return [quotaRow({ key: "weekly", label: name, window: kind, ...values })];
+    const limit = keySlug(name.replace(/\s+limit$/iu, "")) || keySlug(name);
+    return limit ? [quotaRow({ key: `limit.${limit}`, label: name, window: kind, ...values })] : [];
+  });
 }
 
-function createKimiProvider(spec: KimiProviderSpec): QuotaProvider {
+async function fetchKimiQuota(
+  spec: KimiSpec,
+  ctx: QuotaProviderContext,
+): Promise<ProviderFetchResult> {
+  const { auth, diagnostics } = await resolveApiKeyLoginWithDiagnostics(spec.auth, {
+    maxAgeMs: API_KEY_LOGIN_CACHE_MAX_AGE_MS,
+  });
+  const endpoint = getKimiQuotaEndpoint(spec.endpoint);
+  const authDetails = [
+    ...apiKeyStatusDetails(diagnostics),
+    ...statusDetailsFromRecord({
+      api_endpoint: endpoint.id,
+      api_base_url: endpoint.apiBaseUrl,
+    }),
+  ];
+  if (auth.state === "none") return { attempted: false, accounts: [], debug: authDetails };
+
+  const query = (apiKey: string) =>
+    queryKimiQuota({
+      apiKey,
+      endpoint: spec.endpoint,
+      label: spec.label,
+      requestTimeoutMs: ctx.config?.requestTimeoutMs,
+    });
+
+  if (diagnostics.source === "opencode.db") {
+    const logins = await readKeyLogins(spec.auth);
+    if (logins.length > 0) {
+      const accounts = await fetchKeyLogins({
+        providerName: spec.label,
+        logins,
+        brokenFirst: true,
+        async fetchLogin({ auth: login }) {
+          const result = await query(login.apiKey);
+          return result.success
+            ? { rows: kimiRows(result.windows), errors: [] }
+            : { rows: [], errors: [{ message: result.error }] };
+        },
+      });
+      return { attempted: true, accounts, debug: authDetails };
+    }
+  }
+
+  if (auth.state === "invalid") {
+    return {
+      attempted: true,
+      accounts: [failedAccount(spec.label, auth.error)],
+      debug: authDetails,
+    };
+  }
+
+  const result = await query(auth.apiKey);
+  if (!result.success) {
+    return {
+      attempted: true,
+      accounts: [failedAccount(spec.label, result.error)],
+      debug: [...authDetails, { key: "live_fetch_error", value: result.error }],
+    };
+  }
+  return {
+    attempted: true,
+    accounts: [{ name: result.label, rows: kimiRows(result.windows), errors: [] }],
+    debug: [
+      ...authDetails,
+      ...result.windows.map((window) => ({
+        key: window.label.toLowerCase().replace(/\s+/g, "_"),
+        value: `used=${window.used}/${window.limit} percent_remaining=${window.percentRemaining} reset_at=${window.resetTimeIso ?? "(none)"}`,
+      })),
+    ],
+  };
+}
+
+function kimiProvider(spec: KimiSpec): QuotaProvider {
   return {
     id: spec.id,
 
@@ -76,8 +132,8 @@ function createKimiProvider(spec: KimiProviderSpec): QuotaProvider {
       });
       if (!providerAvailable) return false;
 
-      const auth = await spec.resolveAuthCached({
-        maxAgeMs: DEFAULT_KIMI_AUTH_CACHE_MAX_AGE_MS,
+      const auth = await resolveApiKeyLogin(spec.auth, {
+        maxAgeMs: API_KEY_LOGIN_CACHE_MAX_AGE_MS,
       });
       return auth.state === "configured" || auth.state === "invalid";
     },
@@ -87,107 +143,21 @@ function createKimiProvider(spec: KimiProviderSpec): QuotaProvider {
       return Boolean(modelId) && normalizeQuotaProviderId(provider) === spec.id;
     },
 
-    async fetch(ctx: QuotaProviderContext): Promise<QuotaProviderResult> {
-      const { auth, diagnostics } = await spec.resolveAuthWithDiagnosticsCached({
-        maxAgeMs: DEFAULT_KIMI_AUTH_CACHE_MAX_AGE_MS,
-      });
-      const endpoint = getKimiQuotaEndpoint(
-        auth.state === "configured" ? auth.endpoint : spec.endpoint,
-      );
-      const authDetails = [
-        ...apiKeyStatusDetails(diagnostics),
-        ...statusDetailsFromRecord({
-          api_endpoint: endpoint.id,
-          api_base_url: endpoint.apiBaseUrl,
-        }),
-      ];
-
-      if (auth.state === "none") {
-        return withStatusDetails(notAttemptedResult(), authDetails);
-      }
-
-      if (diagnostics.source === "opencode.db") {
-        const { credentials, invalidErrors } = await readKeyLoginRows({
-          integrationIds: spec.integrationIds,
-          label: spec.label,
-          parseAuth: spec.parseAuth,
-        });
-        if (credentials.length > 0 || invalidErrors.length > 0) {
-          const results = await Promise.all(
-            credentials.map(async ({ row, displayName, auth: rowAuth }) => ({
-              row,
-              group: displayName,
-              result: await queryKimiQuota({
-                apiKey: rowAuth.apiKey,
-                endpoint: rowAuth.endpoint,
-                label: spec.label,
-                requestTimeoutMs: ctx.config?.requestTimeoutMs,
-              }),
-            })),
-          );
-          const entries: QuotaToastEntry[] = [];
-          const errors: QuotaProviderResult["errors"] = [...invalidErrors];
-          for (const { row, group, result } of results) {
-            if (!result.success) {
-              errors.push({ label: group, message: result.error });
-              continue;
-            }
-            entries.push(...toKimiEntries(result.windows, group, row.id));
-          }
-          return withStatusDetails(attemptedResult(entries, errors), authDetails);
-        }
-      }
-
-      if (auth.state === "invalid") {
-        return withStatusDetails(attemptedErrorResult(spec.label, auth.error), authDetails);
-      }
-
-      const result = await queryKimiQuota({
-        apiKey: auth.apiKey,
-        endpoint: auth.endpoint,
-        label: spec.label,
-        requestTimeoutMs: ctx.config?.requestTimeoutMs,
-      });
-
-      if (!result.success) {
-        return withStatusDetails(attemptedErrorResult(spec.label, result.error), [
-          ...authDetails,
-          { key: "live_fetch_error", value: result.error },
-        ]);
-      }
-
-      return withStatusDetails(
-        attemptedResult(toKimiEntries(result.windows, result.label), [], {
-          singleWindowDisplayName: result.label,
-        }),
-        [
-          ...authDetails,
-          ...result.windows.map((window) => ({
-            key: window.label.toLowerCase().replace(/\s+/g, "_"),
-            value: `used=${window.used}/${window.limit} percent_remaining=${window.percentRemaining} reset_at=${window.resetTimeIso ?? "(none)"}`,
-          })),
-        ],
-      );
-    },
+    fetch: (ctx: QuotaProviderContext) => fetchKimiQuota(spec, ctx),
   };
 }
 
-export const kimiCodePlanGlobalProvider: QuotaProvider = createKimiProvider({
+// Each region has its own key; the legacy aliases (`kimi`, `kimi-code`, ...) belong to CN.
+export const kimiCodePlanGlobalProvider = kimiProvider({
   id: "kimi-code-plan-global",
   label: "Kimi Code",
   endpoint: "global",
-  integrationIds: ["kimi-code-plan-global"],
-  parseAuth: resolveKimiGlobalAuth,
-  resolveAuthCached: resolveKimiGlobalAuthCached,
-  resolveAuthWithDiagnosticsCached: resolveKimiGlobalAuthWithDiagnosticsCached,
+  auth: API_KEY_LOGIN_VENDORS["kimi-code-plan-global"],
 });
 
-export const kimiCodePlanCnProvider: QuotaProvider = createKimiProvider({
+export const kimiCodePlanCnProvider = kimiProvider({
   id: "kimi-code-plan-cn",
   label: "Kimi Code (CN)",
   endpoint: "cn",
-  integrationIds: ["kimi-code-plan-cn", "kimi-for-coding", "kimi-code", "kimi"],
-  parseAuth: resolveKimiCnAuth,
-  resolveAuthCached: resolveKimiCnAuthCached,
-  resolveAuthWithDiagnosticsCached: resolveKimiCnAuthWithDiagnosticsCached,
+  auth: API_KEY_LOGIN_VENDORS["kimi-code-plan-cn"],
 });

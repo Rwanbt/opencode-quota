@@ -1,10 +1,11 @@
+import type { ProviderRow } from "../providers/contract.js";
 import { type ApiKeySpec, getApiKeyCheckedPaths, resolveApiKey } from "./api-key-resolver.js";
 import { sanitizeSingleLineDisplayText } from "./display-sanitize.js";
-import type { AccountingResultType, QuotaToastEntry } from "./entries.js";
 import { REQUEST_TIMEOUT_MS } from "./http.js";
 import { isRecord } from "./json-guards.js";
 import { getCredentialDatabasePaths } from "./opencode-auth.js";
 import type {
+  CustomResultType,
   JsonV1Mapping,
   JsonV1NumberSource,
   JsonV1Path,
@@ -13,6 +14,7 @@ import type {
   RemoteApiQuotaProviderDefinition,
 } from "./quota-providers.js";
 import {
+  customRow,
   customRowKey,
   JSON_V1_MAX_DISPLAY_CODE_POINTS,
   JSON_V1_MAX_NUMBER_MAGNITUDE,
@@ -26,7 +28,7 @@ const JSON_V1_MAX_CANDIDATES = 1_600;
 const JSON_V1_MAX_ENTRIES = 100;
 const JSON_V1_MAX_DETAILED_ERRORS = 16;
 
-const RESULT_TYPES = new Set<AccountingResultType>([
+const RESULT_TYPES = new Set<CustomResultType>([
   "quota",
   "rate_limit",
   "usage",
@@ -35,7 +37,8 @@ const RESULT_TYPES = new Set<AccountingResultType>([
   "balance",
   "status",
 ]);
-const PERCENT_RESULT_TYPES = new Set<AccountingResultType>(["quota", "rate_limit", "budget"]);
+const PERCENT_RESULT_TYPES = new Set<CustomResultType>(["quota", "rate_limit", "budget"]);
+/** `right` and `observedAtIso` are checked but not shown. */
 const QUOTA_V1_ROW_KEYS = [
   "kind",
   "name",
@@ -59,8 +62,9 @@ export interface QuotaProviderAuthResolution {
   credentialDatabasePaths: string[];
 }
 
+/** The rows of one reply; each key is the part of the row id after `custom.<definition id>.`. */
 export type RemoteQuotaProviderResult =
-  | { success: true; entries: QuotaToastEntry[]; rowErrors?: string[] }
+  | { success: true; rows: ProviderRow[]; rowErrors?: string[] }
   | { success: false; error: string };
 
 function hasOnlyKeys(value: Record<string, unknown>, allowed: readonly string[]): boolean {
@@ -85,19 +89,6 @@ function boundedDisplayText(value: unknown, maxCodePoints: number): string | nul
 
 function formatUsd(value: number): string {
   return `$${value.toFixed(2)}`;
-}
-
-function accountingMetadata(
-  resultType: AccountingResultType,
-  observedAtIso?: string,
-): QuotaToastEntry["accounting"] {
-  return {
-    resultType,
-    acquisitionMethod: "remote_api",
-    ownership: "user_configured",
-    authority: "provider_reported",
-    ...(observedAtIso ? { observedAtIso } : {}),
-  };
 }
 
 export async function resolveQuotaProviderApiKey(
@@ -176,16 +167,14 @@ async function readBoundedJson(
   }
 }
 
-function parseQuotaV1Row(
-  source: RemoteApiQuotaProviderDefinition,
-  raw: unknown,
-): QuotaToastEntry | null {
+/** A quota-v1 row keyed by its name. */
+function parseQuotaV1Row(raw: unknown): ProviderRow | null {
   if (!isRecord(raw) || !hasOnlyKeys(raw, QUOTA_V1_ROW_KEYS)) return null;
 
   const name = boundedDisplayText(raw.name, 80);
   const resultType =
-    typeof raw.resultType === "string" && RESULT_TYPES.has(raw.resultType as AccountingResultType)
-      ? (raw.resultType as AccountingResultType)
+    typeof raw.resultType === "string" && RESULT_TYPES.has(raw.resultType as CustomResultType)
+      ? (raw.resultType as CustomResultType)
       : null;
   // Optional fields are undefined when absent and null when present but invalid.
   const label = raw.label === undefined ? undefined : boundedDisplayText(raw.label, 80);
@@ -205,14 +194,16 @@ function parseQuotaV1Row(
     return null;
   }
 
-  const common = {
-    accounting: accountingMetadata(resultType, observedAtIso),
-    name: `${source.label} ${name}`,
-    group: source.label,
-    ...(label ? { label } : {}),
-    ...(right ? { right } : {}),
-    ...(resetTimeIso ? { resetTimeIso } : {}),
-  };
+  const row = (value: { percentRemaining: number } | { text: string }): ProviderRow =>
+    customRow({
+      key: customRowKey(name),
+      name,
+      label,
+      resultType,
+      method: "remote_api",
+      value,
+      resetsAt: resetTimeIso,
+    });
 
   if (
     raw.kind === "percent" &&
@@ -222,20 +213,17 @@ function parseQuotaV1Row(
     PERCENT_RESULT_TYPES.has(resultType) &&
     raw.value === undefined
   ) {
-    return { ...common, kind: "percent", percentRemaining: raw.percentRemaining };
+    return row({ percentRemaining: raw.percentRemaining });
   }
 
   const value = boundedDisplayText(raw.value, 160);
   if (raw.kind === "value" && value !== null && raw.percentRemaining === undefined) {
-    return { ...common, kind: "value", value };
+    return row({ text: value });
   }
   return null;
 }
 
-function parseQuotaV1(
-  source: RemoteApiQuotaProviderDefinition,
-  body: unknown,
-): RemoteQuotaProviderResult {
+function parseQuotaV1(body: unknown): RemoteQuotaProviderResult {
   const invalid = { success: false, error: "Invalid quota-v1 response" } as const;
   if (
     !isRecord(body) ||
@@ -248,18 +236,18 @@ function parseQuotaV1(
     return invalid;
   }
 
-  const entries: QuotaToastEntry[] = [];
+  const rows: ProviderRow[] = [];
   for (const raw of body.entries) {
-    const entry = parseQuotaV1Row(source, raw);
-    if (!entry) return invalid;
-    entries.push(entry);
+    const row = parseQuotaV1Row(raw);
+    if (!row) return invalid;
+    rows.push(row);
   }
-  return { success: true, entries };
+  return { success: true, rows };
 }
 
 type JsonV1Resolved<T> = { ok: true; value: T } | { ok: false; issue: string };
 
-type JsonV1Candidate = { entry: QuotaToastEntry } | { error: string };
+type JsonV1Candidate = { row: ProviderRow } | { error: string };
 
 function exceedsJsonDepth(value: unknown, maxDepth: number): boolean {
   if (!value || typeof value !== "object") return false;
@@ -357,15 +345,8 @@ function formatJsonV1Value(value: number, mapping: JsonV1Mapping): string {
   return mapping.unitPosition === "prefix" ? `${mapping.unit}${value}` : `${value} ${mapping.unit}`;
 }
 
-function formatJsonV1Pair(left: number, right: number, mapping: JsonV1Mapping): string {
-  if (!mapping.unit) return `${left}/${right}`;
-  return mapping.unitPosition === "prefix"
-    ? `${mapping.unit}${left}/${mapping.unit}${right}`
-    : `${left}/${right} ${mapping.unit}`;
-}
-
+/** One mapping applied to one reply row: a row keyed by the mapping's name, or why not. */
 function mapJsonV1Candidate(
-  source: Extract<RemoteApiQuotaProviderDefinition, { format: "json-v1" }>,
   row: Record<string, unknown>,
   rowIndex: number,
   mapping: JsonV1Mapping,
@@ -382,21 +363,23 @@ function mapJsonV1Candidate(
     resetTimeIso = resolved.value;
   }
 
-  let observedAtIso: string | undefined;
+  // The observed time is checked but not shown.
   if (mapping.observedTime) {
     const resolved = resolveJsonV1Timestamp(row, mapping.observedTime);
     if (!resolved.ok) return fail("observedTime", resolved.issue);
-    observedAtIso = resolved.value;
   }
 
-  const common = {
-    accounting: accountingMetadata(mapping.resultType, observedAtIso),
-    name: `${source.label} ${mapping.name}`,
-    group: source.label,
-    rowKey: customRowKey(mapping.name),
-    ...(mapping.label ? { label: mapping.label } : {}),
-    ...(resetTimeIso ? { resetTimeIso } : {}),
-  };
+  const mapped = (value: { percentRemaining: number } | { text: string }): JsonV1Candidate => ({
+    row: customRow({
+      key: customRowKey(mapping.name),
+      name: mapping.name,
+      label: mapping.label,
+      resultType: mapping.resultType,
+      method: "remote_api",
+      value,
+      resetsAt: resetTimeIso,
+    }),
+  });
 
   // Shared by used-limit, remaining-limit, spend-budget and remaining-budget:
   // an amount (used, spent, or remaining) out of a positive total.
@@ -428,14 +411,7 @@ function mapJsonV1Candidate(
     if (Math.abs(percentRemaining) > JSON_V1_MAX_NUMBER_MAGNITUDE) {
       return fail(totalField, "produced a percentage beyond the numeric magnitude limit");
     }
-    return {
-      entry: {
-        ...common,
-        kind: "percent",
-        percentRemaining,
-        right: formatJsonV1Pair(amount.value, total.value, mapping),
-      },
-    };
+    return mapped({ percentRemaining });
   };
 
   const { metric } = mapping;
@@ -451,7 +427,7 @@ function mapJsonV1Candidate(
       }
       const percentRemaining =
         metric.meaning === "remaining" ? percentage.value : 100 - percentage.value;
-      return { entry: { ...common, kind: "percent", percentRemaining } };
+      return mapped({ percentRemaining });
     }
     case "used-limit":
       return share("used", metric.used, "limit", metric.limit);
@@ -467,14 +443,12 @@ function mapJsonV1Candidate(
       // Remaining and balance values may legitimately be negative (overdrawn).
       const mayBeNegative = metric.valueType === "remaining" || metric.valueType === "balance";
       if (!mayBeNegative && value.value < 0) return fail("metric.value", "must be non-negative");
-      return {
-        entry: { ...common, kind: "value", value: formatJsonV1Value(value.value, mapping) },
-      };
+      return mapped({ text: formatJsonV1Value(value.value, mapping) });
     }
     case "status": {
       const value = resolveJsonV1Text(row, metric.value);
       if (!value.ok) return fail("metric.value", value.issue);
-      return { entry: { ...common, kind: "value", value: value.value } };
+      return mapped({ text: value.value });
     }
   }
 }
@@ -517,7 +491,7 @@ function parseJsonV1(
     return invalid(`candidate count exceeded ${JSON_V1_MAX_CANDIDATES}`);
   }
 
-  const entries: QuotaToastEntry[] = [];
+  const mappedRows: ProviderRow[] = [];
   const rowErrors: string[] = [];
   let errorCount = 0;
   const recordError = (error: string): void => {
@@ -533,19 +507,19 @@ function parseJsonV1(
         );
         continue;
       }
-      const mapped = mapJsonV1Candidate(source, row, rowIndex, mapping, mappingIndex);
+      const mapped = mapJsonV1Candidate(row, rowIndex, mapping, mappingIndex);
       if ("error" in mapped) {
         recordError(mapped.error);
         continue;
       }
-      entries.push(mapped.entry);
-      if (entries.length > JSON_V1_MAX_ENTRIES) {
+      mappedRows.push(mapped.row);
+      if (mappedRows.length > JSON_V1_MAX_ENTRIES) {
         return invalid(`more than ${JSON_V1_MAX_ENTRIES} entries were produced`);
       }
     }
   }
 
-  if (entries.length === 0) {
+  if (mappedRows.length === 0) {
     return invalid(rowErrors[0] ?? "no mappings produced entries");
   }
   if (errorCount > rowErrors.length) {
@@ -553,15 +527,13 @@ function parseJsonV1(
   }
   return {
     success: true,
-    entries,
+    rows: mappedRows,
     ...(rowErrors.length > 0 ? { rowErrors } : {}),
   };
 }
 
-function parseOpenRouterKeyV1(
-  source: RemoteApiQuotaProviderDefinition,
-  body: unknown,
-): RemoteQuotaProviderResult {
+/** The key's budget (percent left), or its spend when the key has no limit. */
+function parseOpenRouterKeyV1(body: unknown): RemoteQuotaProviderResult {
   const invalid = { success: false, error: "Invalid openrouter-key-v1 response" } as const;
   if (!isRecord(body) || !isRecord(body.data)) return invalid;
 
@@ -580,37 +552,36 @@ function parseOpenRouterKeyV1(
   if (!isValidUsage || !isValidLimit || !isValidRemaining) return invalid;
 
   if (typeof limit === "number" && limit > 0) {
+    // `limit_remaining` covers the current limit window, while `usage` is the key's lifetime total.
     const remainingUsd = typeof remaining === "number" ? remaining : limit - usage;
     if (remainingUsd > limit) return invalid;
-    // `limit_remaining` covers the current limit window, while `usage` is the key's lifetime total.
-    const usedUsd = typeof remaining === "number" ? limit - remainingUsd : usage;
+    const percentRemaining = (remainingUsd / limit) * 100;
     return {
       success: true,
-      entries: [
-        {
-          accounting: accountingMetadata("budget"),
-          kind: "percent",
-          name: `${source.label} budget`,
-          group: source.label,
-          label: "Budget:",
-          right: `${formatUsd(usedUsd)}/${formatUsd(limit)}`,
-          percentRemaining: (remainingUsd / limit) * 100,
-        },
+      rows: [
+        customRow({
+          key: "budget",
+          name: "budget",
+          label: "Budget",
+          resultType: "budget",
+          method: "remote_api",
+          value: { percentRemaining },
+        }),
       ],
     };
   }
 
   return {
     success: true,
-    entries: [
-      {
-        accounting: accountingMetadata("spend"),
-        kind: "value",
-        name: `${source.label} spend`,
-        group: source.label,
-        label: "Spend:",
-        value: formatUsd(usage),
-      },
+    rows: [
+      customRow({
+        key: "spend",
+        name: "spend",
+        label: "Spend",
+        resultType: "spend",
+        method: "remote_api",
+        value: { text: formatUsd(usage) },
+      }),
     ],
   };
 }
@@ -648,9 +619,9 @@ export async function fetchRemoteQuotaProvider(
     if (!read.ok) return { success: false, error: read.error };
     switch (source.format) {
       case "quota-v1":
-        return parseQuotaV1(source, read.body);
+        return parseQuotaV1(read.body);
       case "openrouter-key-v1":
-        return parseOpenRouterKeyV1(source, read.body);
+        return parseOpenRouterKeyV1(read.body);
       case "json-v1":
         return parseJsonV1(source, read.body);
     }

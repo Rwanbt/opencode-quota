@@ -1,9 +1,9 @@
 import { API_KEY_VENDORS, getApiKeyDiagnostics, hasApiKey } from "../lib/api-key-resolver.js";
 import { queryChutesQuota } from "../lib/chutes.js";
-import type { QuotaProvider, QuotaProviderContext, QuotaProviderResult } from "../lib/entries.js";
+import type { QuotaProvider, QuotaProviderContext } from "../lib/entries.js";
 import { isCanonicalProviderAvailable } from "../lib/provider-availability.js";
 import { modelProviderIncludesAny } from "../lib/provider-model-matching.js";
-import { attemptedResult, mapNullableProviderResult, withStatusDetails } from "./result-helpers.js";
+import { DAILY, failedAccount, type ProviderFetchResult, quotaRow } from "./contract.js";
 
 export const chutesProvider: QuotaProvider = {
   id: "chutes",
@@ -23,31 +23,25 @@ export const chutesProvider: QuotaProvider = {
     return modelProviderIncludesAny(model, ["chutes"]);
   },
 
-  async fetch(ctx: QuotaProviderContext): Promise<QuotaProviderResult> {
+  async fetch(ctx: QuotaProviderContext): Promise<ProviderFetchResult> {
     const diagnostics = await getApiKeyDiagnostics(API_KEY_VENDORS.chutes).catch(() => ({
       configured: false,
       source: null,
       checkedPaths: [],
     }));
-    const result = await queryChutesQuota({ requestTimeoutMs: ctx.config?.requestTimeoutMs });
-    const providerResult = mapNullableProviderResult(result, {
-      errorLabel: "Chutes",
-      onSuccess: (result) =>
-        attemptedResult([
-          {
-            accounting: {
-              resultType: "quota",
-              acquisitionMethod: "remote_api",
-              ownership: "maintained",
-              authority: "provider_reported",
-            },
-            name: "Chutes",
-            percentRemaining: result.percentRemaining,
-            resetTimeIso: result.resetTimeIso,
-          },
-        ]),
-    });
     const detail = `configured=${diagnostics.configured ? "true" : "false"}${diagnostics.source ? ` source=${diagnostics.source}` : ""}${diagnostics.checkedPaths.length > 0 ? ` checked=${diagnostics.checkedPaths.join(" | ")}` : ""}`;
-    return withStatusDetails(providerResult, [{ key: "api_key_diagnostics", value: detail }]);
+    const debug = [{ key: "api_key_diagnostics", value: detail }];
+
+    const result = await queryChutesQuota({ requestTimeoutMs: ctx.config?.requestTimeoutMs });
+    if (!result) return { attempted: false, accounts: [], debug };
+    if (!result.success) {
+      return { attempted: true, accounts: [failedAccount("Chutes", result.error)], debug };
+    }
+    const row = quotaRow({
+      ...DAILY,
+      percentRemaining: result.percentRemaining,
+      resetsAt: result.resetTimeIso,
+    });
+    return { attempted: true, accounts: [{ name: "Chutes", rows: [row], errors: [] }], debug };
   },
 };

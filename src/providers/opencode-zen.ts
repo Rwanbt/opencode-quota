@@ -1,11 +1,5 @@
-import type {
-  AccountingMetadata,
-  QuotaProvider,
-  QuotaProviderContext,
-  QuotaProviderResult,
-  QuotaProviderStatusDetail,
-  QuotaToastEntry,
-} from "../lib/entries.js";
+import type { DebugDetail } from "../core/types.js";
+import type { QuotaProvider, QuotaProviderContext } from "../lib/entries.js";
 import { scrubCredentialErrorText } from "../lib/opencode-auth.js";
 import {
   consoleBaseUrl,
@@ -17,13 +11,8 @@ import {
   queryOpenCodeZenQuota,
 } from "../lib/opencode-zen.js";
 import { normalizeQuotaProviderId } from "../lib/provider-metadata.js";
-import {
-  attemptedErrorResult,
-  attemptedResult,
-  notAttemptedResult,
-  statusDetailsFromRecord,
-  withStatusDetails,
-} from "./result-helpers.js";
+import { failedAccount, MONTHLY, type ProviderFetchResult, type ProviderRow } from "./contract.js";
+import { statusDetailsFromRecord } from "./result-helpers.js";
 
 const OPENCODE_ZEN_GROUP = "OpenCode Zen";
 const USD_UNIT = { kind: "currency", code: "USD" } as const;
@@ -36,18 +25,21 @@ function isExplicitlyEnabled(ctx: QuotaProviderContext): boolean {
   );
 }
 
-function signInFailedResult(state: "expired" | "invalid", detail: string): QuotaProviderResult {
-  return withStatusDetails(
-    attemptedErrorResult(
-      OPENCODE_ZEN_GROUP,
-      `OpenCode Console sign-in failed: ${detail}. ${LOGIN_HINT}`,
-    ),
-    [{ key: "console_auth_state", value: state }],
-  );
+function signInFailed(state: "expired" | "invalid", detail: string): ProviderFetchResult {
+  return {
+    attempted: true,
+    accounts: [
+      failedAccount(
+        OPENCODE_ZEN_GROUP,
+        `OpenCode Console sign-in failed: ${detail}. ${LOGIN_HINT}`,
+      ),
+    ],
+    debug: [{ key: "console_auth_state", value: state }],
+  };
 }
 
 /** Never includes the token. */
-function consoleStatusDetails(credential: OpenCodeConsoleCredential): QuotaProviderStatusDetail[] {
+function consoleStatusDetails(credential: OpenCodeConsoleCredential): DebugDetail[] {
   return statusDetailsFromRecord({
     console_auth_state: "configured",
     console_server: consoleBaseUrl(credential),
@@ -55,20 +47,19 @@ function consoleStatusDetails(credential: OpenCodeConsoleCredential): QuotaProvi
   });
 }
 
-function zenAccounting(
-  resultType: AccountingMetadata["resultType"],
-  authority: AccountingMetadata["authority"] = "provider_reported",
-): AccountingMetadata {
-  return { resultType, acquisitionMethod: "remote_api", ownership: "maintained", authority };
-}
-
 function zenUsdDecimal(value: number): string {
   return value.toFixed(8).replace(/0+$/u, "").replace(/\.$/u, "");
 }
 
-function usdQuantity(value: number) {
+function usd(value: number) {
   return { decimal: zenUsdDecimal(value), unit: USD_UNIT };
 }
+
+const ZEN_ROW = {
+  method: "remote_api",
+  authority: "provider_reported",
+  prominence: "primary",
+} as const;
 
 export const opencodeZenProvider: QuotaProvider = {
   id: "opencode",
@@ -86,26 +77,29 @@ export const opencodeZenProvider: QuotaProvider = {
     return normalizeQuotaProviderId(provider) === "opencode";
   },
 
-  async fetch(ctx: QuotaProviderContext): Promise<QuotaProviderResult> {
+  async fetch(ctx: QuotaProviderContext): Promise<ProviderFetchResult> {
     const consoleAuth = await resolveOpenCodeConsoleAuth();
 
     if (consoleAuth.state === "none") {
-      const noneResult = isExplicitlyEnabled(ctx)
-        ? attemptedErrorResult(
-            OPENCODE_ZEN_GROUP,
-            `No OpenCode Console sign-in found. ${LOGIN_HINT}`,
-          )
-        : notAttemptedResult();
-      return withStatusDetails(noneResult, [{ key: "console_auth_state", value: "none" }]);
+      const debug = [{ key: "console_auth_state", value: "none" }];
+      return isExplicitlyEnabled(ctx)
+        ? {
+            attempted: true,
+            accounts: [
+              failedAccount(OPENCODE_ZEN_GROUP, `No OpenCode Console sign-in found. ${LOGIN_HINT}`),
+            ],
+            debug,
+          }
+        : { attempted: false, accounts: [], debug };
     }
 
     if (consoleAuth.state === "invalid") {
-      return signInFailedResult("invalid", scrubCredentialErrorText(consoleAuth.error));
+      return signInFailed("invalid", scrubCredentialErrorText(consoleAuth.error));
     }
 
     if (consoleAuth.state === "expired") {
       // OpenCode refreshes the Console token when it is read, so this is rare.
-      return signInFailedResult("expired", "the sign-in expired");
+      return signInFailed("expired", "the sign-in expired");
     }
 
     const { credential } = consoleAuth;
@@ -118,10 +112,11 @@ export const opencodeZenProvider: QuotaProvider = {
     });
 
     if (!result.success) {
-      return withStatusDetails(attemptedErrorResult(OPENCODE_ZEN_GROUP, result.error), [
-        ...statusDetails,
-        { key: "live_fetch_error", value: result.error },
-      ]);
+      return {
+        attempted: true,
+        accounts: [failedAccount(OPENCODE_ZEN_GROUP, result.error)],
+        debug: [...statusDetails, { key: "live_fetch_error", value: result.error }],
+      };
     }
 
     const { data } = result;
@@ -138,80 +133,69 @@ export const opencodeZenProvider: QuotaProvider = {
       Number.isFinite(effectiveMonthlyLimit) &&
       effectiveMonthlyLimit > 0 &&
       hasMonthlyUsage;
-    const entries: QuotaToastEntry[] = [];
+    const rows: ProviderRow[] = [];
 
     if (hasMonthlyBudget) {
       const monthlyRemainingUsd = Math.max(0, effectiveMonthlyLimit - monthlyUsageUsd);
-      entries.push({
-        accounting: zenAccounting("budget", "locally_derived"),
-        name: "zen-monthly-budget",
-        group: OPENCODE_ZEN_GROUP,
+      rows.push({
+        ...MONTHLY,
+        ...ZEN_ROW,
+        type: "budget",
+        authority: "locally_derived",
         percentRemaining: Math.min(100, (monthlyRemainingUsd / effectiveMonthlyLimit) * 100),
-        ...(data.budgetResetIso ? { resetTimeIso: data.budgetResetIso } : {}),
-        semantic: { metric: { kind: "window", window: "month" }, prominence: "primary" },
-        basis: {
-          used: { quantity: usdQuantity(monthlyUsageUsd), authority: "provider_reported" },
-          limit: {
-            quantity: usdQuantity(effectiveMonthlyLimit),
-            authority:
-              configuredMonthlyLimit === undefined ? "provider_reported" : "user_configured",
-          },
-          remaining: { quantity: usdQuantity(monthlyRemainingUsd), authority: "locally_derived" },
-        },
+        used: usd(monthlyUsageUsd),
+        limit: usd(effectiveMonthlyLimit),
+        remaining: usd(monthlyRemainingUsd),
+        ...(data.budgetResetIso ? { resetsAt: data.budgetResetIso } : {}),
       });
     } else if (hasMonthlyUsage) {
       // No limit to measure against: still show this month's real spend.
-      entries.push({
-        accounting: zenAccounting("spend"),
-        kind: "quantity",
-        name: "zen-monthly-spend",
-        group: OPENCODE_ZEN_GROUP,
-        semantic: { metric: { kind: "window", window: "month" }, prominence: "primary" },
-        quantity: usdQuantity(monthlyUsageUsd),
-      });
+      rows.push({ ...MONTHLY, ...ZEN_ROW, type: "usage", amount: usd(monthlyUsageUsd) });
     }
 
-    entries.push({
-      accounting: zenAccounting("balance"),
-      kind: "quantity",
-      name: "zen-current-balance",
-      group: OPENCODE_ZEN_GROUP,
-      semantic: {
-        metric: { kind: "component", component: "current_balance" },
-        prominence: hasMonthlyBudget ? "supplementary" : "primary",
-      },
-      quantity: usdQuantity(balanceUsd),
+    rows.push({
+      ...ZEN_ROW,
+      key: "balance",
+      label: "Balance",
+      type: "balance",
+      prominence: hasMonthlyBudget ? "supplementary" : "primary",
+      amount: usd(balanceUsd),
     });
     if (data.reload !== null) {
-      entries.push({
-        accounting: zenAccounting("status"),
-        kind: "boolean",
-        name: "zen-auto-reload",
-        group: OPENCODE_ZEN_GROUP,
-        semantic: {
-          metric: { kind: "component", component: "auto_reload" },
-          prominence: "supplementary",
-        },
-        value: data.reload,
+      rows.push({
+        ...ZEN_ROW,
+        key: "auto_reload",
+        label: "Auto reload",
+        type: "status",
+        prominence: "supplementary",
+        flag: data.reload,
       });
     }
 
-    const errors = result.errors.map((message) => ({ label: OPENCODE_ZEN_GROUP, message }));
     const usdText = (value: number) => `USD ${zenUsdDecimal(value)}`;
-
-    return withStatusDetails(attemptedResult(entries, errors), [
-      ...statusDetails,
-      ...statusDetailsFromRecord({
-        balance_usd: usdText(balanceUsd),
-        monthly_limit_usd: data.monthlyLimit === null ? "(none)" : usdText(data.monthlyLimit),
-        monthly_usage_usd: monthlyUsageUsd === null ? "(unknown)" : usdText(monthlyUsageUsd),
-        budget_source: data.budgetSource,
-        auto_reload: data.reload === null ? "(unknown)" : String(data.reload),
-        auto_reload_amount_raw: data.reloadAmount === null ? "(none)" : String(data.reloadAmount),
-        auto_reload_trigger_raw:
-          data.reloadTrigger === null ? "(none)" : String(data.reloadTrigger),
-        live_fetch_error: result.errors.length > 0 ? result.errors.join(" | ") : undefined,
-      }),
-    ]);
+    return {
+      attempted: true,
+      accounts: [
+        {
+          name: OPENCODE_ZEN_GROUP,
+          rows,
+          errors: result.errors.map((message) => ({ message })),
+        },
+      ],
+      debug: [
+        ...statusDetails,
+        ...statusDetailsFromRecord({
+          balance_usd: usdText(balanceUsd),
+          monthly_limit_usd: data.monthlyLimit === null ? "(none)" : usdText(data.monthlyLimit),
+          monthly_usage_usd: monthlyUsageUsd === null ? "(unknown)" : usdText(monthlyUsageUsd),
+          budget_source: data.budgetSource,
+          auto_reload: data.reload === null ? "(unknown)" : String(data.reload),
+          auto_reload_amount_raw: data.reloadAmount === null ? "(none)" : String(data.reloadAmount),
+          auto_reload_trigger_raw:
+            data.reloadTrigger === null ? "(none)" : String(data.reloadTrigger),
+          live_fetch_error: result.errors.length > 0 ? result.errors.join(" | ") : undefined,
+        }),
+      ],
+    };
   },
 };

@@ -1,7 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { queryZaiQuota } from "../src/lib/zai.js";
-import { queryZhipuQuota } from "../src/lib/zhipu.js";
+import { GLM_ENDPOINTS, queryGlmCodingPlanQuota } from "../src/lib/glm-coding-plan.js";
+
+function queryZaiQuota(options: { requestTimeoutMs?: number; apiKey?: string } = {}) {
+  return queryGlmCodingPlanQuota(GLM_ENDPOINTS.zai, options);
+}
+
+function queryZhipuQuota(options: { requestTimeoutMs?: number; apiKey?: string } = {}) {
+  return queryGlmCodingPlanQuota(GLM_ENDPOINTS.zhipu, options);
+}
 
 const mocks = vi.hoisted(() => ({
   resolveZaiAuthCached: vi.fn(),

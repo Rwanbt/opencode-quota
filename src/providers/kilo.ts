@@ -1,142 +1,46 @@
+import type { Amount } from "../core/types.js";
 import { API_KEY_VENDORS, getApiKeyDiagnostics, hasApiKey } from "../lib/api-key-resolver.js";
-import type {
-  AccountingMetadata,
-  QuotaProvider,
-  QuotaProviderContext,
-  QuotaProviderResult,
-  QuotaToastEntry,
-} from "../lib/entries.js";
+import type { QuotaProvider, QuotaProviderContext } from "../lib/entries.js";
 import { fmtUsdAmount } from "../lib/format-utils.js";
 import { type KiloQuotaResult, queryKiloQuota } from "../lib/kilo.js";
 import { modelProviderMatchesRuntimeId } from "../lib/provider-model-matching.js";
 import { accountingDecimalFromNumber } from "./accounting-decimal.js";
-import {
-  attemptedErrorResult,
-  attemptedResult,
-  notAttemptedResult,
-  simpleApiKeyStatusDetails,
-  statusDetailsFromRecord,
-  withStatusDetails,
-} from "./result-helpers.js";
+import { failedAccount, type ProviderFetchResult, type ProviderRow } from "./contract.js";
+import { simpleApiKeyStatusDetails, statusDetailsFromRecord } from "./result-helpers.js";
 
-const KILO_QUOTA_ACCOUNTING: AccountingMetadata = {
-  resultType: "quota",
-  acquisitionMethod: "remote_api",
-  ownership: "maintained",
-  authority: "locally_derived",
-};
-
-const KILO_BALANCE_ACCOUNTING: AccountingMetadata = {
-  resultType: "balance",
-  acquisitionMethod: "remote_api",
-  ownership: "maintained",
-  authority: "provider_reported",
-};
+const LABEL = "Kilo Gateway";
 
 type KiloPassSuccess = Extract<NonNullable<KiloQuotaResult>, { success: true; mode: "kilo_pass" }>;
-type KiloBalanceSuccess = Extract<
-  NonNullable<KiloQuotaResult>,
-  { success: true; mode: "gateway_balance" }
->;
 
-function usdQuantity(value: number) {
-  return {
-    decimal: accountingDecimalFromNumber(value),
-    unit: { kind: "currency", code: "USD" } as const,
-  };
+function usd(value: number): Amount {
+  return { decimal: accountingDecimalFromNumber(value), unit: { kind: "currency", code: "USD" } };
 }
 
-function buildKiloPassEntries(state: KiloPassSuccess): QuotaToastEntry[] {
+/** The Kilo Pass credits: percent left of base plus bonus credits, else the USD left. */
+function passCreditsRow(state: KiloPassSuccess): ProviderRow {
   const totalCreditsUsd = state.baseCreditsUsd + state.bonusCreditsUsd;
-
+  const row = {
+    key: "pass_credits",
+    label: "Pass credits",
+    type: "quota",
+    method: "remote_api",
+    authority: "locally_derived",
+    prominence: "primary",
+    ...(state.resetTimeIso ? { resetsAt: state.resetTimeIso } : {}),
+  } as const;
   if (totalCreditsUsd > 0) {
-    return [
-      {
-        accounting: KILO_QUOTA_ACCOUNTING,
-        name: "kilo-gateway-credits",
-        group: "Kilo Gateway",
-        percentRemaining: Math.min(
-          100,
-          Math.max(0, ((totalCreditsUsd - state.usageUsd) / totalCreditsUsd) * 100),
-        ),
-        semantic: {
-          metric: { kind: "component", component: "remaining_credits" },
-          prominence: "primary",
-        },
-        basis: {
-          used: {
-            quantity: usdQuantity(state.usageUsd),
-            authority: "provider_reported",
-          },
-          limit: {
-            quantity: usdQuantity(totalCreditsUsd),
-            authority: "locally_derived",
-          },
-          remaining: {
-            quantity: usdQuantity(state.remainingUsd),
-            authority: "locally_derived",
-          },
-        },
-        ...(state.resetTimeIso ? { resetTimeIso: state.resetTimeIso } : {}),
-      },
-    ];
+    return {
+      ...row,
+      percentRemaining: Math.min(
+        100,
+        Math.max(0, ((totalCreditsUsd - state.usageUsd) / totalCreditsUsd) * 100),
+      ),
+      used: usd(state.usageUsd),
+      limit: usd(totalCreditsUsd),
+      remaining: usd(state.remainingUsd),
+    };
   }
-
-  return [
-    {
-      kind: "quantity",
-      accounting: KILO_QUOTA_ACCOUNTING,
-      name: "kilo-gateway-remaining-credits",
-      group: "Kilo Gateway",
-      semantic: {
-        metric: { kind: "component", component: "remaining_credits" },
-        prominence: "primary",
-      },
-      quantity: usdQuantity(state.remainingUsd),
-      ...(state.resetTimeIso ? { resetTimeIso: state.resetTimeIso } : {}),
-    },
-  ];
-}
-
-function mapKiloPassSuccess(state: KiloPassSuccess): QuotaProviderResult {
-  const rawDetails = statusDetailsFromRecord({
-    base_credits_usd: fmtUsdAmount(state.baseCreditsUsd),
-    usage_usd: fmtUsdAmount(state.usageUsd),
-    bonus_credits_usd: fmtUsdAmount(state.bonusCreditsUsd),
-    remaining_usd: fmtUsdAmount(state.remainingUsd),
-    overage_usd: fmtUsdAmount(state.overageUsd),
-    reset_at: state.resetTimeIso ?? "(none)",
-  });
-
-  return withStatusDetails(
-    {
-      ...attemptedResult(buildKiloPassEntries(state)),
-      rawDetails,
-    },
-    [...statusDetailsFromRecord({ accounting_mode: "kilo_pass" }), ...rawDetails],
-  );
-}
-
-function mapKiloBalanceSuccess(state: KiloBalanceSuccess): QuotaProviderResult {
-  return withStatusDetails(
-    attemptedResult([
-      {
-        kind: "quantity",
-        accounting: KILO_BALANCE_ACCOUNTING,
-        name: "kilo-gateway-total-balance",
-        group: "Kilo Gateway",
-        semantic: {
-          metric: { kind: "component", component: "total_balance" },
-          prominence: "primary",
-        },
-        quantity: usdQuantity(state.balanceUsd),
-      },
-    ]),
-    statusDetailsFromRecord({
-      accounting_mode: "gateway_balance",
-      balance_usd: fmtUsdAmount(state.balanceUsd),
-    }),
-  );
+  return { ...row, amount: usd(state.remainingUsd) };
 }
 
 export const kiloProvider: QuotaProvider = {
@@ -150,36 +54,59 @@ export const kiloProvider: QuotaProvider = {
     return modelProviderMatchesRuntimeId(model, "kilo");
   },
 
-  async fetch(ctx: QuotaProviderContext): Promise<QuotaProviderResult> {
+  async fetch(ctx: QuotaProviderContext): Promise<ProviderFetchResult> {
     const diagnostics = await getApiKeyDiagnostics(API_KEY_VENDORS.kilo).catch(() => ({
       configured: false,
       source: null,
       checkedPaths: [],
       credentialDatabasePaths: [],
     }));
-    const stateResult = await queryKiloQuota({
-      requestTimeoutMs: ctx.config?.requestTimeoutMs,
-    });
-    const keyStatusDetails = simpleApiKeyStatusDetails(diagnostics);
+    const keyDetails = simpleApiKeyStatusDetails(diagnostics);
 
-    if (!stateResult) {
-      return withStatusDetails(notAttemptedResult(), keyStatusDetails);
-    }
-    if (!stateResult.success) {
-      return withStatusDetails(
-        attemptedErrorResult("Kilo Gateway", stateResult.error),
-        keyStatusDetails,
-      );
+    const state = await queryKiloQuota({ requestTimeoutMs: ctx.config?.requestTimeoutMs });
+    if (!state) return { attempted: false, accounts: [], debug: keyDetails };
+    if (!state.success) {
+      return { attempted: true, accounts: [failedAccount(LABEL, state.error)], debug: keyDetails };
     }
 
-    const providerResult =
-      stateResult.mode === "kilo_pass"
-        ? mapKiloPassSuccess(stateResult)
-        : mapKiloBalanceSuccess(stateResult);
+    if (state.mode === "kilo_pass") {
+      return {
+        attempted: true,
+        accounts: [{ name: LABEL, rows: [passCreditsRow(state)], errors: [] }],
+        debug: [
+          ...keyDetails,
+          ...statusDetailsFromRecord({
+            accounting_mode: "kilo_pass",
+            base_credits_usd: fmtUsdAmount(state.baseCreditsUsd),
+            usage_usd: fmtUsdAmount(state.usageUsd),
+            bonus_credits_usd: fmtUsdAmount(state.bonusCreditsUsd),
+            remaining_usd: fmtUsdAmount(state.remainingUsd),
+            overage_usd: fmtUsdAmount(state.overageUsd),
+            reset_at: state.resetTimeIso ?? "(none)",
+          }),
+        ],
+      };
+    }
 
-    return withStatusDetails(providerResult, [
-      ...keyStatusDetails,
-      ...(providerResult.statusDetails ?? []),
-    ]);
+    const balanceRow: ProviderRow = {
+      key: "balance",
+      label: "Balance",
+      type: "balance",
+      method: "remote_api",
+      authority: "provider_reported",
+      prominence: "primary",
+      amount: usd(state.balanceUsd),
+    };
+    return {
+      attempted: true,
+      accounts: [{ name: LABEL, rows: [balanceRow], errors: [] }],
+      debug: [
+        ...keyDetails,
+        ...statusDetailsFromRecord({
+          accounting_mode: "gateway_balance",
+          balance_usd: fmtUsdAmount(state.balanceUsd),
+        }),
+      ],
+    };
   },
 };
