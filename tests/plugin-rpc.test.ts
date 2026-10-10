@@ -164,7 +164,7 @@ describe("server quota RPC", () => {
     await rm(TEST_RUNTIME_ROOT, { recursive: true, force: true, maxRetries: 3 });
   });
 
-  it("registers the quota RPC with its nine methods during setup", async () => {
+  it("registers the quota RPC with its ten methods during setup", async () => {
     const { QuotaRpc } = await import("../src/rpc.js");
     const { definition, handlers } = await setupServer();
 
@@ -178,6 +178,7 @@ describe("server quota RPC", () => {
       "status",
       "usage",
       "downloadPrices",
+      "settings",
       "saveSettings",
       "acknowledgeDisplayImport",
     ]);
@@ -336,6 +337,64 @@ describe("server quota RPC", () => {
       expect(emit).toHaveBeenCalledWith("changed", { snapshot: withPercentWords("used") }),
     );
     await expect(call("snapshot", {})).resolves.toEqual({ snapshot: withPercentWords("used") });
+  });
+
+  it("answers the settings a client may change, and switches a custom provider on", async () => {
+    const gateway = {
+      id: "my-gateway",
+      label: "My gateway",
+      mode: "remote-api",
+      url: "http://127.0.0.2:8080/quota",
+      format: "quota-v1",
+      apiKeyEnv: "MY_GATEWAY_KEY",
+      enabled: false,
+    };
+    useSettings({ providers: { enabled: ["copilot"], custom: [gateway] } });
+    const { call } = await setupServer();
+
+    const settings = (await call("settings", {})) as {
+      values: Record<string, unknown>;
+      providers: Array<{ id: string; label: string }>;
+      custom: Array<{ fingerprint: string }>;
+    };
+
+    expect(settings.values).toMatchObject({ "providers.enabled": ["copilot"] });
+    for (const fileOnly of ["providers.custom", "providers.anthropic.binaryPath", "export.path"]) {
+      expect(settings.values).not.toHaveProperty([fileOnly]);
+    }
+    expect(settings.providers).toContainEqual({ id: "custom", label: "Custom providers" });
+    expect(settings.custom).toEqual([
+      {
+        id: "my-gateway",
+        label: "My gateway",
+        enabled: false,
+        request: {
+          url: "http://127.0.0.2:8080/quota",
+          key: 'environment variable MY_GATEWAY_KEY, else OpenCode\'s API key for provider "my-gateway"',
+          insecure: true,
+        },
+        fingerprint: expect.stringMatching(/^[0-9a-f]{64}$/),
+      },
+    ]);
+
+    const fingerprint = settings.custom[0]?.fingerprint;
+    await expect(
+      call("saveSettings", {
+        patch: {},
+        customEnabled: { "my-gateway": { enabled: true, fingerprint } },
+      }),
+    ).resolves.toEqual({ ok: true, issues: [] });
+    expect(parseJsonc(await readFile(SETTINGS_FILE, "utf8")).providers.custom).toEqual([
+      { ...gateway, enabled: true },
+    ]);
+    expect(((await call("settings", {})) as typeof settings).custom).toMatchObject([
+      { id: "my-gateway", enabled: true },
+    ]);
+    // A definition changed on disk shows at once, before the settings watch sees it.
+    useSettings({ providers: { custom: [{ ...gateway, url: "https://other.example/quota" }] } });
+    expect(((await call("settings", {})) as typeof settings).custom).toMatchObject([
+      { request: { url: "https://other.example/quota" } },
+    ]);
   });
 
   it("saves nothing that only the file may set", async () => {

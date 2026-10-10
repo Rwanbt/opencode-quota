@@ -54,7 +54,11 @@ export type Group = {
 };
 
 /** `ids` first in the given order, then the rest in their own order. */
-function ordered<T>(items: readonly T[], idOf: (item: T) => string, order: readonly string[]): T[] {
+export function ordered<T>(
+  items: readonly T[],
+  idOf: (item: T) => string,
+  order: readonly string[],
+): T[] {
   const rank = new Map(order.map((id, index) => [id, index]));
   return items
     .map((item, index) => ({ item, index, rank: rank.get(idOf(item)) ?? order.length + index }))
@@ -138,7 +142,10 @@ export function visibleGroups(
  * The one row a group shows in the collapsed sidebar and the status line: the preferred
  * window, else the row with the least left, else the first row.
  */
-export function pickRow(group: Group, choice: WindowChoice = "lowest"): VisibleRow | undefined {
+export function pickRow(
+  group: Pick<Group, "rows">,
+  choice: WindowChoice = "lowest",
+): VisibleRow | undefined {
   const withPercent = group.rows.filter((item) => item.row.percentRemaining !== undefined);
   const preferred = withPercent.find((item) => choice !== "lowest" && item.row.window === choice);
   if (preferred) return preferred;

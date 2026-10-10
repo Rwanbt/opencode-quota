@@ -3,7 +3,8 @@
  * draws each segment in its color role; toasts and the CLI print the plain text.
  */
 import { describeError } from "../core/errors.js";
-import type { SessionTokens, Words } from "../core/types.js";
+import { paceOf, paceText } from "../core/pace.js";
+import type { QuotaRow, SessionTokens, Words } from "../core/types.js";
 import { WINDOWS } from "../core/windows.js";
 import { columnsOf } from "./columns.js";
 import {
@@ -82,6 +83,20 @@ function groupState(group: Group, nowMs: number): Segment | undefined {
   return undefined;
 }
 
+/**
+ * "runs out in 1h 5m" when the surface shows it (`on`) and the row, used at its pace so far,
+ * runs out before it resets.
+ */
+function runsOutText(
+  on: boolean | undefined,
+  row: QuotaRow,
+  nowMs: number,
+  words: Words,
+): string | undefined {
+  const pace = on ? paceOf(row, nowMs) : undefined;
+  return pace?.runsOutInMs === undefined ? undefined : paceText(pace, words);
+}
+
 /** Marks rows kept from an earlier check when there is no room for the error's words. */
 const ERROR_MARK = "⚠";
 
@@ -121,6 +136,8 @@ export type SidebarInput = {
   /** Columns the sidebar gives quota. */
   width: number;
   sessionTokens?: SessionTokens;
+  /** A "runs out in 2h" line under each row that runs out before its reset. */
+  runsOut?: boolean;
 };
 
 /** §4.1: the expanded Quota panel, below its title line. */
@@ -182,7 +199,13 @@ export function sidebarLines(input: SidebarInput): Line[] {
         width,
       ),
     });
-    lines.push(...group.rows.map(rowLine));
+    for (const item of group.rows) {
+      lines.push(rowLine(item));
+      const runsOut = runsOutText(input.runsOut, item.row, nowMs, words);
+      if (!runsOut) continue;
+      const text = `${" ".repeat(layout.indent + layout.labelWidth + 1)}${runsOut}`;
+      lines.push({ id: item.row.id, segments: clip([{ text, role: "warning" }], width) });
+    }
   });
   if (input.sessionTokens) {
     for (let gap = 0; gap < layout.providerGap; gap++) lines.push({ id: "", segments: [] });
@@ -222,6 +245,8 @@ export type CollapsedInput = {
   width: number;
   /** Preferred window by provider id. */
   window: Record<string, WindowChoice>;
+  /** A "runs out in 2h" line under each provider whose shown row runs out before its reset. */
+  runsOut?: boolean;
 };
 
 /**
@@ -231,8 +256,7 @@ export type CollapsedInput = {
 export function collapsedLines(input: CollapsedInput): Line[] {
   const { layout, words, nowMs } = input;
   const barWidth = layout.bar === "none" ? 0 : Math.min(layout.barWidth, 10);
-  return input.groups.map((group) => {
-    const picked = pickRow(group, input.window[group.providerId]);
+  const providerLine = (group: Group, picked: VisibleRow | undefined): Line => {
     const percent = picked?.row.percentRemaining;
     const name: Segment = { text: `${fit(group.title, 9)} `, role: "provider", percent };
     const state = groupState(group, nowMs);
@@ -263,6 +287,17 @@ export function collapsedLines(input: CollapsedInput): Line[] {
         input.width,
       ),
     };
+  };
+  return input.groups.flatMap((group) => {
+    const picked = pickRow(group, input.window[group.providerId]);
+    const line = providerLine(group, picked);
+    const runsOut = picked && runsOutText(input.runsOut, picked.row, nowMs, words);
+    if (!runsOut) return [line];
+    const text = `${" ".repeat(10)}${runsOut}`;
+    return [
+      line,
+      { id: group.providerId, segments: clip([{ text, role: "warning" }], input.width) },
+    ];
   });
 }
 
@@ -278,6 +313,8 @@ export type StatusInput = {
   words: Words;
   nowMs: number;
   window: Record<string, WindowChoice>;
+  /** "(runs out in 2h)" after each provider whose shown row runs out before its reset. */
+  runsOut?: boolean;
 };
 
 /** A provider's name on the status line: with its account only when it shows several. */
@@ -310,6 +347,7 @@ export function statusSegment(input: StatusInput, group: Group, level: StatusLev
     : reset
       ? { text: ` ${reset}`, role: "reset", percent }
       : undefined;
+  const runsOut = runsOutText(input.runsOut, picked.row, nowMs, words);
   return {
     id: group.providerId,
     segments: [
@@ -326,6 +364,7 @@ export function statusSegment(input: StatusInput, group: Group, level: StatusLev
         percent,
       },
       ...(after ? [after] : []),
+      ...(runsOut ? [{ text: ` (${runsOut})`, role: "warning" as const }] : []),
     ],
   };
 }
@@ -414,11 +453,13 @@ export function bigStatusLine(input: StatusInput, width?: number): Line | undefi
     : reset
       ? { text: ` · ${reset}`, role: "reset", percent }
       : undefined;
+  const runsOut = runsOutText(input.runsOut, picked.row, input.nowMs, input.words);
   const segments: Segment[] = [
     { text: `${statusName(input, group)} ${shortWindow(picked)} `, role: "statusName", percent },
     ...barSegments(input.layout.bar, percent, 10),
     { text: ` ${percentText(input.words, percent, true)}`, role: "percent", percent },
     ...(after ? [after] : []),
+    ...(runsOut ? [{ text: ` · ${runsOut}`, role: "warning" as const }] : []),
   ];
   return { id: group.providerId, segments: width === undefined ? segments : clip(segments, width) };
 }
@@ -432,6 +473,8 @@ export function plainLines(params: {
   words: Words;
   nowMs: number;
   sessionTokens?: SessionTokens;
+  /** "runs out in 2h" after each row that runs out before its reset. */
+  runsOut?: boolean;
 }): string[] {
   const { words, nowMs } = params;
   const lines = params.groups.flatMap((group) => {
@@ -439,7 +482,9 @@ export function plainLines(params: {
       const name = fit(`${group.title} ${label}`, 19);
       if (row.percentRemaining === undefined) return `${name} ${rowValueText(row)}`.trimEnd();
       const percent = percentText(words, row.percentRemaining, true).padEnd(13);
-      return `${name} ${percent} ${resetText(row, nowMs, words)}`.trimEnd();
+      const line = `${name} ${percent} ${resetText(row, nowMs, words)}`.trimEnd();
+      const runsOut = runsOutText(params.runsOut, row, nowMs, words);
+      return runsOut ? `${line}  ${runsOut}` : line;
     });
     const state = groupState(group, nowMs);
     return state ? [...rows, `${fit(group.title, 19)} ${state.text}`] : rows;

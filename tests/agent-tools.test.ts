@@ -645,17 +645,6 @@ describe("quota_provider_add", () => {
     expect(withKey.ok).toBe(true);
   });
 
-  it("hides the key a new definition names, in the answer that saves it", async () => {
-    vi.stubEnv("REVIEW_ALIAS", "aliasvaluexyz");
-
-    const result = await call("quota_provider_add", {
-      definition: { ...GATEWAY, id: "aliasvaluexyz", apiKeyEnv: "REVIEW_ALIAS" },
-    });
-
-    expect(result).toMatchObject({ ok: true, added: "[redacted]" });
-    expect(result.text).not.toContain("aliasvaluexyz");
-  });
-
   it("hides the key of the provider it removes, in the answer that removes it", async () => {
     vi.stubEnv("REVIEW_ALIAS", "aliasvaluexyz");
     writeSettings(
@@ -947,6 +936,25 @@ describe("quota_provider_test and quota_provider_remove", () => {
     expect(existsSync(join(root, "state", "opencode", "opencode-quota", "quota-providers"))).toBe(
       false,
     );
+  });
+
+  it("reads no login of a switched-off provider, not even to hide it", async () => {
+    const off = { ...GATEWAY, providerId: "off-gateway", enabled: false };
+    writeSettings(JSON.stringify({ providers: { custom: [off] } }));
+    const asked: string[] = [];
+    unbindCredentials = bindCredentialSource({
+      kind: "sqlite",
+      async readRows({ integrationIds }) {
+        asked.push(...integrationIds);
+        return [];
+      },
+    });
+
+    const result = await call("quota_provider_test", { id: off.id });
+
+    expect(result).toMatchObject({ ok: false, error: switchedOff() });
+    expect(asked).toContain("my-gateway");
+    expect(asked).not.toContain("off-gateway");
   });
 
   it("removes one provider and keeps the others and the comments", async () => {

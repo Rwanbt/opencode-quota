@@ -25,7 +25,7 @@ import {
   resolveConfigWriteTarget,
   writeResolvedConfigText,
 } from "../lib/config-write-target.js";
-import { type LockFence, withFileLock } from "../lib/file-lock.js";
+import { type LockFence, LockLostError, withFileLock } from "../lib/file-lock.js";
 import { getOpencodeRuntimeDirs } from "../lib/opencode-runtime-paths.js";
 import {
   type DisplayImport,
@@ -34,7 +34,9 @@ import {
   type V5Conversion,
 } from "./convert.js";
 import {
+  CHANGED_SINCE_REVIEW,
   checkSetting,
+  customProviderFingerprint,
   DOTTED_KEY,
   DUPLICATE_KEY,
   defaultSettings,
@@ -241,14 +243,31 @@ function planEdits(
 const LOCK_WAIT_MS = 2_000;
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+/** The text of the file a save writes; undefined while it does not exist. */
+async function readTarget(target: ConfigWriteTargetSnapshot): Promise<string | undefined> {
+  try {
+    return await readFile(target.writePath, "utf8");
+  } catch (error) {
+    if (errorCode(error) === "ENOENT") return undefined;
+    throw error;
+  }
+}
+
 /**
- * Runs `work` on the file a save writes (a symlink's real target, else settings.jsonc), holding
- * the lock next to it (`withFileLock`), so saves, the conversion and the display import never
- * interleave. `work` calls the fence right before each write commits. After LOCK_WAIT_MS without
- * the lock this fails as busy.
+ * Runs `work` on the file a save writes (a symlink's real target, else settings.jsonc) and its
+ * text, holding the lock next to it (`withFileLock`), so saves, the conversion and the display
+ * import never interleave. `work` calls the fence right before each write commits: it checks
+ * that the lock is still ours and that the file still holds the text `work` got, since a hand
+ * edit takes no lock. Either way the work runs again on a new read. A hand edit between that
+ * check and the rename that commits is still lost: a window of microseconds. After
+ * LOCK_WAIT_MS without the lock this fails as busy.
  */
 async function withSettingsLock<T>(
-  work: (target: ConfigWriteTargetSnapshot, fence: LockFence) => Promise<T>,
+  work: (
+    target: ConfigWriteTargetSnapshot,
+    text: string | undefined,
+    fence: LockFence,
+  ) => Promise<T>,
 ): Promise<T> {
   const deadline = Date.now() + LOCK_WAIT_MS;
   for (;;) {
@@ -257,11 +276,18 @@ async function withSettingsLock<T>(
     const busyMessage = `the settings file is busy: another save holds ${lock}; try again`;
     const done = await withFileLock(
       lock,
-      async (fence) => {
+      async (lockFence) => {
         // Another save created the file, or a link moved, while we waited: lock it again.
         const now = await resolveConfigWriteTarget(target.configuredPath);
         if (!configWriteTargetsEqual(target, now)) return undefined;
-        return { value: await work(target, fence) };
+        const text = await readTarget(target);
+        const fence = async () => {
+          await lockFence();
+          if ((await readTarget(target)) !== text) {
+            throw new LockLostError(`${target.configuredPath} changed while saving; trying again`);
+          }
+        };
+        return { value: await work(target, text, fence) };
       },
       { waitMs: Math.max(0, deadline - Date.now()), busyMessage },
     );
@@ -301,7 +327,7 @@ export async function pendingDisplayImport(): Promise<PendingDisplayImport | und
 
 /** The TUI applied the looks with this id: forget them, but never a newer import. */
 export async function acknowledgeDisplayImport(id: string): Promise<void> {
-  await withSettingsLock(async (_target, fence) => {
+  await withSettingsLock(async (_target, _text, fence) => {
     if ((await pendingDisplayImport())?.id !== id) return;
     await fence();
     await rm(displayImportPath(), { force: true });
@@ -315,21 +341,60 @@ type PlanText = (
   read: ReturnType<typeof readSettingsText>,
 ) => { text: string } | { issues: SettingsIssue[] } | undefined;
 
+/** A custom provider switch: on or off, for the definition with this fingerprint. */
+export type CustomSwitch = { enabled: boolean; fingerprint: string };
+
 /**
- * Merges a patch into settings.jsonc (JSON merge patch: objects merge, null resets). One unknown
- * key or bad value and nothing is saved. Comments stay; a symlink keeps its link; the file is 0600.
+ * Edits that set only the `enabled` field of the custom providers named in `switches`, so each
+ * entry keeps everything else and its comments. Nothing while the list has a problem, and
+ * nothing when a provider to switch on is no longer the definition the user reviewed.
  */
-export async function saveSettings(
-  patch: unknown,
-  options: { allowFileOnly?: boolean } = {},
-): Promise<SaveResult> {
-  return editSettings(() => patch as SettingsPatch, options);
+function planSwitches(
+  read: ReturnType<typeof readSettingsText>,
+  switches: Readonly<Record<string, CustomSwitch>>,
+): { edits: Edit[]; issues: SettingsIssue[] } {
+  if (Object.keys(switches).length === 0) return { edits: [], issues: [] };
+  const key = "providers.custom";
+  if (read.issues.some((issue) => issue.key.startsWith(key))) {
+    return { edits: [], issues: [{ key, message: "has a problem; fix settings.jsonc first" }] };
+  }
+  const definitions = read.settings.providers.custom;
+  const edits: Edit[] = [];
+  const issues: SettingsIssue[] = [];
+  for (const [id, { enabled, fingerprint }] of Object.entries(switches)) {
+    const at = definitions.findIndex((definition) => definition.id === id);
+    const definition = definitions[at];
+    if (!definition) issues.push({ key, message: "a provider to switch is not in the file" });
+    else if (enabled && customProviderFingerprint(definition) !== fingerprint) {
+      issues.push({ key: `${key}.${id}`, message: CHANGED_SINCE_REVIEW });
+    } else edits.push({ path: ["providers", "custom", at, "enabled"], value: enabled });
+  }
+  return { edits, issues };
 }
 
 /**
- * Like `saveSettings`, with the patch built from the settings it saves over: read, `edit`, check
- * and write all hold the lock, so an edit made from the current value never loses a concurrent
- * one. `edit` returns undefined to change nothing.
+ * Merges a patch into settings.jsonc (JSON merge patch: objects merge, null resets). One unknown
+ * key or bad value and nothing is saved. Comments stay; a symlink keeps its link; the file is 0600.
+ * `customEnabled` switches custom providers on or off by id; only the quota window's own switch
+ * sends it (the agent tools never call this).
+ */
+export async function saveSettings(
+  patch: unknown,
+  options: { allowFileOnly?: boolean; customEnabled?: Readonly<Record<string, CustomSwitch>> } = {},
+): Promise<SaveResult> {
+  return editWithLock((base, read) => {
+    const planned = planEdits(patch, options.allowFileOnly === true);
+    const switched = planSwitches(read, options.customEnabled ?? {});
+    const issues = [...planned.issues, ...switched.issues];
+    if (issues.length > 0) return { issues };
+    return { text: applySettingsEdits(base, [...planned.edits, ...switched.edits]) };
+  });
+}
+
+/**
+ * Like `saveSettings` (without switches), with the patch built from the settings it saves over:
+ * read, `edit`, check and write all hold the lock, so an edit made from the current value never
+ * loses a concurrent one. `edit` returns undefined to change nothing.
  */
 export async function editSettings(
   edit: SettingsEdit,
@@ -368,7 +433,7 @@ export async function editSettingsFile(
 async function editWithLock(plan: PlanText): Promise<SaveResult> {
   const path = settingsPath();
   try {
-    return await withSettingsLock((target, fence) => editLocked(target, fence, plan));
+    return await withSettingsLock((target, text, fence) => editLocked(target, text, fence, plan));
   } catch (error) {
     return failedSave(`could not save ${path}: ${errorMessage(error)}`);
   }
@@ -378,17 +443,19 @@ function failedSave(message: string): SaveResult {
   return { ok: false, issues: [{ key: "$file", message }], diff: [] };
 }
 
-function readTarget(target: ConfigWriteTargetSnapshot): Promise<string | undefined> {
-  return target.terminalExisted ? readFile(target.writePath, "utf8") : Promise.resolve(undefined);
-}
-
-async function editLocked(target: ConfigWriteTargetSnapshot, fence: LockFence, plan: PlanText) {
+async function editLocked(
+  target: ConfigWriteTargetSnapshot,
+  original: string | undefined,
+  fence: LockFence,
+  plan: PlanText,
+) {
   const path = target.configuredPath;
-  const original = await readTarget(target);
-  // A syntax error, or a key set twice or with a dot (an edit would change another one).
+  // A syntax error, a version this plugin does not write, or a key set twice or with a dot (an
+  // edit would change another one).
   const blocking = readSettingsText(original ?? "{}").issues.find(
     (issue) =>
       issue.key === "$file" ||
+      issue.key === "version" ||
       issue.message === DUPLICATE_KEY ||
       issue.message.startsWith(DOTTED_KEY),
   );
@@ -411,9 +478,8 @@ async function editLocked(target: ConfigWriteTargetSnapshot, fence: LockFence, p
   const issues = (conversion?.notes ?? []).map((message) => ({ key: "$conversion", message }));
   if (updated === original) return { ok: true, issues, diff };
 
-  // Hand edits and link changes take no lock: write only over the file and text read.
-  const now = await resolveConfigWriteTarget(path);
-  if (!configWriteTargetsEqual(target, now) || (await readTarget(target)) !== original) {
+  // Link changes take no lock: write only over the file read (the fence checks its text).
+  if (!configWriteTargetsEqual(target, await resolveConfigWriteTarget(path))) {
     return failedSave(`${path} changed while saving; nothing was saved, try again`);
   }
   if (conversion) await keepDisplayImport(conversion.displayImport, fence);
@@ -435,7 +501,7 @@ export async function convertV5(): Promise<V5Conversion | undefined> {
   const malformed = "an old settings file does not parse; converted in memory until it is fixed";
   if (conversion.malformed) return { ...conversion, notWrittenReason: malformed };
   try {
-    return await withSettingsLock(async (target, fence) => {
+    return await withSettingsLock(async (target, _text, fence) => {
       // Another OpenCode process converted first.
       if (target.terminalExisted) return undefined;
       await keepDisplayImport(conversion.displayImport, fence);

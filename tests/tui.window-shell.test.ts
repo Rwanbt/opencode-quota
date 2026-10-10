@@ -6,7 +6,8 @@
 import { createRoot } from "solid-js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { QuotaRpcNoticeListInput, QuotaRpcNoticeListOutput } from "../src/rpc.js";
-import { defaultDisplaySettings } from "../src/tui/display.js";
+import { createDisplayStore, type DisplayStorage } from "../src/tui/display.js";
+import { createSettingsEditor } from "../src/tui/window/settings.tsx";
 import { createQuotaWindow, type QuotaWindow } from "../src/tui/window/shell.tsx";
 
 type Node = { type: unknown; props: Record<string, any> };
@@ -66,6 +67,19 @@ function click(tree: unknown, text: string): void {
   ).at(-1);
   if (!target) throw new Error(`nothing clickable shows ${text}`);
   target.props.onMouseUp();
+}
+
+/** Clicks the › of the option line titled `title`, as a click on its value does. */
+function clickLine(tree: unknown, title: string): void {
+  const line = findAll(
+    tree,
+    (node) =>
+      node.type === "box" &&
+      typeof node.props?.onMouseDown === "function" &&
+      textLines(node).some((text) => text.includes(title)),
+  ).at(-1);
+  if (!line) throw new Error(`no option line shows ${title}`);
+  click(line, "›");
 }
 
 /** Lets the answered requests run to their end. */
@@ -193,16 +207,23 @@ function fakeHost() {
       toast: { show: vi.fn() },
     },
   };
+  // Nothing is saved yet: the Settings tabs start from the defaults.
+  const storage: DisplayStorage = {
+    store: (_key, options) => [options.initial, async () => {}],
+  };
+  const display = createDisplayStore(storage);
+  const settings = createSettingsEditor(api as never, display);
   const surface = {
     theme: () => THEME,
-    display: defaultDisplaySettings,
+    display: display.shown,
     quota: {
       snapshot: () => undefined,
       watch: () => () => {},
       refresh: async () => undefined,
     },
+    editing: settings,
   };
-  const quotaWindow = createQuotaWindow(api as never, surface as never);
+  const quotaWindow = createQuotaWindow(api as never, surface as never, settings);
   /** The terminal changes size: OpenTUI calls every resize listener, in the order they came. */
   const resize = () => {
     for (const listener of [...resizeListeners]) listener();
@@ -296,8 +317,8 @@ describe("quota window shell", () => {
     let view = draw(host.quotaWindow);
     click(view.tree, "Copilot moves to AI Credits.");
     click(view.tree, "Copilot moves to AI Credits.");
-    click(view.tree, "Count on the Home screen");
-    click(view.tree, "Count on the Home screen");
+    clickLine(view.tree, "Count on the Home screen");
+    clickLine(view.tree, "Count on the Home screen");
     view.dispose();
     await flush();
     // The requests run one after another: answer each as it goes out.

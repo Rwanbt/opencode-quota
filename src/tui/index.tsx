@@ -13,18 +13,14 @@ import { onCleanup, Show } from "solid-js";
 import type { QuotaSnapshot } from "../core/types.js";
 import { parseUsageArguments } from "../core/usage-ranges.js";
 import { type ClientHost, createQuotaClient, reportFailure } from "./client.js";
-import {
-  applyDisplayImport,
-  type DisplaySettings,
-  type DisplayStorage,
-  loadDisplaySettings,
-} from "./display.js";
+import { applyDisplayImport, createDisplayStore, type DisplayStorage } from "./display.js";
 import { registerTypedQuotaCommands, type TypedCommandHost } from "./legacy-dialogs.js";
 import { createQuickLook, type QuickLookHost } from "./quick-look.js";
 import { SidebarPanel, type SurfaceHost } from "./sidebar.js";
 import { HomeFooter, StatusLine } from "./status-line.js";
 import type { Theme } from "./theme.js";
 import { createToasts, TOAST_TITLE, type TurnEnd } from "./toasts.js";
+import { createSettingsEditor } from "./window/settings.js";
 import { createQuotaWindow, type WindowHost } from "./window/shell.js";
 
 type SidebarState = { open: boolean };
@@ -78,11 +74,7 @@ const plugin = Plugin.define({
   setup(context) {
     const api = context as unknown as TuiContext;
     // Plugin storage is first read when a surface draws, never during setup.
-    let readDisplay: (() => DisplaySettings) | undefined;
-    const display = () => {
-      readDisplay ??= loadDisplaySettings(api.storage);
-      return readDisplay();
-    };
+    const display = createDisplayStore(api.storage);
     let sidebarStore: ReturnType<DisplayStorage["store"]> | undefined;
     const sidebarState = () => {
       sidebarStore ??= api.storage.store<SidebarState>("sidebar", { initial: { open: true } });
@@ -117,12 +109,22 @@ const plugin = Plugin.define({
     });
     const toasts = createToasts({
       show: (toast) => api.ui.toast.show(toast),
-      display,
+      display: display.shown,
       quota,
       isChildSession,
     });
-    const host: SurfaceHost = { theme: () => api.theme, display, quota };
-    const quotaWindow = createQuotaWindow(api, host);
+    const settings = createSettingsEditor(api, display);
+    const host: SurfaceHost = {
+      theme: () => api.theme,
+      display: display.shown,
+      // While the Words tab has unsaved changes, every surface shows its words.
+      quota: {
+        ...quota,
+        snapshot: (sessionID) => settings.withDraftWords(quota.snapshot(sessionID)),
+      },
+      editing: settings,
+    };
+    const quotaWindow = createQuotaWindow(api, host, settings);
     const quickLook = createQuickLook(api, host, quotaWindow);
     /** `/quota_usage [range]`: the Usage tab, on the typed range; a wrong range says why. */
     const openUsage = (argumentsText: string) => {
@@ -260,7 +262,7 @@ const plugin = Plugin.define({
       append: "prompt.footer",
       // Home has a message box too; Home's status line sits in its own footer instead.
       render: (props) => (
-        <Show when={props.sessionID && display().surfaces.statusLine.enabled}>
+        <Show when={props.sessionID && display.shown().surfaces.statusLine.enabled}>
           <StatusLine host={host} sessionID={props.sessionID} />
         </Show>
       ),

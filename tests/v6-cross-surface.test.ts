@@ -3,7 +3,9 @@
  * (`src/tui/index.tsx`) on fake OpenCode hosts, joined by a JSON RPC bridge. Three providers:
  * Copilot with only its plan, MiniMax over its quota, and a custom json-v1 source next to a
  * failing one. OpenCode's history (a session database) used Anthropic and GitHub Copilot.
- * API keys and a private error body are canaries no surface may show.
+ * API keys and a private error body are canaries no surface may show. Then the quota window's
+ * Settings tabs change a surface and save to plugin storage, and save words and a custom
+ * provider switched on to settings.jsonc.
  *
  * Agent tool to plugin: a custom provider an agent replaces is switched off, and the running
  * server stops its requests through the settings reload alone.
@@ -11,6 +13,7 @@
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { parse as parseJsonc } from "jsonc-parser";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ProviderRow } from "../src/providers/contract.js";
 import { answer, percentRow } from "./helpers/fake-answers.js";
@@ -315,6 +318,28 @@ const THEME = {
   }),
 };
 
+type KeyLayer = {
+  mode?: string;
+  priority?: number;
+  enabled?: () => boolean;
+  target?: () => unknown;
+  commands: Array<{ bind?: string; run: () => unknown }>;
+};
+
+/** A line on a node that a click uses: its text is `text`. */
+function clickable(tree: unknown, text: string): Node {
+  return findAll(
+    tree,
+    (node) =>
+      typeof node.props?.onMouseUp === "function" && textLines(node).join("").trim() === text,
+  )[0]!;
+}
+
+/** The lines of the window's Settings line with this setting path (or id). */
+function settingLine(tree: unknown, id: string): Node[] {
+  return findAll(tree, (node) => node.props?.id === `quota-settings.${id}`);
+}
+
 async function startHosts() {
   const { default: serverPlugin } = await import("../src/plugin.js");
   const events = createQuotaRpcEvents();
@@ -367,11 +392,8 @@ async function startHosts() {
   const renderers = new Map<string, (props?: { sessionID?: string }) => unknown>();
   let commands: Array<{ id: string; run: () => Promise<void> }> = [];
   // Every keymap layer, newest last: the Usage tab adds its own each time it renders.
-  const layers: Array<{
-    mode?: string;
-    priority?: number;
-    commands: Array<{ bind?: string; run: () => unknown }>;
-  }> = [];
+  const layers: KeyLayer[] = [];
+  let focused: unknown;
   const renderer: {
     currentFocusedEditor: { plainText: string; clear(): void } | null;
     width: number;
@@ -379,6 +401,7 @@ async function startHosts() {
     off(): void;
   } = { currentFocusedEditor: null, width: 120, on: () => {}, off: () => {} };
   const toast = vi.fn();
+  const dispatch = vi.fn();
   const dialog = { show: vi.fn(), clear: vi.fn(), prompt: vi.fn(), set: vi.fn() };
   // Like OpenCode's prompt, the TUI client runs a server slash command in a session.
   const sessionCommand = vi.fn(async (input: { sessionID: string; name: string; text: string }) =>
@@ -393,7 +416,23 @@ async function startHosts() {
       ...children: unknown[]
     ) => {
       const all = { ...props, children: children.length > 1 ? children : children[0] };
-      return typeof type === "function" ? type(all) : { type, props: all };
+      if (typeof type === "function") return type(all);
+      // A renderable, enough for refs: it takes the keyboard (at once when `focused`). A test
+      // hands an input its own renderable through `ref`.
+      const node = {
+        type,
+        props: all,
+        focus: () => {
+          focused = node;
+        },
+        on: () => {},
+        scrollTo: () => {},
+        scrollBy: () => {},
+        scrollChildIntoView: () => {},
+      };
+      if (typeof all.ref === "function" && type !== "input") all.ref(node);
+      if (all.focused === true) node.focus();
+      return node;
     },
   });
   const { default: tuiPlugin } = await import("../src/tui/index.tsx");
@@ -412,11 +451,12 @@ async function startHosts() {
       location: { default: () => ({ directory: process.cwd() }) },
     },
     keymap: {
-      layer: (build: () => (typeof layers)[number]) => {
+      layer: (build: () => KeyLayer) => {
         const layer = build();
         layers.push(layer);
         if (layer.mode === "global") commands = layer.commands as typeof commands;
       },
+      dispatch,
     },
     ui: {
       slot: (claim: { append: string; render: (props?: { sessionID?: string }) => unknown }) => {
@@ -433,6 +473,9 @@ async function startHosts() {
     render: (slot: string, props?: { sessionID?: string }) => renderers.get(slot)?.(props),
     emit: (name: string, data: Record<string, unknown>) => listeners.get(name)?.({ data }),
     command: (id: string) => commands.find((command) => command.id === `quota.${id}`)!,
+    /** The last layer registered with this priority. */
+    layer: (priority: number) => layers.filter((layer) => layer.priority === priority).at(-1)!,
+    focused: () => focused,
     /** The open dialog, drawn again. */
     renderDialog: () => (dialog.show.mock.calls.at(-1)?.[0] as () => unknown)(),
     /** Presses a key of the open dialog (its newest modal layer). */
@@ -468,6 +511,7 @@ async function startHosts() {
     sessionCommand,
     posted,
     toast,
+    dispatch,
     stored,
     dispose: async () => {
       (disposeTui as () => void)();
@@ -649,18 +693,15 @@ describe("v6 surfaces on the quota snapshot", () => {
     const usageNote = /^Tokens and what they would cost at API prices, from OpenCode's history\./u;
     await vi.waitFor(() => expect(quotaWindow()).toContainEqual(expect.stringMatching(usageNote)));
 
-    // /quota_status and /quota_settings open the window on their tab. A click on Limits shows
-    // every row with its bar, percent, reset and pace.
+    // /quota_status opens the window on Status, /quota_settings on the first Settings tab. A
+    // click on Limits shows every row with its bar, percent, reset and pace.
     await tui.command("status").run();
     expect(quotaWindow()).toContain(
       "What quota found and when it last checked. Copy it into a bug report.",
     );
     await tui.command("settings").run();
-    expect(quotaWindow()).toEqual(
-      expect.arrayContaining([
-        "How the sidebar, the status line, the toasts and /quota look.",
-        "   This tab is not built yet.",
-      ]),
+    expect(quotaWindow()).toContainEqual(
+      expect.stringContaining("Show the Quota panel in the session sidebar"),
     );
     await tui.command("usage").run();
     expect(quotaWindow()).toContainEqual(expect.stringMatching(usageNote));
@@ -678,8 +719,10 @@ describe("v6 surfaces on the quota snapshot", () => {
         "Usage",
         "Notices",
         "Status",
-        "│",
-        "Settings",
+        "│ Settings:",
+        "Sidebar",
+        "Words",
+        "Providers",
         " Copilot · pro   checked just now",
         expect.stringMatching(/^ {3}Plan +█+░+ {2}81% left/u),
         expect.stringMatching(
@@ -782,7 +825,185 @@ describe("v6 surfaces on the quota snapshot", () => {
       gauges,
       savedSnapshot,
     );
+
+    // Settings: the window's Sidebar tab edits a draft that the real sidebar shows at once (the
+    // tab expands the panel collapsed above); Save stores it in plugin storage and closes.
+    const windowTree = () => tui.render("session.composer.top", { sessionID: "ses_1" });
+    clickable(windowTree(), "Sidebar").props.onMouseUp();
+    expect(words(sidebar())).toContain("Session 1.20K in · 45 out");
+    const sessionTokens = settingLine(windowTree(), "sidebar.sessionTokens");
+    expect(words(sessionTokens)).toEqual(["Session tokens line", "‹", "shown", "›", ""]);
+    clickable(sessionTokens, "›").props.onMouseUp();
+    expect(words(sidebar())).not.toContain("Session 1.20K in · 45 out");
+    expect(tui.stored.get("settings").settings.sidebar).toBeUndefined();
+    clickable(windowTree(), "Save").props.onMouseUp();
+    await vi.waitFor(() => expect(windowTree()).toBe(""));
+    expect(tui.stored.get("settings")).toMatchObject({
+      version: 1,
+      settings: { sidebar: { sessionTokens: false }, toast: { afterReply: "always" } },
+    });
+    expect(tui.toast).toHaveBeenLastCalledWith(
+      expect.objectContaining({ variant: "success", title: "Quota settings saved" }),
+    );
     await tui.dispose();
+  });
+
+  describe("the quota window's Settings tabs", () => {
+    async function openSettings(tab: string) {
+      const tui = await startHosts();
+      await tui.command("settings").run();
+      const windowTree = () => tui.render("session.composer.top", { sessionID: "ses_1" });
+      clickable(windowTree(), tab).props.onMouseUp();
+      return { tui, windowTree };
+    }
+
+    it("closes with unsaved changes only after Save or Discard", async () => {
+      const { tui, windowTree } = await openSettings("Layout");
+      clickable(settingLine(windowTree(), "layout.barWidth"), "›").props.onMouseUp();
+      clickable(windowTree(), "esc").props.onMouseUp();
+      clickable(windowTree(), "esc").props.onMouseUp();
+      expect(words(windowTree())).toContain("Keep your changes?");
+      expect(tui.stored.get("settings").settings.layout).toBeUndefined();
+      clickable(windowTree(), "Discard").props.onMouseUp();
+      expect(windowTree()).toBe("");
+      await tui.dispose();
+    });
+
+    it("gives the typed text's keys to its input, and the window its keys back on a tab change", async () => {
+      const { tui, windowTree } = await openSettings("Colors");
+      const press = () =>
+        settingLine(windowTree(), "colors.good")[0]?.props.onMouseDown({ button: 0 });
+      press();
+      press();
+      const input = findAll(windowTree(), (node) => node.type === "input")[0];
+      input?.props.ref(input);
+      expect([tui.layer(20).enabled?.(), tui.layer(20).target?.()]).toEqual([true, input]);
+      expect(tui.layer(10).enabled?.()).toBe(false);
+
+      // Each render makes new nodes, so the window box is "the focusable box".
+      clickable(windowTree(), "Limits").props.onMouseUp();
+      expect(tui.layer(10).enabled?.()).toBe(true);
+      expect(tui.focused()).toMatchObject({ type: "box", props: { focusable: true } });
+      await tui.dispose();
+    });
+
+    it("shows /quota in the Layout tab's form at once, and saves it to plugin storage", async () => {
+      const { tui, windowTree } = await openSettings("Layout");
+      const line = () => settingLine(windowTree(), "quickLook");
+      expect(words(line())).toEqual(expect.arrayContaining(["/quota shows", "a popup"]));
+
+      // A toast before Save: /quota already uses the changed line.
+      clickable(line(), "›").props.onMouseUp();
+      expect(words(line())).toContain("a toast");
+      await tui.command("quick_look").run();
+      await vi.waitFor(() =>
+        expect(tui.toast).toHaveBeenLastCalledWith(
+          expect.objectContaining({
+            variant: "info",
+            message: expect.stringMatching(/^Quota · 7 days/u),
+          }),
+        ),
+      );
+      expect(tui.dialog.show).not.toHaveBeenCalled();
+
+      clickable(windowTree(), "Save").props.onMouseUp();
+      await vi.waitFor(() => expect(tui.stored.get("settings").settings?.quickLook).toBe("toast"));
+      await tui.dispose();
+    });
+
+    it("opens OpenCode's theme list from the theme line's ▸", async () => {
+      const { tui, windowTree } = await openSettings("Colors");
+      clickable(settingLine(windowTree(), "theme"), "▸").props.onMouseUp();
+      expect(tui.dispatch).toHaveBeenCalledWith("theme.switch");
+      await tui.dispose();
+    });
+
+    it("saves Words and a custom provider switched on in Providers to settings.jsonc, then fetches it", async () => {
+      writePluginTestSettings(mocks.root, {
+        providers: {
+          enabled: ["copilot", "custom"],
+          custom: [{ ...CUSTOM_SOURCES[0], enabled: false }],
+        },
+        checking: { minIntervalMs: 1 },
+        announcements: { enabled: false, home: false },
+      });
+      const teamUrl = CUSTOM_SOURCES[0]?.url;
+      const fetchedTeam = () => vi.mocked(fetch).mock.calls.some(([url]) => url === teamUrl);
+      const { tui, windowTree } = await openSettings("Words");
+      const sidebar = () => words(tui.render("sidebar.content", { sessionID: "ses_1" }));
+      await vi.waitFor(() => expect(sidebar()).toContain("Plan ██████░░ 81% left"));
+      await vi.waitFor(() => expect(settingLine(windowTree(), "words.percent")).toHaveLength(1));
+
+      // The sidebar shows the new words before they are saved.
+      clickable(settingLine(windowTree(), "words.percent"), "‹").props.onMouseUp();
+      expect(sidebar()).toContain("Plan ██████░░ 19% used");
+
+      clickable(windowTree(), "Providers").props.onMouseUp();
+      const team = () => settingLine(windowTree(), "custom.team-accounting");
+      await vi.waitFor(() => expect(team()).toHaveLength(1));
+      expect(words(windowTree())).toEqual(
+        expect.arrayContaining([
+          "Custom providers (added in settings.jsonc)",
+          "Team",
+          "off",
+          "https://team-gateway.example/accounting",
+          'sends environment variable V6_TEAM_KEY, else OpenCode\'s API key for provider "team-gateway"',
+        ]),
+      );
+      expect(fetchedTeam()).toBe(false);
+
+      clickable(team(), "›").props.onMouseUp();
+      clickable(windowTree(), "Save").props.onMouseUp();
+      const settingsFile = join(mocks.root, "config", "opencode-quota", "settings.jsonc");
+      await vi.waitFor(async () =>
+        expect(parseJsonc(await readFile(settingsFile, "utf8"))).toMatchObject({
+          words: { percent: "used" },
+          providers: { custom: [{ id: "team-accounting", enabled: true }] },
+        }),
+      );
+      // The window closes once the save's answer is back, a moment after the file changed.
+      await vi.waitFor(() => expect(windowTree()).toBe(""));
+
+      // The plugin uses the saved settings at once: the next check asks the custom provider.
+      await tui.command("settings").run();
+      await vi.waitFor(() => expect(fetchedTeam()).toBe(true));
+      await tui.dispose();
+    });
+
+    it("keeps a custom provider off when it changed after the Providers tab showed it", async () => {
+      const settings = (url: string) =>
+        writePluginTestSettings(mocks.root, {
+          providers: {
+            enabled: ["copilot", "custom"],
+            custom: [{ ...CUSTOM_SOURCES[0], url, enabled: false }],
+          },
+          checking: { minIntervalMs: 1 },
+          announcements: { enabled: false, home: false },
+        });
+      settings("https://team-gateway.example/accounting");
+      const settingsFile = join(mocks.root, "config", "opencode-quota", "settings.jsonc");
+      const custom = async () => parseJsonc(await readFile(settingsFile, "utf8")).providers.custom;
+      const { tui, windowTree } = await openSettings("Providers");
+      const team = () => settingLine(windowTree(), "custom.team-accounting");
+      await vi.waitFor(() => expect(team()).toHaveLength(1));
+      clickable(team(), "›").props.onMouseUp();
+
+      // An agent points the provider somewhere else (saved switched off) before the user saves.
+      settings("https://other.example/accounting");
+      clickable(windowTree(), "Save").props.onMouseUp();
+
+      await vi.waitFor(() =>
+        expect(words(team())).toContain(
+          "changed since you reviewed it; look again · https://other.example/accounting",
+        ),
+      );
+      expect(await custom()).toMatchObject([{ id: "team-accounting", enabled: false }]);
+      expect(words(team())).toContain("off");
+      expect(tui.toast).toHaveBeenLastCalledWith(
+        expect.objectContaining({ variant: "error", title: "Quota settings not saved" }),
+      );
+      await tui.dispose();
+    });
   });
 
   it("shows OpenCode's usage in the Usage tab, its model popup and Web /quota_usage", async () => {

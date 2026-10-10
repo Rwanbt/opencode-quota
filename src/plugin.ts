@@ -53,6 +53,7 @@ import { fetchSessionTokensForDisplay } from "./lib/session-tokens.js";
 import { QuotaRpc } from "./rpc.js";
 import {
   acknowledgeDisplayImport,
+  clientSettings,
   convertV5,
   type LoadedSettings,
   loadSettings,
@@ -337,10 +338,19 @@ export const QuotaToastPlugin = Plugin.define({
         }),
       downloadPrices: () =>
         logRpcFailure("downloadPrices", async () => downloadPrices(loaded.settings.pricing.source)),
+      // Read now, so a custom provider changed a moment ago shows as it is before a switch-on.
+      settings: () =>
+        logRpcFailure("settings", async () =>
+          clientSettings((await loadSettings({ projectDir })).settings),
+        ),
       // The watch sees the save too; reading the file now answers with the new settings in use.
+      // `customEnabled` is the user's switch in the quota window; no agent tool calls this.
       saveSettings: (input) =>
         logRpcFailure("saveSettings", async () => {
-          const result = await saveSettings(input.patch, { allowFileOnly: false });
+          const result = await saveSettings(input.patch, {
+            allowFileOnly: false,
+            customEnabled: input.customEnabled,
+          });
           if (result.ok) await applySettings(await loadSettings({ projectDir }));
           return { ok: result.ok, issues: result.issues };
         }),

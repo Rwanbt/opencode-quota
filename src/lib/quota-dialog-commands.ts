@@ -71,14 +71,17 @@ const EVERY_ROW_SETTINGS: RowSettings = {
 };
 
 /**
- * The quota lines `opencode-quota show` prints, in the snapshot's words: a line per row, a line
- * per provider problem, then the session's tokens when the snapshot has them.
+ * The quota lines `opencode-quota show` prints, in the snapshot's words: a line per row (with
+ * "runs out in …" when `words.runsOut` is on), a line per provider problem, then the session's
+ * tokens when the snapshot has them.
  */
 export function quotaReportLines(snapshot: QuotaSnapshot, nowMs: number): string[] {
   const words = snapshot.words ?? DEFAULT_WORDS;
   const groups = visibleGroups(snapshot, EVERY_ROW_SETTINGS, "toast", words);
   const sessionTokens = snapshot.sessionTokens ? { sessionTokens: snapshot.sessionTokens } : {};
-  return plainLines({ groups, words, nowMs, ...sessionTokens }).map(sanitizeDisplayText);
+  return plainLines({ groups, words, nowMs, runsOut: words.runsOut, ...sessionTokens }).map(
+    sanitizeDisplayText,
+  );
 }
 
 /**

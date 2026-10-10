@@ -8,6 +8,7 @@
 export type { ConvertedKey, DisplayImport, SkippedKey, V5Conversion } from "./convert.js";
 export {
   acknowledgeDisplayImport,
+  type CustomSwitch,
   convertV5,
   editSettings,
   editSettingsFile,
@@ -24,8 +25,12 @@ export {
   watchSettings,
 } from "./file.js";
 export {
+  type ClientSettings,
   type CursorPlan,
+  type CustomProviderSwitch,
   checkSetting,
+  clientSettings,
+  customProviderFingerprint,
   defaultSettings,
   describeRule,
   keysUnder,

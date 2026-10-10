@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { convertV5 } from "../src/settings/index.js";
-import { applyDisplayImport, loadDisplaySettings } from "../src/tui/display.js";
+import { applyDisplayImport, createDisplayStore } from "../src/tui/display.js";
 import type { SurfaceHost } from "../src/tui/sidebar.js";
 
 type Node = { type: unknown; props: Record<string, any> };
@@ -70,7 +70,7 @@ describe("HomeFooter", () => {
     const conversion = await convertV5();
     const storage = memoryStorage();
     await applyDisplayImport(storage, conversion?.displayImport ?? {});
-    const display = loadDisplaySettings(storage);
+    const display = createDisplayStore(storage).shown;
     expect(display().surfaces.statusLine.enabled).toBe(false);
 
     const { HomeFooter, StatusLine } = await import("../src/tui/status-line.tsx");

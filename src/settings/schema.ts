@@ -3,11 +3,17 @@
  * reading, saving and the agent tools all come from it, so a value is valid in one place exactly
  * when it is valid in the others.
  */
+import { createHash } from "node:crypto";
 import { isAbsolute } from "node:path";
 import type { Node } from "jsonc-parser";
 import { getNodeValue } from "jsonc-parser";
 import { normalizeQuotaProviderId, QUOTA_PROVIDER_CATALOG } from "../lib/provider-metadata.js";
-import { type QuotaProviderDefinition, validateQuotaProviders } from "../lib/quota-providers.js";
+import {
+  describeQuotaProviderRequest,
+  isMaintainedQuotaProviderTuning,
+  type QuotaProviderDefinition,
+  validateQuotaProviders,
+} from "../lib/quota-providers.js";
 
 type NumberBounds = { min?: number; above?: number; max?: number };
 export type SettingRule = (
@@ -414,4 +420,65 @@ export function diffSettings(
   return Object.keys(RULES)
     .map((key) => ({ key, before: getSetting(before, key), after: getSetting(after, key) }))
     .filter((change) => JSON.stringify(change.before) !== JSON.stringify(change.after));
+}
+
+/** A custom provider as the quota window's Providers tab shows it, with its on/off switch. */
+export type CustomProviderSwitch = {
+  id: string;
+  label: string;
+  enabled: boolean;
+  /** Where it sends its key, and which key; null for a local estimate, which sends nothing. */
+  request: ReturnType<typeof describeQuotaProviderRequest>;
+  /** `customProviderFingerprint`: switching it on sends it back, so it is this definition. */
+  fingerprint: string;
+};
+
+/** Why a custom provider is not switched on: its definition is not the one the user saw. */
+export const CHANGED_SINCE_REVIEW = "changed since you reviewed it; look again";
+
+/**
+ * A hash of what the user checks before switching a custom provider on (`request`) and of the
+ * fields that decide where its request goes and which key it reads.
+ */
+export function customProviderFingerprint(definition: QuotaProviderDefinition): string {
+  const { mode, providerId } = definition;
+  const sent =
+    definition.mode === "remote-api" ? [definition.url, definition.apiKeyEnv ?? null] : [];
+  const seen = [describeQuotaProviderRequest(definition), mode, providerId, ...sent];
+  return createHash("sha256").update(JSON.stringify(seen)).digest("hex");
+}
+
+/** The settings a client shows and may change, for the quota window's Words and Providers tabs. */
+export type ClientSettings = {
+  /** Every setting but `version` and the file-only ones, by dotted key ("words.percent"). */
+  values: Record<string, unknown>;
+  /** The ids `providers.enabled` takes, with their names. */
+  providers: Array<{ id: string; label: string }>;
+  /** The custom providers in settings.jsonc, without the maintained tunings. */
+  custom: CustomProviderSwitch[];
+};
+
+export function clientSettings(settings: Settings): ClientSettings {
+  const values = Object.fromEntries(
+    Object.keys(RULES)
+      .filter((key) => key !== "version" && !isFileOnly(key))
+      .map((key) => [key, getSetting(settings, key)]),
+  );
+  const providers = PROVIDER_IDS.map((id) => ({
+    id,
+    label:
+      id === "custom"
+        ? "Custom providers"
+        : QUOTA_PROVIDER_CATALOG[id as keyof typeof QUOTA_PROVIDER_CATALOG].label,
+  }));
+  const custom = settings.providers.custom
+    .filter((definition) => !isMaintainedQuotaProviderTuning(definition))
+    .map((definition) => ({
+      id: definition.id,
+      label: definition.label,
+      enabled: definition.enabled !== false,
+      request: describeQuotaProviderRequest(definition),
+      fingerprint: customProviderFingerprint(definition),
+    }));
+  return { values, providers, custom };
 }

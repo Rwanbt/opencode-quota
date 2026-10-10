@@ -7,15 +7,16 @@
  * Methods: `snapshot` (the last known quota, instantly), `refresh`, `notices` (the Home
  * notice line), `noticeList` (the maintainer notices with their read state), `status` (the
  * /quota_status report), `usage` (tokens and cost from OpenCode's history for one range),
- * `downloadPrices` (a new price list from models.dev), `saveSettings` (a patch of the server
- * settings file) and `acknowledgeDisplayImport` (a TUI applied the snapshot's `displayImport`);
- * the `changed` event carries every new snapshot.
+ * `downloadPrices` (a new price list from models.dev), `settings` (the server settings a client
+ * may change), `saveSettings` (a patch of the server settings file, and custom provider
+ * switches) and `acknowledgeDisplayImport` (a TUI applied the snapshot's `displayImport`); the
+ * `changed` event carries every new snapshot.
  */
 import type { Rpc } from "@opencode/plugin";
 import type { QuotaSnapshot } from "./core/types.js";
 import type { UsageQuery, UsageRange, UsageReport } from "./core/usage.js";
 import { parseCalendarDate } from "./lib/calendar-date.js";
-import type { SettingsIssue } from "./settings/index.js";
+import type { ClientSettings, CustomSwitch, SettingsIssue } from "./settings/index.js";
 
 export const QUOTA_RPC_ID = "slkiser.opencode-quota";
 
@@ -49,8 +50,17 @@ export type QuotaRpcUsageOutput = { report: UsageReport };
 export type QuotaRpcDownloadPricesInput = Record<string, never>;
 /** `message` says what happened, for a toast. */
 export type QuotaRpcDownloadPricesOutput = { ok: boolean; message: string };
-/** A JSON merge patch of settings.jsonc; file-only keys are refused. */
-export type QuotaRpcSaveSettingsInput = { patch: Record<string, unknown> };
+export type QuotaRpcSettingsInput = Record<string, never>;
+export type QuotaRpcSettingsOutput = ClientSettings;
+/**
+ * A JSON merge patch of settings.jsonc; file-only keys are refused. `customEnabled` switches
+ * custom providers on or off by id: the user's switch in the quota window's Providers tab, with
+ * the fingerprint of the definition the tab showed.
+ */
+export type QuotaRpcSaveSettingsInput = {
+  patch: Record<string, unknown>;
+  customEnabled?: Record<string, CustomSwitch>;
+};
 /** Nothing is saved unless `ok`; `issues` say why. */
 export type QuotaRpcSaveSettingsOutput = { ok: boolean; issues: SettingsIssue[] };
 /** The `id` of the snapshot's `displayImport` that the TUI applied. */
@@ -233,10 +243,34 @@ export const QuotaRpc = {
           : "output must carry ok and a message",
       ),
     },
-    saveSettings: {
-      input: schema<QuotaRpcSaveSettingsInput>((value) =>
-        isObject(value) && isObject(value.patch) ? null : "input must carry a patch object",
+    settings: {
+      input: schema<QuotaRpcSettingsInput>((value) =>
+        isObject(value) ? null : "input must be an object",
       ),
+      output: schema<QuotaRpcSettingsOutput>((value) =>
+        isObject(value) &&
+        isObject(value.values) &&
+        Array.isArray(value.providers) &&
+        Array.isArray(value.custom)
+          ? null
+          : "output must carry values, providers and custom",
+      ),
+    },
+    saveSettings: {
+      input: schema<QuotaRpcSaveSettingsInput>((value) => {
+        if (!isObject(value) || !isObject(value.patch)) return "input must carry a patch object";
+        const switches = value.customEnabled;
+        if (switches === undefined) return null;
+        return isObject(switches) &&
+          Object.values(switches).every(
+            (item) =>
+              isObject(item) &&
+              typeof item.enabled === "boolean" &&
+              typeof item.fingerprint === "string",
+          )
+          ? null
+          : "customEnabled must map provider ids to { enabled, fingerprint }";
+      }),
       output: schema<QuotaRpcSaveSettingsOutput>((value) =>
         isObject(value) && typeof value.ok === "boolean" && Array.isArray(value.issues)
           ? null
