@@ -4,17 +4,19 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
-  ALIBABA_TOKEN_PLAN_ARGS,
-  ALIBABA_TOKEN_PLAN_COMMAND,
-  ALIBABA_TOKEN_PLAN_KILL_GRACE_MS,
-  ALIBABA_TOKEN_PLAN_STDERR_LIMIT_BYTES,
-  ALIBABA_TOKEN_PLAN_STDOUT_LIMIT_BYTES,
   type AlibabaTokenPlanSpawnRequest,
   parseAlibabaTokenPlanUsageJson,
   queryAlibabaTokenPlanQuota,
   resolveAlibabaTokenPlanExecutable,
   runAlibabaTokenPlanProcess,
 } from "../src/lib/alibaba-token-plan.js";
+
+// The `bl` CLI contract, written out by hand so a changed production constant fails here.
+const BL_COMMAND = "bl";
+const BL_ARGS = ["usage", "token-plan", "--output", "json"];
+const STDOUT_LIMIT_BYTES = 262_144;
+const STDERR_LIMIT_BYTES = 16_384;
+const KILL_GRACE_MS = 250;
 
 vi.mock("node:fs/promises", async (importOriginal) => {
   const fs = await importOriginal<typeof import("node:fs/promises")>();
@@ -84,17 +86,17 @@ function spawnRequest(
 ): AlibabaTokenPlanSpawnRequest {
   return {
     file,
-    args: ALIBABA_TOKEN_PLAN_ARGS,
+    args: BL_ARGS,
     cwd: path.dirname(file),
     env: {
       PATH: `${path.dirname(file)}${path.delimiter}${path.dirname(process.execPath)}`,
     },
     timeoutMs: 5_000,
-    stdoutLimitBytes: ALIBABA_TOKEN_PLAN_STDOUT_LIMIT_BYTES,
-    stderrLimitBytes: ALIBABA_TOKEN_PLAN_STDERR_LIMIT_BYTES,
+    stdoutLimitBytes: STDOUT_LIMIT_BYTES,
+    stderrLimitBytes: STDERR_LIMIT_BYTES,
     stdin: "ignore",
     shell: false,
-    killGraceMs: ALIBABA_TOKEN_PLAN_KILL_GRACE_MS,
+    killGraceMs: KILL_GRACE_MS,
     ...overrides,
   };
 }
@@ -324,15 +326,15 @@ describe("alibaba token plan process boundary", () => {
     });
     expect(result.ok).toBe(true);
     expect(requests).toHaveLength(1);
-    expect(requests[0]?.args).toEqual([...ALIBABA_TOKEN_PLAN_ARGS]);
+    expect(requests[0]?.args).toEqual(BL_ARGS);
     expect(requests[0]?.shell).toBe(false);
     expect(requests[0]?.stdin).toBe("ignore");
-    expect(requests[0]?.file).toBe(`${bin}/${ALIBABA_TOKEN_PLAN_COMMAND}`);
+    expect(requests[0]?.file).toBe(`${bin}/${BL_COMMAND}`);
     expect(requests[0]?.cwd).toBe("/safe-tmp");
     expect(requests[0]?.env).toEqual({ PATH: bin, TEST_ENV: "preserved" });
-    expect(requests[0]?.stdoutLimitBytes).toBe(ALIBABA_TOKEN_PLAN_STDOUT_LIMIT_BYTES);
-    expect(requests[0]?.stderrLimitBytes).toBe(ALIBABA_TOKEN_PLAN_STDERR_LIMIT_BYTES);
-    expect(requests[0]?.killGraceMs).toBe(ALIBABA_TOKEN_PLAN_KILL_GRACE_MS);
+    expect(requests[0]?.stdoutLimitBytes).toBe(STDOUT_LIMIT_BYTES);
+    expect(requests[0]?.stderrLimitBytes).toBe(STDERR_LIMIT_BYTES);
+    expect(requests[0]?.killGraceMs).toBe(KILL_GRACE_MS);
   });
 
   it.each([
@@ -387,7 +389,7 @@ describe("alibaba token plan process boundary", () => {
       },
     });
     expect(result.ok).toBe(true);
-    expect(requests[0]?.file).toBe(`${bin}/${ALIBABA_TOKEN_PLAN_COMMAND}`);
+    expect(requests[0]?.file).toBe(`${bin}/${BL_COMMAND}`);
     expect(requests[0]?.env.PATH).toBe(expectedPath);
     expect(requests[0]?.cwd).toBe("/safe-tmp");
   });
@@ -525,7 +527,7 @@ process.stdin.on("end", () => {
         cwd: string;
         stdin: string;
       };
-      expect(seenPayload.argv).toEqual([...ALIBABA_TOKEN_PLAN_ARGS]);
+      expect(seenPayload.argv).toEqual(BL_ARGS);
       expect(seenPayload.stdin).toBe("");
       expect(seenPayload.cwd.startsWith(workspace)).toBe(false);
     },
@@ -561,7 +563,7 @@ setInterval(() => {}, 30000);
       const elapsed = Date.now() - started;
       expect(result.timedOut).toBe(true);
       expect(result.truncated).toBe(false);
-      expect(elapsed).toBeGreaterThanOrEqual(timeoutMs + ALIBABA_TOKEN_PLAN_KILL_GRACE_MS);
+      expect(elapsed).toBeGreaterThanOrEqual(timeoutMs + KILL_GRACE_MS);
       expect(await readFile(termSeen, "utf8")).toBe("term");
     },
   );

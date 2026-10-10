@@ -185,7 +185,8 @@ export function resolveOpenAIOAuth(auth: AuthData | null | undefined): ResolvedO
   return { state: "none" };
 }
 
-async function readOpenAIAuthCached(): Promise<ResolvedOpenAIOAuth> {
+/** The login OpenCode reports as active for `openai`, `codex`, or `chatgpt` (cached briefly). */
+export async function readOpenAIAuthCached(): Promise<ResolvedOpenAIOAuth> {
   return resolveOpenAIOAuth(
     await readAuthFileCached({
       maxAgeMs: OPENAI_AUTH_CACHE_MAX_AGE_MS,

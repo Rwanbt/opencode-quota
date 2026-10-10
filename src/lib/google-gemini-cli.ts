@@ -115,16 +115,17 @@ function toGeminiCliBuckets(
   const buckets = response.buckets;
   if (!buckets) return [];
 
+  // Filter first: a non-array `buckets` reports "buckets.filter is not a function".
   return aggregateQualityTiers(
-    buckets.flatMap((bucket) => {
-      const modelId = nonEmptyString(bucket.modelId);
-      if (!modelId) return [];
-      const fraction = bucket.remainingFraction;
-      const resetTimeIso = nonEmptyString(bucket.resetTime);
-      const remainingAmount = nonEmptyString(bucket.remainingAmount);
-      const tokenType = nonEmptyString(bucket.tokenType);
-      return [
-        {
+    buckets
+      .filter((bucket) => nonEmptyString(bucket.modelId) !== undefined)
+      .map((bucket) => {
+        const modelId = nonEmptyString(bucket.modelId) ?? "";
+        const fraction = bucket.remainingFraction;
+        const resetTimeIso = nonEmptyString(bucket.resetTime);
+        const remainingAmount = nonEmptyString(bucket.remainingAmount);
+        const tokenType = nonEmptyString(bucket.tokenType);
+        return {
           modelId,
           displayName: formatDisplayName(modelId),
           percentRemaining:
@@ -136,9 +137,8 @@ function toGeminiCliBuckets(
           ...(tokenType ? { tokenType } : {}),
           ...(account.email ? { accountEmail: account.email } : {}),
           sourceKey: account.sourceKey,
-        },
-      ];
-    }),
+        };
+      }),
   );
 }
 
