@@ -10,7 +10,8 @@ let root: string;
 let openCodeProviderIds: string[];
 
 beforeEach(async () => {
-  root = await mkdtemp(join(tmpdir(), "quota-agent-tools-"));
+  // Dots keep the folder name from forming one long random-looking word the output redacts.
+  root = await mkdtemp(join(tmpdir(), "quota.agent.tools."));
   vi.stubEnv("OPENCODE_CONFIG_DIR", join(root, "config"));
   vi.stubEnv("XDG_STATE_HOME", join(root, "state"));
   vi.stubEnv("MY_GATEWAY_API_KEY", "");
@@ -83,6 +84,24 @@ function settingsText(): string {
   return readFileSync(settingsPath(), "utf8");
 }
 
+/** A key saved in the global opencode.json, as `provider.<id>.options.apiKey`. */
+function saveOpenCodeKey(providerId: string, apiKey: string): void {
+  mkdirSync(join(root, "config"), { recursive: true });
+  writeFileSync(
+    join(root, "config", "opencode.json"),
+    JSON.stringify({ provider: { [providerId]: { options: { apiKey } } } }),
+  );
+}
+
+/** A 32-character lowercase hex token, the shape of many API keys. */
+const HEX_TOKEN = "9f86d081884c7d659a2feaa0c55ad015";
+/** A path setting must be absolute; this one hides a key-like folder name. */
+const HEX_PATH = `/opt/${HEX_TOKEN}/claude`;
+
+const GATEWAY_WITHOUT_KEY_VARIABLE = Object.fromEntries(
+  Object.entries(GATEWAY).filter(([field]) => field !== "apiKeyEnv"),
+);
+
 function answerWith(status: number, body: unknown) {
   const fetch = vi.fn(
     async () =>
@@ -113,7 +132,10 @@ describe("quota_settings_get", () => {
   it("lists each setting with its source and allowed values, and key variable names only", async () => {
     vi.stubEnv("MY_GATEWAY_API_KEY", "gateway-key-value-123");
     writeSettings(
-      JSON.stringify({ words: { percent: "used" }, providers: { custom: [GATEWAY, OTHER] } }),
+      JSON.stringify({
+        words: { percent: "used" },
+        providers: { custom: [GATEWAY, OTHER], anthropic: { binaryPath: HEX_PATH } },
+      }),
     );
 
     const result = await call("quota_settings_get", {});
@@ -134,6 +156,10 @@ describe("quota_settings_get", () => {
       },
     ]);
     expect(result.text).not.toContain("gateway-key-value-123");
+    expect(result.settings?.["providers.anthropic.binaryPath"]).toMatchObject({
+      value: "/opt/[redacted]/claude",
+    });
+    expect(result.text).not.toContain(HEX_TOKEN);
   });
 });
 
@@ -141,25 +167,74 @@ describe("quota_settings_set", () => {
   it("saves a patch into the settings file, keeps its comments and returns the diff", async () => {
     writeSettings(FILE_WITH_COMMENTS);
 
-    const result = await call("quota_settings_set", { patch: { words: { percent: "used" } } });
+    const result = await call("quota_settings_set", {
+      patch: { checking: { minIntervalMs: 600_000 } },
+    });
 
     expect(result).toMatchObject({
       ok: true,
-      diff: [{ key: "words.percent", before: "left", after: "used" }],
+      diff: [{ key: "checking.minIntervalMs", before: 300_000, after: 600_000 }],
+      message: "Saved.",
     });
-    expect(result.message).toMatch(/apply live/);
     expect(settingsText()).toContain("// keep me");
-    expect((await loadSettings()).settings.words.percent).toBe("used");
+    expect((await loadSettings()).settings.checking.minIntervalMs).toBe(600_000);
     expect(existsSync(join(root, "config", "opencode.json"))).toBe(false);
+  });
+
+  it("never shows a key-like value in the diff", async () => {
+    writeSettings(JSON.stringify({ providers: { anthropic: { binaryPath: HEX_PATH } } }));
+
+    const result = await call("quota_settings_set", {
+      patch: { providers: { anthropic: { binaryPath: null } } },
+    });
+
+    expect(result.diff).toEqual([
+      { key: "providers.anthropic.binaryPath", before: "/opt/[redacted]/claude", after: "claude" },
+    ]);
+    expect(result.text).not.toContain(HEX_TOKEN);
   });
 
   it.each([
     {
       name: "an unknown key, with the valid ones",
-      patch: { words: { percnt: "used" } },
-      message: /^unknown setting; valid in words: percent, reset,/,
+      patch: { checking: { minIntervalMz: 1 } },
+      message: /^unknown setting; valid in checking: minIntervalMs,/,
     },
-    { name: "a bad value", patch: { words: { percent: "huge" } }, message: /^expected one of/ },
+    {
+      name: "an unknown group, with the ones agents may change",
+      patch: { wordz: {} },
+      message: /^unknown setting; agents may change: providers, checking, pricing$/,
+    },
+    {
+      name: "a bad value",
+      patch: { checking: { minIntervalMs: 0 } },
+      message: /^expected a number/,
+    },
+    ...["words", "announcements", "export", "telemetry", "version"].map((group) => ({
+      name: `the user's ${group}`,
+      patch: { [group]: group === "version" ? 6 : { enabled: true } },
+      message: new RegExp(`^the user changes ${group} in /quota → Customize`),
+    })),
+    {
+      name: "a dotted key for custom providers",
+      patch: { "providers.custom": [{ ...GATEWAY, label: "sk-proj-abcdefghijklmnopqrstuv" }] },
+      message: /^use nested objects, not dotted keys/,
+    },
+    {
+      name: "a dotted reset of custom providers",
+      patch: { "providers.custom": null },
+      message: /^use nested objects, not dotted keys/,
+    },
+    {
+      name: "a nested dotted key",
+      patch: { providers: { "cursor.plan": "pro" } },
+      message: /^use nested objects, not dotted keys/,
+    },
+    {
+      name: "a key-like value",
+      patch: { providers: { anthropic: { binaryPath: "sk-ant-api03-abcdefghijklmnopqrstuv" } } },
+      message: /^looks like a key/,
+    },
     {
       name: "custom providers",
       patch: { providers: { custom: [] } },
@@ -177,7 +252,14 @@ describe("quota_settings_set", () => {
 
     expect(result.ok).toBe(false);
     expect(result.issues?.[0]?.message).toMatch(message);
+    expect(result.text).not.toMatch(/sk-proj|sk-ant/);
     expect(settingsText()).toBe(FILE_WITH_COMMENTS);
+  });
+
+  it("claims nothing applies live until the server reloads the file", () => {
+    const tools = quotaAgentTools({ openCodeProviderIds: async () => [] });
+
+    expect(tools.map((tool) => tool.description).join("\n")).not.toMatch(/live/i);
   });
 });
 
@@ -196,6 +278,11 @@ describe("quota_provider_add", () => {
         url: "https://gateway.example/v1/Zx9QmT4vLr8KpW2sNb7YhC3dFg6JkA1e/quota",
       },
       key: "definition.url",
+    },
+    {
+      name: "a lowercase hex token",
+      definition: { ...GATEWAY, label: HEX_TOKEN },
+      key: "definition.label",
     },
     {
       name: "a key where the variable name belongs",
@@ -224,6 +311,66 @@ describe("quota_provider_add", () => {
     expect(settingsText()).toBe(FILE_WITH_COMMENTS);
   });
 
+  it.each([
+    {
+      name: "no key variable",
+      definition: GATEWAY_WITHOUT_KEY_VARIABLE,
+      issue: {
+        key: "definition.apiKeyEnv",
+        message: /^required .* dedicated environment variable/,
+      },
+    },
+    {
+      name: "a built-in provider's key variable",
+      definition: { ...GATEWAY, apiKeyEnv: "OPENROUTER_API_KEY" },
+      issue: { key: "definition.apiKeyEnv", message: /^OPENROUTER_API_KEY holds a built-in/ },
+    },
+    {
+      name: "a providerId with a key saved in OpenCode",
+      definition: GATEWAY,
+      issue: { key: "definition.providerId", message: /^OpenCode has a key saved for provider/ },
+    },
+  ])("refuses $name: nothing is saved or sent", async ({ definition, issue }) => {
+    writeSettings(FILE_WITH_COMMENTS);
+    vi.stubEnv("OPENROUTER_API_KEY", "router-key-from-env");
+    vi.stubEnv("MY_GATEWAY_API_KEY", "gateway-key");
+    saveOpenCodeKey("my-gateway", "gateway-key-saved-in-opencode");
+    const fetch = answerWith(200, DAILY_QUOTA);
+
+    const result = await call("quota_provider_add", { definition });
+
+    expect(result.ok).toBe(false);
+    expect(result.issues).toEqual([
+      { key: issue.key, message: expect.stringMatching(issue.message) },
+    ]);
+    expect(fetch).not.toHaveBeenCalled();
+    expect(settingsText()).toBe(FILE_WITH_COMMENTS);
+  });
+
+  it("never returns the key, even when the endpoint echoes it", async () => {
+    vi.stubEnv("MY_GATEWAY_API_KEY", "echomeplease42");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init: { headers: Record<string, string> }) => {
+        const key = init.headers.Authorization.replace("Bearer ", "");
+        const body = {
+          version: "quota-v1",
+          entries: [
+            { kind: "percent", name: `Echo ${key}`, resultType: "quota", percentRemaining: 50 },
+          ],
+        };
+        return new Response(JSON.stringify(body), {
+          headers: { "content-type": "application/json" },
+        });
+      }),
+    );
+
+    const result = await call("quota_provider_add", { definition: GATEWAY });
+
+    expect(result.test).toMatchObject({ ok: true, rows: [{ percentRemaining: 50 }] });
+    expect(result.text).not.toContain("echomeplease42");
+  });
+
   it("adds a provider, tests it once, and replaces it by id while keeping the others", async () => {
     writeSettings(FILE_WITH_COMMENTS);
     vi.stubEnv("MY_GATEWAY_API_KEY", "gateway-key");
@@ -231,7 +378,11 @@ describe("quota_provider_add", () => {
 
     const added = await call("quota_provider_add", { definition: GATEWAY });
 
-    expect(added).toMatchObject({ ok: true, added: "my-gateway-quota" });
+    expect(added).toMatchObject({
+      ok: true,
+      added: "my-gateway-quota",
+      message: "Saved and tested.",
+    });
     expect(added.test).toMatchObject({
       ok: true,
       rows: [{ id: "quota-providers.custom.my_gateway_quota.daily", percentRemaining: 42 }],
@@ -256,6 +407,59 @@ describe("quota_provider_add", () => {
       ["my-gateway-quota", "Gateway Two"],
     ]);
     expect(settingsText()).toContain("// keep me");
+  });
+
+  it("keeps every change when adds and a remove run at the same time", async () => {
+    writeSettings(FILE_WITH_COMMENTS);
+    const second = {
+      ...GATEWAY,
+      id: "second-quota",
+      providerId: "second-gateway",
+      apiKeyEnv: "SECOND_QUOTA_API_KEY",
+    };
+    vi.stubEnv("SECOND_QUOTA_API_KEY", "");
+
+    const results = await Promise.all([
+      call("quota_provider_add", { definition: GATEWAY }),
+      call("quota_provider_add", { definition: second }),
+      call("quota_provider_remove", { id: "other-quota" }),
+    ]);
+
+    expect(results.map((result) => result.ok)).toEqual([true, true, true]);
+    const ids = (await loadSettings()).settings.providers.custom.map((item) => item.id);
+    expect(ids.sort()).toEqual(["my-gateway-quota", "second-quota"]);
+    expect(settingsText()).toContain("// keep me");
+  });
+
+  it("writes back a provider whose providerId is its id, without the providerId", async () => {
+    const { providerId: _, ...sameAsOpenCode } = { ...OTHER, id: "my-router" };
+    writeSettings(JSON.stringify({ providers: { custom: [sameAsOpenCode] } }));
+
+    const added = await call("quota_provider_add", { definition: GATEWAY });
+    const removed = await call("quota_provider_remove", { id: "my-gateway-quota" });
+
+    expect([added.ok, removed.ok]).toEqual([true, true]);
+    expect(settingsText()).not.toContain('"providerId": "my-router"');
+    const loaded = await loadSettings();
+    expect(loaded.issues).toEqual([]);
+    expect(loaded.settings.providers.custom.map((item) => item.id)).toEqual(["my-router"]);
+  });
+
+  it.each([
+    ["quota_provider_add", { definition: GATEWAY }],
+    ["quota_provider_remove", { id: "other-quota" }],
+  ])("%s changes nothing while a custom provider in the file is invalid", async (name, input) => {
+    const file = JSON.stringify({ providers: { custom: [OTHER, { id: "broken" }] } });
+    writeSettings(file);
+
+    const result = await call(name, input);
+
+    expect(result).toMatchObject({
+      ok: false,
+      message: expect.stringMatching(/^Nothing was changed: fix the custom providers in /),
+    });
+    expect(result.issues?.length).toBeGreaterThan(0);
+    expect(settingsText()).toBe(file);
   });
 
   it("keeps a definition whose test fails and says what to fix", async () => {
@@ -303,6 +507,17 @@ describe("quota_provider_test and quota_provider_remove", () => {
     expect(result).toMatchObject({ id: "my-gateway-quota", ok: false, error: "HTTP 401" });
   });
 
+  it("does not send a key saved in OpenCode for a hand-added provider", async () => {
+    writeSettings(FILE_WITH_COMMENTS);
+    saveOpenCodeKey("openrouter", "router-key-saved-in-opencode");
+    const fetch = answerWith(200, DAILY_QUOTA);
+
+    const result = await call("quota_provider_test", { id: "other-quota" });
+
+    expect(result).toMatchObject({ ok: false, error: expect.stringMatching(/^Not tested: /) });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it("removes one provider and keeps the others and the comments", async () => {
     writeSettings(
       FILE_WITH_COMMENTS.replace(
@@ -317,6 +532,7 @@ describe("quota_provider_test and quota_provider_remove", () => {
       ok: true,
       removed: "my-gateway-quota",
       remaining: ["other-quota"],
+      message: "Removed.",
     });
     expect((await loadSettings()).settings.providers.custom.map((item) => item.id)).toEqual([
       "other-quota",
