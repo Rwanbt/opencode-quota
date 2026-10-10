@@ -2,7 +2,7 @@
 
 # Configuration
 
-Most people need no settings. When you do, the table below covers the usual changes, and every setting is listed at the bottom.
+Most people need no settings. When you do, the table below covers the usual changes, and every setting but `version` is listed at the bottom.
 
 ## Where settings live
 
@@ -11,7 +11,7 @@ One global file, `settings.jsonc`:
 - `~/.config/opencode/opencode-quota/settings.jsonc` on every OS (`$XDG_CONFIG_HOME/opencode/...` when `XDG_CONFIG_HOME` is set)
 - `$OPENCODE_CONFIG_DIR/opencode-quota/settings.jsonc` when `OPENCODE_CONFIG_DIR` is set (it replaces the global folder, like OpenCode 2)
 
-There are no project settings. Comments and trailing commas are allowed. Every key is optional: a missing or invalid one uses its default. Changes apply without a restart. `/quota_status` shows the file it reads and anything wrong in it. In the TUI, the **Words** and **Providers** tabs of the quota window (`/quota_settings`) change the words, providers, checking, pricing, export and telemetry settings and save them to this file; only a file edit (or your agent) sets the custom provider definitions, the Claude CLI path and the export path.
+There are no project settings. Comments and trailing commas are allowed. Every key is optional: a missing or invalid one uses its default. Changes apply without a restart. `/quota_status` shows the file it reads and anything wrong in it. In the TUI, the **Words** and **Providers** tabs of the quota window (`/quota_settings`) change the words, providers, checking, pricing, export and telemetry settings, and the **Notices** tab the notice switches, and save them to this file; a file edit or your agent sets custom providers and the Claude CLI path; only a file edit sets the export path and `announcements.homeFrequency`.
 
 Without the file, OpenCode Quota uses the defaults. Create it when you want to change something. Coming from 5.x, the first start writes it from your old settings; see [Updating](updating.md#moving-from-5x).
 
@@ -63,7 +63,7 @@ Rules:
 
 - `providers.custom` keeps file order.
 - `id` is the stable identity. Add `providerId` only when it differs.
-- `modelIds` affects only `words.onlyCurrentModel`. Use exact, case-sensitive model IDs without the outer provider prefix, or omit it to cover every model for that provider.
+- `modelIds` only limits `words.onlyCurrentModel` and which requests a local estimate counts. Use exact, case-sensitive model IDs without the outer provider prefix, or omit it to cover every model for that provider.
 - Remote APIs use a fixed authenticated `GET`. Formats: `quota-v1`, `json-v1`, and `openrouter-key-v1`. `json-v1` needs an `adapter` with 1–16 mappings; paths are literal own-property segment arrays, not JSONPath. See [response rules](providers.md#custom-providers).
 - Local estimates support 1–16 UTC-day or rolling request windows. Counters live under `~/.local/state/opencode/opencode-quota/quota-providers/`.
 - Automatic models.dev matching runs first. Add `pricingModelMap` only when it cannot find one clear model. `pricingModelMap` cannot override a successful automatic match.

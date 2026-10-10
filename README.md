@@ -68,7 +68,7 @@ Restart OpenCode. Coming from 5.x? Your old settings are converted automatically
 > - OpenCode 1 is no longer supported. OpenCode 1 users stay on 4.x (`@slkiser/opencode-quota@4`).
 > - Logins come from OpenCode 2, never from `auth.json`. If a provider is missing, log in again.
 > - Web and Desktop get the slash commands, but no toasts or panels.
-> - TUI reports open in a popup or in the quota window. Only `/quota` with the `chat` [quick look](docs/readme/configuration.md#tui-surfaces) leaves a chat message.
+> - TUI reports open in a popup, a toast or the quota window. Only `/quota` with the `chat` [quick look](docs/readme/configuration.md#tui-surfaces) leaves a chat message.
 > - OpenCode Zen uses your OpenCode Console sign-in: `opencode auth login opencode`.
 
 Full list: [Moving to OpenCode 2](docs/readme/updating.md#moving-to-opencode-2).
@@ -189,7 +189,7 @@ Track a provider that is not listed, from its quota API or from a local estimate
 
 ## Troubleshooting
 
-1. Run `/quota_status` in OpenCode, or `npx @slkiser/opencode-quota@latest status` in a terminal.
+1. Run `/quota_status` in an OpenCode session, or `npx @slkiser/opencode-quota@latest status` in a terminal.
 2. Provider missing? Log in to it again in OpenCode 2.
 3. Using a companion plugin (Cursor, Google)? List it **before** `@slkiser/opencode-quota` in `opencode.json`.
 4. `claude` or `bl` not found? See [Service environment](docs/readme/troubleshooting.md#service-environment).

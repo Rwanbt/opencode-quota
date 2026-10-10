@@ -94,7 +94,7 @@ These show only your own member API key's usage, not the whole organization's.
 
 ### How rows are shown
 
-- `Quota` covers quota and rate-limit windows; JSON tells them apart.
+- `Quota` covers quota and rate-limit windows; both export as `quota`.
 - OpenCode Zen, NanoGPT, Xiaomi MiMo, Kilo Gateway, DeepSeek, and Cursor keep quota, rate limit, budget, usage, spend, credits, and balance as separate rows. A balance is not remaining allowance, and spend is not a budget percentage.
 - Money uses uppercase currency codes such as `USD 12.50` or `CNY 8.25`. OpenCode Quota never converts, combines, or picks a preferred currency.
 - `words.detail: "detailed"` adds supplementary balance, status, and spend rows. See [All settings](configuration.md#all-settings).
@@ -104,19 +104,19 @@ These show only your own member API key's usage, not the whole organization's.
 Custom providers can report quota, rate limit, usage, spend, budget, balance, or status. Ask your agent to add a custom provider: paste this into OpenCode and replace `<provider>`:
 
 ```text
-Add a custom OpenCode Quota provider for <provider> with the quota_provider_add tool, following docs/readme/providers.md#custom-providers in https://github.com/slkiser/opencode-quota. Never put a key or other secret in the definition: set apiKeyEnv to the name of the environment variable that holds the key, or leave it out to use the key OpenCode has for that provider. The tool saves the provider switched off; tell me the address and key source it returns. After I switch it on, test it with quota_provider_test, and fix what it reports (add it again with the same id) until it shows rows.
+Add a custom OpenCode Quota provider for <provider> with the quota_provider_add tool, following docs/readme/providers.md#custom-providers in https://github.com/slkiser/opencode-quota. Never put a key or other secret in the definition: set apiKeyEnv to the name of the environment variable that holds the key, or leave it out to use the key OpenCode has for that provider. The tool saves the provider switched off; tell me the address and key source it returns. After I switch it on, test it with quota_provider_test, and fix what it reports (add it again with the same id; I switch it on again) until it shows rows.
 ```
 
-Then switch the provider on by setting `"enabled": true` in `opencode-quota/settings.jsonc` in the OpenCode config folder (`~/.config/opencode/` by default), or in `/quota_settings` → **Providers**. An agent saves every provider it adds or replaces switched off: until you switch it on, it is never fetched and its key is never sent. No agent tool can switch it on. The Providers tab switches on only the definition it shows: if the provider changed since, Save leaves it off and shows the new address and key source to check.
+Then switch the provider on by setting `"enabled": true` in `opencode-quota/settings.jsonc` in the OpenCode config folder (`~/.config/opencode/` by default), or in the TUI's `/quota_settings` → **Providers**. An agent saves every provider it adds or replaces switched off: until you switch it on, it is never fetched and its key is never sent. No agent tool can switch it on. The Providers tab switches on only the definition it shows: if its address or key source changed since, Save saves nothing and shows the new ones to check.
 
-The agent tools change only OpenCode Quota's own settings file (through a symlink, its target), never `opencode.json`; testing a local-estimate provider also updates its state file. A definition holding anything that looks like a key is refused. `quota_provider_test` and `quota_provider_remove` take a provider's `id`.
+The `quota_settings_*` and `quota_provider_*` tools change only OpenCode Quota's own settings file (through a symlink, its target), never `opencode.json`; testing a local-estimate provider also updates its state file. A definition holding anything that looks like a key is refused. `quota_provider_test` and `quota_provider_remove` take a provider's `id`.
 
 To edit it yourself, put definitions in `providers.custom` in `settings.jsonc` ([where](configuration.md#where-settings-live)). Changes apply without a restart.
 
 - **Remote API:** real quota data from a supported endpoint (formats below).
 - **Local estimate:** counts matching completed OpenCode requests in 1–16 windows, with optional spend estimates. `utc-day` resets at UTC midnight; `rolling` uses `durationMinutes` (up to 366 days). Every window needs `requestLimit`; `usdBudget` is optional.
-- **Credentials:** the variable named by `apiKeyEnv`, then trusted global `provider.<providerId>.options.apiKey`, then an API-key login saved in OpenCode 2 (`opencode.db`) for that provider id. A switched-off provider is never fetched and its key is never sent. Project secrets are never read.
-- With `providers.enabled: "auto"`, definitions run automatically. A list must include `custom` plus every built-in provider you still want.
+- **Credentials:** the variable named by `apiKeyEnv`, then trusted global `provider.<providerId>.options.apiKey` (no `{env:…}` unless it names `apiKeyEnv`), then an API-key login saved in OpenCode 2 (`opencode.db`) for that provider id. A switched-off provider is never fetched and its key is never sent. Project secrets are never read.
+- With `providers.enabled: "auto"`, switched-on definitions whose `providerId` OpenCode has run automatically. A list must include `custom` plus every built-in provider you still want.
 - A custom model provider still needs its normal OpenCode provider/model config. `/connect` → **Other** stores its credential, not its model setup.
 - OpenRouter is built in. A custom OpenRouter definition only helps if you need a different endpoint or label.
 - Alibaba Personal Token Plan uses the reserved `alibaba-token-plan` ID and stays a separate official-CLI provider; it is not a local-estimate tuning target.
@@ -204,7 +204,7 @@ A `quota-v1` response looks like this:
 {
   "version": "quota-v1",
   "entries": [
-    { "kind": "percent", "name": "Requests", "resultType": "quota", "percentRemaining": 42, "label": "Daily:", "right": "58/100" },
+    { "kind": "percent", "name": "Requests", "resultType": "quota", "percentRemaining": 42, "label": "Daily:" },
     { "kind": "value", "name": "Spend", "resultType": "spend", "value": "$12.50" }
   ]
 }
@@ -244,10 +244,10 @@ Metric compatibility and fixed output:
 | `metric.type`      | Allowed `resultType`            | Percent or value output                                    |
 | ------------------ | ------------------------------- | ---------------------------------------------------------- |
 | `percentage`       | `quota`, `rate_limit`, `budget` | remaining: `percentage`; used: `100 - percentage`          |
-| `used-limit`       | `quota`, `rate_limit`           | `(limit - used) / limit * 100`; right side is `used/limit` |
-| `remaining-limit`  | `quota`, `rate_limit`           | `remaining / limit * 100`; right side is `remaining/limit` |
-| `spend-budget`     | `budget`                        | `(budget - spend) / budget * 100`; right is `spend/budget` |
-| `remaining-budget` | `budget`                        | `remaining / budget * 100`; right is `remaining/budget`    |
+| `used-limit`       | `quota`, `rate_limit`           | `(limit - used) / limit * 100`                             |
+| `remaining-limit`  | `quota`, `rate_limit`           | `remaining / limit * 100`                                  |
+| `spend-budget`     | `budget`                        | `(budget - spend) / budget * 100`                          |
+| `remaining-budget` | `budget`                        | `remaining / budget * 100`                                 |
 | `value`            | Determined by `valueType`       | The selected numeric value                                 |
 | `status`           | `status`                        | The selected bounded text value                            |
 
@@ -264,7 +264,7 @@ For `metric.type: "value"`:
 
 Pair denominators (`limit` and pair-form `budget`) must be greater than zero. Remaining values cannot exceed their denominator; used and spend may exceed it, so the calculated remaining percentage may be negative. A direct remaining percentage may be negative but cannot exceed 100; a direct used percentage must be non-negative and may exceed 100. Values are never clamped.
 
-`unit` and `unitPosition` must appear together. Units are forbidden for `percentage` and `status`; prefix units render like `$2/$10`, while suffix units render like `2/10 tokens`.
+`unit` and `unitPosition` must appear together. Units are forbidden for `percentage` and `status`, and show only on `value` rows: prefix like `$2`, suffix like `2 tokens`.
 
 **Never put secrets in adapter display configuration.** Static `name`, `label`, and `unit` fields and every `literal` can appear in written configuration, cache identity, rendered quota rows, or exports.
 
@@ -429,7 +429,7 @@ bl auth login --console
 
 - OpenCode Quota runs only `bl usage token-plan --output json`. It never installs `bl`, opens a login, reads console cookies, or runs a custom command.
 - On macOS and Linux, `bl` must be in an absolute folder on the `PATH` (the OpenCode service's inside OpenCode, your shell's in the terminal). Relative entries are ignored, and so is anything inside the project folder, including a `bl` that links into it. Your home folder is not a project, so `~/.local/bin` and nvm folders work.
-- On Windows, use WSL. Native `bl.exe` and `.cmd` shims are not supported in this release.
+- On Windows, use WSL. Native `bl.exe` and `.cmd` shims are not supported.
 - Team plans, China-only `alibaba-token-plan-cn` runtimes, and cookie-based console scraping are not supported.
 - After switching the CLI's console account, restart OpenCode or wait for the next live check.
 - With a manual provider list, include `alibaba-token-plan` in `providers.enabled`.
@@ -536,7 +536,7 @@ To copy the cookie:
 - An invalid variable or a higher-priority `mimo.json` blocks lower-priority sources instead of falling back.
 - Provider ids: `xiaomi`, `xiaomi-token-plan-cn`, `xiaomi-token-plan-ams`, and `xiaomi-token-plan-sgp`. With a manual provider list, use `xiaomi`.
 - Plan name and code only label the display. An expired plan is not shown as active, and `currentPeriodEnd` is not a quota reset.
-- The three dashboard requests are independent, so other rows still appear if one fails. Per-API-key costs are not supported yet.
+- The three dashboard requests are independent, so other rows still appear if one fails. Per-API-key costs are not supported.
 
 <a id="ollama-cloud"></a>
 
@@ -559,7 +559,7 @@ Create an Ollama API key, then set `OLLAMA_API_KEY` (or use trusted user/global 
 
 ### OpenRouter
 
-Reads your OpenCode API key and calls OpenRouter's current-key endpoint. Limited keys show used budget and remaining percentage; unlimited keys show spend. No reset time is invented. `/quota_status` has an `openrouter:` section with the key source and the live check result.
+Reads your OpenCode API key and calls OpenRouter's current-key endpoint. Limited keys show the budget's percentage left; unlimited keys show spend. No reset time is invented. `/quota_status` has an `openrouter:` section with the key source and the live check result.
 
 <a id="opencode-go"></a>
 

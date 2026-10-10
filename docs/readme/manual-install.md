@@ -48,11 +48,11 @@ OpenCode Quota works without settings. To change something, create `opencode-quo
 }
 ```
 
-Restart OpenCode, then run `/quota` and `/quota_status` in the TUI. `/quota_status` shows the settings file OpenCode Quota read.
+Restart OpenCode, open a session, then run `/quota` and `/quota_status` in the TUI. `/quota_status` shows the settings file OpenCode Quota read.
 
 ## What appears in the TUI
 
-The TUI shows the `Quota` panel in the session sidebar, a status line under the message box, and a toast after compaction. Change their look in the Settings tabs of `/quota`; see [TUI surfaces](configuration.md#tui-surfaces). Web and Desktop show none of these. See [Configuration](configuration.md) for every setting.
+The TUI shows the `Quota` panel in the session sidebar, a status line under the message box, and a toast after compaction. Change their look in the Settings tabs of `/quota_settings`; see [TUI surfaces](configuration.md#tui-surfaces). Web and Desktop show none of these. See [Configuration](configuration.md) for every setting.
 
 ## Web and Desktop notes
 

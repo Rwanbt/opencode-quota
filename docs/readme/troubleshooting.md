@@ -6,13 +6,13 @@
 
 1. Run `/quota_status` inside OpenCode, or `opencode-quota status` in a terminal. Both show which settings, providers, logins, and local files OpenCode Quota found.
 2. Find the provider or feature that fails, and follow the matching fix below.
-3. Restart OpenCode after changing `opencode.json` or logins. Changes to `settings.jsonc` apply without a restart.
+3. Restart OpenCode after changing `opencode.json`. Changes to logins and `settings.jsonc` apply without a restart.
 
 Every provider missing? Check that `@slkiser/opencode-quota` is in the `plugin` list of `opencode.jsonc` or `.json`. That one entry also loads the TUI; no `tui.json` entry is needed.
 
 ## Logins
 
-OpenCode Quota never reads `auth.json`. Inside OpenCode, it asks OpenCode 2 for logins (OpenCode keeps them in `opencode.db`). OpenCode 2 copies `auth.json` only once, the first time it starts. **If a provider is missing, log in to it again in OpenCode 2.**
+OpenCode Quota never reads OpenCode's `auth.json`. Inside OpenCode, it asks OpenCode 2 for logins (OpenCode keeps them in `opencode.db`). OpenCode 2 copies `auth.json` only once, the first time it starts. **If a provider is missing, log in to it again in OpenCode 2.**
 
 In `/quota_status`, the `credential_source` section shows:
 
@@ -34,9 +34,10 @@ The TUI, Web, and Desktop get their numbers from OpenCode's background service. 
 `opencode-quota show` and `opencode-quota status` run in your terminal, not in OpenCode:
 
 - They work with OpenCode closed and read logins from `opencode.db` read-only.
-- They never refresh a token, so a sign-in can show as expired (for example `Token expired`) until you open OpenCode.
+- They never refresh a token, so a sign-in can show as expired (for example `Sign in again`) until you open OpenCode.
 - They use your shell's `PATH` and API-key variables.
 - They read the same global `settings.jsonc` as OpenCode.
+- `status --json` prints the report as data: `version` (`"6"`), `generatedAt`, `config`, `providers`, `pricing`, and `liveProbes`.
 
 ## Common problems
 
@@ -48,7 +49,7 @@ The TUI, Web, and Desktop get their numbers from OpenCode's background service. 
 | Status line is missing                                      | It uses only the free room in the footer under the message box. Widen the terminal.                      |
 | TUI toast is missing                                        | Toasts show after compaction and when every provider fails. Toasts appear only in the TUI.               |
 | `/quota_usage` is empty                                     | Start OpenCode once so it creates `opencode.db`, then use a model.                                       |
-| Pricing looks old                                           | Click **Download new prices** in the `/quota_usage` tab.                                                 |
+| Pricing looks old                                           | Press `p` in the TUI's Usage tab (`/quota_usage`).                                                       |
 | Web report columns do not line up                           | Expected: Web uses a proportional font. Use the TUI or `npx @slkiser/opencode-quota show`.               |
 | Terminal shows a sign-in as expired but OpenCode shows data | The terminal never refreshes tokens. Open OpenCode (or use that provider in it) once, then retry.        |
 
@@ -65,7 +66,7 @@ Run `/quota_status` first and check that provider's section. Every known provide
 | ------------------------------------------ | --- |
 | Config is rejected                         | Keep definitions in `providers.custom` in `settings.jsonc` ([where](configuration.md#where-settings-live)). Remove unknown fields, duplicate IDs/request identities, or overlapping model coverage. |
 | Definition is `unavailable`                | Confirm OpenCode reports the exact `providerId`. With `words.onlyCurrentModel`, the model id (without provider prefix) must match `modelIds`, or omit `modelIds`. |
-| `API key not configured`                   | Set the `apiKeyEnv` variable, trusted global `provider.<providerId>.options.apiKey`, or an API-key login saved in OpenCode 2 for that provider id. |
+| `Not set up` (`missing_credential`)       | Set the `apiKeyEnv` variable, trusted global `provider.<providerId>.options.apiKey`, or an API-key login saved in OpenCode 2 for that provider id. |
 | `HTTP <code>`, timeout, or response error  | Check the endpoint and its response format. `/quota_status` intentionally hides URLs, request/response contents, raw errors, and secret material. |
 | One definition fails but others show       | Expected. Working definitions stay visible; the failed one stays an error row. |
 | CLI/export looks stale                     | `show --json` is cache-only, and the export file changes only when the server's quota does. Open a TUI session first. `/quota_status` is the live check. |
@@ -111,7 +112,7 @@ Check the `copilot` section: `pat_state`, `pat_organization` and `pat_enterprise
 | ---------------------------------------- | --- |
 | OpenAI quota missing                     | Sign in with a Codex login: `/connect` → OpenAI → **Codex browser (legacy)** or **Codex device code (legacy)**. **Sign in with ChatGPT** has no ChatGPT quota. |
 | `ChatGPT quota unavailable for Sign in with ChatGPT` | OpenAI doesn't share ChatGPT usage with this login. Run `/connect` → OpenAI → **Codex browser (legacy)** or **Codex device code (legacy)**. |
-| `OpenAI sign-in could not be refreshed`  | OpenCode could not refresh that login. If the error names an `opencode auth logout …` command, run it to remove the broken login, then `opencode auth login openai`; signing in again alone can leave a broken login with another label in place. Otherwise run `opencode auth login openai` (`opencode auth list` shows the labels). For xAI (`xAI sign-in could not be refreshed`), run `opencode auth login xai`. |
+| OpenAI or xAI shows `Sign in again`      | OpenCode could not refresh that login. Find it with `opencode auth list`, remove it with `opencode auth logout`, then run `opencode auth login openai` (or `xai`); signing in again alone can leave a broken login with another label in place. |
 | Provider not detected                    | Make sure OpenCode uses the `openai` provider or a compatible OpenAI login. |
 
 </details>
@@ -125,7 +126,7 @@ Check the `copilot` section: `pat_state`, `pat_organization` and `pat_enterprise
 | Cursor login missing                      | Run `/connect` → **Cursor** in OpenCode, or set `CURSOR_API_KEY`. |
 | Quota shows but no remaining percentage   | Set `providers.cursor.plan` or `providers.cursor.includedApiUsd`. |
 | Billing cycle looks wrong                 | Set `providers.cursor.billingCycleStartDay` to your billing day. |
-| Unknown Cursor pricing                    | Click **Download new prices** in the `/quota_usage` tab. If still unknown, check `unpriced_30d` in `/quota_status` (the share of the last 30 days' tokens without a price; it names a model only when the bundled price list has its id). Cursor `auto`, `composer*`, and `grok-4.5`–`grok-4.7` use bundled Cursor pricing. |
+| Unknown Cursor pricing                    | Press `p` in the TUI's Usage tab (`/quota_usage`). If still unknown, check `unpriced_30d` in `/quota_status` (the share of the last 30 days' tokens without a price; it names a model only when the bundled price list has its id). Cursor `auto`, `composer*`, and `grok-4.5`–`grok-4.7` use bundled Cursor pricing. |
 
 </details>
 
@@ -163,7 +164,7 @@ Check the `alibaba-token-plan` section (separate from Alibaba Coding Plan).
 - Check the provider's API-key section in `/quota_status` (for example `kimi-code-plan-global:`, `kimi-code-plan-cn:`, or `openrouter:`), which also shows the live check's result, for example `Sign in again (login_expired)` after HTTP 401.
 - Put keys in environment variables or trusted user/global config, never in the project's `opencode.json`. Variable names and rules: [API keys](providers.md#api-keys).
 - Kimi keys go only to their own region's host: see [Kimi Code](providers.md#kimi-code).
-- Synthetic says `Synthetic returned no quota data for this account.`: the quota endpoint returned HTTP 200 `{}`. This is not a bad API key or a Clerk/browser problem, and no 5h or Weekly rows are invented. `/quota_status` shows it as `Nothing reported (no_data)`.
+- Synthetic shows `Nothing reported`: the quota endpoint returned HTTP 200 `{}`. This is not a bad API key or a Clerk/browser problem, and no 5h or Weekly rows are invented. `/quota_status` shows it as `Nothing reported (no_data)`.
 
 </details>
 
@@ -225,7 +226,7 @@ Check the `opencode-go` section:
 | --------------------------------- | --- |
 | Provider not detected             | Run `opencode auth login opencode`, or set an API key ([order](providers.md#opencode-go)). Then rerun `/quota_status`; once Go is detected, `auth_state`, `auth_source`, and `auth_checked_paths` show which key it uses. |
 | `auth_state` is `invalid`         | Run `opencode auth login opencode-go`. A broken `opencode-go` login blocks the legacy `opencode` fallback. |
-| `OpenCode Console sign-in failed` | Shown only when no API key is set. Run `opencode auth login opencode`, or set an API key. |
+| Console sign-in failed            | `console_auth_state` is not `configured`; shown only when no API key is set. Run `opencode auth login opencode`, or set an API key. |
 | No Go quota, `console_error` set  | The Console request failed and no API key is set (`Not configured` in manual mode). Retry, or set an API key. |
 | API returns 401 or 403            | The usage API rejected the key. Update the source shown by `auth_source`, wait briefly for the credential cache to expire, and rerun `/quota_status`. |
 | Invalid API response              | `state` shows `Unexpected reply (bad_response)`. 5h, Weekly, and Monthly must all be valid; one bad window rejects the whole response. |
@@ -242,9 +243,9 @@ Check the `opencode` section (OpenCode Zen). `console_auth_state` shows whether 
 | Symptom                                                           | Fix |
 | ----------------------------------------------------------------- | --- |
 | Zen does not appear                                               | Run `opencode auth login opencode` and sign in to the Console. An API key alone is not a Console sign-in. To see a hint instead of nothing, include `opencode` in `providers.enabled`. |
-| `OpenCode Console sign-in failed` or `session expired or invalid` | Run `opencode auth login opencode` again. |
+| Zen shows `Sign in again`, or a failed `console_auth_state`       | Run `opencode auth login opencode` again. |
 | Wrong organization                                                | Run `opencode auth switch opencode`, or sign in again and pick the organization. |
-| `OpenCode Console <route> error 403`                              | Your sign-in cannot read that route for this organization. Zen still shows the other rows, unless the route is `billing/status` (the balance). |
+| Zen shows `Provider error 403`                                    | Your sign-in cannot read that route for this organization. Zen still shows the other rows, unless the route is `billing/status` (the balance). |
 
 </details>
 
@@ -256,7 +257,7 @@ Check the pricing snapshot health and the `opencode.db` path.
 | Symptom                                | Fix |
 | -------------------------------------- | --- |
 | `/quota_usage` is empty                | Start OpenCode once so it creates `opencode.db`, then use a model. |
-| Pricing looks stale                    | Click **Download new prices** in the `/quota_usage` tab. |
+| Pricing looks stale                    | Press `p` in the TUI's Usage tab (`/quota_usage`). |
 | Runtime pricing does not change output | Check `pricing.source`; `bundled` keeps the packaged pricing. |
 
 </details>
