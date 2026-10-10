@@ -203,8 +203,16 @@ export function readDisplaySettings(stored: unknown): DisplaySettings {
 // ---------------------------------------------------------------------------------------------
 // The Settings tabs: one line per setting, every tab from this table.
 
-/** The quota window's Settings tabs that edit display settings. */
-export type SettingsTab = "sidebar" | "collapsed" | "statusLine" | "toast" | "colors" | "layout";
+/** The quota window's Settings tabs; Words and Providers edit server settings (`server-settings.ts`). */
+export type SettingsTab =
+  | "sidebar"
+  | "collapsed"
+  | "statusLine"
+  | "toast"
+  | "colors"
+  | "layout"
+  | "words"
+  | "providers";
 
 export function isSurfaceTab(tab: SettingsTab): tab is Surface {
   return SURFACES.includes(tab as Surface);
@@ -495,7 +503,7 @@ export const PRESETS: Record<PresetName, Preset> = {
 };
 
 /** The value `delta` steps from `current` in `values`, wrapping; an unknown one counts as the first. */
-function stepIn<T>(values: readonly T[], current: T, delta: number): T {
+export function stepIn<T>(values: readonly T[], current: T, delta: number): T {
   const index = Math.max(0, values.indexOf(current));
   return values[(index + delta + values.length) % values.length] as T;
 }

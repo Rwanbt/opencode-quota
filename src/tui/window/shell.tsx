@@ -24,6 +24,10 @@ import {
   type QuotaRpcDownloadPricesOutput,
   type QuotaRpcNoticeListInput,
   type QuotaRpcNoticeListOutput,
+  type QuotaRpcSaveSettingsInput,
+  type QuotaRpcSaveSettingsOutput,
+  type QuotaRpcSettingsInput,
+  type QuotaRpcSettingsOutput,
   type QuotaRpcStatusInput,
   type QuotaRpcStatusOutput,
   type QuotaRpcUsageInput,
@@ -102,6 +106,11 @@ export type WindowRpc = {
     input: QuotaRpcDownloadPricesInput,
     options: CallOptions,
   ): Promise<QuotaRpcDownloadPricesOutput>;
+  settings(input: QuotaRpcSettingsInput, options: CallOptions): Promise<QuotaRpcSettingsOutput>;
+  saveSettings(
+    input: QuotaRpcSaveSettingsInput,
+    options: CallOptions,
+  ): Promise<QuotaRpcSaveSettingsOutput>;
 };
 
 /** What the window needs from OpenCode's TUI context (its theme and client types aren't installed). */

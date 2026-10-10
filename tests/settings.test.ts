@@ -303,6 +303,64 @@ describe("saveSettings", () => {
     expect((await loadSettings()).settings.providers.anthropic.binaryPath).toBe("~/bin/claude");
   });
 
+  describe("custom provider switches", () => {
+    const [first, second] = VALID_QUOTA_PROVIDER_INPUTS;
+    const file = () =>
+      [
+        "{",
+        '  "providers": {',
+        '    "custom": [',
+        `      // first\n      ${JSON.stringify({ ...first, enabled: false })},`,
+        `      // second\n      ${JSON.stringify({ ...second, enabled: false })}`,
+        "    ]",
+        "  }",
+        "}",
+      ].join("\n");
+
+    it("sets only the named provider's enabled field, with the patch, and keeps comments", async () => {
+      const path = writeSettings(file());
+
+      const result = await saveSettings(
+        { words: { runsOut: true } },
+        { customEnabled: { [second.id]: true } },
+      );
+
+      expect(result.ok).toBe(true);
+      const text = readFileSync(path, "utf8");
+      expect(text).toContain("// first");
+      expect(text).toContain("// second");
+      const { settings } = await loadSettings();
+      expect(settings.providers.custom.map((item) => [item.id, item.enabled])).toEqual([
+        [first.id, false],
+        [second.id, true],
+      ]);
+      expect(settings.words.runsOut).toBe(true);
+    });
+
+    it.each([
+      {
+        name: "an id not in the file",
+        switches: { "not-there": true },
+        message: /not in the file/,
+      },
+      {
+        name: "a switch while the list has a problem",
+        text: '{ "providers": { "custom": [{ "id": "broken" }] } }',
+        switches: { broken: true },
+        message: /fix settings\.jsonc first/,
+      },
+    ])("refuses $name and writes nothing", async ({ text, switches, message }) => {
+      const path = writeSettings(text ?? file());
+      const before = readFileSync(path, "utf8");
+
+      const result = await saveSettings({ words: { runsOut: true } }, { customEnabled: switches });
+
+      expect(result.ok).toBe(false);
+      expect(result.issues.map((issue) => issue.message).join("\n")).toMatch(message);
+      expect(readFileSync(path, "utf8")).toBe(before);
+    });
+  });
+
   it("refuses to edit a file with a syntax error", async () => {
     const path = writeSettings('{ "words": { "percent": "used" ');
 

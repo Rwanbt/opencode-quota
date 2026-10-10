@@ -81,7 +81,7 @@ Type these in OpenCode. Add a range after `/quota_usage`, like `/quota_usage 30d
 
 | Command                | What it shows                                                                                                   |
 | ---------------------- | --------------------------------------------------------------------------------------------------------------- |
-| `/quota`               | Quota window: limits, usage, maintainer notices, status, TUI settings                                           |
+| `/quota`               | Quota window: limits, usage, maintainer notices, status, settings                                               |
 | `/quota_usage [range]` | Tokens and API cost: `today`, `24h`, `7d` (default), `30d`, `all`, `session`, `session_tree`, `between` two dates |
 | `/quota_status`        | Setup check: logins, providers, pricing, and notices                                                            |
 

@@ -102,5 +102,20 @@ describe("quota report messages", () => {
     expect(quotaMessageText({ snapshot: otherModel, notices: [], nowMs })).toBe(
       "Quota\nNo quota provider serves the session's current model. Run /quota_status to see why.",
     );
+    // 10% left after 1h of a 5h window: at that pace it runs out long before the reset.
+    const fast = row("anthropic.5h", {
+      window: "five_hour",
+      percentRemaining: 10,
+      resetsAt: new Date(nowMs + 4 * 3_600_000).toISOString(),
+    });
+    const provider = { ...snapshot.providers[0], rows: [fast] };
+    const paced = (runsOut: boolean) =>
+      quotaMessageText({
+        snapshot: { ...snapshot, providers: [provider], words: { ...snapshot.words, runsOut } },
+        notices: [],
+        nowMs,
+      });
+    expect(paced(false)).toBe("Quota\nClaude 5h           10% left      4h");
+    expect(paced(true)).toBe("Quota\nClaude 5h           10% left      4h  runs out in 7m");
   });
 });

@@ -217,8 +217,10 @@ describe("display settings in plugin storage", () => {
       displayImport: {
         statusLine: { detail: "one" as const },
         toast: { afterReply: "always" as const },
+        // v5's quotaProjection "runway": every runs-out estimate on.
+        runsOut: { sidebar: true, collapsed: true, statusLine: true, toast: true },
       },
-      expected: { detail: "one", afterReply: "always", afterCompaction: true },
+      expected: { detail: "one", afterReply: "always", afterCompaction: true, runsOut: 4 },
     },
     {
       name: "never overwrites settings saved before",
@@ -227,13 +229,13 @@ describe("display settings in plugin storage", () => {
         statusLine: { detail: "one" as const },
         toast: { afterReply: "always" as const },
       },
-      expected: { detail: "auto", afterReply: "low", afterCompaction: true },
+      expected: { detail: "auto", afterReply: "low", afterCompaction: true, runsOut: 0 },
     },
     {
       name: "saves nothing for an empty import",
       saved: undefined,
       displayImport: {},
-      expected: { detail: "auto", afterReply: "off", afterCompaction: true },
+      expected: { detail: "auto", afterReply: "off", afterCompaction: true, runsOut: 0 },
     },
   ])("applyDisplayImport $name", async ({ saved, displayImport, expected }) => {
     const { storage, live } = fakeStorage(saved);
@@ -243,6 +245,7 @@ describe("display settings in plugin storage", () => {
       detail: display.statusLine.detail,
       afterReply: display.toast.afterReply,
       afterCompaction: display.toast.afterCompaction,
+      runsOut: Object.values(display.runsOut).filter(Boolean).length,
     }).toEqual(expected);
     if (Object.keys(displayImport).length === 0 && !saved) {
       expect(live.value).toEqual({ version: 1 });

@@ -114,7 +114,11 @@ const plugin = Plugin.define({
     const host: SurfaceHost = {
       theme: () => api.theme,
       display: display.shown,
-      quota,
+      // While the Words tab has unsaved changes, every surface shows its words.
+      quota: {
+        ...quota,
+        snapshot: (sessionID) => settings.withDraftWords(quota.snapshot(sessionID)),
+      },
       editing: settings,
     };
     const quotaWindow = createQuotaWindow(api, host, settings);

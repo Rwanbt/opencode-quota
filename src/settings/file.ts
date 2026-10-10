@@ -375,20 +375,53 @@ type PlanText = (
 ) => { text: string } | { issues: SettingsIssue[] } | undefined;
 
 /**
- * Merges a patch into settings.jsonc (JSON merge patch: objects merge, null resets). One unknown
- * key or bad value and nothing is saved. Comments stay; a symlink keeps its link; the file is 0600.
+ * Edits that set only the `enabled` field of the custom providers named in `switches`, so each
+ * entry keeps everything else and its comments. Nothing while the list has a problem.
  */
-export async function saveSettings(
-  patch: unknown,
-  options: { allowFileOnly?: boolean } = {},
-): Promise<SaveResult> {
-  return editSettings(() => patch as SettingsPatch, options);
+function planSwitches(
+  read: ReturnType<typeof readSettingsText>,
+  switches: Readonly<Record<string, boolean>>,
+): { edits: Edit[]; issues: SettingsIssue[] } {
+  const ids = Object.keys(switches);
+  if (ids.length === 0) return { edits: [], issues: [] };
+  const key = "providers.custom";
+  if (read.issues.some((issue) => issue.key.startsWith(key))) {
+    return { edits: [], issues: [{ key, message: "has a problem; fix settings.jsonc first" }] };
+  }
+  const definitions = read.settings.providers.custom;
+  const edits: Edit[] = [];
+  const issues: SettingsIssue[] = [];
+  for (const id of ids) {
+    const at = definitions.findIndex((definition) => definition.id === id);
+    if (at === -1) issues.push({ key, message: "a provider to switch is not in the file" });
+    else edits.push({ path: ["providers", "custom", at, "enabled"], value: switches[id] === true });
+  }
+  return { edits, issues };
 }
 
 /**
- * Like `saveSettings`, with the patch built from the settings it saves over: read, `edit`, check
- * and write all hold the lock, so an edit made from the current value never loses a concurrent
- * one. `edit` returns undefined to change nothing.
+ * Merges a patch into settings.jsonc (JSON merge patch: objects merge, null resets). One unknown
+ * key or bad value and nothing is saved. Comments stay; a symlink keeps its link; the file is 0600.
+ * `customEnabled` switches custom providers on or off by id; only the quota window's own switch
+ * sends it (the agent tools never call this).
+ */
+export async function saveSettings(
+  patch: unknown,
+  options: { allowFileOnly?: boolean; customEnabled?: Readonly<Record<string, boolean>> } = {},
+): Promise<SaveResult> {
+  return editWithLock((base, read) => {
+    const planned = planEdits(patch, options.allowFileOnly === true);
+    const switched = planSwitches(read, options.customEnabled ?? {});
+    const issues = [...planned.issues, ...switched.issues];
+    if (issues.length > 0) return { issues };
+    return { text: applySettingsEdits(base, [...planned.edits, ...switched.edits]) };
+  });
+}
+
+/**
+ * Like `saveSettings` (without switches), with the patch built from the settings it saves over:
+ * read, `edit`, check and write all hold the lock, so an edit made from the current value never
+ * loses a concurrent one. `edit` returns undefined to change nothing.
  */
 export async function editSettings(
   edit: SettingsEdit,

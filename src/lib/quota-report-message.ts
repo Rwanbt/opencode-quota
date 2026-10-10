@@ -45,7 +45,10 @@ const NO_DISPLAY_CHOICES: RowSettings = {
   surfaces: { sidebar: EVERY_ROW, collapsed: EVERY_ROW, statusLine: EVERY_ROW, toast: EVERY_ROW },
 };
 
-/** The /quota report of Web and Desktop: every limit in the server's words, then the notices. */
+/**
+ * The /quota report of Web and Desktop: every limit in the server's words (with "runs out in …"
+ * when `words.runsOut` is on), then the notices.
+ */
 export function quotaMessageText(params: {
   snapshot: QuotaSnapshot;
   notices: Notice[];
@@ -56,7 +59,13 @@ export function quotaMessageText(params: {
   const groups = visibleGroups(snapshot, NO_DISPLAY_CHOICES, "sidebar", words);
   const limits =
     groups.length > 0
-      ? plainLines({ groups, words, nowMs, sessionTokens: snapshot.sessionTokens })
+      ? plainLines({
+          groups,
+          words,
+          nowMs,
+          sessionTokens: snapshot.sessionTokens,
+          runsOut: words.runsOut,
+        })
       : snapshot.providers.length > 0
         ? ["No quota provider serves the session's current model. Run /quota_status to see why."]
         : ["No quota providers found. Run /quota_status to see why."];

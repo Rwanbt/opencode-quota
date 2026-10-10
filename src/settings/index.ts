@@ -24,8 +24,11 @@ export {
   watchSettings,
 } from "./file.js";
 export {
+  type ClientSettings,
   type CursorPlan,
+  type CustomProviderSwitch,
   checkSetting,
+  clientSettings,
   defaultSettings,
   describeRule,
   keysUnder,

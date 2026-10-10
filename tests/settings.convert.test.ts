@@ -110,7 +110,11 @@ const ROWS: Array<{
     server: { "words.detail": "summary" },
     dropped: ["opencodeZenDisplay"],
   },
-  { v5: { quotaProjection: "runway" }, server: { "words.runsOut": true } },
+  {
+    v5: { quotaProjection: "runway" },
+    server: { "words.runsOut": true },
+    display: { runsOut: { sidebar: true, collapsed: true, statusLine: true, toast: true } },
+  },
   {
     v5: { resetTimeDecimals: 2, resetTimeSpaced: false },
     server: { "words.reset": "decimal", "words.resetDecimals": 2 },

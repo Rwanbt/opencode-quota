@@ -32,7 +32,7 @@ async function expectRejected(schema: StandardSchema, value: unknown, message: s
 const methods = QuotaRpc.methods;
 
 describe("quota RPC definition", () => {
-  it("defines the plain RPC id, the changed event and seven methods", () => {
+  it("defines the plain RPC id, the changed event and its methods", () => {
     expect(QUOTA_RPC_ID).toBe("slkiser.opencode-quota");
     expect(QuotaRpc.id).toBe(QUOTA_RPC_ID);
     expect(Object.keys(QuotaRpc.events)).toEqual(["changed"]);
@@ -44,6 +44,7 @@ describe("quota RPC definition", () => {
       "status",
       "usage",
       "downloadPrices",
+      "settings",
       "saveSettings",
       "acknowledgeDisplayImport",
     ]);
@@ -221,10 +222,32 @@ describe("quota RPC definition", () => {
     }
   });
 
-  it("validates saveSettings and acknowledgeDisplayImport", async () => {
+  it("validates settings, saveSettings and acknowledgeDisplayImport", async () => {
+    await expectAccepted(methods.settings.input, {});
+    await expectRejected(methods.settings.input, null, "input must be an object");
+    await expectAccepted(methods.settings.output, { values: {}, providers: [], custom: [] });
+    for (const value of [
+      {},
+      { values: {}, providers: [] },
+      { values: [], providers: [], custom: [] },
+    ]) {
+      await expectRejected(
+        methods.settings.output,
+        value,
+        "output must carry values, providers and custom",
+      );
+    }
     await expectAccepted(methods.saveSettings.input, { patch: { words: { percent: "used" } } });
+    await expectAccepted(methods.saveSettings.input, { patch: {}, customEnabled: { gw: true } });
     for (const value of [undefined, {}, { patch: null }, { patch: [] }]) {
       await expectRejected(methods.saveSettings.input, value, "input must carry a patch object");
+    }
+    for (const customEnabled of [[], { gw: "yes" }, null]) {
+      await expectRejected(
+        methods.saveSettings.input,
+        { patch: {}, customEnabled },
+        "customEnabled must map provider ids to true or false",
+      );
     }
     await expectAccepted(methods.saveSettings.output, { ok: false, issues: [] });
     for (const value of [{}, { ok: "yes", issues: [] }, { ok: true }]) {

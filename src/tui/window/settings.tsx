@@ -1,11 +1,12 @@
 /** @jsxImportSource @opentui/solid */
 /**
- * The quota window's Settings tabs: Sidebar, Collapsed, Status line, Toast, Colors and Layout.
- * Their setting lines come from the field table in `display.ts`; the surface tabs also list
- * the snapshot's providers (and rows) as a tree you drag, hide and rename. While you edit, the
- * real sidebar, status line and toast show your changes and mark the selected line. Save
- * (ctrl+s) stores them in plugin storage, Discard drops them, and closing the window with
- * unsaved changes asks first.
+ * The quota window's Settings tabs: Sidebar, Collapsed, Status line, Toast, Colors and Layout
+ * edit the display settings (the field table in `display.ts`); Words and Providers edit the
+ * server settings (the field table in `server-settings.ts`). The surface tabs also list the
+ * snapshot's providers (and rows) as a tree you drag, hide and rename. While you edit, the real
+ * sidebar, status line and toast show your changes (the words too) and mark the selected line.
+ * Save (ctrl+s) stores the display settings in plugin storage and sends the server ones with
+ * `saveSettings`; Discard drops them, and closing the window with unsaved changes asks first.
  */
 import {
   type BoxRenderable,
@@ -18,11 +19,14 @@ import {
 import type { JSX } from "@opentui/solid";
 import { createEffect, createMemo, createSignal, For, on, Show } from "solid-js";
 import { describeError } from "../../core/errors.js";
-import type { ProviderSnapshot, QuotaRow } from "../../core/types.js";
+import type { ProviderSnapshot, QuotaRow, QuotaSnapshot } from "../../core/types.js";
 import { WINDOWS } from "../../core/windows.js";
+import { QuotaRpc } from "../../rpc.js";
+import type { CustomProviderSwitch } from "../../settings/index.js";
 import { DEFAULT_WORDS, fit, percentText, resetText, rowValueText } from "../../view/format.js";
 import { pickRow, type Surface, type SurfaceRows, type WindowChoice } from "../../view/select.js";
 import type { ColorRole } from "../../view/text.js";
+import { quotaCallOptions, rpcErrorMessage } from "../client.js";
 import {
   COLOR_NAMES,
   cycleField,
@@ -38,9 +42,23 @@ import {
   resetTab,
   type SettingsTab,
   setIn,
+  stepIn,
   typedColor,
   valueAt,
 } from "../display.js";
+import {
+  createServerSettings,
+  foundProviderIds,
+  isTicked,
+  PROVIDERS_KEY,
+  SERVER_FIELDS,
+  type ServerField,
+  type ServerTab,
+  type ServerValue,
+  steppedWording,
+  withTick,
+  wordingChoice,
+} from "../server-settings.js";
 import type { SurfaceHost } from "../sidebar.js";
 import { namedColor, roleColor } from "../theme.js";
 import { TOAST_TITLE, toastText } from "../toasts.js";
@@ -101,7 +119,23 @@ export const SETTINGS_TABS: ReadonlyArray<{
     note: "Bars and spacing. Watch the sidebar → and the line under the message box ↓",
     watchesSidebar: true,
   },
+  {
+    tab: "words",
+    title: "Words",
+    note: "How numbers and times read here, in Web and Desktop /quota and in the CLI. Saved in the server's settings.jsonc. Watch the sidebar →",
+    watchesSidebar: true,
+  },
+  {
+    tab: "providers",
+    title: "Providers",
+    note: "Which providers quota checks, and how. Saved in the server's settings.jsonc; the sidebar → follows after Save.",
+    watchesSidebar: true,
+  },
 ];
+
+function isServerTab(tab: SettingsTab): tab is ServerTab {
+  return tab === "words" || tab === "providers";
+}
 
 export function isSettingsTab(tab: string | undefined): tab is SettingsTab {
   return SETTINGS_TABS.some((item) => item.tab === tab);
@@ -118,6 +152,12 @@ export type OptionLine = {
   run?: () => void;
   typed?: Typed;
   note?: () => string;
+  /** The note in the warning color. */
+  warning?: boolean;
+  /** A second muted line under the value. */
+  detail?: string;
+  /** Nesting under the line above: 1 for a provider's tick, 2 for that provider's settings. */
+  depth?: number;
   swatches?: () => RGBA[];
 };
 
@@ -199,6 +239,13 @@ export function OptionRow(props: {
   const fg = () => (props.active ? props.theme.text.action.primary.focused : props.theme.text.base);
   const arrow = () => (props.active ? fg() : props.theme.text.action.primary.selected);
   const note = () => line.note?.() ?? "";
+  const indent = "  ".repeat(line.depth ?? 0);
+  const noteColor = () =>
+    props.active
+      ? fg()
+      : line.warning
+        ? props.theme.text.feedback.warning.base
+        : props.theme.text.muted;
   return (
     <>
       <Show when={line.group}>
@@ -212,7 +259,7 @@ export function OptionRow(props: {
         backgroundColor={props.active ? props.theme.background.action.primary.focused : TRANSPARENT}
         onMouseDown={props.press}
       >
-        <Cell fg={fg()}>{`   ${fit(line.title, 26)} `}</Cell>
+        <Cell fg={fg()}>{`   ${indent}${fit(line.title, 26 - indent.length)} `}</Cell>
         <Cell fg={arrow()} onUp={props.click(() => line.cycle?.(-1))}>
           {line.cycle ? "‹ " : "  "}
         </Cell>
@@ -236,10 +283,18 @@ export function OptionRow(props: {
             ))}
           </Cell>
         </Show>
-        <Cell fg={props.active ? fg() : props.theme.text.muted} shrink>
+        <Cell fg={noteColor()} shrink>
           {note() ? `   ${note()}` : ""}
         </Cell>
       </box>
+      <Show when={line.detail}>
+        {/* Under the value: past the 3 spaces, the 26-column title and the "‹ ". */}
+        <box paddingLeft={32}>
+          <Cell fg={props.theme.text.muted} shrink>
+            {line.detail}
+          </Cell>
+        </box>
+      </Show>
     </>
   );
 }
@@ -260,6 +315,25 @@ export function createSettingsEditor(api: WindowHost, display: DisplayStore) {
   const treeLines = new Map<string, TreeLine>();
   const theme = () => api.theme;
   const shown = () => display.shown();
+  // The RPC client is made per call, so nothing reaches OpenCode during plugin setup.
+  const server = createServerSettings({
+    settings: () => api.client.rpc(QuotaRpc).settings({}, quotaCallOptions(api)),
+    saveSettings: (input) => api.client.rpc(QuotaRpc).saveSettings(input, quotaCallOptions(api)),
+  });
+  /** Unsaved changes on any Settings tab, display or server. */
+  const dirty = () => display.dirty() || server.dirty();
+  const discard = () => {
+    display.discard();
+    server.discard();
+  };
+  /** A tab's lines back to their defaults; the custom provider switches stay as they are. */
+  function resetTabLines(settingsTab: SettingsTab): void {
+    display.edit((settings) => resetTab(settings, settingsTab));
+    for (const field of SERVER_FIELDS) {
+      if (field.tab === settingsTab) server.set(field.key, field.initial);
+    }
+    if (settingsTab === "providers") server.set(PROVIDERS_KEY, "auto");
+  }
 
   /** `run` as a click handler that skips the click OpenCode sends right after a drag. */
   const click: Click = (run) => () => {
@@ -336,7 +410,126 @@ export function createSettingsEditor(api: WindowHost, display: DisplayStore) {
     },
   ];
 
-  function optionLines(settingsTab: SettingsTab): OptionLine[] {
+  /** A plain server setting's line: ‹ › step through its values, or you type one. */
+  function serverFieldLine(field: ServerField): OptionLine {
+    const value = () => server.value(field.key) as ServerValue;
+    const typed = field.typed;
+    return {
+      id: field.key,
+      group: field.group,
+      title: field.title,
+      depth: field.provider ? 2 : 0,
+      value: () => field.show(value()),
+      cycle:
+        field.values.length > 0
+          ? (delta) => server.set(field.key, stepIn(field.values, value(), delta))
+          : undefined,
+      typed: typed && {
+        placeholder: typed.placeholder,
+        hint: `Type ${typed.placeholder}, then enter · enter with nothing typed = ${field.show(null)} · esc stop`,
+        apply: (text) => {
+          const parsed = typed.parse(text);
+          if (parsed !== undefined) server.set(field.key, parsed);
+        },
+      },
+      note: () =>
+        field.preset && wordingChoice(server.value) !== undefined
+          ? "from the preset"
+          : (field.note ?? ""),
+    };
+  }
+
+  const wordingLine: OptionLine = {
+    id: "preset.words",
+    title: "Wording",
+    value: () => wordingChoice(server.value) ?? "your own",
+    cycle: (delta) => {
+      for (const [key, value] of Object.entries(steppedWording(server.value, delta))) {
+        server.set(key, value);
+      }
+    },
+    note: () => "sets the 2 lines under it",
+  };
+
+  /** A custom provider's switch, its web address and the key it would send. */
+  function customLine(entry: CustomProviderSwitch, first: boolean): OptionLine {
+    const on = () => server.customOn(entry.id);
+    const request = entry.request;
+    return {
+      id: `custom.${entry.id}`,
+      group: first ? "Custom providers (added in settings.jsonc)" : undefined,
+      title: entry.label,
+      value: () => (on() ? "on" : "off"),
+      cycle: () => server.switchCustom(entry.id, !on()),
+      note: () =>
+        !request
+          ? "a local estimate: sends nothing"
+          : request.insecure
+            ? `${request.url}  plain http: the key travels unencrypted`
+            : request.url,
+      warning: request?.insecure,
+      detail: request ? `sends ${request.key}` : undefined,
+    };
+  }
+
+  /**
+   * The custom providers' switches (on top: an agent sends the user here to switch one on), which
+   * providers quota checks (ticks, with Cursor's and OpenCode Zen's settings nested; the ones
+   * quota found first), then the other groups.
+   */
+  function providerLines(snapshot: QuotaSnapshot | undefined): OptionLine[] {
+    const loaded = server.saved();
+    if (!loaded) return [];
+    const found = foundProviderIds(snapshot);
+    const ids = loaded.providers.map(({ id }) => id);
+    const enabled = () => server.value(PROVIDERS_KEY) as "auto" | string[];
+    const ordered = [
+      ...loaded.providers.filter(({ id }) => found.includes(id)),
+      ...loaded.providers.filter(({ id }) => !found.includes(id)),
+    ];
+    const check: OptionLine = {
+      id: PROVIDERS_KEY,
+      group: "Which providers",
+      title: "Check",
+      value: () => (enabled() === "auto" ? "every one it finds" : "only the ticked ones"),
+      cycle: () =>
+        server.set(
+          PROVIDERS_KEY,
+          enabled() === "auto" ? ids.filter((id) => isTicked("auto", id, found)) : "auto",
+        ),
+      note: () => "tick one to choose them yourself",
+    };
+    const ticks = ordered.flatMap(({ id, label }): OptionLine[] => {
+      const ticked = isTicked(enabled(), id, found);
+      const tick: OptionLine = {
+        id: `provider.${id}`,
+        title: `${ticked ? "[x]" : "[ ]"} ${label}`,
+        depth: 1,
+        value: () => (ticked ? "checked" : enabled() === "auto" ? "not found" : "skipped"),
+        cycle: () => server.set(PROVIDERS_KEY, withTick(enabled(), ids, found, id, !ticked)),
+      };
+      const nested = ticked ? SERVER_FIELDS.filter((field) => field.provider === id) : [];
+      return [tick, ...nested.map(serverFieldLine)];
+    });
+    return [
+      ...loaded.custom.map((entry, index) => customLine(entry, index === 0)),
+      check,
+      ...ticks,
+      ...SERVER_FIELDS.filter((field) => field.tab === "providers" && !field.provider).map(
+        serverFieldLine,
+      ),
+    ];
+  }
+
+  function optionLines(settingsTab: SettingsTab, snapshot?: QuotaSnapshot): OptionLine[] {
+    if (settingsTab === "providers") return providerLines(snapshot);
+    if (settingsTab === "words") {
+      if (!server.saved()) return [];
+      return [
+        wordingLine,
+        ...SERVER_FIELDS.filter((field) => field.tab === "words").map(serverFieldLine),
+      ];
+    }
     const presets = (Object.keys(PRESETS) as PresetName[]).filter(
       (name) => PRESETS[name].tab === settingsTab,
     );
@@ -350,6 +543,21 @@ export function createSettingsEditor(api: WindowHost, display: DisplayStore) {
   function firstLine(settingsTab: SettingsTab | undefined): string {
     if (settingsTab === undefined) return "";
     return isSurfaceTab(settingsTab) ? SWITCH_ID : (optionLines(settingsTab)[0]?.id ?? "");
+  }
+
+  /** Reads the server settings each time a Words or Providers tab shows. */
+  async function loadServer(settingsTab: ServerTab): Promise<void> {
+    try {
+      await server.load();
+    } catch (error) {
+      api.ui.toast.show({
+        variant: "error",
+        title: "Quota settings not loaded",
+        message: rpcErrorMessage(error),
+      });
+      return;
+    }
+    if (tab() === settingsTab && selected() === "") setSelected(firstLine(settingsTab));
   }
 
   function Button(props: { label: string; primary?: boolean; run: () => void }): JSX.Element {
@@ -457,7 +665,7 @@ export function createSettingsEditor(api: WindowHost, display: DisplayStore) {
       const loaded = snapshot();
       return current && loaded ? surfaceTree(loaded, shown().surfaces[current]) : [];
     };
-    const options = createMemo(() => optionLines(props.tab));
+    const options = createMemo(() => optionLines(props.tab, snapshot()));
     const lines = createMemo(() =>
       tree().flatMap(({ provider, rowIds }) => [
         treeLine(provider.providerId, provider.providerId, false),
@@ -626,14 +834,14 @@ export function createSettingsEditor(api: WindowHost, display: DisplayStore) {
         { bind: "alt+down", title: "Move down", group: KEYS, run: () => move(1) },
         { bind: "space", title: "Use the line", group: KEYS, run: activate },
         { bind: "return", title: "Use the line", group: KEYS, run: activate },
-        { bind: "e", title: "Rename a row or type a color", group: KEYS, run: startTyping },
+        { bind: "e", title: "Type a value or rename a row", group: KEYS, run: startTyping },
         { bind: "left", title: "Previous value", group: KEYS, run: () => sideways(-1) },
         { bind: "right", title: "Next value", group: KEYS, run: () => sideways(1) },
         {
           bind: "ctrl+r",
           title: "Reset this tab",
           group: KEYS,
-          run: () => display.edit((settings) => resetTab(settings, props.tab)),
+          run: () => resetTabLines(props.tab),
         },
       ],
     }));
@@ -800,6 +1008,9 @@ export function createSettingsEditor(api: WindowHost, display: DisplayStore) {
         <Show when={surface() && !snapshot()}>
           <Cell fg={theme().text.muted}>{"   Loading quota…"}</Cell>
         </Show>
+        <Show when={isServerTab(props.tab) && !server.saved()}>
+          <Cell fg={theme().text.muted}>{"   Loading settings…"}</Cell>
+        </Show>
         <Show when={options().length > 0 && lines().length > 0}>
           <box height={1} />
         </Show>
@@ -833,8 +1044,9 @@ export function createSettingsEditor(api: WindowHost, display: DisplayStore) {
     async function save(): Promise<void> {
       try {
         await display.save();
+        await server.save();
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
+        const message = rpcErrorMessage(error);
         api.ui.toast.show({ variant: "error", title: "Quota settings not saved", message });
         return;
       }
@@ -848,8 +1060,8 @@ export function createSettingsEditor(api: WindowHost, display: DisplayStore) {
       });
     }
     /** Drops the changes; from the "Keep your changes?" question it also closes the window. */
-    const discard = () => {
-      display.discard();
+    const discardChanges = () => {
+      discard();
       if (!confirming()) return;
       setConfirming(false);
       props.close();
@@ -858,7 +1070,7 @@ export function createSettingsEditor(api: WindowHost, display: DisplayStore) {
     api.keymap.layer(() => ({
       target: props.box,
       priority: 12,
-      enabled: () => typing() === undefined && (settingsTab() !== undefined || display.dirty()),
+      enabled: () => typing() === undefined && (settingsTab() !== undefined || dirty()),
       commands: [{ bind: "ctrl+s", title: "Save", group: KEYS, run: () => void save() }],
     }));
     // While the bottom bar asks about unsaved changes: d drops them, Esc goes back to editing.
@@ -867,7 +1079,7 @@ export function createSettingsEditor(api: WindowHost, display: DisplayStore) {
       priority: 15,
       enabled: () => confirming() && typing() === undefined,
       commands: [
-        { bind: "d", title: "Discard the changes", group: KEYS, run: discard },
+        { bind: "d", title: "Discard the changes", group: KEYS, run: discardChanges },
         { bind: "escape", title: "Keep editing", group: KEYS, run: () => setConfirming(false) },
       ],
     }));
@@ -881,27 +1093,24 @@ export function createSettingsEditor(api: WindowHost, display: DisplayStore) {
               Keep your changes?
             </Cell>
             <Button label="Save" primary run={() => void save()} />
-            <Button label="Discard" run={discard} />
+            <Button label="Discard" run={discardChanges} />
             <Button label="Keep editing" run={() => setConfirming(false)} />
           </>
         }
       >
-        <Show when={display.dirty()} fallback={<Button label="Close" primary run={props.close} />}>
+        <Show when={dirty()} fallback={<Button label="Close" primary run={props.close} />}>
           <Button label="Save" primary run={() => void save()} />
-          <Button label="Discard" run={discard} />
+          <Button label="Discard" run={discardChanges} />
         </Show>
         <Show when={settingsTab()}>
           {(current: () => SettingsTab) => (
-            <Button
-              label="Reset tab"
-              run={() => display.edit((settings) => resetTab(settings, current()))}
-            />
+            <Button label="Reset tab" run={() => resetTabLines(current())} />
           )}
         </Show>
         <Show when={settingsTab() === "toast" && shown().surfaces.toast.enabled}>
           <Button label="Show toast" run={() => previewToast(props.host, props.sessionID)} />
         </Show>
-        <Cell fg={warning()}>{display.dirty() ? " unsaved changes" : ""}</Cell>
+        <Cell fg={warning()}>{dirty() ? " unsaved changes" : ""}</Cell>
       </Show>
     );
   }
@@ -924,6 +1133,12 @@ export function createSettingsEditor(api: WindowHost, display: DisplayStore) {
     },
     /** A line takes typing, so the window's own keys rest. */
     typing: () => typing() !== undefined,
+    /** The snapshot with the Words tab's unsaved words, which every surface shows while you edit. */
+    withDraftWords(snapshot: QuotaSnapshot | undefined): QuotaSnapshot | undefined {
+      const words = server.draftWords();
+      if (!snapshot || Object.keys(words).length === 0) return snapshot;
+      return { ...snapshot, words: { ...(snapshot.words ?? DEFAULT_WORDS), ...words } };
+    },
     /**
      * The window shows `next`; undefined when it closed, which drops the changes. Any tab
      * change stops typing, so the window gets its keys back.
@@ -932,16 +1147,17 @@ export function createSettingsEditor(api: WindowHost, display: DisplayStore) {
       setTyping(undefined);
       typingInput = undefined;
       if (next === undefined) {
-        display.discard();
+        discard();
         setConfirming(false);
       }
       const settingsTab = isSettingsTab(next) ? next : undefined;
       if (settingsTab !== tab()) setSelected(firstLine(settingsTab));
       setTabNow(settingsTab);
+      if (settingsTab && isServerTab(settingsTab)) void loadServer(settingsTab);
     },
     /** Esc or Close: true while there are unsaved changes; the bottom bar then asks about them. */
     askBeforeClose(): boolean {
-      if (!display.dirty()) return false;
+      if (!dirty()) return false;
       setConfirming(true);
       return true;
     },
@@ -959,6 +1175,10 @@ export function createSettingsEditor(api: WindowHost, display: DisplayStore) {
       if (confirming()) return "ctrl+s save · d discard the changes · esc keep editing";
       if (!isSettingsTab(windowTab)) return undefined;
       const end = "↑↓ select · tab next tab · ctrl+s save · ctrl+r reset tab · esc close";
+      if (windowTab === "words") return `‹ › or ←/→ change · ${end}`;
+      if (windowTab === "providers") {
+        return `‹ › or ←/→ change · space ticks a provider or flips a switch · double-click a number (or e) to type it · ${end}`;
+      }
       if (!isSurfaceTab(windowTab)) {
         return `‹ › or ←/→ change · double-click a color (or e) to type your own · ${end}`;
       }

@@ -11,7 +11,7 @@ One global file, `settings.jsonc`:
 - `~/.config/opencode/opencode-quota/settings.jsonc` on every OS (`$XDG_CONFIG_HOME/opencode/...` when `XDG_CONFIG_HOME` is set)
 - `$OPENCODE_CONFIG_DIR/opencode-quota/settings.jsonc` when `OPENCODE_CONFIG_DIR` is set (it replaces the global folder, like OpenCode 2)
 
-There are no project settings. Comments and trailing commas are allowed. Every key is optional: a missing or invalid one uses its default. Changes apply without a restart. `/quota_status` shows the file it reads and anything wrong in it.
+There are no project settings. Comments and trailing commas are allowed. Every key is optional: a missing or invalid one uses its default. Changes apply without a restart. `/quota_status` shows the file it reads and anything wrong in it. In the TUI, the **Words** and **Providers** tabs of the `/quota` window change the words, providers, checking, pricing, export and telemetry settings and save them to this file; only a file edit (or your agent) sets the custom provider definitions, the Claude CLI path and the export path.
 
 Without the file, OpenCode Quota uses the defaults. Create it when you want to change something. Coming from 5.x, the first start writes it from your old settings; see [Updating](updating.md#moving-from-5x).
 
@@ -42,7 +42,7 @@ Example:
 }
 ```
 
-The `words` settings apply everywhere: the sidebar, the status line, toasts, `/quota`, and terminal `show`.
+The `words` settings apply everywhere: the sidebar, the status line, toasts, `/quota`, and terminal `show`. `words.runsOut` applies only to the text of `/quota` in Web and Desktop and of terminal `show`; the TUI places have their own switches (see [TUI surfaces](#tui-surfaces)).
 
 ## TUI surfaces
 
@@ -68,7 +68,7 @@ Rules:
 - Automatic models.dev matching runs first. Add `pricingModelMap` only when it cannot find one clear model. `pricingModelMap` cannot override a successful automatic match.
 - If any request cannot be priced, request counts stay visible and the budget percentage is reported unavailable.
 - Credentials resolve from `apiKeyEnv`, trusted global `provider.<providerId>.options.apiKey`, then API-key logins saved in OpenCode 2 (`opencode.db`).
-- `"enabled": false` switches a definition off: it is never fetched, its key is never sent, and `/quota_status` shows it as off. Without `enabled` (or with `true`) it is on. Providers an agent adds start switched off; switch one on by setting `"enabled": true` in `opencode-quota/settings.jsonc`, or in `/quota_settings` → **Providers**.
+- `"enabled": false` switches a definition off: it is never fetched, its key is never sent, and `/quota_status` shows it as off. Without `enabled` (or with `true`) it is on. Providers an agent adds start switched off; switch one on by setting `"enabled": true` in `opencode-quota/settings.jsonc`, or in `/quota_settings` → **Providers**, which shows each custom provider's web address and the key it sends (and warns about plain `http`) next to its switch.
 - Definitions run automatically with `providers.enabled: "auto"`. A list must include `custom` and every built-in provider you still want.
 - To tune maintained estimates, use the reserved `alibaba-coding-plan` ID and its window shape. Do not add a duplicate normal provider block.
 - Not accepted: project secrets, scripts, methods, custom headers, templates, executable mappings, regular expressions, JSONPath, and automatic endpoint discovery.
@@ -158,7 +158,7 @@ Provider credentials (API keys, cookies, tokens) are never set here. See [API ke
 | `words.reset`            | `"exact"`   | Reset countdowns: `exact` (`2h 14m`), `compact` (`2h14m`), `short` (`2h`), or `decimal` (`2.2h`). Partial minutes round up. |
 | `words.resetDecimals`    | `1`         | `0`–`4` decimals for `decimal`. |
 | `words.detail`           | `"summary"` | `detailed` also shows supplementary accounting rows. |
-| `words.runsOut`          | `false`     | Has no effect. The TUI's runs-out estimates have their own switches; see [TUI surfaces](#tui-surfaces). |
+| `words.runsOut`          | `false`     | `runs out in 2h` after a limit that, used at your pace so far, runs out before its reset, in Web and Desktop `/quota` and terminal `show`. The TUI places have their own switches; see [TUI surfaces](#tui-surfaces). |
 | `words.onlyCurrentModel` | `false`     | Show only the providers that serve the session's current model, when they can be found. Of the custom providers, only those whose `providerId` and `modelIds` serve it. |
 | `words.sessionTokens`    | `"current"` | `tree` adds every subagent session to the session tokens, counted once. It does not change the `session` and `session_tree` ranges of `/quota_usage`. |
 

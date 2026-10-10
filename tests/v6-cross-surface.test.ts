@@ -3,7 +3,8 @@
  * (`src/tui/index.tsx`) on fake OpenCode hosts, joined by a JSON RPC bridge. Three providers:
  * Copilot with only its plan, MiniMax over its quota, and a custom json-v1 source next to a
  * failing one. API keys and a private error body are canaries no surface may show. Then the
- * quota window's Settings tabs change a surface and save to plugin storage.
+ * quota window's Settings tabs change a surface and save to plugin storage, and save words and
+ * a custom provider switched on to settings.jsonc.
  *
  * Agent tool to plugin: a custom provider an agent replaces is switched off, and the running
  * server stops its requests through the settings reload alone.
@@ -11,6 +12,7 @@
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { parse as parseJsonc } from "jsonc-parser";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createFakeIntegration } from "./helpers/fake-integration.js";
 import {
@@ -759,6 +761,57 @@ describe("v6 surfaces on the quota snapshot", () => {
       const { tui, windowTree } = await openSettings("Colors");
       clickable(settingLine(windowTree(), "theme"), "▸").props.onMouseUp();
       expect(tui.dispatch).toHaveBeenCalledWith("theme.switch");
+      await tui.dispose();
+    });
+
+    it("saves Words and a custom provider switched on in Providers to settings.jsonc, then fetches it", async () => {
+      writePluginTestSettings(mocks.root, {
+        providers: {
+          enabled: ["copilot", "custom"],
+          custom: [{ ...CUSTOM_SOURCES[0], enabled: false }],
+        },
+        checking: { minIntervalMs: 1 },
+        announcements: { enabled: false, home: false },
+      });
+      const teamUrl = CUSTOM_SOURCES[0]?.url;
+      const fetchedTeam = () => vi.mocked(fetch).mock.calls.some(([url]) => url === teamUrl);
+      const { tui, windowTree } = await openSettings("Words");
+      const sidebar = () => words(tui.render("sidebar.content", { sessionID: "ses_1" }));
+      await vi.waitFor(() => expect(sidebar()).toContain("Plan ██████░░ 81% left"));
+      await vi.waitFor(() => expect(settingLine(windowTree(), "words.percent")).toHaveLength(1));
+
+      // The sidebar shows the new words before they are saved.
+      clickable(settingLine(windowTree(), "words.percent"), "‹").props.onMouseUp();
+      expect(sidebar()).toContain("Plan ██████░░ 19% used");
+
+      clickable(windowTree(), "Providers").props.onMouseUp();
+      const team = () => settingLine(windowTree(), "custom.team-accounting");
+      await vi.waitFor(() => expect(team()).toHaveLength(1));
+      expect(words(windowTree())).toEqual(
+        expect.arrayContaining([
+          "Custom providers (added in settings.jsonc)",
+          "Team",
+          "off",
+          "https://team-gateway.example/accounting",
+          'sends environment variable V6_TEAM_KEY, else OpenCode\'s API key for provider "team-gateway"',
+        ]),
+      );
+      expect(fetchedTeam()).toBe(false);
+
+      clickable(team(), "›").props.onMouseUp();
+      clickable(windowTree(), "Save").props.onMouseUp();
+      const settingsFile = join(mocks.root, "config", "opencode-quota", "settings.jsonc");
+      await vi.waitFor(async () =>
+        expect(parseJsonc(await readFile(settingsFile, "utf8"))).toMatchObject({
+          words: { percent: "used" },
+          providers: { custom: [{ id: "team-accounting", enabled: true }] },
+        }),
+      );
+      expect(windowTree()).toBe("");
+
+      // The plugin uses the saved settings at once: the next check asks the custom provider.
+      await tui.command("window").run();
+      await vi.waitFor(() => expect(fetchedTeam()).toBe(true));
       await tui.dispose();
     });
   });
