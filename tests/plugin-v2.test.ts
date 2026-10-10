@@ -124,8 +124,16 @@ describe("V2 server plugin", () => {
     buildOutput.mockResolvedValue({ state: "output", output: "Quota ready" });
 
     await plugin.setup(ctx as never);
-    expect(tools.map((tool) => tool.name)).toEqual(["quota_status"]);
-    const output = await tools[0].execute({}, { sessionID: "session-test" });
+    expect(tools.map((tool) => tool.name)).toEqual([
+      "quota_settings_get",
+      "quota_settings_set",
+      "quota_provider_add",
+      "quota_provider_test",
+      "quota_provider_remove",
+      "quota_status",
+    ]);
+    const quotaStatus = tools.find((tool) => tool.name === "quota_status");
+    const output = await quotaStatus?.execute({}, { sessionID: "session-test" });
     expect(output).toEqual({ content: "Quota ready" });
     expect(buildOutput).toHaveBeenCalledWith(
       expect.objectContaining({

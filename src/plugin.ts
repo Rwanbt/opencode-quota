@@ -6,6 +6,7 @@
  */
 import { join } from "node:path";
 import { Plugin } from "@opencode/plugin";
+import { quotaAgentTools } from "./agent-tools.js";
 import {
   loadProviderSource,
   loadServerSettings,
@@ -274,6 +275,11 @@ export const QuotaToastPlugin = Plugin.define({
     });
 
     await ctx.tool.transform((editor) => {
+      // Agent tools: read and change the settings file, add, test and remove custom providers.
+      const host = {
+        openCodeProviderIds: async () => (await ctx.provider.list()).data.map(({ id }) => id),
+      };
+      for (const tool of quotaAgentTools(host)) editor.add(tool);
       editor.add({
         name: "quota_status",
         description: "Diagnostics for toast, TUI, pricing and local storage.",
