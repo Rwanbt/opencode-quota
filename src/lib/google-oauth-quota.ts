@@ -66,7 +66,7 @@ export type GoogleQuotaResult<Bucket> =
   | null;
 
 /** The logins and companion plugin of one flavor. */
-export type GoogleAuthFlavor<Key extends GoogleAuthSourceKey> = {
+type GoogleAuthFlavor<Key extends GoogleAuthSourceKey> = {
   providerId: "google-agy" | "google-gemini-cli";
   /** Name in messages, e.g. "Gemini CLI quota API error: 500". */
   name: "Google AGY" | "Gemini CLI";

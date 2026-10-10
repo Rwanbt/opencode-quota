@@ -1,6 +1,8 @@
 import { readFile } from "fs/promises";
 import type { DebugDetail } from "../core/types.js";
+import { type ApiKeySpec, getApiKeyDiagnostics } from "../lib/api-key-resolver.js";
 import { sanitizeDisplayText } from "../lib/display-sanitize.js";
+import { asRecord } from "../lib/json-guards.js";
 
 export function statusDetailsFromRecord(
   values: Readonly<Record<string, string | undefined>>,
@@ -40,6 +42,28 @@ export function simpleApiKeyStatusDetails(diagnostics: {
   });
 }
 
+/** Where a vendor's API key was looked for and found; "not configured" when that can't be read. */
+export async function apiKeyVendorDetails(vendor: ApiKeySpec): Promise<DebugDetail[]> {
+  const diagnostics = await getApiKeyDiagnostics(vendor).catch(() => ({
+    configured: false,
+    source: null,
+    checkedPaths: [],
+    credentialDatabasePaths: [],
+  }));
+  return simpleApiKeyStatusDetails(diagnostics);
+}
+
+/** One `api_key_diagnostics` line: configured, the key's source and the paths checked. */
+export async function apiKeyDiagnosticsDetail(vendor: ApiKeySpec): Promise<DebugDetail[]> {
+  const diagnostics = await getApiKeyDiagnostics(vendor).catch(() => ({
+    configured: false,
+    source: null,
+    checkedPaths: [],
+  }));
+  const detail = `configured=${diagnostics.configured ? "true" : "false"}${diagnostics.source ? ` source=${diagnostics.source}` : ""}${diagnostics.checkedPaths.length > 0 ? ` checked=${diagnostics.checkedPaths.join(" | ")}` : ""}`;
+  return [{ key: "api_key_diagnostics", value: detail }];
+}
+
 export function apiKeyStatusDetails(diagnostics: {
   state: string;
   source: string | null;
@@ -68,10 +92,7 @@ export async function inspectGeneratedCounterFile(
 }> {
   try {
     const parsed = JSON.parse(await readFile(path, "utf8")) as unknown;
-    const record =
-      parsed && typeof parsed === "object" && !Array.isArray(parsed)
-        ? (parsed as Record<string, unknown>)
-        : null;
+    const record = asRecord(parsed);
     const version = typeof record?.version === "number" ? record.version : null;
     const updatedAt =
       typeof record?.updatedAt === "number" && Number.isFinite(record.updatedAt)

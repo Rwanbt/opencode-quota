@@ -21,9 +21,9 @@ export const OPENCODE_ZEN_BILLING_UNITS_PER_DOLLAR = 100_000_000;
  * Where the monthly limit and usage come from: the org budget (budgets/org), or the
  * credit limit (billing/account) plus this month's usage costs (usage/cost-by-day).
  */
-export type OpenCodeZenBudgetSource = "org_budget" | "credit_limit";
+type OpenCodeZenBudgetSource = "org_budget" | "credit_limit";
 
-export interface OpenCodeZenBillingData {
+interface OpenCodeZenBillingData {
   balance: number;
   /** Monthly limit in USD from `budgetSource`; null when there is no limit or its route failed. */
   monthlyLimit: number | null;
@@ -43,7 +43,7 @@ export interface OpenCodeZenBillingData {
  * billing/status (balance) is required. The other routes are optional: when one fails,
  * its fields are null and its error is listed in `errors`.
  */
-export type OpenCodeZenResult =
+type OpenCodeZenResult =
   | { success: true; data: OpenCodeZenBillingData; errors: string[] }
   | { success: false; error: string };
 

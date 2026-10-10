@@ -1,6 +1,6 @@
 /** DeepSeek: the exact balances /user/balance reports, per currency. */
 
-import { API_KEY_VENDORS, getApiKeyDiagnostics, hasApiKey } from "../lib/api-key-resolver.js";
+import { API_KEY_VENDORS, hasApiKey } from "../lib/api-key-resolver.js";
 import { queryDeepSeekBalance } from "../lib/deepseek.js";
 import type { QuotaProvider, QuotaProviderContext } from "../lib/entries.js";
 import { isCanonicalProviderAvailable } from "../lib/provider-availability.js";
@@ -12,7 +12,7 @@ import {
   type ProviderFetchResult,
   type ProviderRow,
 } from "./contract.js";
-import { simpleApiKeyStatusDetails } from "./result-helpers.js";
+import { apiKeyVendorDetails } from "./result-helpers.js";
 
 const LABEL = "DeepSeek";
 
@@ -86,13 +86,7 @@ export const deepseekProvider: QuotaProvider = {
   },
 
   async fetch(ctx: QuotaProviderContext): Promise<ProviderFetchResult> {
-    const diagnostics = await getApiKeyDiagnostics(API_KEY_VENDORS.deepseek).catch(() => ({
-      configured: false,
-      source: null,
-      checkedPaths: [],
-      credentialDatabasePaths: [],
-    }));
-    const debug = simpleApiKeyStatusDetails(diagnostics);
+    const debug = await apiKeyVendorDetails(API_KEY_VENDORS.deepseek);
 
     const result = await queryDeepSeekBalance({ requestTimeoutMs: ctx.config?.requestTimeoutMs });
     if (!result) return { attempted: false, accounts: [], debug };

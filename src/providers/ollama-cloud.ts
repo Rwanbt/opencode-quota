@@ -1,9 +1,9 @@
-import { API_KEY_VENDORS, getApiKeyDiagnostics, hasApiKey } from "../lib/api-key-resolver.js";
+import { API_KEY_VENDORS, hasApiKey } from "../lib/api-key-resolver.js";
 import type { QuotaProvider, QuotaProviderContext } from "../lib/entries.js";
 import { queryOllamaCloudQuota } from "../lib/ollama-cloud.js";
 import { modelProviderMatchesRuntimeId } from "../lib/provider-model-matching.js";
 import { failedAccount, MONTHLY, type ProviderFetchResult, quotaRow, WEEKLY } from "./contract.js";
-import { simpleApiKeyStatusDetails, statusDetailsFromRecord } from "./result-helpers.js";
+import { apiKeyVendorDetails, statusDetailsFromRecord } from "./result-helpers.js";
 
 const LABEL = "Ollama Cloud";
 const SESSION = { key: "session", label: "Session", window: "session" } as const;
@@ -25,13 +25,7 @@ export const ollamaCloudProvider: QuotaProvider = {
   },
 
   async fetch(ctx: QuotaProviderContext): Promise<ProviderFetchResult> {
-    const diagnostics = await getApiKeyDiagnostics(API_KEY_VENDORS["ollama-cloud"]).catch(() => ({
-      configured: false,
-      source: null,
-      checkedPaths: [],
-      credentialDatabasePaths: [],
-    }));
-    const keyDetails = simpleApiKeyStatusDetails(diagnostics);
+    const keyDetails = await apiKeyVendorDetails(API_KEY_VENDORS["ollama-cloud"]);
 
     const result = await queryOllamaCloudQuota({
       requestTimeoutMs: ctx.config?.requestTimeoutMs,

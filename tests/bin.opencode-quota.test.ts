@@ -11,13 +11,7 @@ const commandMocks = vi.hoisted(() => ({
   runCliStatusCommand: vi.fn(),
 }));
 
-vi.mock("../src/lib/cli-show.js", () => ({
-  runCliShowCommand: commandMocks.runCliShowCommand,
-}));
-
-vi.mock("../src/lib/cli-status.js", () => ({
-  runCliStatusCommand: commandMocks.runCliStatusCommand,
-}));
+vi.mock("../src/lib/cli-show.js", () => commandMocks);
 
 describe("opencode-quota bin", () => {
   beforeEach(() => {

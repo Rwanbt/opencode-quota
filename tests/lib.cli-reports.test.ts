@@ -52,6 +52,16 @@ describe("CLI reports", () => {
   let workspaceDir: string;
   let savedConfigDir: string | undefined;
 
+  /** A provider whose check answers with one account. */
+  function fakeProvider(account: Parameters<typeof answer>[0], id = "synthetic") {
+    return {
+      id,
+      cachePolicy: { kind: "account-neutral" as const },
+      isAvailable: vi.fn().mockResolvedValue(true),
+      fetch: vi.fn().mockResolvedValue(answer(account)),
+    };
+  }
+
   // OpenCode's provider list is the given ids; the settings come from settings.jsonc.
   async function hostFor(providerIds: string[] = []): Promise<ProviderSourceHost> {
     const loaded = await loadSettings();
@@ -115,16 +125,10 @@ describe("CLI reports", () => {
 
   describe("buildCliShowText", () => {
     it("renders a compact quota glance and returns zero when quota rows are available", async () => {
-      const provider = {
-        id: "synthetic",
-        cachePolicy: { kind: "account-neutral" as const },
-        isAvailable: vi.fn().mockResolvedValue(true),
-        fetch: vi
-          .fn()
-          .mockResolvedValue(
-            answer({ name: "Synthetic", rows: [percentRow("weekly", "Weekly", 75)] }),
-          ),
-      };
+      const provider = fakeProvider({
+        name: "Synthetic",
+        rows: [percentRow("weekly", "Weekly", 75)],
+      });
       mockProviders.push(provider);
       writeSettings({ providers: { enabled: ["synthetic"] } });
 
@@ -141,22 +145,17 @@ describe("CLI reports", () => {
     it("shows used percents and the time to the reset", async () => {
       vi.useFakeTimers();
       vi.setSystemTime(new Date("2026-01-15T10:00:00.000Z"));
-      mockProviders.push({
-        id: "synthetic",
-        cachePolicy: { kind: "account-neutral" as const },
-        isAvailable: vi.fn().mockResolvedValue(true),
-        fetch: vi.fn().mockResolvedValue(
-          answer({
-            name: "Synthetic",
-            rows: [
-              percentRow("weekly", "Weekly", 81, {
-                window: "week",
-                resetsAt: "2026-01-17T15:14:00.000Z",
-              }),
-            ],
-          }),
-        ),
-      });
+      mockProviders.push(
+        fakeProvider({
+          name: "Synthetic",
+          rows: [
+            percentRow("weekly", "Weekly", 81, {
+              window: "week",
+              resetsAt: "2026-01-17T15:14:00.000Z",
+            }),
+          ],
+        }),
+      );
       writeSettings({ providers: { enabled: ["synthetic"] }, words: { percent: "used" } });
 
       const report = await buildCliShowText(await hostFor());
@@ -169,12 +168,8 @@ describe("CLI reports", () => {
     });
 
     it("returns non-zero without asking a provider that is not available", async () => {
-      const provider = {
-        id: "copilot",
-        cachePolicy: { kind: "account-neutral" as const },
-        isAvailable: vi.fn().mockResolvedValue(false),
-        fetch: vi.fn(),
-      };
+      const provider = fakeProvider({ name: "Copilot" }, "copilot");
+      provider.isAvailable.mockResolvedValue(false);
       mockProviders.push(provider);
       writeSettings({ providers: { enabled: ["copilot"] } });
 
@@ -185,23 +180,14 @@ describe("CLI reports", () => {
     });
 
     it("renders Copilot and Gemini CLI success rows", async () => {
-      const copilotProvider = {
-        id: "copilot",
-        cachePolicy: { kind: "account-neutral" as const },
-        isAvailable: vi.fn().mockResolvedValue(true),
-        fetch: vi
-          .fn()
-          .mockResolvedValue(
-            answer({ name: "Copilot (personal)", rows: [percentRow("allowance", "Quota", 100)] }),
-          ),
-      };
-      const geminiCliProvider = {
-        id: "google-gemini-cli",
-        isAvailable: vi.fn().mockResolvedValue(true),
-        fetch: vi
-          .fn()
-          .mockResolvedValue(answer({ name: "Gemini CLI", rows: [percentRow("pro", "Pro", 84)] })),
-      };
+      const copilotProvider = fakeProvider(
+        { name: "Copilot (personal)", rows: [percentRow("allowance", "Quota", 100)] },
+        "copilot",
+      );
+      const geminiCliProvider = fakeProvider(
+        { name: "Gemini CLI", rows: [percentRow("pro", "Pro", 84)] },
+        "google-gemini-cli",
+      );
       mockProviders.push(copilotProvider, geminiCliProvider);
       writeSettings({ providers: { enabled: ["copilot", "google-gemini-cli"] } });
 
@@ -243,16 +229,6 @@ describe("CLI reports", () => {
   });
 
   describe("buildCliShowJson", () => {
-    /** A provider whose check answers with one account named after `name`. */
-    function fakeProvider(account: Parameters<typeof answer>[0], id = "synthetic") {
-      return {
-        id,
-        cachePolicy: { kind: "account-neutral" as const },
-        isAvailable: vi.fn().mockResolvedValue(true),
-        fetch: vi.fn().mockResolvedValue(answer(account)),
-      };
-    }
-
     it("outputs valid JSON with the quota OpenCode saved last", async () => {
       const provider = fakeProvider({
         name: "Synthetic",
@@ -371,16 +347,10 @@ describe("CLI reports", () => {
     });
 
     it("includes only the providers enabled now", async () => {
-      const copilotProvider = {
-        id: "copilot",
-        cachePolicy: { kind: "account-neutral" as const },
-        isAvailable: vi.fn().mockResolvedValue(true),
-        fetch: vi
-          .fn()
-          .mockResolvedValue(
-            answer({ name: "Copilot", rows: [percentRow("allowance", "Premium requests", 90)] }),
-          ),
-      };
+      const copilotProvider = fakeProvider(
+        { name: "Copilot", rows: [percentRow("allowance", "Premium requests", 90)] },
+        "copilot",
+      );
       mockProviders.push(
         copilotProvider,
         fakeProvider({ name: "Synthetic", rows: [percentRow("weekly", "Weekly", 50)] }),
@@ -401,12 +371,7 @@ describe("CLI reports", () => {
   describe("buildCliStatus", () => {
     /** Synthetic, enabled; its check answers with `rows` and `errors`. */
     function useSynthetic(rows: ReturnType<typeof percentRow>[], errors: string[] = []): void {
-      mockProviders.push({
-        id: "synthetic",
-        cachePolicy: { kind: "account-neutral" as const },
-        isAvailable: vi.fn().mockResolvedValue(true),
-        fetch: vi.fn().mockResolvedValue(answer({ name: "Synthetic", rows, errors })),
-      });
+      mockProviders.push(fakeProvider({ name: "Synthetic", rows, errors }));
       writeSettings({ providers: { enabled: ["synthetic"] } });
     }
     const WEEKLY = percentRow("weekly", "Weekly", 75);
@@ -436,7 +401,7 @@ describe("CLI reports", () => {
       expect(report.exitCode).toBe(0);
       expect(report.stderr).toBe("");
       const parsed = JSON.parse(report.stdout);
-      expect(parsed).toHaveProperty("version", expect.any(String));
+      expect(parsed).toHaveProperty("version", "6");
       expect(parsed).toHaveProperty("generatedAt");
       expect(parsed.config).toMatchObject({ enabledProviders: ["synthetic"] });
       expect(parsed.providers).toEqual([{ id: "synthetic", enabled: true, available: true }]);
@@ -444,24 +409,21 @@ describe("CLI reports", () => {
       expect(parsed.liveProbes).toEqual([{ id: "synthetic", ok: true }]);
     });
 
-    it("exits 2 with JSON when there is no comparable provider data", async () => {
-      writeSettings({ providers: { enabled: ["synthetic"] } });
+    it.each([
+      ["nothing was checked", [], []],
+      ["a failed check made no rows", [], [FAILED]],
+    ])("exits 2 with JSON when %s", async (_case, rows, errors) => {
+      if (errors.length > 0) useSynthetic(rows, errors);
+      else writeSettings({ providers: { enabled: ["synthetic"] } });
 
       const report = await buildCliStatus({ host: await hostFor(), json: true });
 
       expect(report.exitCode).toBe(2);
       expect(report.stderr).toBe("");
       // JSON still prints on exit 2.
-      expect(JSON.parse(report.stdout).liveProbes).toEqual([]);
-    });
-
-    it("exits 2 with JSON when probes fail without producing quota entries", async () => {
-      useSynthetic([], [FAILED]);
-
-      const report = await buildCliStatus({ host: await hostFor(), json: true });
-
-      expect(report.exitCode).toBe(2);
-      expect(JSON.parse(report.stdout).liveProbes).toEqual([{ id: "synthetic", ok: false }]);
+      expect(JSON.parse(report.stdout).liveProbes).toEqual(
+        errors.length > 0 ? [{ id: "synthetic", ok: false }] : [],
+      );
     });
 
     it("succeeds with JSON when a partial probe produced quota entries", async () => {

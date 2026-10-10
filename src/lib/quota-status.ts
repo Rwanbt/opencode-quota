@@ -14,7 +14,7 @@
  */
 import { stat } from "node:fs/promises";
 import { homedir } from "node:os";
-import { classifyError, describeError, LOCAL_TOOLS } from "../core/errors.js";
+import { classifyError, describeError, isQuotaErrorCode, LOCAL_TOOLS } from "../core/errors.js";
 import type {
   Amount,
   ProviderSnapshot,
@@ -34,6 +34,7 @@ import { API_KEY_LOGIN_VENDORS, API_KEY_VENDORS } from "./api-key-resolver.js";
 import { COPILOT_AUTH_KEYS } from "./copilot.js";
 import { CURSOR_CANONICAL_PLUGIN_PACKAGE } from "./cursor-detection.js";
 import { sanitizeSingleLineDisplayText } from "./display-sanitize.js";
+import { formatLocalCallTimestamp } from "./format-utils.js";
 import { AGY_AUTH_KEYS } from "./google-agy.js";
 import { GEMINI_CLI_AUTH_KEYS } from "./google-gemini-cli.js";
 import { replaceHomeDirWithTildeInDocument } from "./home-dir-display.js";
@@ -68,7 +69,6 @@ import {
   type QuotaProviderDefinition,
 } from "./quota-providers.js";
 import {
-  commandHeading,
   type ReportDocument,
   type ReportKvRow,
   type ReportSection,
@@ -90,20 +90,6 @@ const OPENCODE_PROVIDER_IDS: ReadonlySet<string> = new Set([
   ...PROVIDER_IDS,
   ...Object.values(QUOTA_PROVIDER_RUNTIME_IDS).flat(),
 ]);
-
-const ERROR_CODES: Readonly<Record<QuotaErrorCode, true>> = {
-  not_configured: true,
-  login_expired: true,
-  no_plan: true,
-  rate_limited: true,
-  timeout: true,
-  network: true,
-  provider_error: true,
-  bad_response: true,
-  no_data: true,
-  local_tool: true,
-  internal: true,
-};
 
 const CURRENCIES: ReadonlySet<string> = new Set(Intl.supportedValuesOf("currency"));
 
@@ -546,10 +532,6 @@ async function pathsSection(homeDir: string): Promise<ReportSection> {
   ]);
 }
 
-function isErrorCode(code: unknown): code is QuotaErrorCode {
-  return typeof code === "string" && Object.hasOwn(ERROR_CODES, code);
-}
-
 /** An HTTP status this file shows: a whole number from 100 to 599. */
 function httpStatus(status: unknown): number | undefined {
   return typeof status === "number" && Number.isInteger(status) && status >= 100 && status < 600
@@ -559,7 +541,7 @@ function httpStatus(status: unknown): number | undefined {
 
 /** An error's code and HTTP status: "provider_error, http 503". */
 function errorKind(error: QuotaError): string {
-  if (!isErrorCode(error.code)) return "(unknown error code)";
+  if (!isQuotaErrorCode(error.code)) return "(unknown error code)";
   const status = httpStatus(error.status);
   return status === undefined ? error.code : `${error.code}, http ${status}`;
 }
@@ -673,7 +655,7 @@ function rowIdText(
  * (provider_error, http 503)". A local tool is named only when it is one this plugin knows.
  */
 function errorText(error: QuotaError, providerId: string, nowMs: number): string {
-  if (!isErrorCode(error.code)) return "(unknown error code)";
+  if (!isQuotaErrorCode(error.code)) return "(unknown error code)";
   const tool =
     error.tool !== undefined && LOCAL_TOOLS.includes(error.tool) ? error.tool : undefined;
   // A wait shows in minutes or hours: up to a week.
@@ -1292,11 +1274,7 @@ export async function buildQuotaStatusReportDocument(
 
   return replaceHomeDirWithTildeInDocument(
     {
-      heading: commandHeading({
-        title: `Quota Status (opencode-quota v${version}) (/quota_status)`,
-        detail: `opencode-quota v${version}`,
-        generatedAtMs: params.generatedAtMs,
-      }),
+      heading: `# Quota Status (opencode-quota v${version}) (/quota_status) ${formatLocalCallTimestamp(params.generatedAtMs)}`,
       sections,
     },
     homeDir,

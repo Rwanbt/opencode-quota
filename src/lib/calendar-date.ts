@@ -3,11 +3,11 @@
  * RPC input check and the report itself: "YYYY-MM-DD" naming a real calendar day. So
  * 2026-02-31 and 2026-02-29 are not dates, and 2028-02-29 is.
  */
-export type CalendarDate = { year: number; month: number; day: number };
+type CalendarDate = { year: number; month: number; day: number };
 
 const DATE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
 
-function daysInMonth(year: number, month: number): number {
+export function daysInMonth(year: number, month: number): number {
   if (month === 2) {
     const leapYear = (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
     return leapYear ? 29 : 28;

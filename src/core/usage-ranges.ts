@@ -32,7 +32,7 @@ function isUsageRange(text: string): text is UsageRange {
   return USAGE_RANGES.some((item) => item.range === text);
 }
 
-export type UsageArguments =
+type UsageArguments =
   | { ok: true; range: UsageRange; from?: string; to?: string }
   | { ok: false; error: string };
 

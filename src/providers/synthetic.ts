@@ -1,4 +1,4 @@
-import { API_KEY_VENDORS, getApiKeyDiagnostics, hasApiKey } from "../lib/api-key-resolver.js";
+import { API_KEY_VENDORS, hasApiKey } from "../lib/api-key-resolver.js";
 import type { QuotaProvider, QuotaProviderContext } from "../lib/entries.js";
 import { isCanonicalProviderAvailable } from "../lib/provider-availability.js";
 import { modelProviderIncludesAny } from "../lib/provider-model-matching.js";
@@ -10,6 +10,7 @@ import {
   WEEKLY,
   windowRows,
 } from "./contract.js";
+import { apiKeyDiagnosticsDetail } from "./result-helpers.js";
 
 export const syntheticProvider: QuotaProvider = {
   id: "synthetic",
@@ -30,13 +31,7 @@ export const syntheticProvider: QuotaProvider = {
   },
 
   async fetch(ctx: QuotaProviderContext): Promise<ProviderFetchResult> {
-    const diagnostics = await getApiKeyDiagnostics(API_KEY_VENDORS.synthetic).catch(() => ({
-      configured: false,
-      source: null,
-      checkedPaths: [],
-    }));
-    const detail = `configured=${diagnostics.configured ? "true" : "false"}${diagnostics.source ? ` source=${diagnostics.source}` : ""}${diagnostics.checkedPaths.length > 0 ? ` checked=${diagnostics.checkedPaths.join(" | ")}` : ""}`;
-    const debug = [{ key: "api_key_diagnostics", value: detail }];
+    const debug = await apiKeyDiagnosticsDetail(API_KEY_VENDORS.synthetic);
 
     const result = await querySyntheticQuota({ requestTimeoutMs: ctx.config?.requestTimeoutMs });
     if (!result) return { attempted: false, accounts: [], debug };

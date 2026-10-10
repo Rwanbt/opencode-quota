@@ -133,7 +133,7 @@ export type ResetNotice = {
 export type SessionTokens = { input: number; cachedInput: number; output: number };
 
 /** "58% left", "58% remaining", "58%", or "42% used". */
-export type PercentStyle = "left" | "remaining" | "bare" | "used";
+type PercentStyle = "left" | "remaining" | "bare" | "used";
 /** How a time until a reset reads: "2h 14m", "2h14m", "2h", or "2.2h". */
 export type ResetStyle = "exact" | "compact" | "short" | "decimal";
 

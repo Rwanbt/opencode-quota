@@ -40,7 +40,7 @@ function isOneOf<T extends string>(value: unknown, choices: readonly T[]): value
   return typeof value === "string" && (choices as readonly string[]).includes(value);
 }
 
-function isIsoTime(value: unknown): value is string {
+export function isIsoTime(value: unknown): value is string {
   return typeof value === "string" && ISO_TIME_RE.test(value) && Number.isFinite(Date.parse(value));
 }
 

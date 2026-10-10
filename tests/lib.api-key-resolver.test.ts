@@ -515,14 +515,13 @@ describe("API key login vendors (a broken stored login is reported, not skipped)
     expect(mocks.readAuthFileCached).toHaveBeenLastCalledWith(expectedLoginRead(expected, 5_000));
 
     mocks.readAuthFileCached.mockResolvedValue({ [expected.authKeys[0]]: { type: "oauth" } });
-    await expect(getApiKeyLoginDiagnostics(spec, { maxAgeMs: -1 })).resolves.toEqual({
+    await expect(getApiKeyLoginDiagnostics(spec)).resolves.toEqual({
       state: "invalid",
       source: "opencode.db",
       error: unsupportedTypeError(expected, "oauth"),
       checkedPaths: [],
       credentialDatabasePaths: DB_PATHS,
     });
-    expect(mocks.readAuthFileCached).toHaveBeenLastCalledWith(expectedLoginRead(expected, 0));
   });
 });
 
@@ -658,12 +657,12 @@ describe("per-vendor differences", () => {
     }
 
     await withLogins([consoleSignIn, workspaceKey], async (signedIn) => {
-      await expect(resolveApiKeyLogin(spec, { maxAgeMs: 0 })).resolves.toEqual({ state: "none" });
+      await expect(resolveApiKeyLogin(spec)).resolves.toEqual({ state: "none" });
       expect(signedIn.connection.active.mock.calls).toEqual([["opencode-go"], ["opencode"]]);
       expect(signedIn.connection.resolve).not.toHaveBeenCalled();
     });
     await withLogins([workspaceKey], async () => {
-      await expect(resolveApiKeyLogin(spec, { maxAgeMs: 0 })).resolves.toEqual({
+      await expect(resolveApiKeyLogin(spec)).resolves.toEqual({
         state: "configured",
         apiKey: "workspace-key",
       });

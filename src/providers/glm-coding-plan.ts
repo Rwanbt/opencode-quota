@@ -4,7 +4,6 @@
  */
 
 import {
-  API_KEY_LOGIN_CACHE_MAX_AGE_MS,
   getApiKeyLoginDiagnostics,
   readKeyLogins,
   resolveApiKeyLogin,
@@ -51,9 +50,7 @@ async function fetchGlmQuota(
   ctx: QuotaProviderContext,
 ): Promise<ProviderFetchResult> {
   const requestTimeoutMs = ctx.config?.requestTimeoutMs;
-  const diagnostics = await getApiKeyLoginDiagnostics(endpoint.auth, {
-    maxAgeMs: API_KEY_LOGIN_CACHE_MAX_AGE_MS,
-  });
+  const diagnostics = await getApiKeyLoginDiagnostics(endpoint.auth);
   const authDetails = apiKeyStatusDetails(diagnostics);
   if (diagnostics.source === "opencode.db") {
     const logins = await readKeyLogins(endpoint.auth);
@@ -122,9 +119,7 @@ function glmProvider(
       });
       if (!providerAvailable) return false;
 
-      const auth = await resolveApiKeyLogin(endpoint.auth, {
-        maxAgeMs: API_KEY_LOGIN_CACHE_MAX_AGE_MS,
-      });
+      const auth = await resolveApiKeyLogin(endpoint.auth);
       return auth.state === "configured" || auth.state === "invalid";
     },
 

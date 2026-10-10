@@ -8,7 +8,7 @@ const MIMO_RESPONSE_MAX_BYTES = 256 * 1024;
 const MIMO_USER_AGENT =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36";
 
-export interface MimoMonthlyQuota {
+interface MimoMonthlyQuota {
   used: number;
   limit: number;
 }
@@ -63,7 +63,7 @@ function nonBlankStringOrNull(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value : null;
 }
 
-export function parseMimoUsageResponse(json: unknown): MimoMonthlyQuota {
+function parseMimoUsageResponse(json: unknown): MimoMonthlyQuota {
   const data = parseEnvelope(json);
   if (!isRecord(data.monthUsage) || !Array.isArray(data.monthUsage.items)) {
     throw new Error("missing monthly usage");
@@ -83,7 +83,7 @@ export function parseMimoUsageResponse(json: unknown): MimoMonthlyQuota {
   return { used, limit };
 }
 
-export function parseMimoDetailResponse(json: unknown): MimoPlanDetail {
+function parseMimoDetailResponse(json: unknown): MimoPlanDetail {
   const data = parseEnvelope(json);
   if (typeof data.expired !== "boolean") throw new Error("invalid plan state");
 
@@ -94,7 +94,7 @@ export function parseMimoDetailResponse(json: unknown): MimoPlanDetail {
   };
 }
 
-export function parseMimoBalanceResponse(json: unknown): MimoBalance {
+function parseMimoBalanceResponse(json: unknown): MimoBalance {
   const data = parseEnvelope(json);
   return {
     total: parseOptionalBalance(data.balance),
@@ -143,7 +143,7 @@ async function readBoundedJson(response: Response): Promise<unknown> {
   return JSON.parse(new TextDecoder().decode(Buffer.concat(chunks)));
 }
 
-export function formatMimoDashboardTimeZone(timezoneOffsetMinutes?: number): string {
+function formatMimoDashboardTimeZone(timezoneOffsetMinutes?: number): string {
   const javascriptOffset = timezoneOffsetMinutes ?? new Date().getTimezoneOffset();
   const utcOffset = -javascriptOffset;
   const sign = utcOffset >= 0 ? "+" : "-";

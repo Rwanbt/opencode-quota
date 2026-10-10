@@ -1,30 +1,16 @@
 import {
   type CanonicalQuotaProviderId,
   QUOTA_PROVIDER_REGISTRATION_SOURCE,
-  type QuotaProviderAuthentication,
-  type QuotaProviderAuthFallback,
-  type QuotaProviderAutoSetup,
   type QuotaProviderRegistrationSourceEntry,
 } from "./provider-registration.js";
 
 export type { CanonicalQuotaProviderId } from "./provider-registration.js";
 
-export interface QuotaProviderShape {
-  id: CanonicalQuotaProviderId;
-  recommendedReplacementId?: CanonicalQuotaProviderId;
-  autoSetup: QuotaProviderAutoSetup;
-  authentication: QuotaProviderAuthentication;
-  authFallbacks?: QuotaProviderAuthFallback[];
-  quickSetupAnchor?: string;
-  notes?: string;
-}
-
-export interface QuotaProviderCatalogEntry {
+interface QuotaProviderCatalogEntry {
   label: string;
   labelAliases: readonly string[];
   runtimeIds: readonly string[];
   synonyms: readonly string[];
-  shape: QuotaProviderShape;
 }
 
 const REGISTRATIONS: readonly QuotaProviderRegistrationSourceEntry[] =
@@ -36,23 +22,11 @@ function isCanonicalQuotaProviderId(value: string): value is CanonicalQuotaProvi
 }
 
 function catalogEntry(source: QuotaProviderRegistrationSourceEntry): QuotaProviderCatalogEntry {
-  const { recommendedReplacementId, authFallbacks, ...shape } = source.shape;
-  if (recommendedReplacementId && !isCanonicalQuotaProviderId(recommendedReplacementId)) {
-    throw new Error(`Unknown quota provider replacement: ${recommendedReplacementId}`);
-  }
   return {
     label: source.label,
     labelAliases: [...(source.labelAliases ?? [])],
     runtimeIds: [...source.runtimeIds],
     synonyms: [...source.synonyms],
-    shape: {
-      id: source.id as CanonicalQuotaProviderId,
-      ...shape,
-      ...(recommendedReplacementId
-        ? { recommendedReplacementId: recommendedReplacementId as CanonicalQuotaProviderId }
-        : {}),
-      ...(authFallbacks ? { authFallbacks: [...authFallbacks] } : {}),
-    },
   };
 }
 
@@ -130,11 +104,10 @@ export function normalizeQuotaProviderId(id: string): string {
   return SYNONYMS[normalized] ?? normalized;
 }
 
-export function getQuotaProviderShape(id: string): QuotaProviderShape | undefined {
+/** The provider id for an id or synonym ("claude" → "anthropic"); none for an unknown id. */
+export function getCanonicalQuotaProviderId(id: string): CanonicalQuotaProviderId | undefined {
   const normalized = normalizeQuotaProviderId(id);
-  return isCanonicalQuotaProviderId(normalized)
-    ? QUOTA_PROVIDER_CATALOG[normalized].shape
-    : undefined;
+  return isCanonicalQuotaProviderId(normalized) ? normalized : undefined;
 }
 
 /** The provider's label; an unknown id is shown as given. */
@@ -144,8 +117,8 @@ export function getQuotaProviderDisplayLabel(id: string): string {
 
 /** The OpenCode provider ids that count as this provider (narrower than its synonyms). */
 export function getQuotaProviderRuntimeIds(id: string): readonly string[] {
-  const shape = getQuotaProviderShape(id);
-  return shape ? [...new Set(QUOTA_PROVIDER_RUNTIME_IDS[shape.id])] : [];
+  const providerId = getCanonicalQuotaProviderId(id);
+  return providerId ? [...new Set(QUOTA_PROVIDER_RUNTIME_IDS[providerId])] : [];
 }
 
 export function getQuotaProviderIdsForRuntimeId(id: string): readonly CanonicalQuotaProviderId[] {

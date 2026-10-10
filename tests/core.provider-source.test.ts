@@ -6,13 +6,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { keyedLogins, loadProviderSource } from "../src/core/provider-source.js";
 import { createQuotaStore } from "../src/core/store.js";
-import type { QuotaRow } from "../src/core/types.js";
 import type { QuotaProvider } from "../src/lib/entries.js";
 import { buildQuotaExportFromSnapshot } from "../src/lib/quota-export.js";
 import { __resetResolvedAuthIdentityForTests } from "../src/lib/resolved-auth-identity.js";
 import type { ProviderFetchResult } from "../src/providers/contract.js";
 import { defaultSettings } from "../src/settings/index.js";
-import { answer, percentRow } from "./helpers/fake-answers.js";
+import { answer, percentRow, quotaRow } from "./helpers/fake-answers.js";
 
 const runtime = vi.hoisted(() => ({ root: "" }));
 const registry = vi.hoisted(() => ({ providers: [] as unknown[] }));
@@ -36,6 +35,39 @@ function sha256(text: string): string {
   return createHash("sha256").update(text).digest("hex");
 }
 
+/** A provider that is always available and answers with `fetch`. */
+function fakeProvider(id: string, fetch: () => Promise<ProviderFetchResult>): QuotaProvider {
+  return { id, cachePolicy: { kind: "account-neutral" }, isAvailable: async () => true, fetch };
+}
+
+/** A store over `provider` with the default settings, saving to this test's snapshot file. */
+function storeFor(provider: QuotaProvider) {
+  registry.providers = [provider];
+  const loaded = {
+    path: "settings.jsonc",
+    exists: true,
+    settings: defaultSettings(),
+    issues: [],
+    fromFile: [],
+    notRead: [],
+  };
+  const host = { client: {} as never, workspaceRoot: runtime.root, settings: () => loaded };
+  return createQuotaStore({
+    source: () => loadProviderSource(host),
+    file: join(runtime.root, "state", "snapshot-v6.json"),
+    log: () => {},
+  });
+}
+
+/** One Copilot login on the "pro" plan with its premium requests left. */
+function copilotPlan(login: string, percentRemaining: number) {
+  return {
+    name: "Copilot (pro)",
+    login,
+    rows: [percentRow("allowance", "Premium requests", percentRemaining, { window: "month" })],
+  };
+}
+
 describe("provider source logins", () => {
   beforeEach(async () => {
     runtime.root = await mkdtemp(join(tmpdir(), "opencode-quota-logins-"));
@@ -57,17 +89,11 @@ describe("provider source logins", () => {
       expect(await keyedLogins("google-agy", [EMAIL])).not.toEqual([login]);
 
       // The store saves a hash of the keyed id, never one anyone can recompute from an email.
-      const row: QuotaRow = {
-        id: "google-gemini-cli.pro",
-        providerId: "google-gemini-cli",
+      const row = quotaRow("google-gemini-cli.pro", {
         label: "Pro",
-        type: "quota",
-        method: "remote_api",
-        authority: "provider_reported",
         window: "day",
-        prominence: "primary",
         percentRemaining: 50,
-      };
+      });
       const file = join(runtime.root, "state", "snapshot-v6.json");
       const store = createQuotaStore({
         source: async () => ({
@@ -98,15 +124,29 @@ describe("provider source logins", () => {
   );
 });
 
-describe("export after a failed check", () => {
+describe("export of a check and of the saved snapshot", () => {
   beforeEach(async () => {
-    runtime.root = await mkdtemp(join(tmpdir(), "opencode-quota-export-failure-"));
+    runtime.root = await mkdtemp(join(tmpdir(), "opencode-quota-export-reload-"));
   });
 
   afterEach(async () => {
     registry.providers = [];
     await rm(runtime.root, { recursive: true, force: true });
   });
+
+  /** `provider`'s part of the export after a check, and after a restart reads the file. */
+  async function checkThenReload(provider: QuotaProvider) {
+    const nowMs = Date.now();
+    const checking = storeFor(provider);
+    const checked = await checking.refresh({ reason: "manual" });
+    await checking.dispose();
+    const reading = storeFor(provider);
+    const reloaded = await reading.snapshot({ refresh: false });
+    await reading.dispose();
+    return [checked, reloaded].map(
+      (snapshot) => buildQuotaExportFromSnapshot(snapshot, nowMs).providers[provider.id],
+    );
+  }
 
   it("shows the provider's last failure, not its kept rows, until a check works again", async () => {
     const left = (percentRemaining: number) =>
@@ -119,27 +159,9 @@ describe("export after a failed check", () => {
       answer({ name: "Claude", errors: ["HTTP 503"] }),
       left(70),
     ];
-    const provider: QuotaProvider = {
-      id: "anthropic",
-      cachePolicy: { kind: "account-neutral" },
-      isAvailable: async () => true,
-      fetch: async () => answers.shift() as ProviderFetchResult,
-    };
-    registry.providers = [provider];
-    const loaded = {
-      path: "settings.jsonc",
-      exists: true,
-      settings: defaultSettings(),
-      issues: [],
-      fromFile: [],
-      notRead: [],
-    };
-    const host = { client: {} as never, workspaceRoot: runtime.root, settings: () => loaded };
-    const store = createQuotaStore({
-      source: () => loadProviderSource(host),
-      file: join(runtime.root, "state", "snapshot-v6.json"),
-      log: () => {},
-    });
+    const store = storeFor(
+      fakeProvider("anthropic", async () => answers.shift() as ProviderFetchResult),
+    );
     const checkThenExport = async () => {
       const snapshot = await store.refresh({ reason: "manual" });
       return buildQuotaExportFromSnapshot(snapshot).providers.anthropic;
@@ -163,63 +185,13 @@ describe("export after a failed check", () => {
     const saved = await readFile(join(runtime.root, "state", "snapshot-v6.json"), "utf8");
     expect(saved).not.toContain("exportPart");
   });
-});
-
-describe("export of a check and of the saved snapshot", () => {
-  beforeEach(async () => {
-    runtime.root = await mkdtemp(join(tmpdir(), "opencode-quota-export-reload-"));
-  });
-
-  afterEach(async () => {
-    registry.providers = [];
-    await rm(runtime.root, { recursive: true, force: true });
-  });
-
-  /** A store over `provider`, saving to this test's snapshot file. */
-  function storeFor(provider: QuotaProvider) {
-    registry.providers = [provider];
-    const loaded = {
-      path: "settings.jsonc",
-      exists: true,
-      settings: defaultSettings(),
-      issues: [],
-      fromFile: [],
-      notRead: [],
-    };
-    const host = { client: {} as never, workspaceRoot: runtime.root, settings: () => loaded };
-    return createQuotaStore({
-      source: () => loadProviderSource(host),
-      file: join(runtime.root, "state", "snapshot-v6.json"),
-      log: () => {},
-    });
-  }
-
-  /** `provider`'s part of the export after a check, and after a restart reads the file. */
-  async function checkThenReload(provider: QuotaProvider) {
-    const nowMs = Date.now();
-    const checking = storeFor(provider);
-    const checked = await checking.refresh({ reason: "manual" });
-    await checking.dispose();
-    const reading = storeFor(provider);
-    const reloaded = await reading.snapshot({ refresh: false });
-    await reading.dispose();
-    return [checked, reloaded].map(
-      (snapshot) => buildQuotaExportFromSnapshot(snapshot, nowMs).providers[provider.id],
-    );
-  }
 
   it("numbers two accounts with one name alike in the check's export and after a reload", async () => {
-    const plan = (login: string, percentRemaining: number) => ({
-      name: "Copilot (pro)",
-      login,
-      rows: [percentRow("allowance", "Premium requests", percentRemaining, { window: "month" })],
-    });
-    const [checked, reloaded] = await checkThenReload({
-      id: "copilot",
-      cachePolicy: { kind: "account-neutral" },
-      isAvailable: async () => true,
-      fetch: async () => answer(plan("alice-id", 80), plan("bob-id", 40)),
-    });
+    const [checked, reloaded] = await checkThenReload(
+      fakeProvider("copilot", async () =>
+        answer(copilotPlan("alice-id", 80), copilotPlan("bob-id", 40)),
+      ),
+    );
 
     expect(reloaded).toEqual(checked);
     const entries = checked?.status === "ok" ? checked.entries : [];
@@ -231,18 +203,10 @@ describe("export of a check and of the saved snapshot", () => {
   });
 
   it("keeps an account's number in the check's export while the other login fails", async () => {
-    const plan = (login: string, percentRemaining: number) => ({
-      name: "Copilot (pro)",
-      login,
-      rows: [percentRow("allowance", "Premium requests", percentRemaining, { window: "month" })],
-    });
-    const answers = [answer(plan("alice-id", 80), plan("bob-id", 40))];
-    const store = storeFor({
-      id: "copilot",
-      cachePolicy: { kind: "account-neutral" },
-      isAvailable: async () => true,
-      fetch: async () => answers.shift() as ProviderFetchResult,
-    });
+    const answers = [answer(copilotPlan("alice-id", 80), copilotPlan("bob-id", 40))];
+    const store = storeFor(
+      fakeProvider("copilot", async () => answers.shift() as ProviderFetchResult),
+    );
     const checkThenExport = async () => {
       const snapshot = await store.refresh({ reason: "manual" });
       const part = buildQuotaExportFromSnapshot(snapshot).providers.copilot;
@@ -258,7 +222,7 @@ describe("export of a check and of the saved snapshot", () => {
     answers.push(
       answer(
         { name: "Copilot (pro)", login: otherLogin, errors: ["HTTP 503"] },
-        plan(secondLogin, 5),
+        copilotPlan(secondLogin, 5),
       ),
     );
     const failed = await checkThenExport();
@@ -268,12 +232,9 @@ describe("export of a check and of the saved snapshot", () => {
   });
 
   it("writes a check that reported nothing as the same error after a reload", async () => {
-    const [checked, reloaded] = await checkThenReload({
-      id: "anthropic",
-      cachePolicy: { kind: "account-neutral" },
-      isAvailable: async () => true,
-      fetch: async () => answer({ name: "Claude" }),
-    });
+    const [checked, reloaded] = await checkThenReload(
+      fakeProvider("anthropic", async () => answer({ name: "Claude" })),
+    );
 
     expect(checked).toMatchObject({ status: "error", error: "Nothing reported" });
     expect(reloaded).toEqual(checked);

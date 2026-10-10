@@ -1,25 +1,3 @@
-export type QuotaProviderAutoSetup = "yes" | "usually" | "manual_env_config" | "needs_quick_setup";
-
-export type QuotaProviderAuthentication =
-  | "opencode_auth_oauth_token"
-  | "opencode_auth_api_key"
-  | "companion_auth_oauth_token"
-  | "local_cli_auth"
-  | "github_oauth_or_pat"
-  | "external_api_key"
-  | "state_only";
-
-export type QuotaProviderAuthFallback = "env_api_key" | "global_opencode_config";
-
-export interface QuotaProviderShapeSource {
-  recommendedReplacementId?: string;
-  autoSetup: QuotaProviderAutoSetup;
-  authentication: QuotaProviderAuthentication;
-  authFallbacks?: readonly QuotaProviderAuthFallback[];
-  quickSetupAnchor?: string;
-  notes?: string;
-}
-
 export interface QuotaProviderRegistrationSourceEntry {
   id: string;
   label: string;
@@ -27,7 +5,6 @@ export interface QuotaProviderRegistrationSourceEntry {
   runtimeIds: readonly string[];
   synonyms: readonly string[];
   liveLocalUsage?: true;
-  shape: QuotaProviderShapeSource;
 }
 
 export const QUOTA_PROVIDER_REGISTRATION_SOURCE = [
@@ -36,56 +13,30 @@ export const QUOTA_PROVIDER_REGISTRATION_SOURCE = [
     label: "Anthropic",
     runtimeIds: ["anthropic"],
     synonyms: ["claude", "claude-code"],
-    shape: {
-      autoSetup: "needs_quick_setup",
-      authentication: "local_cli_auth",
-      quickSetupAnchor: "anthropic-claude",
-    },
   },
   {
     id: "copilot",
     label: "Copilot",
     runtimeIds: ["copilot", "github-copilot", "copilot-chat", "github-copilot-chat"],
     synonyms: ["github-copilot", "copilot-chat", "github-copilot-chat"],
-    shape: {
-      autoSetup: "usually",
-      authentication: "github_oauth_or_pat",
-      notes: "OAuth for personal flow; PAT for managed billing",
-    },
   },
   {
     id: "openai",
     label: "OpenAI",
     runtimeIds: ["openai", "chatgpt", "codex"],
     synonyms: [],
-    shape: {
-      autoSetup: "yes",
-      authentication: "opencode_auth_oauth_token",
-    },
   },
   {
     id: "openrouter",
     label: "OpenRouter",
     runtimeIds: ["openrouter"],
     synonyms: [],
-    shape: {
-      autoSetup: "yes",
-      authentication: "opencode_auth_api_key",
-      authFallbacks: ["env_api_key", "global_opencode_config"],
-    },
   },
   {
     id: "kilo",
     label: "Kilo Gateway",
     runtimeIds: ["kilo"],
     synonyms: [],
-    shape: {
-      autoSetup: "usually",
-      authentication: "opencode_auth_api_key",
-      authFallbacks: ["env_api_key", "global_opencode_config"],
-      notes:
-        "Queries Kilo Pass state first, then falls back to the documented personal Gateway balance when no active subscription exists",
-    },
   },
   {
     id: "cursor",
@@ -93,12 +44,6 @@ export const QUOTA_PROVIDER_REGISTRATION_SOURCE = [
     runtimeIds: ["cursor", "cursor-acp"],
     synonyms: ["cursor-acp", "open-cursor", "@rama_nigg/open-cursor"],
     liveLocalUsage: true,
-    shape: {
-      autoSetup: "needs_quick_setup",
-      authentication: "companion_auth_oauth_token",
-      quickSetupAnchor: "cursor",
-      notes: "companion runtime/plugin integration plus local usage accounting",
-    },
   },
   {
     id: "alibaba-coding-plan",
@@ -106,111 +51,60 @@ export const QUOTA_PROVIDER_REGISTRATION_SOURCE = [
     runtimeIds: ["alibaba-coding-plan"],
     synonyms: ["alibaba"],
     liveLocalUsage: true,
-    shape: {
-      autoSetup: "yes",
-      authentication: "opencode_auth_api_key",
-      authFallbacks: ["env_api_key", "global_opencode_config"],
-    },
   },
   {
     id: "alibaba-token-plan",
     label: "Alibaba Personal Token Plan",
     runtimeIds: ["alibaba-token-plan"],
     synonyms: [],
-    shape: {
-      autoSetup: "needs_quick_setup",
-      authentication: "local_cli_auth",
-      quickSetupAnchor: "alibaba-personal-token-plan",
-    },
   },
   {
     id: "synthetic",
     label: "Synthetic",
     runtimeIds: ["synthetic"],
     synonyms: [],
-    shape: {
-      autoSetup: "yes",
-      authentication: "opencode_auth_api_key",
-      authFallbacks: ["env_api_key", "global_opencode_config"],
-    },
   },
   {
     id: "chutes",
     label: "Chutes",
     runtimeIds: ["chutes", "chutes-ai"],
     synonyms: [],
-    shape: {
-      autoSetup: "usually",
-      authentication: "opencode_auth_api_key",
-      authFallbacks: ["env_api_key", "global_opencode_config"],
-    },
   },
   {
     id: "google-gemini-cli",
     label: "Gemini CLI",
     runtimeIds: ["google-gemini-cli", "gemini-cli", "gemini", "opencode-gemini-auth", "google"],
     synonyms: ["gemini-cli", "google-gemini", "opencode-gemini-auth", "gemini"],
-    shape: {
-      recommendedReplacementId: "google-agy",
-      autoSetup: "needs_quick_setup",
-      authentication: "companion_auth_oauth_token",
-      quickSetupAnchor: "gemini-cli",
-    },
   },
   {
     id: "google-agy",
     label: "Google AGY",
     runtimeIds: ["google-agy", "opencode-agy-auth", "google-agy-auth"],
     synonyms: ["opencode-agy-auth", "google-agy-auth"],
-    shape: {
-      autoSetup: "needs_quick_setup",
-      authentication: "companion_auth_oauth_token",
-      quickSetupAnchor: "google-agy-quick-setup",
-    },
   },
   {
     id: "zai",
     label: "Z.ai",
     runtimeIds: ["zai", "glm", "zai-coding-plan"],
     synonyms: [],
-    shape: {
-      autoSetup: "yes",
-      authentication: "opencode_auth_api_key",
-      authFallbacks: ["env_api_key", "global_opencode_config"],
-    },
   },
   {
     id: "zhipu",
     label: "Zhipu",
     runtimeIds: ["zhipu", "glm-coding-plan", "zhipu-coding-plan", "zhipuai-coding-plan"],
     synonyms: ["glm-coding-plan", "zhipu-coding-plan", "zhipuai-coding-plan"],
-    shape: {
-      autoSetup: "yes",
-      authentication: "opencode_auth_api_key",
-      authFallbacks: ["env_api_key", "global_opencode_config"],
-    },
   },
   {
     id: "nanogpt",
     label: "NanoGPT",
     runtimeIds: ["nanogpt", "nano-gpt"],
     synonyms: ["nano-gpt"],
-    shape: {
-      autoSetup: "usually",
-      authentication: "opencode_auth_api_key",
-      authFallbacks: ["env_api_key", "global_opencode_config"],
-    },
   },
   {
     id: "minimax-coding-plan",
     label: "MiniMax Token Plan",
     runtimeIds: ["minimax-coding-plan", "minimax"],
     synonyms: ["minimax"],
-    shape: {
-      autoSetup: "yes",
-      authentication: "opencode_auth_api_key",
-      authFallbacks: ["env_api_key", "global_opencode_config"],
-    },
   },
   {
     id: "minimax-china-coding-plan",
@@ -223,22 +117,12 @@ export const QUOTA_PROVIDER_REGISTRATION_SOURCE = [
       "minimax-china",
     ],
     synonyms: ["minimax-cn", "minimax-china", "minimax-cn-coding-plan"],
-    shape: {
-      autoSetup: "yes",
-      authentication: "opencode_auth_api_key",
-      authFallbacks: ["env_api_key", "global_opencode_config"],
-    },
   },
   {
     id: "kimi-code-plan-global",
     label: "Kimi Code",
     runtimeIds: ["kimi-code-plan-global"],
     synonyms: [],
-    shape: {
-      autoSetup: "yes",
-      authentication: "opencode_auth_api_key",
-      authFallbacks: ["env_api_key", "global_opencode_config"],
-    },
   },
   {
     id: "kimi-code-plan-cn",
@@ -246,33 +130,18 @@ export const QUOTA_PROVIDER_REGISTRATION_SOURCE = [
     labelAliases: ["kimi-code"],
     runtimeIds: ["kimi-code-plan-cn", "kimi-for-coding", "kimi", "kimi-code"],
     synonyms: ["kimi", "kimi-for-code", "kimi-code", "kimi-for-coding"],
-    shape: {
-      autoSetup: "yes",
-      authentication: "opencode_auth_api_key",
-      authFallbacks: ["env_api_key", "global_opencode_config"],
-    },
   },
   {
     id: "deepseek",
     label: "DeepSeek",
     runtimeIds: ["deepseek"],
     synonyms: ["deep-seek"],
-    shape: {
-      autoSetup: "yes",
-      authentication: "opencode_auth_api_key",
-      authFallbacks: ["env_api_key", "global_opencode_config"],
-    },
   },
   {
     id: "xai",
     label: "xAI",
     runtimeIds: ["xai"],
     synonyms: [],
-    shape: {
-      autoSetup: "yes",
-      authentication: "opencode_auth_oauth_token",
-      notes: "SuperGrok OAuth via OpenCode /connect; shared weekly credit meter",
-    },
   },
   {
     id: "xiaomi",
@@ -284,61 +153,30 @@ export const QUOTA_PROVIDER_REGISTRATION_SOURCE = [
       "xiaomi-token-plan-sgp",
     ],
     synonyms: ["xiaomi-token-plan-cn", "xiaomi-token-plan-ams", "xiaomi-token-plan-sgp"],
-    shape: {
-      autoSetup: "needs_quick_setup",
-      authentication: "state_only",
-      quickSetupAnchor: "xiaomi-mimo",
-      notes: "Reads the Xiaomi MiMo dashboard with a filtered trusted cookie",
-    },
   },
   {
     id: "opencode-go",
     label: "OpenCode Go",
     runtimeIds: ["opencode-go"],
     synonyms: ["opencode-go-subscription"],
-    shape: {
-      autoSetup: "yes",
-      authentication: "opencode_auth_api_key",
-      authFallbacks: ["env_api_key", "global_opencode_config"],
-      notes: "Reads the official OpenCode Go usage API through standard Go API-key sources",
-    },
   },
   {
     id: "opencode",
     label: "OpenCode Zen",
     runtimeIds: ["opencode", "opencode-zen"],
     synonyms: ["opencode-zen"],
-    shape: {
-      autoSetup: "yes",
-      authentication: "opencode_auth_oauth_token",
-      notes:
-        "Reads the OpenCode Console billing, budget and usage APIs with your OpenCode Console sign-in",
-    },
   },
   {
     id: "ollama-cloud",
     label: "Ollama Cloud",
     runtimeIds: ["ollama-cloud"],
     synonyms: [],
-    shape: {
-      autoSetup: "usually",
-      authentication: "opencode_auth_api_key",
-      authFallbacks: ["env_api_key", "global_opencode_config"],
-      notes:
-        "Queries the Ollama Cloud usage API; reports session, weekly, or monthly usage fractions",
-    },
   },
   {
     id: "quota-providers",
     label: "Quota providers",
     runtimeIds: [],
     synonyms: [],
-    shape: {
-      autoSetup: "manual_env_config",
-      authentication: "external_api_key",
-      authFallbacks: ["env_api_key", "global_opencode_config"],
-      notes: "Aggregates exact user-configured accounting sources",
-    },
   },
 ] as const satisfies readonly QuotaProviderRegistrationSourceEntry[];
 

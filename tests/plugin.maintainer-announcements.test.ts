@@ -5,12 +5,12 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { answer, percentRow } from "./helpers/fake-answers.js";
-import { createFakeIntegration } from "./helpers/fake-integration.js";
 import {
   createAlibabaAuthModuleMock,
   createPluginRuntimePathsMockModule,
   createPricingModuleMock,
   createProvidersRegistryModuleMock,
+  createServerContext,
   seedDefaultPluginBootstrapMocks,
   writePluginTestSettings,
 } from "./helpers/plugin-test-harness.js";
@@ -70,7 +70,6 @@ vi.mock("solid-js", async (importOriginal) => {
 vi.mock("../src/lib/maintainer-announcements.js", () => ({
   BUNDLED_MAINTAINER_ANNOUNCEMENTS: [TEST_ANNOUNCEMENT],
   getMaintainerAnnouncementsSummary: announcementMocks.getMaintainerAnnouncementsSummary,
-  getMaintainerAnnouncementTargetProviderIds: () => ["copilot"],
 }));
 
 function makeAnnouncementSummary(overrides: Record<string, unknown> = {}) {
@@ -122,18 +121,9 @@ async function startCli() {
       typeof type === "function" ? type(props ?? {}) : { type, props },
   });
   const { default: server } = await import("../src/plugin.js");
-  const register = vi.fn(async () => ({ dispose: async () => {}, events: { emit: vi.fn() } }));
-  const disposeServer = await server.setup({
-    location: { directory: process.cwd() },
-    provider: { list: vi.fn(async () => ({ data: [{ id: "copilot" }] })) },
-    session: { get: vi.fn(async () => ({})), hook: vi.fn() },
-    command: { transform: vi.fn() },
-    tool: { transform: vi.fn() },
-    rpc: { register },
-    integration: createFakeIntegration([]),
-    event: { subscribe: () => ({ async *[Symbol.asyncIterator]() {} }) },
-  } as never);
-  const [, serverHandlers] = register.mock.calls[0] as unknown as [
+  const { ctx } = createServerContext({ openCodeProviders: ["copilot"] });
+  const disposeServer = await server.setup(ctx as never);
+  const [, serverHandlers] = ctx.rpc.register.mock.calls[0] as unknown as [
     unknown,
     Parameters<typeof createQuotaRpcBridge>[0],
   ];

@@ -3,10 +3,11 @@ import { isIP } from "node:net";
 import type { RowType } from "../core/types.js";
 import { classifyWindow } from "../core/windows.js";
 import type { ProviderRow } from "../providers/contract.js";
+import { daysInMonth } from "./calendar-date.js";
 import { isRecord } from "./json-guards.js";
 import { lookupCost } from "./modelsdev-pricing.js";
-import { getQuotaProviderShape } from "./provider-metadata.js";
-import { resolvePricingKey } from "./quota-stats.js";
+import { resolvePricingKey } from "./pricing-key.js";
+import { getCanonicalQuotaProviderId } from "./provider-metadata.js";
 
 export const QUOTA_PROVIDER_REMOTE_FORMATS = ["quota-v1", "openrouter-key-v1", "json-v1"] as const;
 export const QUOTA_PROVIDER_MODES = ["remote-api", "local-estimate"] as const;
@@ -178,8 +179,8 @@ export function selectEligibleQuotaProviderDefinitions(params: {
 }
 
 export type QuotaProviderRemoteFormat = (typeof QUOTA_PROVIDER_REMOTE_FORMATS)[number];
-export type QuotaProviderMode = (typeof QUOTA_PROVIDER_MODES)[number];
-export type QuotaProviderWindowType = (typeof QUOTA_PROVIDER_WINDOW_TYPES)[number];
+type QuotaProviderMode = (typeof QUOTA_PROVIDER_MODES)[number];
+type QuotaProviderWindowType = (typeof QUOTA_PROVIDER_WINDOW_TYPES)[number];
 
 export type JsonV1Path = string[];
 
@@ -294,12 +295,12 @@ export type QuotaProviderDefinition =
   | RemoteApiQuotaProviderDefinition
   | LocalEstimateQuotaProviderDefinition;
 
-export interface QuotaProviderValidationIssue {
+interface QuotaProviderValidationIssue {
   key: string;
   message: string;
 }
 
-export type QuotaProvidersValidationResult =
+type QuotaProvidersValidationResult =
   | { value: QuotaProviderDefinition[]; issues: [] }
   | { value?: undefined; issues: QuotaProviderValidationIssue[] };
 
@@ -334,14 +335,14 @@ const MAX_ROLLING_MINUTES = 366 * 24 * 60;
 const MAX_SAFE_REQUEST_LIMIT = 1_000_000_000;
 const MAX_USD_BUDGET = 1_000_000_000;
 const JSON_V1_MAX_MAPPINGS = 16;
-export const JSON_V1_MAX_ADAPTER_DEPTH = 8;
-export const JSON_V1_MAX_ADAPTER_OBJECTS = 128;
-export const JSON_V1_MAX_ADAPTER_PROPERTIES = 384;
-export const JSON_V1_MAX_ADAPTER_ARRAY_ELEMENTS = 640;
+const JSON_V1_MAX_ADAPTER_DEPTH = 8;
+const JSON_V1_MAX_ADAPTER_OBJECTS = 128;
+const JSON_V1_MAX_ADAPTER_PROPERTIES = 384;
+const JSON_V1_MAX_ADAPTER_ARRAY_ELEMENTS = 640;
 const JSON_V1_MAX_PATH_SEGMENTS = 8;
-export const JSON_V1_MAX_PATH_SEGMENT_CODE_POINTS = 64;
-export const JSON_V1_MAX_STATIC_NAME_CODE_POINTS = 80;
-export const JSON_V1_MAX_STATIC_UNIT_CODE_POINTS = 32;
+const JSON_V1_MAX_PATH_SEGMENT_CODE_POINTS = 64;
+const JSON_V1_MAX_STATIC_NAME_CODE_POINTS = 80;
+const JSON_V1_MAX_STATIC_UNIT_CODE_POINTS = 32;
 export const JSON_V1_MAX_DISPLAY_CODE_POINTS = 160;
 export const JSON_V1_MAX_NUMBER_MAGNITUDE = 1e15;
 
@@ -352,7 +353,7 @@ const JSON_V1_TIMESTAMP_ENCODINGS = new Set<JsonV1TimestampEncoding>([
   "unix-seconds",
   "unix-milliseconds",
 ]);
-const JSON_V1_RESULT_TYPES = new Set<CustomResultType>([
+export const CUSTOM_RESULT_TYPES: ReadonlySet<string> = new Set<CustomResultType>([
   "quota",
   "rate_limit",
   "usage",
@@ -453,21 +454,15 @@ function normalizeRemoteUrl(value: unknown): { value?: string; message?: string 
 }
 
 function cloneDefinition(definition: QuotaProviderDefinition): QuotaProviderDefinition {
+  const modelIds = definition.modelIds ? { modelIds: [...definition.modelIds] } : {};
   if (definition.mode === "remote-api") {
     return definition.format === "json-v1"
-      ? {
-          ...definition,
-          ...(definition.modelIds ? { modelIds: [...definition.modelIds] } : {}),
-          adapter: structuredClone(definition.adapter),
-        }
-      : {
-          ...definition,
-          ...(definition.modelIds ? { modelIds: [...definition.modelIds] } : {}),
-        };
+      ? { ...definition, ...modelIds, adapter: structuredClone(definition.adapter) }
+      : { ...definition, ...modelIds };
   }
   return {
     ...definition,
-    ...(definition.modelIds ? { modelIds: [...definition.modelIds] } : {}),
+    ...modelIds,
     windows: definition.windows.map((window) => ({ ...window })),
     ...(definition.pricingModelMap ? { pricingModelMap: { ...definition.pricingModelMap } } : {}),
   };
@@ -595,13 +590,6 @@ function validateJsonV1Path(
 
 const JSON_V1_ISO_RE =
   /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,3}))?(Z|([+-])(\d{2}):(\d{2}))$/;
-
-function daysInMonth(year: number, month: number): number {
-  if (month === 2) {
-    return year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0) ? 29 : 28;
-  }
-  return [4, 6, 9, 11].includes(month) ? 30 : 31;
-}
 
 export function normalizeJsonV1Timestamp(
   value: unknown,
@@ -1003,7 +991,7 @@ function validateJsonV1Mapping(
 
   const resultType =
     typeof value.resultType === "string" &&
-    JSON_V1_RESULT_TYPES.has(value.resultType as CustomResultType)
+    CUSTOM_RESULT_TYPES.has(value.resultType as CustomResultType)
       ? (value.resultType as CustomResultType)
       : undefined;
   if (hasOwnKey(value, "resultType") && !resultType) {
@@ -1158,7 +1146,6 @@ function validateJsonV1Adapter(
 function validateModelIds(params: {
   raw: Record<string, unknown>;
   providerKey: string;
-  providerId: string | undefined;
   issues: QuotaProviderValidationIssue[];
 }): string[] | undefined {
   if (!hasOwnKey(params.raw, "modelIds")) return undefined;
@@ -1481,7 +1468,7 @@ export function validateQuotaProviders(value: unknown): QuotaProvidersValidation
           message: `"${QUOTA_PROVIDERS_AGGREGATE_ID}" is reserved for the aggregate provider`,
         });
       }
-      const builtIn = getQuotaProviderShape(id);
+      const builtIn = getCanonicalQuotaProviderId(id);
       if (builtIn && !(MAINTAINED_LOCAL_ESTIMATE_IDS as readonly string[]).includes(id)) {
         issues.push({
           key: `${providerKey}.id`,
@@ -1531,7 +1518,7 @@ export function validateQuotaProviders(value: unknown): QuotaProvidersValidation
       });
     }
 
-    const modelIds = validateModelIds({ raw, providerKey, providerId, issues });
+    const modelIds = validateModelIds({ raw, providerKey, issues });
     const enabled = raw.enabled;
     if (hasOwnKey(raw, "enabled") && typeof enabled !== "boolean") {
       issues.push({ key: `${providerKey}.enabled`, message: "expected true or false" });

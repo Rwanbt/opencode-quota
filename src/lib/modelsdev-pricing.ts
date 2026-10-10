@@ -4,6 +4,7 @@ import { join } from "path";
 
 import { writeJsonAtomic } from "./atomic-json.js";
 import { fetchWithTimeout } from "./http.js";
+import { asRecord } from "./json-guards.js";
 import { getOpencodeRuntimeDirs, type OpencodeRuntimeDirs } from "./opencode-runtime-paths.js";
 
 /** Which price list reports use: "auto" (runtime when valid, else bundled), or one of them. */
@@ -27,7 +28,7 @@ export type CostBuckets = {
   reasoning?: number;
 };
 
-export type PricingSnapshot = {
+type PricingSnapshot = {
   _meta: {
     source: string;
     generatedAt: number;
@@ -39,14 +40,14 @@ export type PricingSnapshot = {
 
 export const DEFAULT_PRICING_SNAPSHOT_MAX_AGE_MS = 3 * 24 * 60 * 60 * 1000;
 
-export type PricingSnapshotHealth = {
+type PricingSnapshotHealth = {
   generatedAt: number;
   ageMs: number;
   maxAgeMs: number;
   stale: boolean;
 };
 
-export interface PricingRefreshStateV1 {
+interface PricingRefreshStateV1 {
   version: 1;
   updatedAt: number;
   lastAttemptAt?: number;
@@ -58,7 +59,7 @@ export interface PricingRefreshStateV1 {
   lastModified?: string;
 }
 
-export interface PricingRefreshPolicy {
+interface PricingRefreshPolicy {
   enabled: boolean;
   maxAgeMs: number;
   minAttemptIntervalMs: number;
@@ -80,7 +81,7 @@ export interface PricingRefreshOptions {
   allowRefreshWhenSelectionBundled?: boolean;
 }
 
-export interface PricingRefreshResult {
+interface PricingRefreshResult {
   attempted: boolean;
   updated: boolean;
   state: PricingRefreshStateV1;
@@ -108,10 +109,6 @@ let SNAPSHOT_SELECTION: PricingSnapshotSource = "auto";
 let REFRESH_IN_FLIGHT: Promise<PricingRefreshResult> | null = null;
 let PROCESS_REFRESH_CHECKED = false;
 let CONFIGURED_MAX_AGE_MS = DEFAULT_PRICING_SNAPSHOT_MAX_AGE_MS;
-
-function asRecord(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === "object" ? (value as Record<string, unknown>) : null;
-}
 
 /** Sorted by key, so a saved snapshot reads and diffs in a stable order. */
 function sortByKey<T>(record: Record<string, T>): Record<string, T> {
@@ -492,16 +489,8 @@ export function hasProvider(providerId: string): boolean {
   return !!pricedProviders()[providerId];
 }
 
-export function isModelsDevProviderId(providerId: string): boolean {
-  return hasProvider(providerId);
-}
-
 export function hasModel(providerId: string, modelId: string): boolean {
   return !!pricedProviders()[providerId]?.[modelId];
-}
-
-export function getProviderModelCount(providerId: string): number {
-  return Object.keys(pricedProviders()[providerId] || {}).length;
 }
 
 export function listProviders(): string[] {

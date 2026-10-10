@@ -13,24 +13,6 @@ export interface FixedWindowProjectionEvidence {
   startedAtIso: string;
 }
 
-/** Per-model token summary for current session (toast display). */
-export interface SessionTokenModel {
-  modelID: string;
-  input: number;
-  cachedInput?: number;
-  totalInput?: number;
-  output: number;
-}
-
-/** Session tokens data for toast display. */
-export interface SessionTokensData {
-  models: SessionTokenModel[];
-  totalInput: number;
-  totalCachedInput?: number;
-  totalCombinedInput?: number;
-  totalOutput: number;
-}
-
 export interface QuotaProviderMatchContext {
   enabledProviders: string[] | "auto";
   quotaProviders?: QuotaProviderDefinition[];

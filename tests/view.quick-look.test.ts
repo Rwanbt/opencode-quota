@@ -13,6 +13,7 @@ import {
   quotaProviderIdsOfUsage,
   stepRange,
 } from "../src/view/quick-look.js";
+import { providerSnapshot, quotaRow as row } from "./helpers/fake-answers.js";
 
 const NOW = new Date(2026, 9, 10, 15).getTime();
 const MINUTE = 60_000;
@@ -26,32 +27,13 @@ const TOAST_45 = 33;
 
 const text = (line: QuickLookLine) => line.map((part) => part.text).join("");
 
-function row(id: string, fields: Partial<QuotaRow> = {}): QuotaRow {
-  const [providerId = "", key = ""] = id.split(".");
-  return {
-    id,
-    providerId,
-    label: key,
-    type: "quota",
-    method: "remote_api",
-    authority: "provider_reported",
-    prominence: "primary",
-    ...fields,
-  };
-}
-
-function provider(providerId: string, label: string, rows: QuotaRow[], extra = {}) {
-  return {
-    providerId,
-    label,
-    rows,
-    okAtMs: NOW,
-    checkedAtMs: NOW,
-    refreshing: false,
-    debug: [],
-    ...extra,
-  } satisfies ProviderSnapshot;
-}
+/** A provider whose rows were fetched and checked at NOW. */
+const provider = (
+  providerId: string,
+  label: string,
+  rows: QuotaRow[],
+  extra: Partial<ProviderSnapshot> = {},
+) => providerSnapshot(providerId, label, rows, { okAtMs: NOW, checkedAtMs: NOW, ...extra });
 
 /** Half of the 5-hour window has passed with 30% left: even use would leave 50%. */
 const ZAI = provider("zai", "Z.ai", [
@@ -343,15 +325,17 @@ describe("quick look: ranges", () => {
 });
 
 describe("quick look: short text", () => {
-  const settings = defaultDisplaySettings();
-
-  it("writes the range and totals, then one line per provider", () => {
-    const lines = quickLookText({
+  const shortText = (fields: Partial<Parameters<typeof quickLookText>[0]> = {}) =>
+    quickLookText({
       snapshot: snapshot([ZAI, COPILOT, OPENROUTER]),
       usage: USAGE,
-      settings,
+      settings: defaultDisplaySettings(),
       nowMs: NOW,
-    }).split("\n");
+      ...fields,
+    });
+
+  it("writes the range and totals, then one line per provider", () => {
+    const lines = shortText().split("\n");
     expect(lines[0]).toBe("Quota · 7 days · $202.92 · 7.00M tokens");
     expect(lines.slice(1)).toEqual([
       "● Anthropic   $190.42",
@@ -363,24 +347,17 @@ describe("quick look: short text", () => {
 
   it("adds the pace words only when the server's words ask for them", () => {
     const words = { ...DEFAULT_WORDS, runsOut: true };
-    const message = quickLookText({
-      snapshot: snapshot([ZAI], words),
-      usage: undefined,
-      settings,
-      nowMs: NOW,
-    });
+    const message = shortText({ snapshot: snapshot([ZAI], words), usage: undefined });
     expect(message).toBe("Quota\n● Z.ai  5h 30% left runs out in 1h 5m");
   });
 
   it("keeps each amount and limit whole on lines as wide as the toast", () => {
-    const message = quickLookText({
+    const message = shortText({
       snapshot: { ...snapshot([ZAI, TEAM]), customRowProviders: TEAM_ROW_PROVIDERS },
       usage: report([
         usageRow("zai-coding-plan", 12.5, 4_100_000, 3),
         usageRow("team-gateway", 3.39, 1_000_000, 2),
       ]),
-      settings,
-      nowMs: NOW,
       width: TOAST_45,
     });
     expect(message.split("\n")).toEqual([
@@ -394,7 +371,7 @@ describe("quick look: short text", () => {
   });
 
   it("says when quota found no provider", () => {
-    expect(quickLookText({ snapshot: snapshot([]), usage: report([]), settings, nowMs: NOW })).toBe(
+    expect(shortText({ snapshot: snapshot([]), usage: report([]) })).toBe(
       "Quota · 7 days · no usage\nNo quota providers found. Run /quota_status to see why.",
     );
   });

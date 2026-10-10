@@ -460,17 +460,13 @@ function garbageSource(seed: number) {
 }
 
 describe("buildQuotaStatusReport", () => {
-  it("starts with the command, version and time; the dialog gets them as its subtitle", async () => {
+  it("starts with the command, version and time", async () => {
     const version = await getPackageVersion();
     const time = formatLocalCallTimestamp(NOW);
 
-    const document = await buildQuotaStatusReportDocument(params());
-
-    expect(document.heading).toEqual({
-      line: `# Quota Status (opencode-quota v${version}) (/quota_status) ${time}`,
-      subtitle: `opencode-quota v${version} · ${time}`,
-    });
-    expect((await report()).split("\n")[0]).toBe(document.heading?.line);
+    expect((await report()).split("\n")[0]).toBe(
+      `# Quota Status (opencode-quota v${version}) (/quota_status) ${time}`,
+    );
   });
 
   it("has settings, every provider, files and logins, one section per known provider, then prices", async () => {
@@ -1996,9 +1992,9 @@ describe("buildStatusReportData", () => {
     return { data, text: data.output, onDetectedProviderIds };
   }
 
-  /** The forms of the JSON fields that hold a number: the version and two times. */
+  /** The forms of the JSON fields that hold a number: the format version and two times. */
   const JSON_NUMBER_LINES: readonly RegExp[] = [
-    String.raw`version: \d+\.\d+\.\d+[\w.-]*`,
+    String.raw`version: 6`,
     String.raw`generatedAt: ${DATE}`,
     String.raw`pricing\.snapshot\.generatedAt: ${TIME}`,
   ].map((form) => new RegExp(`^(?:${form})$`, "u"));

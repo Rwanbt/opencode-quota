@@ -48,7 +48,7 @@ import {
  * and a `chip`, the picked mode or range.
  */
 export type QuickLookRole = UsageRole | Level | "empty" | "marker" | "error" | "chip";
-export type QuickLookSpan = { text: string; role: QuickLookRole };
+type QuickLookSpan = { text: string; role: QuickLookRole };
 export type QuickLookLine = QuickLookSpan[];
 
 /** The ranges the quick look offers: the usage ranges without "between", which needs dates. */
@@ -71,9 +71,9 @@ export type QuickLookInput = {
 };
 
 /** The dialog: a fixed header and key line, and the body between them, which scrolls. */
-export type QuickLookView = { header: QuickLookLine; body: QuickLookLine[]; keys: QuickLookLine };
+type QuickLookView = { header: QuickLookLine; body: QuickLookLine[]; keys: QuickLookLine };
 
-export type QuickLookTextInput = {
+type QuickLookTextInput = {
   snapshot: QuotaSnapshot | undefined;
   usage: UsageReport | undefined;
   settings: RowSettings;

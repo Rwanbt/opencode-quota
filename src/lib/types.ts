@@ -28,18 +28,8 @@ export interface CopilotAuthData {
 
 export type AlibabaCodingPlanTier = "lite" | "pro";
 
-export interface CursorAuthData {
-  type: string;
-  access?: string;
-  refresh?: string;
-  expires?: number;
-  key?: string;
-  /** Set when OpenCode could not return this login; see `CredentialRow.resolveError`. */
-  resolveError?: string;
-  [key: string]: unknown;
-}
-
-export interface AnthropicOAuthAuthData {
+/** An OAuth login as OpenCode stores it; providers read the fields they know. */
+interface OAuthAuthData {
   type: string;
   access?: string;
   refresh?: string;
@@ -49,32 +39,7 @@ export interface AnthropicOAuthAuthData {
   [key: string]: unknown;
 }
 
-export interface OpenAIOAuthData {
-  type: string;
-  access?: string;
-  refresh?: string;
-  expires?: number;
-  accountId?: string;
-  /** Set when OpenCode could not return this login; see `CredentialRow.resolveError`. */
-  resolveError?: string;
-  [key: string]: unknown;
-}
-
-export interface XaiOAuthData {
-  type: string;
-  access?: string;
-  refresh?: string;
-  expires?: number;
-  /** Set when OpenCode could not return this login; see `CredentialRow.resolveError`. */
-  resolveError?: string;
-  [key: string]: unknown;
-}
-
-export interface GeminiCliOAuthAuthData {
-  type: string;
-  access?: string;
-  refresh?: string;
-  expires?: number;
+interface GeminiCliOAuthAuthData extends OAuthAuthData {
   projectId?: string;
   /** Legacy spelling used by some companion/runtime variants */
   projectID?: string;
@@ -83,9 +48,6 @@ export interface GeminiCliOAuthAuthData {
   email?: string;
   accountEmail?: string;
   login?: string;
-  /** Set when OpenCode could not return this login; see `CredentialRow.resolveError`. */
-  resolveError?: string;
-  [key: string]: unknown;
 }
 
 /**
@@ -139,7 +101,7 @@ export interface CopilotQuotaConfig {
 
 /** Full opencode.db structure (partial - only what we need) */
 export interface AuthData {
-  anthropic?: AnthropicOAuthAuthData;
+  anthropic?: OAuthAuthData;
   "github-copilot"?: CopilotAuthData;
   copilot?: CopilotAuthData;
   "copilot-chat"?: CopilotAuthData;
@@ -154,13 +116,13 @@ export interface AuthData {
   "google-agy"?: GeminiCliOAuthAuthData;
   "opencode-agy-auth"?: GeminiCliOAuthAuthData;
   "google-agy-auth"?: GeminiCliOAuthAuthData;
-  openai?: OpenAIOAuthData;
+  openai?: OAuthAuthData & { accountId?: string };
   // Some OpenCode installs store ChatGPT auth under "codex".
-  codex?: OpenAIOAuthData;
+  codex?: OAuthAuthData & { accountId?: string };
   // Some OpenCode installs store ChatGPT auth under "chatgpt".
-  chatgpt?: OpenAIOAuthData;
-  cursor?: CursorAuthData;
-  xai?: XaiOAuthData;
+  chatgpt?: OAuthAuthData & { accountId?: string };
+  cursor?: OAuthAuthData & { key?: string };
+  xai?: OAuthAuthData;
 }
 
 // =============================================================================
@@ -177,7 +139,7 @@ export interface KimiQuotaWindow {
 }
 
 /** Result from fetching Kimi quota */
-export interface KimiQuotaResult {
+interface KimiQuotaResult {
   success: true;
   label: string;
   windows: KimiQuotaWindow[];
@@ -220,7 +182,7 @@ export interface ZaiQuotaResult {
 // Quota Result Types
 // =============================================================================
 
-export type CopilotResultAuthority = "provider_reported" | "locally_derived";
+type CopilotResultAuthority = "provider_reported" | "locally_derived";
 
 export interface CopilotBudgetResult {
   amountUsd: number;
@@ -322,7 +284,7 @@ export interface GeminiCliQuotaBucket {
   sourceKey?: GeminiCliAuthSourceKey;
 }
 
-export interface GeminiCliQuotaResult {
+interface GeminiCliQuotaResult {
   success: true;
   buckets: GeminiCliQuotaBucket[];
   errors?: GoogleAccountError[];
@@ -340,7 +302,7 @@ export interface GoogleAgyQuotaSummaryBucket {
   resetTime?: string;
 }
 
-export interface GoogleAgyQuotaSummaryGroup {
+interface GoogleAgyQuotaSummaryGroup {
   displayName?: string;
   description?: string;
   buckets?: GoogleAgyQuotaSummaryBucket[];
@@ -367,7 +329,7 @@ export interface GoogleAgyQuotaBucket {
   sourceKey: GoogleAgyAuthSourceKey;
 }
 
-export interface GoogleAgyQuotaResult {
+interface GoogleAgyQuotaResult {
   success: true;
   buckets: GoogleAgyQuotaBucket[];
   errors?: GoogleAccountError[];

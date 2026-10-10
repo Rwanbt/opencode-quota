@@ -11,7 +11,7 @@ import type { AuthData } from "./types.js";
 
 const ANTHROPIC_AUTH_CACHE_MAX_AGE_MS = 5_000;
 
-export type ResolvedAnthropicOAuth =
+type ResolvedAnthropicOAuth =
   | { state: "none" }
   | { state: "failed"; error: string }
   | { state: "expired"; expiresAt: number }

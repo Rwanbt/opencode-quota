@@ -11,26 +11,19 @@ import {
   type StoreProvider,
 } from "../src/core/store.js";
 import type { QuotaRow, QuotaSnapshot, SessionModel } from "../src/core/types.js";
+import { quotaRow } from "./helpers/fake-answers.js";
 
 const START_MS = Date.parse("2026-10-10T12:00:00.000Z");
 const SECOND = 1000;
 const MINUTE = 60 * SECOND;
 const HOUR = 60 * MINUTE;
+/** The weekly window's reset, an hour after the start, and the reset after it. */
+const RESETS_AT = new Date(START_MS + HOUR).toISOString();
+const NEXT_RESETS_AT = new Date(START_MS + 8 * 24 * HOUR).toISOString();
 
-function row(key: string, percentRemaining: number, extra: Partial<QuotaRow> = {}): QuotaRow {
-  return {
-    id: `copilot.${key}`,
-    providerId: "copilot",
-    label: key,
-    type: "quota",
-    method: "remote_api",
-    authority: "provider_reported",
-    window: "week",
-    prominence: "primary",
-    percentRemaining,
-    ...extra,
-  };
-}
+/** A Copilot row of a weekly window. */
+const row = (key: string, percentRemaining: number, extra: Partial<QuotaRow> = {}) =>
+  quotaRow(`copilot.${key}`, { window: "week", percentRemaining, ...extra });
 
 function ok(rows: QuotaRow[]): ProviderFetch {
   return { rows, debug: [{ key: "source", value: "test" }] };
@@ -88,6 +81,22 @@ describe("quota store", () => {
     stores.push(store);
     return store;
   }
+
+  /** A store that saw the weekly row at 5% before its reset; then 2 hours pass. */
+  async function storePastWeeklyReset(
+    copilot: ReturnType<typeof fakeProvider>,
+    extra: Partial<QuotaRow> = {},
+  ) {
+    copilot.fetch.mockResolvedValue(ok([row("weekly", 5, { resetsAt: RESETS_AT, ...extra })]));
+    const store = makeStore([copilot.provider], 0);
+    await store.refresh({ reason: "poll" });
+    clock += 2 * HOUR;
+    return store;
+  }
+
+  /** The weekly row refilled, with its next reset. */
+  const refilled = (extra: Partial<QuotaRow> = {}) =>
+    ok([row("weekly", 100, { resetsAt: NEXT_RESETS_AT, ...extra })]);
 
   function only(snapshot: QuotaSnapshot) {
     const [provider] = snapshot.providers;
@@ -339,19 +348,11 @@ describe("quota store", () => {
   });
 
   it("records a reset notice once when a window refills", async () => {
-    const resetsAt = new Date(START_MS + HOUR).toISOString();
-    const nextResetsAt = new Date(START_MS + HOUR + 7 * 24 * HOUR).toISOString();
     const copilot = fakeProvider();
-    copilot.fetch.mockResolvedValue(ok([row("weekly", 5, { resetsAt, account: "pro" })]));
-    const store = makeStore([copilot.provider], 0);
-    await store.refresh({ reason: "poll" });
-
-    clock += 2 * HOUR;
-    copilot.fetch.mockResolvedValue(
-      ok([row("weekly", 100, { resetsAt: nextResetsAt, account: "pro" })]),
-    );
+    const store = await storePastWeeklyReset(copilot, { account: "pro" });
+    copilot.fetch.mockResolvedValue(refilled({ account: "pro" }));
     const notice = {
-      id: `copilot.weekly|pro||${resetsAt}`,
+      id: `copilot.weekly|pro||${RESETS_AT}`,
       rowId: "copilot.weekly",
       providerId: "copilot",
       account: "pro",
@@ -372,14 +373,13 @@ describe("quota store", () => {
   });
 
   it("gives no reset notice for windows that don't refill or rows that didn't reset", async () => {
-    const resetsAt = new Date(START_MS + HOUR).toISOString();
     const later = new Date(START_MS + 5 * HOUR).toISOString();
     const copilot = fakeProvider();
     copilot.fetch.mockResolvedValue(
       ok([
-        row("session", 5, { window: "session", resetsAt }),
-        row("weekly", 5, { resetsAt }),
-        row("budget", 5, { type: "budget", resetsAt }),
+        row("session", 5, { window: "session", resetsAt: RESETS_AT }),
+        row("weekly", 5, { resetsAt: RESETS_AT }),
+        row("budget", 5, { type: "budget", resetsAt: RESETS_AT }),
       ]),
     );
     const store = makeStore([copilot.provider], 0);
@@ -436,20 +436,6 @@ describe("quota store", () => {
     expect(
       listener.mock.lastCall?.[0].providers.map((p: { providerId: string }) => p.providerId),
     ).toEqual(["copilot", "openai"]);
-  });
-
-  it("merges the file with what other processes saved", async () => {
-    const copilot = fakeProvider("copilot");
-    const openai = fakeProvider("openai");
-    const one = makeStore([copilot.provider]);
-    const two = makeStore([openai.provider]);
-    await one.refresh({ reason: "manual" });
-    await two.refresh({ reason: "manual" });
-    const saved = await savedFile();
-    expect(Object.keys(saved.entries).map((key) => key.split("|")[0])).toEqual([
-      "copilot",
-      "openai",
-    ]);
   });
 
   it("ignores a broken file and skips bad rows in a good one", async () => {
@@ -511,14 +497,9 @@ describe("quota store", () => {
   });
 
   it("keeps reset notices with the account that saw them", async () => {
-    const resetsAt = new Date(START_MS + HOUR).toISOString();
-    const nextResetsAt = new Date(START_MS + 8 * 24 * HOUR).toISOString();
     const copilot = fakeProvider();
-    copilot.fetch.mockResolvedValue(ok([row("weekly", 5, { resetsAt })]));
-    const store = makeStore([copilot.provider], 0);
-    await store.refresh({ reason: "poll" });
-    clock += 2 * HOUR;
-    copilot.fetch.mockResolvedValue(ok([row("weekly", 100, { resetsAt: nextResetsAt })]));
+    const store = await storePastWeeklyReset(copilot);
+    copilot.fetch.mockResolvedValue(refilled());
     expect((await store.refresh({ reason: "poll" })).resetNotices).toHaveLength(1);
 
     // Bob never sees Alice's notice, nor does a process where the provider is off.
@@ -530,15 +511,10 @@ describe("quota store", () => {
   });
 
   it("keeps a memory-only login's reset notices out of the file", async () => {
-    const resetsAt = new Date(START_MS + HOUR).toISOString();
-    const nextResetsAt = new Date(START_MS + 8 * 24 * HOUR).toISOString();
     const copilot = fakeProvider();
     copilot.signInAs("settings-only", false);
-    copilot.fetch.mockResolvedValue(ok([row("weekly", 5, { resetsAt })]));
-    const store = makeStore([copilot.provider], 0);
-    await store.refresh({ reason: "poll" });
-    clock += 2 * HOUR;
-    copilot.fetch.mockResolvedValue(ok([row("weekly", 100, { resetsAt: nextResetsAt })]));
+    const store = await storePastWeeklyReset(copilot);
+    copilot.fetch.mockResolvedValue(refilled());
     expect((await store.refresh({ reason: "poll" })).resetNotices).toHaveLength(1);
     await makeStore([fakeProvider("openai").provider]).refresh({ reason: "manual" });
     expect(await readFile(file, "utf8")).not.toContain("copilot.weekly");
@@ -548,20 +524,15 @@ describe("quota store", () => {
   });
 
   it("notices a reset that a provider reports only after repeating the old reset time", async () => {
-    const resetsAt = new Date(START_MS + HOUR).toISOString();
-    const nextResetsAt = new Date(START_MS + 8 * 24 * HOUR).toISOString();
     const copilot = fakeProvider();
-    copilot.fetch.mockResolvedValue(ok([row("weekly", 5, { resetsAt })]));
-    const store = makeStore([copilot.provider], 0);
-    await store.refresh({ reason: "poll" });
+    const store = await storePastWeeklyReset(copilot);
 
     // The provider's data lags: after the reset time it still reports the old window.
-    clock += 2 * HOUR;
     expect((await store.refresh({ reason: "poll" })).resetNotices).toEqual([]);
     clock += HOUR;
-    copilot.fetch.mockResolvedValue(ok([row("weekly", 100, { resetsAt: nextResetsAt })]));
+    copilot.fetch.mockResolvedValue(refilled());
     const { resetNotices } = await store.refresh({ reason: "poll" });
-    expect(resetNotices.map((notice) => notice.id)).toEqual([`copilot.weekly|||${resetsAt}`]);
+    expect(resetNotices.map((notice) => notice.id)).toEqual([`copilot.weekly|||${RESETS_AT}`]);
   });
 
   it("drops a memory-only fetch that ran across a login change and shows that at once", async () => {
@@ -760,8 +731,6 @@ describe("quota store", () => {
   });
 
   it("numbers logins around names rows already have and gives each login its own notice", async () => {
-    const resetsAt = new Date(START_MS + HOUR).toISOString();
-    const nextResetsAt = new Date(START_MS + HOUR + 7 * 24 * HOUR).toISOString();
     const copilot = fakeProvider();
     // Two logins without a name and one named "Account 2", all on the same window.
     const answer = (percent: number, at: string): ProviderFetch => ({
@@ -775,7 +744,7 @@ describe("quota store", () => {
     });
     const accounts = (items: Array<{ account?: string }>) =>
       items.map((item) => item.account ?? "(none)").sort();
-    copilot.fetch.mockResolvedValue(answer(5, resetsAt));
+    copilot.fetch.mockResolvedValue(answer(5, RESETS_AT));
     const store = makeStore([copilot.provider], 0);
     const before = only(await store.refresh({ reason: "poll" })).rows;
     expect(accounts(before)).toEqual(["(none)", "Account 2", "Account 3"]);
@@ -783,7 +752,7 @@ describe("quota store", () => {
 
     // All three reset at once: three notices.
     clock += 2 * HOUR;
-    copilot.fetch.mockResolvedValue(answer(100, nextResetsAt));
+    copilot.fetch.mockResolvedValue(answer(100, NEXT_RESETS_AT));
     const { resetNotices } = await store.refresh({ reason: "poll" });
     expect(accounts(resetNotices)).toEqual(["(none)", "Account 2", "Account 3"]);
     expect(new Set(resetNotices.map((notice) => notice.id)).size).toBe(3);

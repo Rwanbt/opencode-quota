@@ -155,6 +155,12 @@ function from(lines: UsageLine[], text: string): UsageLine[] {
   return lines.slice(index);
 }
 
+/** The T3 report's view from the first line holding `text`; default: cost by model, 80 columns. */
+function t3From(text: string, options: Partial<UsageViewOptions> = {}): UsageLine[] {
+  const view = usageView(t3Report(), { mode: "cost", breakdown: "model", width: 80, ...options });
+  return from(view, text);
+}
+
 /** One provider with a price, one free model, one model without a price, over 7 days. */
 function unpricedReport(): UsageReport {
   return buildReport({
@@ -196,22 +202,6 @@ const EMPTY_REPORT = buildReport({
   cacheSavingsUsd: 0,
 });
 
-/** 400 days up to Oct 10, 2026, every one of them used: more days than a chart has columns. */
-function longReport(): UsageReport {
-  const days = Array.from({ length: 400 }, (_, index): Amounts => [index % 5, (index % 5) * M]);
-  const cost = days.reduce((sum, [dayCost]) => sum + dayCost, 0);
-  return buildReport({
-    range: "all",
-    sessions: 40,
-    providers: [["anthropic", 40, cost, cost * M]],
-    models: [["anthropic", "claude-test", cost, cost * M]],
-    days,
-    tokens: { cachedInput: 0, uncachedInput: cost * M, output: 0 },
-    costByType: { input: cost, cacheRead: 0, cacheWrite: 0, output: 0 },
-    cacheSavingsUsd: 0,
-  });
-}
-
 /** Names in CJK and emoji, which take two terminal columns per character. */
 function wideNamesReport(): UsageReport {
   return buildReport({
@@ -237,12 +227,13 @@ function wideNamesReport(): UsageReport {
 }
 
 /** One provider, one model and these days ([cost, tokens], oldest first). */
-function daysReport(days: Amounts[]): UsageReport {
+function daysReport(days: Amounts[], range?: UsageReport["range"], sessions = 1): UsageReport {
   const cost = days.reduce((sum, [dayCost]) => sum + dayCost, 0);
   const tokens = days.reduce((sum, [, dayTokens]) => sum + dayTokens, 0);
   return buildReport({
-    sessions: 1,
-    providers: [["anthropic", 1, cost, tokens]],
+    range,
+    sessions,
+    providers: [["anthropic", sessions, cost, tokens]],
     models: [["anthropic", "claude-test", cost, tokens]],
     days,
     tokens: { cachedInput: 0, uncachedInput: tokens, output: 0 },
@@ -250,6 +241,14 @@ function daysReport(days: Amounts[]): UsageReport {
     cacheSavingsUsd: 0,
   });
 }
+
+/** 400 days up to Oct 10, 2026, every one of them used: more days than a chart has columns. */
+const longReport = () =>
+  daysReport(
+    Array.from({ length: 400 }, (_, index): Amounts => [index % 5, (index % 5) * M]),
+    "all",
+    40,
+  );
 
 const GRAPHEMES = new Intl.Segmenter("en", { granularity: "grapheme" });
 
@@ -371,10 +370,7 @@ describe("usageView", () => {
   });
 
   it("draws a daily chart: top value, 0, one column per day, first/middle/last dates", () => {
-    const lines = from(
-      usageView(t3Report(), { mode: "cost", breakdown: "model", width: 80 }),
-      "Daily cost",
-    );
+    const lines = t3From("Daily cost");
     const rows = lines.slice(1, 7);
     expect(rows.map((row) => row.map((part) => part.role))).toEqual(
       Array.from({ length: 6 }, () => ["muted", "bar"]),
@@ -440,10 +436,7 @@ describe("usageView", () => {
   });
 
   it("shows the totals as label-over-value cells", () => {
-    const lines = from(
-      usageView(t3Report(), { mode: "cost", breakdown: "model", width: 110 }),
-      "Totals",
-    );
+    const lines = t3From("Totals", { width: 110 });
     expect(textOf(lines[1]).split(/ {2,}/).filter(Boolean)).toEqual([
       "Processed tokens",
       "Cached input",
@@ -492,7 +485,7 @@ describe("usageView", () => {
     parts,
     legend,
   }) => {
-    const lines = from(usageView(t3Report(), { mode, breakdown: "model", width: 110 }), title);
+    const lines = t3From(title, { mode, width: 110 });
     const bar = lines[1];
     expect(textOf(bar)).toHaveLength(64);
     const total = Object.values(parts).reduce((sum, amount) => sum + amount, 0);
@@ -540,7 +533,7 @@ describe("usageView", () => {
     header,
     rows,
   }) => {
-    const lines = from(usageView(t3Report(), { ...options, width: 80 }), "Breakdown");
+    const lines = t3From("Breakdown", options);
     const texts = lines.map(textOf);
     expect(texts[1]).toMatch(header);
     for (const [index, row] of rows.entries()) expect(texts[index + 2]).toMatch(row);
@@ -548,10 +541,7 @@ describe("usageView", () => {
   });
 
   it("breakdown by model: provider colors, no price, and the provider for a shared model id", () => {
-    const lines = from(
-      usageView(t3Report(), { mode: "cost", breakdown: "model", width: 80 }),
-      "Breakdown",
-    );
+    const lines = t3From("Breakdown");
     expect(from(lines, "composer-2")[0][1]).toEqual({ text: "● ", role: "provider:1" });
     expect(from(lines, "openai/gpt-6.1")[0][1]).toEqual({ text: "● ", role: "provider:2" });
     expect(from(lines, "opencode/gpt-6.1")[0][1]).toEqual({ text: "● ", role: "provider:3" });

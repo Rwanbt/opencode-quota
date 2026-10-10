@@ -103,7 +103,7 @@ export function failedAccount(name: string, message: string): AccountResult {
 }
 
 /** What one login gave: its rows and errors, or null when it had nothing to query. */
-export type LoginFetch = {
+type LoginFetch = {
   rows: ProviderRow[];
   errors: FetchError[];
   /** The name of a login without an alias of its own, for example "Copilot (pro)". */

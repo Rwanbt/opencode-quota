@@ -4,8 +4,8 @@
  */
 import type { QuotaProvider } from "../lib/entries.js";
 import {
+  getCanonicalQuotaProviderId,
   getQuotaProviderIdsForRuntimeId,
-  getQuotaProviderShape,
 } from "../lib/provider-metadata.js";
 import type { QuotaProviderDefinition } from "../lib/quota-providers.js";
 
@@ -41,8 +41,9 @@ export function matchesQuotaProviderCurrentSelection(params: {
 
   if (params.currentProviderID) {
     const explicitId = params.currentProviderID.trim().toLowerCase();
-    const catalogShape = getQuotaProviderShape(explicitId);
-    if (catalogShape?.id === explicitId) return params.provider.id === catalogShape.id;
+    if (getCanonicalQuotaProviderId(explicitId) === explicitId) {
+      return params.provider.id === explicitId;
+    }
 
     const runtimeCandidates = getQuotaProviderIdsForRuntimeId(explicitId);
     if (runtimeCandidates.length === 1) return params.provider.id === runtimeCandidates[0];

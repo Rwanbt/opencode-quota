@@ -82,7 +82,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
   }
 
   if (command === "status") {
-    const { runCliStatusCommand } = await import("../lib/cli-status.js");
+    const { runCliStatusCommand } = await import("../lib/cli-show.js");
     return await runCliStatusCommand({ argv: rest });
   }
 

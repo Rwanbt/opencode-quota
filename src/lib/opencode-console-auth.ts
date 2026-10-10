@@ -29,7 +29,7 @@ export interface OpenCodeConsoleCredential {
   server?: string;
 }
 
-export type OpenCodeConsoleAuthState =
+type OpenCodeConsoleAuthState =
   | { state: "none"; reason?: "not_oauth" }
   | { state: "configured"; credential: OpenCodeConsoleCredential }
   | { state: "expired"; credential: OpenCodeConsoleCredential }

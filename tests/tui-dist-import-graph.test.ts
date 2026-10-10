@@ -59,7 +59,6 @@ describe("tui dist import graph", () => {
     expect(reached).toContain("plugin.js");
     expect(reached).not.toContain("lib/opencode-auth-sqlite.js");
     expect(reached).not.toContain("lib/cli-show.js");
-    expect(reached).not.toContain("lib/cli-status.js");
     expect(filesQueryingCredentials(reached)).toEqual([]);
   });
 });

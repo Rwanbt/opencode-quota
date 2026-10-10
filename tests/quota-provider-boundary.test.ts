@@ -11,9 +11,6 @@ describe("quota provider boundary", () => {
     const registrationIds = QUOTA_PROVIDER_REGISTRATION_SOURCE.map(({ id }) => id);
     const quotaProviders = getProviders().map((p) => p.id);
     expect(Object.keys(QUOTA_PROVIDER_CATALOG)).toEqual(registrationIds);
-    expect(Object.values(QUOTA_PROVIDER_CATALOG).map((entry) => entry.shape.id)).toEqual(
-      registrationIds,
-    );
     expect(quotaProviders).toEqual(registrationIds);
     expect(quotaProviders).toContain("synthetic");
     expect(quotaProviders).toContain("xiaomi");

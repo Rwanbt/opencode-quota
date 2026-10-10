@@ -72,7 +72,7 @@ function nameWords(name: string): string[] {
  * True when a word of a field name is a secret word: "access_token", "apiKey", "XSRFToken",
  * "Set-Cookie", "session_id".
  */
-export function namesSecret(name: string): boolean {
+function namesSecret(name: string): boolean {
   return nameWords(name).some((word) => SECRET_WORDS.has(word));
 }
 
@@ -148,7 +148,7 @@ function hideOpaqueRun(run: string): string {
 }
 
 /** `text` with credential-looking parts replaced by "[redacted]". */
-export function redactSecrets(text: string): string {
+function redactSecrets(text: string): string {
   let result = text;
   for (const [pattern, replacement] of SECRET_PATTERNS) {
     result = result.replace(pattern, replacement);

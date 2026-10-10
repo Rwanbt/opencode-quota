@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { writeJsonAtomic } from "../lib/atomic-json.js";
 import { isRecord } from "../lib/json-guards.js";
 import { getOpencodeRuntimeDirs } from "../lib/opencode-runtime-paths.js";
+import { isQuotaErrorCode } from "./errors.js";
 import { safeDebugValue, safeDetail } from "./redact.js";
 import type { DebugDetail, QuotaError, QuotaErrorCode, QuotaRow, ResetNotice } from "./types.js";
 import { validateRows } from "./validate.js";
@@ -26,20 +27,6 @@ export function snapshotFilePath(): string {
 const LOGIN_RE = /^[0-9a-f]{0,64}$/u;
 const ENTRY_MAX_AGE_MS = 7 * 24 * 60 * 60_000;
 const DETAIL_MAX_LENGTH = 300;
-
-const ERROR_CODES: readonly QuotaErrorCode[] = [
-  "not_configured",
-  "login_expired",
-  "no_plan",
-  "rate_limited",
-  "timeout",
-  "network",
-  "provider_error",
-  "bad_response",
-  "no_data",
-  "local_tool",
-  "internal",
-];
 
 /**
  * A row and the login it came from: a hash of the provider's source id, "" when the provider
@@ -79,8 +66,8 @@ function parseError(value: unknown): QuotaError | undefined | null {
   if (value === undefined) return undefined;
   if (!isRecord(value)) return null;
   const { code, status, retryAtMs, tool, missing, detail } = value;
-  if (typeof code !== "string" || !(ERROR_CODES as readonly string[]).includes(code)) return null;
-  const error: QuotaError = { code: code as QuotaErrorCode };
+  if (!isQuotaErrorCode(code)) return null;
+  const error: QuotaError = { code };
   if (Number.isInteger(status)) error.status = status as number;
   if (typeof retryAtMs === "number" && Number.isFinite(retryAtMs)) error.retryAtMs = retryAtMs;
   if (typeof tool === "string") error.tool = safeDetail(tool, 40);

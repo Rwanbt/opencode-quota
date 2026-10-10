@@ -8,7 +8,7 @@ export const MAX_CONFIG_SYMLINK_HOPS = 40;
 export const NEW_CONFIG_FILE_MODE = 0o600;
 export const NEW_CONFIG_DIRECTORY_MODE = 0o700;
 
-export type ConfigWriteTargetReason =
+type ConfigWriteTargetReason =
   | "dangling"
   | "loop"
   | "depth"
@@ -17,7 +17,7 @@ export type ConfigWriteTargetReason =
   | "changed"
   | "bytes-changed";
 
-export interface ConfigWriteHop {
+interface ConfigWriteHop {
   path: string;
   linkText: string;
 }

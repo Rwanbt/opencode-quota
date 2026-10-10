@@ -113,7 +113,7 @@ describe("resolveOpenAIOAuth", () => {
       { state: "failed", sourceKey: "openai", error: "resolve_empty: no value" },
     ],
     [
-      "email and account id from the JWT, refresh token and expiry from the entry",
+      "the account id from the JWT, refresh token and expiry from the entry",
       {
         openai: {
           type: "oauth",
@@ -129,7 +129,6 @@ describe("resolveOpenAIOAuth", () => {
         accessToken: PROFILE_JWT,
         refreshToken: "refresh-token",
         expiresAt: 5,
-        email: "user@example.com",
         accountId: "acct_jwt",
       },
     ],
@@ -433,9 +432,7 @@ describe("queryOpenAIQuota", () => {
       name: "infinite",
       spendControl: { individual_limit: { remaining_percent: Number.POSITIVE_INFINITY } },
     },
-  ])("omits $name while preserving personal, credits, and code-review paths", async ({
-    spendControl,
-  }) => {
+  ])("omits $name while preserving personal and code-review paths", async ({ spendControl }) => {
     const out = await queryUsage({
       plan_type: "plus",
       rate_limit: { primary_window: HOURLY_20_USED, secondary_window: null },
@@ -451,7 +448,6 @@ describe("queryOpenAIQuota", () => {
         hourly: HOURLY_80,
         codeReview: { percentRemaining: 95, resetTimeIso: "2026-01-01T00:01:00.000Z" },
       },
-      credits: { hasCredits: true, unlimited: false, balance: "12.34" },
     });
   });
 

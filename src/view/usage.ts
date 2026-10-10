@@ -25,11 +25,11 @@ import { formatShare, formatTokens, formatUsd } from "./format.js";
 export type UsageMode = "cost" | "tokens";
 export type UsageBreakdown = "model" | "day";
 export type UsageViewOptions = { mode: UsageMode; breakdown: UsageBreakdown; width: number };
-export type UsageTextOptions = { mode: UsageMode; breakdown: UsageBreakdown; width?: number };
-export type ModelDetailOptions = { mode: UsageMode; width: number };
+type UsageTextOptions = { mode: UsageMode; breakdown: UsageBreakdown; width?: number };
+type ModelDetailOptions = { mode: UsageMode; width: number };
 
 /** A part of the "by type" bar: the token kinds that have their own price. */
-export type UsagePart = "input" | "cacheRead" | "cacheWrite" | "output";
+type UsagePart = "input" | "cacheRead" | "cacheWrite" | "output";
 
 /**
  * What a span shows, so the TUI can color it:
@@ -52,7 +52,7 @@ export type UsageRole =
   | `provider:${number}`
   | `part:${UsagePart}`;
 
-export type UsageSpan = { text: string; role: UsageRole };
+type UsageSpan = { text: string; role: UsageRole };
 export type UsageLine = UsageSpan[];
 
 /** From this width the chart sits beside the total and the providers, like T3's page. */

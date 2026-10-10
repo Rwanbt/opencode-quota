@@ -11,10 +11,8 @@ import { API_KEY_VENDORS, resolveApiKey } from "./api-key-resolver.js";
 import { sanitizeDisplaySnippet, sanitizeDisplayText } from "./display-sanitize.js";
 import { clampPercent } from "./format-utils.js";
 import { fetchWithTimeout } from "./http.js";
-import { finiteNumber, nonEmptyString } from "./json-guards.js";
+import { finiteNumber, isRecord, nonEmptyString } from "./json-guards.js";
 import type { QuotaError } from "./types.js";
-
-type NanoGptRecord = Record<string, unknown>;
 
 type NanoGptEndpoint = "usage" | "balance";
 
@@ -90,10 +88,6 @@ interface NanoGptBalanceResponse {
 const USER_AGENT = "OpenCode-Quota-Toast/1.0";
 const NANOGPT_USAGE_URL = "https://nano-gpt.com/api/subscription/v1/usage";
 const NANOGPT_BALANCE_URL = "https://nano-gpt.com/api/check-balance";
-
-function isRecord(value: unknown): value is NanoGptRecord {
-  return Boolean(value) && typeof value === "object";
-}
 
 function getFinitePositiveNumber(value: unknown): number | undefined {
   const n = finiteNumber(value);

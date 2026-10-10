@@ -1,5 +1,13 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
-
+import { existsSync } from "node:fs";
+import { readFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  bindCredentialSource,
+  createIntegrationCredentialSource,
+  notifyCredentialsChanged,
+} from "../src/lib/opencode-auth.js";
 import type {
   JsonV1Mapping,
   RemoteApiQuotaProviderDefinition,
@@ -7,13 +15,29 @@ import type {
 import {
   fetchRemoteQuotaProvider,
   QUOTA_PROVIDER_MAX_BODY_BYTES,
+  resolveQuotaProviderApiKey,
 } from "../src/lib/quota-providers-remote.js";
 import {
   NEURALWATT_LIKE_ADAPTER,
   NEURALWATT_LIKE_RESPONSE,
 } from "./fixtures/quota-provider-json-v1.js";
+import { createFakeIntegration } from "./helpers/fake-integration.js";
+
+// The key tests fake OpenCode's folders under the test home and the files in them.
+vi.mock("../src/lib/opencode-runtime-paths.js", () => ({
+  getOpencodeRuntimeDirs: () => ({
+    dataDir: join(homedir(), ".local", "share", "opencode"),
+    configDir: join(homedir(), ".config", "opencode"),
+    cacheDir: join(homedir(), ".cache", "opencode"),
+    stateDir: join(homedir(), ".local", "state", "opencode"),
+  }),
+}));
+vi.mock("fs", () => ({ existsSync: vi.fn() }));
+vi.mock("fs/promises", () => ({ readFile: vi.fn() }));
 
 type JsonV1Source = Extract<RemoteApiQuotaProviderDefinition, { format: "json-v1" }>;
+
+const JSON_HEADERS = { "content-type": "application/json" };
 
 function source(
   overrides: Partial<RemoteApiQuotaProviderDefinition> = {},
@@ -32,15 +56,7 @@ function source(
 const OPENROUTER = source({ format: "openrouter-key-v1" });
 
 function jsonSource(adapter: JsonV1Source["adapter"] = NEURALWATT_LIKE_ADAPTER): JsonV1Source {
-  return {
-    id: "json-source",
-    providerId: "provider-one",
-    label: "JSON Source",
-    url: "https://provider.example/quota",
-    mode: "remote-api",
-    format: "json-v1",
-    adapter,
-  };
+  return { ...source(), format: "json-v1", adapter };
 }
 
 /** One json-v1 mapping per metric, so each table row stays one line. */
@@ -84,13 +100,7 @@ function abortError(): Error {
   return error;
 }
 
-afterEach(() => {
-  vi.unstubAllGlobals();
-  vi.useRealTimers();
-});
-
 describe("quota provider remote transport", () => {
-  const json = { "content-type": "application/json" };
   const reply = (body: string | null, init: ResponseInit) => () => new Response(body, init);
   it.each([
     [
@@ -121,19 +131,19 @@ describe("quota provider remote transport", () => {
     [
       "oversized Content-Length",
       reply("{}", {
-        headers: { ...json, "content-length": String(QUOTA_PROVIDER_MAX_BODY_BYTES + 1) },
+        headers: { ...JSON_HEADERS, "content-length": String(QUOTA_PROVIDER_MAX_BODY_BYTES + 1) },
       }),
       "Response exceeded 262144 bytes",
     ],
     [
       "oversized body",
-      reply("x".repeat(QUOTA_PROVIDER_MAX_BODY_BYTES + 1), { headers: json }),
+      reply("x".repeat(QUOTA_PROVIDER_MAX_BODY_BYTES + 1), { headers: JSON_HEADERS }),
       "Response exceeded 262144 bytes",
     ],
   ])("rejects %s responses with a fixed message", async (_name, respond, error) => {
     vi.stubGlobal(
       "fetch",
-      vi.fn().mockImplementation(async () => respond()),
+      vi.fn(async () => respond()),
     );
     await expect(fetchRemoteQuotaProvider(source(), "secret")).resolves.toEqual({
       success: false,
@@ -159,7 +169,7 @@ describe("quota provider remote transport", () => {
                 init.signal?.addEventListener("abort", () => controller.error(abortError()));
               },
             }),
-            { headers: json },
+            { headers: JSON_HEADERS },
           ),
         ),
     ],
@@ -353,9 +363,7 @@ describe("openrouter-key-v1", () => {
   ])("rejects %s", async (_name, body) => {
     vi.stubGlobal(
       "fetch",
-      vi
-        .fn()
-        .mockResolvedValue(new Response(body, { headers: { "content-type": "application/json" } })),
+      vi.fn().mockResolvedValue(new Response(body, { headers: JSON_HEADERS })),
     );
     await expect(fetchRemoteQuotaProvider(OPENROUTER, "secret")).resolves.toEqual({
       success: false,
@@ -635,5 +643,126 @@ describe("json-v1", () => {
       success: false,
       error: `Invalid json-v1 response: adapter.mappings[0].${issue} at row 0`,
     });
+  });
+});
+
+describe("quota provider key resolution", () => {
+  const trustedJson = join(homedir(), ".config", "opencode", "opencode.json");
+  const trustedJsonc = join(homedir(), ".config", "opencode", "opencode.jsonc");
+  const workspaceJson = join(process.cwd(), "opencode.json");
+
+  /** Fakes the files on disk: path -> JSON content. Every other path is missing. */
+  function files(contents: Record<string, unknown>): void {
+    vi.mocked(existsSync).mockImplementation((path) => String(path) in contents);
+    vi.mocked(readFile).mockImplementation(async (path) => {
+      if (String(path) in contents) return JSON.stringify(contents[String(path)]);
+      throw new Error("missing");
+    });
+  }
+
+  const providerKeys = (keys: Record<string, string>) => ({
+    provider: Object.fromEntries(
+      Object.entries(keys).map(([id, apiKey]) => [id, { options: { apiKey } }]),
+    ),
+  });
+
+  beforeEach(() => files({}));
+
+  it("uses explicit environment auth before trusted config", async () => {
+    vi.stubEnv("EXPLICIT_KEY", "env-secret");
+    files({ [trustedJson]: providerKeys({ "provider-one": "config-secret" }) });
+
+    await expect(
+      resolveQuotaProviderApiKey(source({ apiKeyEnv: "EXPLICIT_KEY" })),
+    ).resolves.toMatchObject({ key: "env-secret", source: "env" });
+  });
+
+  it("uses only the exact providerId in trusted global provider config", async () => {
+    files({
+      [trustedJson]: providerKeys({
+        "provider-one-alias": "neighbor-secret",
+        "provider-one": "exact-secret",
+      }),
+    });
+
+    await expect(resolveQuotaProviderApiKey(source())).resolves.toMatchObject({
+      key: "exact-secret",
+      source: "opencode.json",
+    });
+  });
+
+  it("expands a global config env template only for exact explicit apiKeyEnv", async () => {
+    vi.stubEnv("EXPLICIT_KEY", "explicit-secret");
+    vi.stubEnv("OTHER_KEY", "other-secret");
+    files({ [trustedJsonc]: providerKeys({ "provider-one": "{env:OTHER_KEY}" }) });
+
+    const result = await resolveQuotaProviderApiKey(source({ apiKeyEnv: "EXPLICIT_KEY" }));
+    expect(result.key).toBe("explicit-secret");
+
+    vi.stubEnv("EXPLICIT_KEY", undefined);
+    const disallowed = await resolveQuotaProviderApiKey(source({ apiKeyEnv: "EXPLICIT_KEY" }));
+    expect(disallowed.key).toBeUndefined();
+    expect(JSON.stringify(disallowed)).not.toContain("other-secret");
+  });
+
+  it("never reads workspace config, SDK config, aliases, or derived env names", async () => {
+    vi.stubEnv("PROVIDER_ONE_API_KEY", "derived-secret");
+    files({ [workspaceJson]: providerKeys({ "provider-one": "workspace-secret" }) });
+
+    const result = await resolveQuotaProviderApiKey(source());
+    expect(result.key).toBeUndefined();
+    expect(result.checkedPaths).not.toContain(workspaceJson);
+    expect(JSON.stringify(result)).not.toMatch(/workspace-secret|derived-secret/);
+  });
+
+  it("reads only a key login for the providerId and never resolves an OAuth sign-in", async () => {
+    const integration = createFakeIntegration([
+      {
+        integrationId: "opencode",
+        id: "cred_console",
+        label: "default",
+        registered: true,
+        method: "oauth",
+        value: { type: "oauth", methodID: "device", access: "console-access", expires: 0 },
+      },
+      {
+        integrationId: "provider-one",
+        id: "cred_provider_one",
+        label: "default",
+        registered: true,
+        method: "key",
+        value: { type: "key", key: "db-secret" },
+      },
+    ]);
+    const unbind = bindCredentialSource(createIntegrationCredentialSource(integration as never));
+    try {
+      const signIn = await resolveQuotaProviderApiKey(source({ providerId: "opencode" }));
+      expect(signIn.key).toBeUndefined();
+      expect(integration.connection.resolve).not.toHaveBeenCalled();
+
+      const keyLogin = await resolveQuotaProviderApiKey(source());
+      expect(keyLogin).toMatchObject({ key: "db-secret", source: "opencode.db" });
+    } finally {
+      unbind();
+      notifyCredentialsChanged();
+    }
+  });
+
+  it("reads no key and sends no request for a switched-off provider, even when called directly", async () => {
+    vi.stubEnv("EXPLICIT_KEY", "env-secret");
+    const fetch = vi.fn();
+    vi.stubGlobal("fetch", fetch);
+    const off = source({ apiKeyEnv: "EXPLICIT_KEY", enabled: false });
+
+    await expect(resolveQuotaProviderApiKey(off)).resolves.toEqual({
+      source: null,
+      checkedPaths: [],
+      credentialDatabasePaths: [],
+    });
+    await expect(fetchRemoteQuotaProvider(off, "key")).resolves.toEqual({
+      success: false,
+      error: "Provider is switched off",
+    });
+    expect(fetch).not.toHaveBeenCalled();
   });
 });

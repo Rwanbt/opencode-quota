@@ -1,6 +1,7 @@
 /**
  * The API-key vendors (Chutes, Synthetic, Ollama Cloud, DeepSeek, Kilo, NanoGPT, OpenRouter)
  * through their public `fetch`, with a key in the environment and fake HTTP replies.
+ * Kimi Code and MiniMax, which also need a key, share the "without a key" check.
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -11,6 +12,11 @@ import { chutesProvider } from "../src/providers/chutes.js";
 import type { ProviderFetchResult } from "../src/providers/contract.js";
 import { deepseekProvider } from "../src/providers/deepseek.js";
 import { kiloProvider } from "../src/providers/kilo.js";
+import { kimiCodePlanCnProvider, kimiCodePlanGlobalProvider } from "../src/providers/kimi-code.js";
+import {
+  minimaxChinaCodingPlanProvider,
+  minimaxCodingPlanProvider,
+} from "../src/providers/minimax-coding-plan.js";
 import { nanoGptProvider } from "../src/providers/nanogpt.js";
 import { ollamaCloudProvider } from "../src/providers/ollama-cloud.js";
 import { openRouterProvider } from "../src/providers/openrouter.js";
@@ -39,6 +45,15 @@ const VENDORS = {
 } as const;
 type VendorId = keyof typeof VENDORS;
 const VENDOR_IDS = Object.keys(VENDORS) as VendorId[];
+
+/** The vendors above plus Kimi Code and MiniMax, which also need a key. */
+const KEY_PROVIDERS: Array<Pick<QuotaProvider, "id" | "fetch">> = [
+  ...Object.values(VENDORS).map((vendor) => vendor.provider),
+  kimiCodePlanGlobalProvider,
+  kimiCodePlanCnProvider,
+  minimaxCodingPlanProvider,
+  minimaxChinaCodingPlanProvider,
+];
 
 const KEY = "test-key";
 
@@ -99,12 +114,14 @@ beforeEach(() => {
 });
 
 describe("every API-key vendor", () => {
-  it.each(VENDOR_IDS)("%s without a key is not configured and sends nothing", async (id) => {
+  it.each(
+    KEY_PROVIDERS.map((provider) => [provider.id, provider] as const),
+  )("%s without a key is not configured and sends nothing", async (_id, provider) => {
     const http = fakeHttp(() => {
       throw new Error("no request expected");
     });
 
-    const fetched = await fetchRows(VENDORS[id].provider);
+    const fetched = await fetchRows(provider);
 
     expect(fetched.rows).toEqual([]);
     expect(fetched.error).toEqual({ code: "not_configured" });

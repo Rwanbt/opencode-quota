@@ -57,7 +57,7 @@ export function percentWord(words: Words): string {
 }
 
 /** A raw percent left as a whole number from 0 to 100. */
-export function clampPercent(percent: number): number {
+function clampPercent(percent: number): number {
   return Math.max(0, Math.min(100, Math.round(percent)));
 }
 

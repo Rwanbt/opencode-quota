@@ -171,7 +171,6 @@ export const QuotaToastPlugin = Plugin.define({
       options: { reconcileDetectedProviders: boolean },
     ) =>
       buildQuotaDialogCommandOutput({
-        command: "quota_status",
         host: sourceHost,
         sessionID,
         resolveSessionModel: sessionModel,
@@ -221,7 +220,6 @@ export const QuotaToastPlugin = Plugin.define({
     ): Promise<QuotaSnapshot> => {
       if (!sessionID) return snapshot;
       const { sessionTokens } = await fetchSessionTokensForDisplay({
-        enabled: true,
         sessionID,
         scope: loaded.settings.words.sessionTokens,
       });
@@ -230,7 +228,7 @@ export const QuotaToastPlugin = Plugin.define({
         ...snapshot,
         sessionTokens: {
           input: sessionTokens.totalInput,
-          cachedInput: sessionTokens.totalCachedInput ?? 0,
+          cachedInput: sessionTokens.totalCachedInput,
           output: sessionTokens.totalOutput,
         },
       };
@@ -263,11 +261,7 @@ export const QuotaToastPlugin = Plugin.define({
     const loadUsageReport = async (query: UsageQuery): Promise<UsageReport> => {
       const { pricing } = loaded.settings;
       applyPricingSettings(pricing);
-      await kickPricingRefresh({
-        reason: "tokens",
-        maxWaitMs: 750,
-        snapshotSelection: pricing.source,
-      });
+      await kickPricingRefresh({ reason: "tokens", snapshotSelection: pricing.source });
       return usageReport(query);
     };
 

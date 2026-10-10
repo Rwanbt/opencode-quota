@@ -11,7 +11,7 @@ import {
   lookupCost,
   setPricingSnapshotSelection,
 } from "../src/lib/modelsdev-pricing.js";
-import { resolvePricingKey } from "../src/lib/quota-stats.js";
+import { resolvePricingKey } from "../src/lib/pricing-key.js";
 
 // Price not confirmed, so these stay unknown: models.dev rates differ from Cursor's for the
 // Gemini Flash and GLM 5.3 Flash ids, and muse-spark (meta) is not a pricing snapshot provider.
