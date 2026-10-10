@@ -30,6 +30,7 @@ import {
   startOfLocalDayMs,
   startOfNextLocalDayMs,
 } from "./command-parsing.js";
+import { inspectCursorAuthPresence } from "./cursor-detection.js";
 import { isCursorProviderId } from "./cursor-pricing.js";
 import { sanitizeDisplayText } from "./display-sanitize.js";
 import type { QuotaProvider, QuotaProviderContext } from "./entries.js";
@@ -66,7 +67,12 @@ import {
   type SessionTreeNode,
 } from "./quota-stats.js";
 import { buildQuotaStatsReportDocument } from "./quota-stats-format.js";
-import { buildQuotaStatusReportDocument } from "./quota-status.js";
+import {
+  buildQuotaStatusReportDocument,
+  knownProviderIds,
+  publicPricingMeta,
+  statusPathText,
+} from "./quota-status.js";
 import {
   commandHeading,
   messageDocument,
@@ -288,9 +294,9 @@ async function isAvailable(provider: QuotaProvider, ctx: QuotaProviderContext): 
 }
 
 /**
- * Where an API-key provider looked for its key, from local reads only, with the same details
- * its own check writes: whether a key is set, its source, and the files checked. Nothing for a
- * provider without an API key.
+ * Where an API-key provider (and Cursor) looked for its key, from local reads only, with the
+ * same details its own check writes: whether a key is set, its source, and the files checked.
+ * Nothing for a provider without an API key.
  */
 async function apiKeySetupDetails(providerId: string): Promise<DebugDetail[]> {
   if (Object.hasOwn(API_KEY_VENDORS, providerId)) {
@@ -309,6 +315,15 @@ async function apiKeySetupDetails(providerId: string): Promise<DebugDetail[]> {
       checkedPaths: resolved.checkedPaths,
       credentialDatabasePaths: resolved.credentialDatabasePaths,
     });
+  }
+  if (providerId === "cursor") {
+    const auth = await inspectCursorAuthPresence();
+    return [
+      { key: "auth_state", value: auth.state },
+      { key: "auth_selected_path", value: auth.selectedPath ?? "(none)" },
+      { key: "auth_present_paths", value: auth.presentPaths.join(" | ") || "(none)" },
+      { key: "auth_candidate_paths", value: auth.candidatePaths.join(" | ") || "(none)" },
+    ];
   }
   return [];
 }
@@ -490,15 +505,16 @@ export async function buildStatusReportData(params: {
     generatedAtMs: params.generatedAtMs,
   });
 
+  // The payload follows the report's closed vocabulary: known ids, fixed words, known paths.
   const version = (await getPackageVersion()) ?? "unknown";
-  const pricingMeta = getPricingSnapshotMeta();
+  const pricingMeta = publicPricingMeta();
   const payload: QuotaStatusReportPayload = {
     version,
     generatedAt: new Date(params.generatedAtMs).toISOString(),
     config: {
-      settingsPath: loaded.path,
+      settingsPath: statusPathText(loaded.path),
       settingsFileExists: loaded.exists,
-      enabledProviders: settings.providers.enabled,
+      enabledProviders: knownProviderIds(settings.providers.enabled),
       onlyCurrentModel: settings.words.onlyCurrentModel,
       pricingSnapshotSource: settings.pricing.source,
     },
@@ -508,12 +524,11 @@ export async function buildStatusReportData(params: {
       activeSource: getPricingSnapshotSource(),
       snapshot: {
         source: pricingMeta.source,
-        generatedAt:
-          pricingMeta.generatedAt > 0 ? new Date(pricingMeta.generatedAt).toISOString() : null,
+        generatedAt: pricingMeta.generatedAt === "(none)" ? null : pricingMeta.generatedAt,
         units: pricingMeta.units,
       },
-      snapshotPath: getRuntimePricingSnapshotPath(),
-      refreshStatePath: getRuntimePricingRefreshStatePath(),
+      snapshotPath: statusPathText(getRuntimePricingSnapshotPath()),
+      refreshStatePath: statusPathText(getRuntimePricingRefreshStatePath()),
     },
     liveProbes: checked.map((provider) => ({
       id: provider.providerId,

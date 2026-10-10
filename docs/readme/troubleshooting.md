@@ -20,7 +20,7 @@ In `/quota_status`, the `credential_source` section shows:
 - `list_error`: OpenCode could not list logins: the error's kind and when.
 - `failures`: each login OpenCode could not return (for example a failed token refresh), as `provider: reason at <time>`. That login also shows as an error row; log in to that provider again. From the terminal, `list_error` and `failures` stay empty.
 
-`/quota_status` also shows the `opencode.db` path used for session and token history. `OPENCODE_DB` and `XDG_DATA_HOME` change it. Custom or source builds of OpenCode may use `opencode-<channel>.db`; set `OPENCODE_DB` to that file's path.
+`/quota_status` also shows the `opencode.db` path used for session and token history. `OPENCODE_DB` and `XDG_DATA_HOME` change it; a path they set shows as `(custom path)/opencode.db`. Custom or source builds of OpenCode may use `opencode-<channel>.db`; set `OPENCODE_DB` to that file's path.
 
 ## Service environment
 
@@ -54,12 +54,12 @@ The TUI, Web, and Desktop get their numbers from OpenCode's background service. 
 
 ## Provider fixes
 
-Run `/quota_status` first and check that provider's section. Every known provider has a section, named after its id (for example `copilot:` or `opencode-go:`). It shows `state` (`ok`, `partial`, `error`, `not checked`, `unavailable`, or `disabled`; an error adds its kind and HTTP status, for example `Provider error 503 (provider_error, http 503)`), `checked_at`, the `rows` it returned (id, window, numbers, reset time), and the provider's own details. An `unavailable` provider is not asked for quota; its section shows whether OpenCode lists it (`opencode_provider`) and, for an API-key provider, whether a key is set and where it was looked for (`api_key_configured`, `api_key_source`, `api_key_checked_paths`). A `disabled` provider (left out of `providers.enabled`) is never asked. The report is safe to paste into an issue: logins show as `account 1`, `account 2`, free text (provider messages, response bodies, names, URLs) as `(free text, not shown)`, and secrets and ids as `[redacted]` and `[id]`. Setup steps and API-key variable names are in [Providers](providers.md).
+Run `/quota_status` first and check that provider's section. Every known provider has a section, named after its id (for example `copilot:` or `opencode-go:`). It shows `state` (`ok`, `partial`, `error`, `not checked`, `unavailable`, or `disabled`; an error adds its kind and HTTP status, for example `Provider error 503 (provider_error, http 503)`), `checked_at`, the `rows` it returned (id, window, numbers, reset time), and the provider's details from its own list of known keys. An `unavailable` provider is not asked for quota; its section shows whether OpenCode lists it (`opencode_provider`) and, for an API-key provider or Cursor, whether a key is set and where it was looked for (`api_key_configured`, `api_key_source`, `api_key_checked_paths`, or Cursor's `auth_state` and `auth_candidate_paths`). A `disabled` provider (left out of `providers.enabled`) is never asked. The report prints only words from OpenCode Quota's own lists (provider ids, row keys, states, setting keys, known env variables, known OpenCode folders and files), numbers and times. Everything else stands in as a placeholder or a count: logins as `account 1`, a part of a row id the provider named as `(part 1)`, a custom definition as `custom 1`, a path outside the known folders as `(custom path)`, an env variable OpenCode Quota does not read as `env:(other)`, and any other detail as `3 other details not shown`. Provider messages, labels, names, URLs and custom ids never appear. Read the report before you paste it into an issue. Setup steps and API-key variable names are in [Providers](providers.md).
 
 <details>
 <summary><strong>Custom providers</strong></summary>
 
-`/quota_status` lists each definition in the `settings` section as `provider_<id>`: IDs, mode, format and environment variable name (or limits and exact local state path), and model coverage. The `quota-providers` section shows the live check: `state`, the rows, and a `custom_<id>_check` line per definition with its outcome, HTTP status, credential source, and checked paths (or local state health). These results are fetched live for the status command; cached results are not substituted.
+`/quota_status` lists each definition in the `settings` section by its place in `providers.custom`, with its mode and model count, for example `custom_provider: custom 1 (remote-api, 3 models)`; it never shows a definition's id, URL, environment variable name or model ids. The `quota-providers` section shows the live check: `state`, the rows (a definition as `(custom 1)`), and a `custom 1 check` line per definition with its outcome, HTTP status, credential source, and checked paths (or local state health). These results are fetched live for the status command; cached results are not substituted.
 
 | Symptom                                    | Fix |
 | ------------------------------------------ | --- |
@@ -80,7 +80,7 @@ Run `/quota_status` first and check that provider's section. Every known provide
 | `claude` not found                   | Install Claude Code. OpenCode Quota tries `claude` on the [service `PATH`](#service-environment), then `~/.claude/local/claude`, `~/.local/bin/claude`, `/opt/homebrew/bin/claude`, and `/usr/local/bin/claude` (not on Windows). `binary_path` shows which one ran. |
 | Claude is installed at a custom path | Set `providers.anthropic.binaryPath` in `settings.jsonc`. |
 | Not signed in                        | Run `claude auth login`, then check `claude auth status`. |
-| Signed in but no quota rows          | Check `quota_source` and `message`; sign in to Claude again if the OAuth credential fallback is missing or stale. |
+| Signed in but no quota rows          | Check `auth_status` and `quota_source`; sign in to Claude again if the OAuth credential fallback is missing or stale. |
 | Provider not detected                | Make sure OpenCode uses the `anthropic` provider. |
 
 </details>
@@ -92,7 +92,7 @@ Check the `copilot` section: `pat_state`, `deployment`, `api_host`, `enterprise_
 
 | Symptom                                           | Fix |
 | ------------------------------------------------- | --- |
-| Copilot works in OpenCode but no personal quota   | Check `oauth_accounting_state`, `deployment`, and `api_host`; log in to Copilot again if the token or its saved GHE.com host is invalid. |
+| Copilot works in OpenCode but no personal quota   | Check `oauth_accounting_state` and `deployment`; log in to Copilot again if the token or its saved GHE.com host is invalid. |
 | Organization or enterprise accounting is missing  | Create `copilot-quota-token.json` as in [GitHub Copilot setup](providers.md#github-copilot). |
 | GHE.com host is rejected                          | Use the enterprise hostname (for example `acme.ghe.com`) or a host-only HTTPS URL. No `api.`, path, query, fragment, port, userinfo, wildcard, HTTP, IP/localhost, or other domain. |
 | Personal report is forbidden                      | Use a fine-grained PAT with **Plan: read** or a GitHub App user token. An installation token cannot read a personal report. |
@@ -125,7 +125,7 @@ Check the `copilot` section: `pat_state`, `deployment`, `api_host`, `enterprise_
 | Cursor login missing                      | Run `/connect` → **Cursor** in OpenCode, or set `CURSOR_API_KEY`. |
 | Quota shows but no remaining percentage   | Set `providers.cursor.plan` or `providers.cursor.includedApiUsd`. |
 | Billing cycle looks wrong                 | Set `providers.cursor.billingCycleStartDay` to your billing day. |
-| Unknown Cursor pricing                    | Run `/pricing_refresh`. If still unknown, check `unpriced_30d` in `/quota_status` (models of the last 30 days without a price). Cursor `auto`, `composer*`, and `grok-4.5`–`grok-4.7` use bundled Cursor pricing. |
+| Unknown Cursor pricing                    | Run `/pricing_refresh`. If still unknown, check `unpriced_30d` in `/quota_status` (the share of the last 30 days' tokens without a price; it names a model only when the bundled price list has its id). Cursor `auto`, `composer*`, and `grok-4.5`–`grok-4.7` use bundled Cursor pricing. |
 
 </details>
 

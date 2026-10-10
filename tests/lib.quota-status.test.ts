@@ -1,22 +1,41 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ProviderSnapshot, QuotaRow } from "../src/core/types.js";
 import type { UsageReport } from "../src/core/usage.js";
+import { WINDOWS } from "../src/core/windows.js";
 import { API_KEY_LOGIN_VENDORS, API_KEY_VENDORS } from "../src/lib/api-key-resolver.js";
+import { COPILOT_AUTH_KEYS } from "../src/lib/copilot.js";
+import { CURSOR_CANONICAL_PLUGIN_PACKAGE } from "../src/lib/cursor-detection.js";
 import type { QuotaProviderContext, QuotaProviderResult } from "../src/lib/entries.js";
 import { formatLocalCallTimestamp } from "../src/lib/format-utils.js";
+import { AGY_AUTH_KEYS } from "../src/lib/google-agy.js";
+import { GEMINI_CLI_AUTH_KEYS } from "../src/lib/google-gemini-cli.js";
+import { __resetPricingSnapshotForTests } from "../src/lib/modelsdev-pricing.js";
+import { OPENAI_AUTH_SOURCE_KEYS } from "../src/lib/openai.js";
+import {
+  QUOTA_PROVIDER_CATALOG,
+  QUOTA_PROVIDER_RUNTIME_IDS,
+} from "../src/lib/provider-metadata.js";
 import { buildStatusReportData } from "../src/lib/quota-dialog-commands.js";
+import type { QuotaProviderDefinition } from "../src/lib/quota-providers.js";
 import {
   buildQuotaStatusReport,
   buildQuotaStatusReportDocument,
   type QuotaStatusReportParams,
+  REPORT_ROW_KEYS,
 } from "../src/lib/quota-status.js";
 import { getPackageVersion } from "../src/lib/version.js";
 import { chutesProvider } from "../src/providers/chutes.js";
 import { syntheticProvider } from "../src/providers/synthetic.js";
-import { defaultSettings, loadSettings, type V5Conversion } from "../src/settings/index.js";
+import {
+  defaultSettings,
+  loadSettings,
+  SETTINGS_SCHEMA,
+  type V5Conversion,
+} from "../src/settings/index.js";
+import { PROVIDER_ROW_KEYS } from "./helpers/provider-assertions.js";
 
 const registry = vi.hoisted(() => ({ providers: [] as unknown[] }));
 
@@ -27,20 +46,28 @@ const NOW = Date.UTC(2026, 9, 10, 12, 0, 0);
 const NOW_ISO = new Date(NOW).toISOString();
 const RESET = "2026-10-11T00:00:00.000Z";
 const SECRET = "status-secret-canary-0123456789";
+/** A model id the shipped price list has. */
+const KNOWN_MODEL = "gpt-4.1";
 
 let root: string;
 
-/** One temp folder is the home dir and holds every OpenCode folder. */
+/** One temp folder is the home dir and holds every OpenCode folder, at OpenCode's defaults. */
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), "opencode-quota-status-"));
   vi.stubEnv("HOME", root);
   vi.stubEnv("USERPROFILE", root);
-  vi.stubEnv("XDG_DATA_HOME", join(root, "data"));
-  vi.stubEnv("XDG_CONFIG_HOME", join(root, "config"));
-  vi.stubEnv("XDG_CACHE_HOME", join(root, "cache"));
-  vi.stubEnv("XDG_STATE_HOME", join(root, "state"));
-  vi.stubEnv("OPENCODE_CONFIG_DIR", "");
-  vi.stubEnv("OPENCODE_DB", "");
+  for (const name of [
+    "XDG_DATA_HOME",
+    "XDG_CONFIG_HOME",
+    "XDG_CACHE_HOME",
+    "XDG_STATE_HOME",
+    "OPENCODE_CONFIG_DIR",
+    "OPENCODE_DB",
+    "CURSOR_API_KEY",
+    "CURSOR_ACP_HOME_DIR",
+  ]) {
+    vi.stubEnv(name, "");
+  }
   // No price download leaves the machine.
   vi.stubGlobal(
     "fetch",
@@ -126,6 +153,21 @@ function row(id: string, extra: Partial<QuotaRow> = {}): QuotaRow {
   };
 }
 
+function remoteDefinition(
+  id: string,
+  extra: Record<string, unknown> = {},
+): QuotaProviderDefinition {
+  return {
+    id,
+    providerId: id,
+    label: id,
+    mode: "remote-api",
+    url: `https://${id}.example/quota`,
+    format: "quota-v1",
+    ...extra,
+  } as QuotaProviderDefinition;
+}
+
 describe("buildQuotaStatusReport", () => {
   it("starts with the command, version and time; the dialog gets them as its subtitle", async () => {
     const version = await getPackageVersion();
@@ -153,7 +195,7 @@ describe("buildQuotaStatusReport", () => {
         snapshot("anthropic", { checkedAtMs: NOW }),
         snapshot("copilot"),
         snapshot("openai", {
-          debug: [{ key: "opencode_provider", value: "no looked_for=openai" }],
+          debug: [{ key: "opencode_provider", value: "no looked_for=openai,codex" }],
         }),
       ],
       maintainerAnnouncements: {
@@ -193,7 +235,7 @@ describe("buildQuotaStatusReport", () => {
       ].join("\n"),
     );
     expect(section(text, "openai")).toContain("- state: unavailable\n");
-    expect(section(text, "openai")).toContain("- opencode_provider: no looked_for=openai");
+    expect(section(text, "openai")).toContain("- opencode_provider: no looked_for=openai,codex");
     expect(section(text, "xai")).toBe("xai:\n- state: disabled");
     expect(section(text, "maintainer_announcements")).toBe(
       [
@@ -210,17 +252,23 @@ describe("buildQuotaStatusReport", () => {
     );
   });
 
-  it("shows the home dir as ~ in every path, but not in lookalike or outside paths", async () => {
+  it("has the row key ledger the provider tests check every adapter against", () => {
+    expect(REPORT_ROW_KEYS).toEqual(PROVIDER_ROW_KEYS);
+  });
+
+  it("shows a path made of known folders under the home dir as ~, and every other path as (custom path)", async () => {
     const params_ = params({
       settings: {
-        path: join(root, "config", "opencode", "opencode-quota", "settings.jsonc"),
+        path: join(root, ".config", "opencode", "opencode-quota", "settings.jsonc"),
         exists: true,
         issues: [],
         notRead: [`${root}foo/quota-toast.json`, "/opt/x"],
       },
       workspaceRoot: join(root, "project"),
       providers: [
-        snapshot("anthropic", { debug: [{ key: "binary_path", value: join(root, "bin") }] }),
+        snapshot("anthropic", {
+          debug: [{ key: "binary_path", value: join(root, ".local", "bin", "claude") }],
+        }),
       ],
     });
 
@@ -228,22 +276,36 @@ describe("buildQuotaStatusReport", () => {
     const document = await buildQuotaStatusReportDocument(params_);
 
     expect(text).toContain(
-      "- settings_file: ~/config/opencode/opencode-quota/settings.jsonc (exists)",
+      "- settings_file: ~/.config/opencode/opencode-quota/settings.jsonc (exists)",
     );
-    expect(text).toContain(`- not_read: ${root}foo/quota-toast.json | /opt/x`);
-    expect(text).toContain("- workspace_root: ~/project\n");
+    expect(text).toContain("- not_read: (custom path)/quota-toast.json | (custom path)\n");
+    expect(text).toContain("- workspace_root: (custom path)\n");
     expect(text).toContain(
-      "- opencode_dirs: data=~/data/opencode config=~/config/opencode cache=~/cache/opencode state=~/state/opencode",
+      "- opencode_dirs: data=~/.local/share/opencode config=~/.config/opencode cache=~/.cache/opencode state=~/.local/state/opencode",
     );
-    expect(text).toContain("- opencode.db: path=~/data/opencode/opencode.db present=false");
-    expect(text).toContain("snapshot=~/cache/opencode/opencode-quota/");
-    expect(text).toContain("- binary_path: ~/bin");
-    expect(text.replaceAll(`${root}foo`, "")).not.toContain(root);
-    expect(JSON.stringify(document).replaceAll(`${root}foo`, "")).not.toContain(root);
+    expect(text).toContain("- opencode.db: path=~/.local/share/opencode/opencode.db present=false");
+    expect(text).toContain(
+      "- runtime_paths: snapshot=~/.cache/opencode/opencode-quota/modelsdev-pricing.runtime.min.json refresh_state=~/.cache/opencode/opencode-quota/modelsdev-pricing.refresh-state.json",
+    );
+    expect(text).toContain("- binary_path: ~/.local/bin/claude");
+    expect(text).not.toContain(root);
+    expect(JSON.stringify(document)).not.toContain(root);
+  });
+
+  it("shows the folders an env variable chose as (custom path)", async () => {
+    vi.stubEnv("XDG_DATA_HOME", join(root, "my-data"));
+    vi.stubEnv("OPENCODE_CONFIG_DIR", join(root, ".config", "opencode"));
+
+    const text = section(await report(), "paths");
+
+    expect(text).toContain(
+      "- opencode_dirs: data=(custom path) config=~/.config/opencode cache=~/.cache/opencode state=~/.local/state/opencode",
+    );
+    expect(text).toContain("- opencode.db: path=(custom path)/opencode.db present=false");
   });
 
   it("shows a JSON-quoted Windows command under a home with a space as ~", async () => {
-    const command = JSON.stringify("C:\\Users\\Alice Smith\\.local\\bin\\claude");
+    const command = `${JSON.stringify("C:\\Users\\Alice Smith\\.local\\bin\\claude")} auth status --json`;
     const text = await report({
       homeDir: "C:\\Users\\Alice Smith",
       providers: [
@@ -255,14 +317,14 @@ describe("buildQuotaStatusReport", () => {
 
     const anthropic = section(text, "anthropic");
     expect(anthropic).toContain(
-      '- checked_commands: claude --version | "~\\\\.local\\\\bin\\\\claude"',
+      "- checked_commands: claude --version | ~/.local/bin/claude auth status --json",
     );
     expect(anthropic).not.toContain("Alice");
   });
 
   it.each([
     {
-      name: "rows with their ids, windows and numbers; accounts as numbers",
+      name: "ledger row ids, windows and numbers; accounts as numbers",
       provider: snapshot("anthropic", {
         checkedAtMs: NOW,
         okAtMs: NOW,
@@ -278,11 +340,11 @@ describe("buildQuotaStatusReport", () => {
             window: "week",
             percentRemaining: 88,
           }),
-          row("anthropic.extra", {
+          row("anthropic.extra_usage", {
             label: "Extra",
             type: "budget",
             account: "home",
-            used: { decimal: "4.5", unit: { kind: "currency", code: "USD" } },
+            used: { decimal: "4.50", unit: { kind: "currency", code: "USD" } },
             limit: { decimal: "20", unit: { kind: "currency", code: "USD" } },
           }),
           row("anthropic.flag", { label: "Overage", type: "status", flag: false, text: "Off" }),
@@ -294,10 +356,10 @@ describe("buildQuotaStatusReport", () => {
         "- rows: 4",
         `  - anthropic.five_hour: window=five_hour, 43% left, resets ${RESET}`,
         "  - anthropic.weekly (account 1): window=week, 88% left",
-        "  - anthropic.extra (account 2): 4.5/20 USD",
-        "  - anthropic.flag: no, text not shown",
+        "  - anthropic.extra_usage (account 2): 4.5/20 USD",
+        "  - anthropic.(other row): no, text not shown",
       ],
-      absent: ["rows from", "error", "work", "Weekly", "Off"],
+      absent: ["rows from", "error", "work", "Weekly", "Off", "flag"],
     },
     {
       name: "an error in the shared words, without its detail",
@@ -309,11 +371,11 @@ describe("buildQuotaStatusReport", () => {
       absent: ["Unauthorized", "error_detail"],
     },
     {
-      name: "older rows kept after an error; the provider's message only noted",
+      name: "older rows kept after an error; the provider's message only counted",
       provider: snapshot("copilot", {
         checkedAtMs: NOW,
         okAtMs: NOW - 60_000,
-        rows: [row("copilot.monthly", { percentRemaining: 50 })],
+        rows: [row("copilot.allowance", { percentRemaining: 50 })],
         error: { code: "provider_error", status: 503, detail: "Billing endpoint HTTP 503" },
         debug: [
           { key: "deployment", value: "github.com" },
@@ -323,8 +385,8 @@ describe("buildQuotaStatusReport", () => {
       lines: [
         "- state: partial: Provider error 503 (provider_error, http 503)",
         `- checked_at: ${NOW_ISO} (rows from ${new Date(NOW - 60_000).toISOString()})`,
-        "- rows: 1\n  - copilot.monthly: 50% left\n- deployment: github.com",
-        "- error: (free text, not shown)",
+        "- rows: 1\n  - copilot.allowance: 50% left\n- deployment: github.com",
+        "- 1 other detail not shown",
       ],
       absent: ["Billing"],
     },
@@ -335,15 +397,19 @@ describe("buildQuotaStatusReport", () => {
       absent: ["checked_at"],
     },
     {
-      name: "a long row list, cut",
+      name: "a long row list, cut; a part the provider named, numbered",
       provider: snapshot("google-agy", {
         checkedAtMs: NOW,
         rows: Array.from({ length: 10 }, (_, index) =>
-          row(`google-agy.r${index}`, { percentRemaining: index }),
+          row(`google-agy.model${index}.weekly`, { percentRemaining: index }),
         ),
       }),
-      lines: ["- rows: 10", "  - google-agy.r7: 7% left\n  - … (2 more)"],
-      absent: ["google-agy.r8"],
+      lines: [
+        "- rows: 10",
+        "  - google-agy.(part 1).weekly: 0% left",
+        "  - google-agy.(part 8).weekly: 7% left\n  - … (2 more)",
+      ],
+      absent: ["model7", "(part 9)"],
     },
   ])("builds a provider section from its snapshot: $name", async ({ provider, lines, absent }) => {
     const text = section(await report({ providers: [provider] }), provider.providerId);
@@ -389,11 +455,9 @@ describe("buildQuotaStatusReport", () => {
           debug: [
             ...["error", "note", "live_fetch_error", "auth_error", "message", "request"].map(free),
             ...["console_org", "console_server", "username_filter", "cli_version"].map(free),
-            // Structured keys: shown only when the value is a structured fact.
-            ...["auth_source", "api_key_checked_paths", "binary_path", "checked_commands"].map(
-              free,
-            ),
-            { key: "custom_team_check", value: `outcome=failed checked_paths=${text}` },
+            // Allowed keys: shown only through their rule.
+            ...["auth_status", "binary_path", "checked_commands"].map(free),
+            { key: "custom_team_check", value: `outcome=success checked_paths=${text}` },
           ],
         }),
         snapshot("alibaba-token-plan", {
@@ -424,22 +488,585 @@ describe("buildQuotaStatusReport", () => {
 
     expect(output).not.toContain("CANARY");
     expect(output).not.toContain("\u001b");
-    expect(section(output, "anthropic")).toContain("- error: (free text, not shown)");
+    expect(section(output, "anthropic")).toMatch(/- \d+ other details not shown/u);
     expect(section(output, "anthropic")).toContain("  - anthropic.five_hour (account 1): yes");
     expect(section(output, "alibaba-token-plan")).toContain(
       "- state: error: Local tool not found (local_tool)",
     );
   });
 
+  const HEX_CANARY = "0123456789abcdef0123456789abcdef01234567";
+  const SK_CANARY = "sk-secretcanary0123456789";
+
   it.each([
     {
-      name: "a long provider id",
-      overrides: { providers: [snapshot("minimax-china-coding-plan", { checkedAtMs: NOW })] },
-      title: "providers",
-      lines: ["- minimax-china-coding-plan: enabled available"],
+      name: "a lowercase word as a login state",
+      canary: "lowercasecanary",
+      overrides: {
+        providers: [snapshot("zai", { debug: [{ key: "auth_state", value: "lowercasecanary" }] })],
+      },
     },
     {
-      name: "row ids, windows, numbers and reset times",
+      name: "an env variable this plugin does not read",
+      canary: "SECRET_CANARY_0123456789",
+      shows: "- auth_source: env:(other)",
+      overrides: {
+        providers: [
+          snapshot("opencode-go", {
+            debug: [{ key: "auth_source", value: "env:SECRET_CANARY_0123456789" }],
+          }),
+        ],
+      },
+    },
+    {
+      name: "a folder under the home dir this plugin did not name",
+      canary: "lowercasecanary",
+      shows: "- binary_path: (custom path)/claude",
+      overrides: {
+        providers: [
+          snapshot("anthropic", {
+            debug: [{ key: "binary_path", value: "~/lowercasecanary/claude" }],
+          }),
+        ],
+      },
+    },
+    {
+      name: "a debug key no allow list has",
+      canary: "lowercasecanary",
+      shows: "- 1 other detail not shown",
+      overrides: {
+        providers: [snapshot("zai", { debug: [{ key: "lowercasecanary", value: "true" }] })],
+      },
+    },
+    {
+      name: "a short secret as the session's model",
+      canary: "lowercasecanary",
+      shows: "- currentModel: (a model not in the price list)",
+      overrides: { currentModel: "lowercasecanary" },
+    },
+    {
+      name: "a short secret as a model of the usage history",
+      canary: "lowercasecanary",
+      shows: "  - … (1 more unpriced model)",
+      overrides: {
+        usage: {
+          totals: { tokens: { processed: 1_000 }, unpricedShare: 1 },
+          models: [
+            { providerID: "openai", modelID: "lowercasecanary", priced: false, unpricedTokens: 9 },
+          ],
+        } as unknown as UsageReport,
+      },
+    },
+    {
+      name: "a token in a rejected providers.enabled value",
+      canary: HEX_CANARY,
+      shows: "- settings_issue: providers.enabled: unknown provider id",
+      overrides: {
+        settings: {
+          path: "/cfg/settings.jsonc",
+          exists: true,
+          issues: [
+            {
+              key: "providers.enabled",
+              message: `unknown provider id(s): ${HEX_CANARY}; valid: openai`,
+            },
+          ],
+          notRead: [],
+        },
+      },
+    },
+    {
+      name: "an invalid v5 value",
+      canary: "lowercasecanary",
+      shows: "- conversion_invalid: percentDisplayMode",
+      overrides: {
+        conversion: conversion({
+          invalid: [
+            {
+              key: "percentDisplayMode",
+              reason: '"lowercasecanary" was not valid in v5 either',
+            },
+          ],
+        }),
+      },
+    },
+    {
+      name: "unknown setting keys",
+      canary: "lowercasecanary",
+      shows: "- settings_issue: 2 unknown keys",
+      overrides: {
+        settings: {
+          path: "/cfg/settings.jsonc",
+          exists: true,
+          issues: [
+            { key: "lowercasecanary", message: "unknown setting; valid: version" },
+            { key: "words.lowercasecanary", message: "unknown setting; valid in group: x" },
+          ],
+          notRead: [],
+        },
+        conversion: conversion({
+          dropped: [{ key: "lowercasecanary", reason: "not a v5 setting" }],
+        }),
+      },
+    },
+    {
+      name: "a custom definition's id, provider id, env variable and model ids",
+      canary: "secretcanary",
+      shows: "- custom_provider: custom 1 (remote-api, 1 model)",
+      overrides: {
+        quotaProviders: [
+          remoteDefinition(SK_CANARY, { apiKeyEnv: "SK_SECRETCANARY", modelIds: [SK_CANARY] }),
+        ],
+        providers: [
+          snapshot("quota-providers", {
+            rows: [
+              row(`quota-providers.custom.${SK_CANARY}.${SK_CANARY}`, { percentRemaining: 5 }),
+            ],
+            debug: [
+              {
+                key: `custom_${SK_CANARY}_check`,
+                value: "outcome=success credential_source=explicit_env checked_paths=(none)",
+              },
+            ],
+          }),
+        ],
+      },
+    },
+    {
+      name: "a token in a row id the provider named",
+      canary: HEX_CANARY,
+      shows: "  - google-gemini-cli.model.(part 1): 5% left",
+      overrides: {
+        providers: [
+          snapshot("google-gemini-cli", {
+            rows: [row(`google-gemini-cli.model.${HEX_CANARY}`, { percentRemaining: 5 })],
+          }),
+        ],
+      },
+    },
+    {
+      name: "a custom amount symbol",
+      canary: "SECRETCANARY",
+      shows: "  - xai.credits: 5 (custom unit)",
+      overrides: {
+        providers: [
+          snapshot("xai", {
+            rows: [
+              row("xai.credits", {
+                amount: { decimal: "5", unit: { kind: "custom", symbol: "SECRETCANARY" } },
+              }),
+            ],
+          }),
+        ],
+      },
+    },
+    {
+      name: "an OPENCODE_DB path",
+      canary: "secretcanary",
+      shows: "- opencode.db: path=(custom path)/opencode.db",
+      env: { OPENCODE_DB: `~/${SK_CANARY}/opencode.db` },
+      overrides: {},
+    },
+    {
+      name: "a terminal escape inside the home dir of a path",
+      canary: "CANARY",
+      shows: "- settings_file: ~/.config/opencode/opencode-quota/settings.jsonc (exists)",
+      overrides: {
+        homeDir: HOME_CANARY,
+        settings: {
+          path: "/Users/CANARY\u001b[0malice/.config/opencode/opencode-quota/settings.jsonc",
+          exists: true,
+          issues: [],
+          notRead: [],
+        },
+        providers: [
+          snapshot("anthropic", {
+            debug: [{ key: "binary_path", value: "/Users/CANARY\u001b[0malice/.local/bin/claude" }],
+          }),
+        ],
+      },
+    },
+    {
+      name: "an unknown error code",
+      canary: "lowercasecanary",
+      shows: "- state: error: (unknown error code)",
+      overrides: {
+        providers: [
+          snapshot("openai", {
+            checkedAtMs: NOW,
+            error: { code: "lowercasecanary" as "internal", status: 503 },
+          }),
+        ],
+      },
+    },
+    {
+      name: "an unknown window and reset time",
+      canary: "lowercasecanary",
+      shows: "  - openai.weekly: window=(other), resets (none)",
+      overrides: {
+        providers: [
+          snapshot("openai", {
+            rows: [
+              row("openai.weekly", {
+                window: "lowercasecanary" as "week",
+                resetsAt: "lowercasecanary",
+              }),
+            ],
+          }),
+        ],
+      },
+    },
+    {
+      name: "an unknown login integration",
+      canary: "lowercasecanary",
+      shows: "- failures: (other integration): refresh_failed",
+      overrides: {
+        credentialSource: {
+          state: "bound",
+          kind: "sqlite",
+          failures: [
+            {
+              integrationId: "lowercasecanary",
+              connectionId: "c",
+              label: "lowercasecanary",
+              category: "refresh_failed",
+              detail: "lowercasecanary",
+              at: NOW,
+            },
+          ],
+        },
+      },
+    },
+    {
+      name: "an unknown provider id in the provider list and a row",
+      canary: "lowercasecanary",
+      shows: "- (other provider): enabled available",
+      overrides: {
+        enabledProviders: ["openai", "lowercasecanary"],
+        providerAvailability: [{ id: "lowercasecanary", enabled: true, available: true }],
+        providers: [
+          snapshot("lowercasecanary", {
+            rows: [row("lowercasecanary.five_hour", { percentRemaining: 1 })],
+          }),
+        ],
+      },
+    },
+    {
+      name: "v5 source files, notes and a write failure",
+      canary: "lowercasecanary",
+      shows: "- conversion_notes: 1 not shown",
+      overrides: {
+        conversion: conversion({
+          sources: ["/lowercasecanary/opencode.json (experimental.quotaToast)"],
+          notes: ["/lowercasecanary/x was not converted"],
+          notWrittenReason: "could not write /lowercasecanary/settings.jsonc",
+        }),
+      },
+    },
+  ] as Array<{
+    name: string;
+    canary: string;
+    shows?: string;
+    env?: Record<string, string>;
+    overrides: Partial<QuotaStatusReportParams>;
+  }>)("shows only members of its own sets: $name", async ({ canary, shows, env, overrides }) => {
+    for (const [name, value] of Object.entries(env ?? {})) {
+      vi.stubEnv(name, value.replace(/^~/u, root));
+    }
+
+    const output = await report(overrides);
+
+    expect(output.toLowerCase()).not.toContain(canary.toLowerCase());
+    if (shows) expect(output).toContain(shows);
+  });
+
+  it("shows only fixed words for a downloaded price list's own fields", async () => {
+    const dir = join(root, ".cache", "opencode", "opencode-quota");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, "modelsdev-pricing.runtime.min.json"),
+      JSON.stringify({
+        _meta: { source: `https://${SK_CANARY}.example`, generatedAt: NOW, units: SK_CANARY },
+        providers: { [SK_CANARY]: { [SK_CANARY]: { input: 1, output: 2 } } },
+      }),
+    );
+    __resetPricingSnapshotForTests();
+
+    const text = section(await report(), "pricing_snapshot");
+
+    expect(text).toContain(
+      `- pricing: source=downloaded generated_at=${NOW_ISO} units=(other units)`,
+    );
+    expect(text).toMatch(/- providers: \d+\n/u);
+    expect(text).not.toContain("secretcanary");
+  });
+
+  /** Splits a printed value into its words; a path, a row id or a sentence is several. */
+  const WORD_SPLIT = /[\s,|=:()/\\;.…"'`{}<>$+[\]]+/u;
+  const ISO_TIME = /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z/gu;
+  const NUMBER = /^-?\d+(?:e\d+)?[%KMBmh]?$/u;
+
+  /**
+   * Every word the report may print: the words of the files that build it, and of the tables
+   * they read (provider ids and labels, setting keys, env variable names, windows, currencies,
+   * the shipped price list's ids). A provider's text, a label or a path never is one.
+   */
+  function reportVocabulary(): Set<string> {
+    const files = [
+      "../src/lib/quota-status.ts",
+      "../src/core/errors.ts",
+      "../src/settings/convert.ts",
+      "../src/data/modelsdev-pricing.min.json",
+    ];
+    const tables = [
+      ...files.map((file) => readFileSync(new URL(file, import.meta.url), "utf8")),
+      ...Object.keys(QUOTA_PROVIDER_CATALOG),
+      ...Object.values(QUOTA_PROVIDER_CATALOG).map((entry) => entry.label),
+      ...Object.values(QUOTA_PROVIDER_RUNTIME_IDS).flat(),
+      ...Object.keys(SETTINGS_SCHEMA),
+      ...[...Object.values(API_KEY_VENDORS), ...Object.values(API_KEY_LOGIN_VENDORS)].flatMap(
+        (vendor) => vendor.envVars,
+      ),
+      ...COPILOT_AUTH_KEYS,
+      ...AGY_AUTH_KEYS,
+      ...GEMINI_CLI_AUTH_KEYS,
+      ...OPENAI_AUTH_SOURCE_KEYS,
+      CURSOR_CANONICAL_PLUGIN_PACKAGE,
+      ...Object.keys(WINDOWS),
+      ...Intl.supportedValuesOf("currency"),
+    ];
+    return new Set(["-", "~", ...tables.flatMap((text) => text.split(WORD_SPLIT))]);
+  }
+
+  /** The words of the report's lines (not its heading) that are no member and no number. */
+  function wordsOutsideVocabulary(output: string, vocabulary: ReadonlySet<string>): string[] {
+    return output
+      .split("\n")
+      .slice(1)
+      .flatMap((line) => line.replace(ISO_TIME, " ").split(WORD_SPLIT))
+      .filter((word) => word !== "" && !vocabulary.has(word) && !NUMBER.test(word));
+  }
+
+  /** A small seeded random source, so a failure can be run again. */
+  function randomSource(seed: number): () => number {
+    let state = seed;
+    return () => {
+      state = (state + 0x6d2b79f5) | 0;
+      let t = Math.imul(state ^ (state >>> 15), 1 | state);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  /**
+   * A big report where every free field holds random text: ids, labels, accounts, messages,
+   * paths, env names, model ids, setting keys, debug keys and values. Every random word has
+   * "zq" in it, and the 40-character hex tokens are kept to look for.
+   */
+  function fuzzedParams(seed: number): { params: QuotaStatusReportParams; hex: string[] } {
+    const random = randomSource(seed);
+    const pick = <T>(items: readonly T[]): T => items[Math.floor(random() * items.length)] as T;
+    const chars = (alphabet: string, length: number) =>
+      Array.from({ length }, () => pick([...alphabet])).join("");
+    const hex: string[] = [];
+    const word = () =>
+      `zq${chars("abcdefghijklmnopqrstuvwxyz0123456789", (4 + random() * 12) | 0)}`;
+    const garbage = (): string => {
+      const w = word();
+      const forms = [
+        () => w,
+        () => w.toUpperCase(),
+        () => `SK-${w}`,
+        () => `env:${w.toUpperCase()}_KEY`,
+        () => `~/${w}/opencode.db`,
+        () => join(root, w, "settings.jsonc"),
+        () => join(root, ".config", w, "auth.json"),
+        () => `${w}@example.com`,
+        () => `\u001b[31m${w}\u001b[0m`,
+        () => `https://${w}.example/v1?key=${w}`,
+        () => `outcome=success checked_paths=${w}`,
+        () => `yes found=openai,${w}`,
+        () => `true key=${w}`,
+        () => `${w} ${w}`,
+        () => {
+          const token = chars("0123456789abcdef", 40);
+          hex.push(token);
+          return token;
+        },
+      ];
+      return pick(forms)();
+    };
+    const validValues = [
+      "true",
+      "false",
+      "configured",
+      "present",
+      "github.com",
+      "(none)",
+      "2",
+      RESET,
+      "env:ZAI_API_KEY",
+      "opencode.db",
+      join(root, ".config", "opencode", "opencode.json"),
+      "yes found=openai,codex",
+      "outcome=http_error http_status=503 credential_source=opencode_db checked_paths=(none)",
+      "claude --version",
+      "2.1.3 (Claude Code)",
+    ];
+    const debugKeys = [
+      "auth_state",
+      "auth_source",
+      "api_key_source",
+      "api_key_checked_paths",
+      "binary_path",
+      "checked_commands",
+      "cli_version",
+      "pat_path",
+      "deployment",
+      "api_host",
+      "opencode_provider",
+      "oauth_configured",
+      "api_key_diagnostics",
+      "selected_windows",
+      "token_expires_at",
+      "local_state_path",
+      "config_source",
+      "auth_selected_path",
+      "error",
+      "message",
+    ];
+    const providerIds = Object.keys(QUOTA_PROVIDER_CATALOG);
+    const definitions = Array.from({ length: 3 }, () =>
+      remoteDefinition(word(), {
+        providerId: garbage(),
+        apiKeyEnv: garbage(),
+        modelIds: [garbage(), KNOWN_MODEL],
+      }),
+    );
+    const providers = [...providerIds, garbage()].map((providerId) =>
+      snapshot(providerId, {
+        checkedAtMs: NOW,
+        okAtMs: NOW - 1_000,
+        error: pick([
+          undefined,
+          { code: "provider_error", status: 503, detail: garbage() },
+          { code: garbage() as "internal", status: 999, detail: garbage() },
+          { code: "local_tool", tool: garbage(), missing: true },
+        ]),
+        rows: [...(PROVIDER_ROW_KEYS[providerId] ?? ["five_hour"]), word()].map((key) =>
+          row(`${pick([providerId, garbage()])}.${key.replaceAll("*", definitions[0]?.id ?? "")}`, {
+            account: garbage(),
+            label: garbage(),
+            text: garbage(),
+            window: pick(["week", garbage()]) as "week",
+            percentRemaining: random() * 100,
+            used: { decimal: "1.5", unit: { kind: "count", unit: pick(["request", garbage()]) } },
+            limit: { decimal: "10", unit: { kind: "currency", code: pick(["USD", "ZQZ"]) } },
+            amount: { decimal: garbage(), unit: { kind: "custom", symbol: garbage() } },
+            resetsAt: pick([RESET, garbage()]),
+          }),
+        ),
+        debug: [
+          ...debugKeys.flatMap((key) => [
+            { key, value: garbage() },
+            { key, value: pick(validValues) },
+          ]),
+          { key: garbage(), value: pick(validValues) },
+          { key: `custom_${definitions[1]?.id}_check`, value: garbage() },
+          { key: `custom_${definitions[2]?.id}_check`, value: pick(validValues) },
+        ],
+      }),
+    );
+    vi.stubEnv("OPENCODE_DB", join(root, word(), "opencode.db"));
+    vi.stubEnv("XDG_STATE_HOME", join(root, word()));
+    return {
+      hex,
+      params: params({
+        settings: {
+          path: garbage(),
+          exists: false,
+          issues: [
+            { key: garbage(), message: garbage() },
+            { key: "providers.enabled", message: `unknown provider id(s): ${garbage()}` },
+            { key: "words.percent", message: `expected ${garbage()}` },
+            { key: "$file", message: `syntax error on line 3: ${garbage()}` },
+          ],
+          notRead: [garbage(), garbage()],
+        },
+        conversion: conversion({
+          sources: [garbage(), `${garbage()} (experimental.quotaToast)`],
+          converted: [{ key: garbage(), to: garbage(), where: "server", note: garbage() }],
+          dropped: [
+            { key: "debug", reason: garbage() },
+            { key: garbage(), reason: garbage() },
+          ],
+          invalid: [{ key: `quotaProviders[0].${garbage()}`, reason: garbage() }],
+          notes: [garbage()],
+          notWrittenReason: garbage(),
+        }),
+        workspaceRoot: garbage(),
+        enabledProviders: ["openai", garbage()],
+        quotaProviders: definitions,
+        currentModel: pick([garbage(), KNOWN_MODEL]),
+        providerAvailability: providers.map((provider) => ({
+          id: provider.providerId,
+          enabled: true,
+          available: true,
+          matchesCurrentModel: true,
+        })),
+        providers,
+        credentialSource: {
+          state: "bound",
+          kind: "opencode-integration-api",
+          lastListError: { at: NOW, detail: garbage() },
+          failures: [
+            {
+              integrationId: garbage(),
+              connectionId: garbage(),
+              label: garbage(),
+              category: "refresh_failed",
+              detail: garbage(),
+              at: NOW,
+            },
+          ],
+        },
+        usage: {
+          totals: { tokens: { processed: 9_000 }, unpricedShare: 0.5 },
+          models: [
+            { providerID: "openai", modelID: KNOWN_MODEL, priced: false, unpricedTokens: 3_000 },
+            { providerID: garbage(), modelID: garbage(), priced: false, unpricedTokens: 3_000 },
+            { providerID: "openai", modelID: garbage(), priced: false, unpricedTokens: 3_000 },
+          ],
+        } as unknown as UsageReport,
+      }),
+    };
+  }
+
+  it.each([
+    { seed: 1 },
+    { seed: 2 },
+    { seed: 3 },
+    { seed: 4 },
+  ])("prints only words of its own vocabulary, numbers and times (seed $seed)", async ({
+    seed,
+  }) => {
+    const vocabulary = reportVocabulary();
+    const { params: fuzzed, hex } = fuzzedParams(seed);
+
+    const output = await buildQuotaStatusReport(fuzzed);
+
+    expect(wordsOutsideVocabulary(output, vocabulary)).toEqual([]);
+    expect(output.toLowerCase()).not.toContain("zq");
+    for (const token of hex) expect(output).not.toContain(token);
+    // The report still has its facts: known model, row ids, custom numbers.
+    expect(output).toContain(`- currentModel: `);
+    expect(output).toContain(`  - openai/${KNOWN_MODEL}: 3.00K tokens`);
+    expect(output).toContain("- custom_provider: custom 3 (remote-api, 2 models)");
+  });
+
+  it.each([
+    {
+      name: "row ids from the ledger, windows, numbers and reset times",
       overrides: {
         providers: [
           snapshot("google-gemini-cli", {
@@ -451,22 +1078,30 @@ describe("buildQuotaStatusReport", () => {
                 percentRemaining: 12,
                 resetsAt: RESET,
               }),
+              row("google-gemini-cli.pro", { percentRemaining: 50 }),
             ],
           }),
         ],
       },
       title: "google-gemini-cli",
       lines: [
-        `  - google-gemini-cli.model.gemini_2_5_pro (account 1): window=day, 12% left, resets ${RESET}`,
+        `  - google-gemini-cli.model.(part 1) (account 1): window=day, 12% left, resets ${RESET}`,
+        "  - google-gemini-cli.pro: 50% left",
       ],
     },
     {
-      name: "model ids from the session and the usage history",
+      name: "model ids the shipped price list has",
       overrides: {
-        currentModel: "Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8",
+        currentModel: KNOWN_MODEL,
         usage: {
           totals: { tokens: { processed: 2_000 }, unpricedShare: 0.5 },
           models: [
+            {
+              providerID: "github-copilot",
+              modelID: KNOWN_MODEL,
+              priced: false,
+              unpricedTokens: 1_000,
+            },
             {
               providerID: "deepseek-ai",
               modelID: "DeepSeek-R1-Distill-Qwen-32B",
@@ -478,8 +1113,8 @@ describe("buildQuotaStatusReport", () => {
       },
       title: "",
       lines: [
-        "- currentModel: Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8",
-        "  - deepseek-ai/DeepSeek-R1-Distill-Qwen-32B: 1.00K tokens",
+        `- currentModel: ${KNOWN_MODEL}`,
+        `  - github-copilot/${KNOWN_MODEL}: 1.00K tokens\n  - … (1 more unpriced model)`,
       ],
     },
     {
@@ -510,79 +1145,144 @@ describe("buildQuotaStatusReport", () => {
       ],
     },
     {
-      name: "file paths, under the home dir as ~",
+      name: "the Claude CLI's paths and commands",
       overrides: {
+        homeDir: "/Users/alice",
         providers: [
           snapshot("anthropic", {
             debug: [
-              { key: "binary_path", value: "/Users/alice/Library/Application Support/claude" },
+              { key: "cli_installed", value: "true" },
+              { key: "cli_version", value: "2.1.3 (Claude Code)" },
+              { key: "binary_path", value: "/Users/alice/.claude/local/claude" },
               {
                 key: "checked_commands",
                 value:
                   'claude --version | /opt/homebrew/bin/claude auth status --json | "/Users/alice/My Tools/claude" -p',
               },
+              { key: "auth_status", value: "authenticated" },
+              { key: "quota_source", value: "claude-credentials-oauth-api" },
+            ],
+          }),
+        ],
+      },
+      title: "anthropic",
+      lines: [
+        "- cli_installed: true",
+        "- cli_version: 2.1.3",
+        "- binary_path: ~/.claude/local/claude",
+        "- checked_commands: claude --version | /opt/homebrew/bin/claude auth status --json | (custom path)/claude (arg)",
+        "- auth_status: authenticated",
+        "- quota_source: claude-credentials-oauth-api",
+      ],
+    },
+    {
+      name: "where an API key was looked for",
+      overrides: {
+        homeDir: "/Users/alice",
+        providers: [
+          snapshot("zai", {
+            debug: [
+              { key: "auth_state", value: "configured" },
+              { key: "api_key_configured", value: "true" },
+              { key: "api_key_source", value: "env:ZAI_API_KEY" },
               {
                 key: "api_key_checked_paths",
-                value: "env:CHUTES_API_KEY | /Users/alice/.config/opencode/opencode.json",
+                value: "env:ZAI_API_KEY | /Users/alice/.config/opencode/opencode.json",
               },
               {
-                key: "custom_production-gateway-us_check",
+                key: "api_key_credential_database_paths",
+                value: "~/.local/share/opencode/opencode.db",
+              },
+            ],
+          }),
+          snapshot("synthetic", {
+            debug: [
+              {
+                key: "api_key_diagnostics",
                 value:
-                  "outcome=success http_status=200 credential_source=env:TEAM_KEY checked_paths=/Users/alice/.config/opencode/opencode.json | /opt/opencode/opencode.json",
+                  "configured=true source=opencode.json checked=~/.config/opencode/opencode.json",
               },
             ],
           }),
         ],
-        homeDir: "/Users/alice",
       },
-      title: "anthropic",
+      title: "",
       lines: [
-        "- binary_path: ~/Library/Application Support/claude",
-        '- checked_commands: claude --version | /opt/homebrew/bin/claude auth status --json | "~/My Tools/claude" -p',
-        "- api_key_checked_paths: env:CHUTES_API_KEY | ~/.config/opencode/opencode.json",
-        "- custom_production-gateway-us_check: outcome=success http_status=200 credential_source=env:TEAM_KEY checked_paths=~/.config/opencode/opencode.json | /opt/opencode/opencode.json",
+        "- auth_state: configured\n- api_key_configured: true\n- api_key_source: env:ZAI_API_KEY",
+        "- api_key_checked_paths: env:ZAI_API_KEY | ~/.config/opencode/opencode.json",
+        "- api_key_credential_database_paths: ~/.local/share/opencode/opencode.db",
+        "- api_key_diagnostics: configured=true source=opencode.json checked=~/.config/opencode/opencode.json",
       ],
     },
     {
-      name: "states, yes/no, counts, amounts, hosts and windows",
+      name: "a custom definition's check under its number",
+      overrides: {
+        homeDir: "/Users/alice",
+        quotaProviders: [remoteDefinition("team"), remoteDefinition("production-gateway-us")],
+        providers: [
+          snapshot("quota-providers", {
+            rows: [
+              row("quota-providers.custom.production-gateway-us.day", { percentRemaining: 9 }),
+            ],
+            debug: [
+              {
+                key: "custom_production-gateway-us_check",
+                value:
+                  "outcome=success http_status=200 credential_source=explicit_env checked_paths=/Users/alice/.config/opencode/opencode.json | /opt/opencode/opencode.json",
+              },
+            ],
+          }),
+        ],
+      },
+      title: "quota-providers",
+      lines: [
+        "  - quota-providers.custom.(custom 2).(part 1): 9% left",
+        "- custom 2 check: outcome=success http_status=200 credential_source=explicit_env checked_paths=~/.config/opencode/opencode.json | (custom path)/opencode.json",
+      ],
+    },
+    {
+      name: "states, yes/no, counts, times and lists",
       overrides: {
         providers: [
           snapshot("copilot", {
             debug: [
-              { key: "auth_state", value: "configured" },
-              { key: "api_key_configured", value: "false" },
-              { key: "account_count", value: "2" },
+              { key: "pat_state", value: "valid" },
+              { key: "deployment", value: "github.com" },
               { key: "api_host", value: "api.github.com" },
-              { key: "billing_period", value: "2026-10" },
-              { key: "selected_windows", value: "five_hour,weekly" },
-              { key: "api_usage", value: "$1.23 across 45 messages" },
               {
-                key: "five_hour_usage",
-                value: `status=ok percent_used=12 percent_remaining=88 reset_at=${RESET}`,
+                key: "oauth_configured",
+                value: "true key=github-copilot refresh=true access=false enterprise_host=false",
               },
-              { key: "token_expires_at", value: RESET },
+              { key: "billing_api_access_likely", value: "false" },
+              { key: "opencode_provider", value: "yes found=copilot,github-copilot" },
+            ],
+          }),
+          snapshot("google-agy", { debug: [{ key: "account_count", value: "2" }] }),
+          snapshot("opencode-go", {
+            debug: [
+              { key: "selected_windows", value: "rolling,weekly" },
+              { key: "console_error", value: "Console returned HTTP 500 for alice" },
+            ],
+          }),
+          snapshot("openai", { debug: [{ key: "token_expires_at", value: RESET }] }),
+          snapshot("alibaba-coding-plan", {
+            debug: [
               { key: "alibaba auth configured", value: "true" },
-              {
-                key: "alibaba coding plan local quota",
-                value: `path=/opt/state.json exists=true health=healthy version=1 last_update=${RESET}`,
-              },
+              { key: "local_state_health", value: "healthy" },
             ],
           }),
         ],
       },
-      title: "copilot",
+      title: "",
       lines: [
-        "- auth_state: configured",
-        "- api_key_configured: false",
+        "- pat_state: valid\n- deployment: github.com\n- api_host: api.github.com",
+        "- oauth_configured: true key=github-copilot refresh=true access=false enterprise_host=false",
+        "- billing_api_access_likely: false",
+        "- opencode_provider: yes found=copilot,github-copilot",
         "- account_count: 2",
-        "- api_host: api.github.com",
-        "- billing_period: 2026-10",
-        "- selected_windows: five_hour,weekly",
-        "- api_usage: $1.23 across 45 messages",
-        `- five_hour_usage: status=ok percent_used=12 percent_remaining=88 reset_at=${RESET}`,
+        "- selected_windows: rolling,weekly\n- console_error: (text not shown)",
         `- token_expires_at: ${RESET}`,
-        "- alibaba auth configured: true",
-        `- alibaba coding plan local quota: path=/opt/state.json exists=true health=healthy version=1 last_update=${RESET}`,
+        "- alibaba auth configured: true\n- local_state_health: healthy",
       ],
     },
   ] as Array<{
@@ -595,6 +1295,7 @@ describe("buildQuotaStatusReport", () => {
     const text = title ? section(output, title) : output;
 
     for (const line of lines) expect(text).toContain(line);
+    expect(text).not.toContain("other detail");
   });
 
   it.each([
@@ -603,15 +1304,15 @@ describe("buildQuotaStatusReport", () => {
       overrides: {
         enabledProviders: ["copilot", "openai"],
         onlyCurrentModel: true,
-        currentModel: "gpt-5",
+        currentModel: KNOWN_MODEL,
       },
       lines: [
-        "- settings_file: /cfg/opencode-quota/settings.jsonc (exists)",
+        "- settings_file: (custom path)/settings.jsonc (exists)",
         "- project_settings: none: the settings are global; v5 project-scope files are not read",
         "- enabledProviders: copilot | openai",
         "- onlyCurrentModel: true",
-        "- currentModel: gpt-5",
-        "- workspace_root: /ws",
+        `- currentModel: ${KNOWN_MODEL}`,
+        "- workspace_root: (custom path)",
       ],
       absent: ["settings_issue", "conversion", "not_read"],
     },
@@ -628,13 +1329,13 @@ describe("buildQuotaStatusReport", () => {
         sessionModelLookup: "no_session",
       },
       lines: [
-        "- settings_file: /cfg/opencode-quota/settings.jsonc (missing; using the defaults)",
+        "- settings_file: (custom path)/settings.jsonc (missing; using the defaults)",
         "- enabledProviders: (none)",
         "- currentModel: (no session available)",
       ],
     },
     {
-      name: "auto providers, a session without a model, and settings issues",
+      name: "auto providers, a session without a model, and settings issues in our words",
       overrides: {
         sessionModelLookup: "not_found",
         settings: {
@@ -643,6 +1344,9 @@ describe("buildQuotaStatusReport", () => {
           issues: [
             { key: "$file", message: "syntax error on line 2: ValueExpected" },
             { key: "checking.minIntervalMs", message: "expected a number" },
+            { key: "providers.custom[0].url", message: "expected an https URL" },
+            { key: "words.percent", message: "duplicate key; the last valid value is used" },
+            { key: "colour", message: "unknown setting; valid: version" },
           ],
           notRead: ["/ws/opencode-quota/quota-toast.json"],
         },
@@ -650,19 +1354,24 @@ describe("buildQuotaStatusReport", () => {
       lines: [
         "- enabledProviders: (auto)",
         "- currentModel: (error: session.get returned no modelID)",
-        "- settings_issue: $file: syntax error on line 2: ValueExpected\n- settings_issue: checking.minIntervalMs: expected a number",
-        "- not_read: /ws/opencode-quota/quota-toast.json",
+        [
+          "- settings_issue: $file: syntax error on line 2",
+          "- settings_issue: checking.minIntervalMs: invalid value",
+          "- settings_issue: providers.custom: invalid value",
+          "- settings_issue: words.percent: duplicate key",
+          "- settings_issue: 1 unknown key",
+        ].join("\n"),
+        "- not_read: (custom path)/quota-toast.json",
       ],
+      absent: ["ValueExpected", "colour", "https URL"],
     },
     {
-      name: "custom provider definitions without their URL, adapter or key",
+      name: "custom provider definitions as their number, mode and model count",
       overrides: {
         quotaProviders: [
-          {
-            id: "team",
+          remoteDefinition("team", {
             providerId: "gateway",
             label: "Team",
-            mode: "remote-api",
             url: "https://private.example/secret-path",
             format: "json-v1",
             adapter: {
@@ -676,32 +1385,40 @@ describe("buildQuotaStatusReport", () => {
             },
             apiKeyEnv: "TEAM_KEY",
             modelIds: ["model-a"],
-          },
+          }),
           {
             id: "seats",
             providerId: "gateway",
+            label: "seats",
             mode: "local-estimate",
-            windows: [{ id: "day", type: "utc-day", requestLimit: 50 }],
+            windows: [{ id: "day", label: "Day", type: "utc-day", requestLimit: 50 }],
           },
           {
             id: "alibaba-coding-plan",
             providerId: "alibaba-coding-plan",
+            label: "Alibaba",
             mode: "local-estimate",
             windows: [
-              { id: "five-hour", type: "rolling", durationMinutes: 300, requestLimit: 1000 },
+              {
+                id: "five-hour",
+                label: "5h",
+                type: "rolling",
+                durationMinutes: 300,
+                requestLimit: 1000,
+              },
             ],
           },
         ],
       },
       lines: [
-        "- provider_team: provider_id=gateway mode=remote-api format=json-v1 env_name=TEAM_KEY coverage=model-a",
-        "- provider_seats: provider_id=gateway mode=local-estimate limits=day:50 coverage=all_models state_path=~/state/opencode/opencode-quota/quota-providers/seats.json",
-        "- provider_alibaba-coding-plan: provider_id=alibaba-coding-plan mode=local-estimate limits=five-hour:1000 coverage=all_models tunes=alibaba-coding-plan",
+        "- custom_provider: custom 1 (remote-api, 1 model)",
+        "- custom_provider: custom 2 (local-estimate, all models)",
+        "- custom_provider: custom 3 (local-estimate, all models, tunes alibaba-coding-plan)",
       ],
-      absent: ["private.example", "private-adapter-literal"],
+      absent: ["team", "seats", "gateway", "TEAM_KEY", "model-a", "private"],
     },
     {
-      name: "the v5 settings this server converted and wrote",
+      name: "the v5 settings this server converted and wrote, by their v5 keys",
       overrides: {
         conversion: conversion({
           written: true,
@@ -714,18 +1431,22 @@ describe("buildQuotaStatusReport", () => {
               note: "the TUI shows it",
             },
           ],
-          dropped: [{ key: "showOnIdle", reason: "removed in v6" }],
+          dropped: [
+            { key: "debug", reason: "/quota_status shows the diagnostics" },
+            { key: "myOwnKey", reason: "not a v5 setting" },
+          ],
           invalid: [{ key: "minIntervalMs", reason: "expected a number" }],
           notes: ["the project files are not read"],
         }),
       },
       lines: [
-        "- conversion: from /cfg/opencode.json | /cfg/opencode-quota/quota-toast.json (2 converted, 1 dropped, 1 invalid); written to settings.jsonc",
-        "- conversion_note: percentDisplayMode: the TUI shows it",
-        "- conversion_note: showOnIdle dropped: removed in v6",
-        "- conversion_note: minIntervalMs invalid: expected a number",
-        "- conversion_note: the project files are not read",
+        "- conversion: from (custom path)/opencode.json | (custom path)/quota-toast.json (2 converted, 2 dropped, 1 invalid); written to settings.jsonc",
+        "- conversion_converted: enabledProviders, percentDisplayMode",
+        "- conversion_dropped: debug (+1 unknown key)",
+        "- conversion_invalid: minIntervalMs",
+        "- conversion_notes: 1 not shown",
       ],
+      absent: ["myOwnKey", "the TUI shows it", "project files"],
     },
     {
       name: "the v5 settings converted in memory while settings.jsonc is missing",
@@ -739,17 +1460,18 @@ describe("buildQuotaStatusReport", () => {
         conversion: conversion({}),
       },
       lines: [
-        "- settings_file: /cfg/opencode-quota/settings.jsonc (missing; the v5 settings are converted in memory)",
+        "- settings_file: (custom path)/settings.jsonc (missing; the v5 settings are converted in memory)",
         "(0 converted, 0 dropped, 0 invalid); converted in memory",
       ],
-      absent: ["conversion_note"],
+      absent: ["conversion_converted", "conversion_notes"],
     },
     {
       name: "the v5 settings that could not be written",
       overrides: {
         conversion: conversion({ notWrittenReason: "settings.jsonc is not writable" }),
       },
-      lines: ["(0 converted, 0 dropped, 0 invalid); settings.jsonc is not writable"],
+      lines: ["(0 converted, 0 dropped, 0 invalid); not written"],
+      absent: ["writable"],
     },
   ] as Array<{
     name: string;
@@ -823,8 +1545,10 @@ describe("buildQuotaStatusReport", () => {
   ] as const)("explains the $configured price list choice", async ({ configured, note }) => {
     const text = section(await report({ pricingSnapshotSource: configured }), "pricing_snapshot");
 
+    expect(text).toMatch(/- pricing: source=bundled generated_at=\S+Z units=USD per 1M tokens\n/u);
     expect(text).toContain(`- selection: configured=${configured} active=bundled`);
     expect(text).toContain("- refresh: (no runtime refresh state yet)");
+    expect(text).toMatch(/- providers: \d+\n/u);
     if (note) expect(text).toContain(`- selection_note: ${note}`);
     else expect(text).not.toContain("selection_note");
   });
@@ -841,24 +1565,33 @@ describe("buildQuotaStatusReport", () => {
       lines: ["- unpriced_30d: (no usage)"],
     },
     {
-      name: "models without a price, the first five listed",
+      name: "models without a price: the first five the price list knows, the others counted",
       usage: {
         totals: { tokens: { processed: 80_000 }, unpricedShare: 0.125 },
         models: [
           { providerID: "anthropic", modelID: "claude", priced: true, unpricedTokens: 0 },
-          ...Array.from({ length: 7 }, (_, index) => ({
-            providerID: "deepseek",
-            modelID: `model-${index}`,
+          ...[
+            "gpt-4",
+            "gpt-4.1",
+            "gpt-4.1-mini",
+            "gpt-4-turbo",
+            "gpt-3.5-turbo",
+            "codex-mini-latest",
+          ].map((modelID) => ({
+            providerID: "openai",
+            modelID,
             priced: false,
             unpricedTokens: 1_500,
           })),
+          { providerID: "deepseek", modelID: "model-x", priced: false, unpricedTokens: 1_500 },
         ],
       },
       lines: [
         "- unpriced_30d: 12.5% of 80.0K tokens",
-        "  - deepseek/model-4: 1.50K tokens\n  - … (2 more)",
+        "  - openai/gpt-4: 1.50K tokens",
+        "  - openai/gpt-3.5-turbo: 1.50K tokens\n  - … (2 more unpriced models)",
       ],
-      absent: ["anthropic/claude", "model-5"],
+      absent: ["anthropic/claude", "codex-mini-latest", "model-x"],
     },
   ])("lists the last 30 days' models without a price: $name", async ({
     usage,
@@ -915,7 +1648,7 @@ describe("buildStatusReportData", () => {
     });
 
   function writeV5Settings(settings: Record<string, unknown>): void {
-    const dir = join(root, "config", "opencode", "opencode-quota");
+    const dir = join(root, ".config", "opencode", "opencode-quota");
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, "quota-toast.json"), JSON.stringify(settings));
   }
@@ -934,7 +1667,7 @@ describe("buildStatusReportData", () => {
     return { data, text: data.output, onDetectedProviderIds };
   }
 
-  it("checks every enabled provider through a store and shows what it returned, secrets redacted", async () => {
+  it("checks every enabled provider through a store and shows what it returned, secrets hidden", async () => {
     const syntheticProvider = synthetic();
     const openai = fakeProvider("openai", false);
     registry.providers = [syntheticProvider, openai];
@@ -949,8 +1682,8 @@ describe("buildStatusReportData", () => {
       `- rows: 1\n  - synthetic.five_hour: window=five_hour, 84% left, resets ${RESET}`,
     );
     expect(syntheticSection).toContain("- api_key_source: env:SYNTHETIC_API_KEY");
-    expect(syntheticSection).toContain("- access_token: [redacted]");
-    expect(syntheticSection).toContain("- error: (free text, not shown)");
+    // The access token and the error message.
+    expect(syntheticSection).toContain("- 2 other details not shown");
     expect(text).not.toContain(SECRET);
     expect(section(text, "providers")).toContain("- openai: disabled unavailable");
     // An unavailable provider shows local setup details: it is never fetched.
@@ -962,8 +1695,13 @@ describe("buildStatusReportData", () => {
     expect(onDetectedProviderIds).toHaveBeenCalledWith(["synthetic"]);
     expect(data.payload?.liveProbes).toEqual([{ id: "synthetic", ok: false }]);
     expect(data.payload?.providers.map((provider) => provider.id)).toEqual(["synthetic", "openai"]);
+    expect(data.payload?.config.settingsPath).toBe(
+      "~/.config/opencode/opencode-quota/settings.jsonc",
+    );
+    expect(data.payload?.pricing.snapshot.source).toBe("bundled");
     expect(data.hasComparableProviderData).toBe(true);
     expect(JSON.stringify(data.payload)).not.toContain(SECRET);
+    expect(JSON.stringify(data.payload)).not.toContain(root);
   });
 
   it("shows the real API-key setup details of providers without a key", async () => {
@@ -979,34 +1717,66 @@ describe("buildStatusReportData", () => {
     }
   });
 
+  /** Every provider that reads an API key or a key file: each shows where it looked. */
+  const KEY_PROVIDERS = [
+    "chutes",
+    "deepseek",
+    "kilo",
+    "nanogpt",
+    "ollama-cloud",
+    "synthetic",
+    "zai",
+    "zhipu",
+    "opencode-go",
+    "kimi-code-plan-global",
+    "kimi-code-plan-cn",
+    "minimax-coding-plan",
+    "minimax-china-coding-plan",
+    "alibaba-coding-plan",
+    "openrouter",
+    "cursor",
+  ];
+
+  it("lists every provider that reads an API key", () => {
+    expect(
+      [
+        ...Object.keys(API_KEY_VENDORS),
+        ...Object.keys(API_KEY_LOGIN_VENDORS),
+        "openrouter",
+        "cursor",
+      ].sort(),
+    ).toEqual([...KEY_PROVIDERS].sort());
+  });
+
   it("shows where every API-key provider looked for its key, without asking it for quota", async () => {
-    const ids = [
-      ...Object.keys(API_KEY_VENDORS),
-      ...Object.keys(API_KEY_LOGIN_VENDORS),
-      "openrouter",
-    ];
     for (const name of [...Object.values(API_KEY_VENDORS), ...Object.values(API_KEY_LOGIN_VENDORS)]
       .flatMap((vendor) => vendor.envVars)
       .concat("OPENROUTER_API_KEY")) {
       vi.stubEnv(name, "");
     }
     vi.stubEnv("ZAI_API_KEY", "zai-test-key");
-    const providers = ids.map((id) => fakeProvider(id, false));
+    const providers = KEY_PROVIDERS.map((id) => fakeProvider(id, false));
     registry.providers = providers;
-    const configPath = join(root, "config", "opencode", "opencode.json");
-    mkdirSync(join(root, "config", "opencode"), { recursive: true });
-    writeFileSync(configPath, "{}");
+    mkdirSync(join(root, ".config", "opencode"), { recursive: true });
+    writeFileSync(join(root, ".config", "opencode", "opencode.json"), "{}");
 
     const { text } = await statusData();
 
-    for (const id of ids) {
+    for (const id of KEY_PROVIDERS) {
       const lines = section(text, id);
       expect(lines).toContain("- state: unavailable\n");
+      if (id === "cursor") {
+        expect(lines).toContain("- auth_state: missing");
+        expect(lines).toContain("- auth_candidate_paths: ~/.local/share/opencode/opencode.db | ");
+        expect(lines).toContain("~/.config/cursor/auth.json");
+        continue;
+      }
       expect(lines).toContain(
         id === "zai" ? "- api_key_configured: true" : "- api_key_configured: false",
       );
       expect(lines).toContain("- api_key_checked_paths: ");
-      expect(lines).toContain("~/config/opencode/opencode.json");
+      expect(lines).toContain("~/.config/opencode/opencode.json");
+      expect(lines).not.toContain("other detail");
     }
     expect(section(text, "zai")).toContain("- api_key_source: env:ZAI_API_KEY");
     expect(section(text, "zai")).toContain("- auth_state: configured");
@@ -1057,18 +1827,18 @@ describe("buildStatusReportData", () => {
     const before = section((await statusData()).text, "settings");
 
     expect(before).toContain(
-      "- settings_file: ~/config/opencode/opencode-quota/settings.jsonc (missing; the v5 settings are converted in memory)",
+      "- settings_file: ~/.config/opencode/opencode-quota/settings.jsonc (missing; the v5 settings are converted in memory)",
     );
     expect(before).toContain("- enabledProviders: synthetic");
     expect(before).toMatch(
-      /- conversion: from ~\/config\/opencode\/opencode-quota\/quota-toast\.json \(\d+ converted, \d+ dropped, \d+ invalid\); converted in memory/u,
+      /- conversion: from ~\/\.config\/opencode\/opencode-quota\/quota-toast\.json \(\d+ converted, \d+ dropped, \d+ invalid\); converted in memory/u,
     );
 
-    writeFileSync(join(root, "config", "opencode", "opencode-quota", "settings.jsonc"), "{ ");
+    writeFileSync(join(root, ".config", "opencode", "opencode-quota", "settings.jsonc"), "{ ");
     const after = section((await statusData()).text, "settings");
 
     expect(after).toContain("settings.jsonc (exists)");
-    expect(after).toMatch(/- settings_issue: \$file: syntax error/u);
+    expect(after).toMatch(/- settings_issue: \$file: syntax error on line \d+\n/u);
     expect(after).not.toContain("- conversion:");
   });
 });
