@@ -30,18 +30,25 @@ vi.mock("../src/lib/api-key-resolver.js", async (importOriginal) => {
 const jsonResponse = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status });
 
-function stubJsonFetch(body: unknown): void {
-  vi.stubGlobal(
-    "fetch",
-    vi.fn(async () => jsonResponse(body)),
-  );
+function stubJsonFetch(body: unknown) {
+  const fetchMock = vi.fn(async () => jsonResponse(body));
+  vi.stubGlobal("fetch", fetchMock);
+  return fetchMock;
 }
 
-function useNanoGptApiKey(): void {
+/** Answers NanoGPT's usage and balance endpoints; a plain object becomes a JSON 200. */
+function stubNanoGpt(usage: unknown, balance: unknown): void {
   mocks.resolveNanoGptApiKey.mockResolvedValueOnce({
     key: "nano-key",
     source: "env:NANOGPT_API_KEY",
   });
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: RequestInfo | URL) => {
+      const reply = String(input).includes("/subscription/v1/usage") ? usage : balance;
+      return reply instanceof Response ? reply : jsonResponse(reply);
+    }),
+  );
 }
 
 const syntheticPayload = (overrides: Record<string, unknown> = {}) => ({
@@ -116,10 +123,12 @@ describe("simple API-key provider queries", () => {
   });
 
   describe("Chutes", () => {
-    it("maps quota data, reset time, endpoint, and authorization", async () => {
+    beforeEach(() => {
       process.env.CHUTES_API_KEY = "test-key";
-      const fetchMock = vi.fn(async () => jsonResponse({ quota: 1000, used: 250 }));
-      vi.stubGlobal("fetch", fetchMock);
+    });
+
+    it("maps quota data, reset time, endpoint, and authorization", async () => {
+      const fetchMock = stubJsonFetch({ quota: 1000, used: 250 });
 
       await expect(queryChutesQuota()).resolves.toEqual({
         success: true,
@@ -135,7 +144,6 @@ describe("simple API-key provider queries", () => {
     });
 
     it("handles zero quota safely", async () => {
-      process.env.CHUTES_API_KEY = "test-key";
       stubJsonFetch({ quota: 0, used: 0 });
       await expect(queryChutesQuota()).resolves.toMatchObject({
         success: true,
@@ -149,9 +157,13 @@ describe("simple API-key provider queries", () => {
       process.env.SYNTHETIC_API_KEY = "test-key";
     });
 
-    it("maps both top-level quota windows, endpoint, and authorization", async () => {
-      const fetchMock = vi.fn(async () => jsonResponse(syntheticPayload()));
-      vi.stubGlobal("fetch", fetchMock);
+    it("maps both top-level quota windows, ignores legacy fields, and calls the endpoint", async () => {
+      const fetchMock = stubJsonFetch(
+        syntheticPayload({
+          freeToolCalls: { max: 250, remaining: 220 },
+          subscription: { limit: 10, requests: 9, renewsAt: "2027-01-01T00:00:00.000Z" },
+        }),
+      );
 
       await expect(querySyntheticQuota()).resolves.toEqual({
         success: true,
@@ -193,44 +205,25 @@ describe("simple API-key provider queries", () => {
         }),
       );
       const result = await querySyntheticQuota();
-      expect(result && result.success ? result.windows.weekly.percentRemaining : -1).toBe(8);
+      expect(result?.success ? result.windows.weekly.percentRemaining : -1).toBe(8);
     });
 
-    it("normalizes valid reset timestamps and drops malformed ones", async () => {
-      vi.stubGlobal(
-        "fetch",
-        vi
-          .fn()
-          .mockResolvedValueOnce(jsonResponse(syntheticPayload()))
-          .mockResolvedValueOnce(
-            jsonResponse(
-              syntheticPayload({
-                rollingFiveHourLimit: { max: 100, remaining: 74.5, nextTickAt: "\u001b[31mbad" },
-                weeklyTokenLimit: {
-                  maxCredits: "$24.00",
-                  remainingCredits: "$2.02",
-                  nextRegenAt: "\u001b[31mbad",
-                  percentRemaining: 8.4552365,
-                },
-              }),
-            ),
-          ),
+    it("drops malformed reset timestamps", async () => {
+      stubJsonFetch(
+        syntheticPayload({
+          rollingFiveHourLimit: { max: 100, remaining: 74.5, nextTickAt: "\u001b[31mbad" },
+          weeklyTokenLimit: {
+            maxCredits: "$24.00",
+            remainingCredits: "$2.02",
+            nextRegenAt: "\u001b[31mbad",
+            percentRemaining: 8.4552365,
+          },
+        }),
       );
 
-      const valid = await querySyntheticQuota();
       const invalid = await querySyntheticQuota();
-      expect(valid && valid.success ? valid.windows.fiveHour.resetTimeIso : undefined).toBe(
-        "2026-01-20T18:12:03.000Z",
-      );
-      expect(valid && valid.success ? valid.windows.weekly.resetTimeIso : undefined).toBe(
-        "2026-01-27T18:12:03.000Z",
-      );
-      expect(
-        invalid && invalid.success ? invalid.windows.fiveHour.resetTimeIso : "missing",
-      ).toBeUndefined();
-      expect(
-        invalid && invalid.success ? invalid.windows.weekly.resetTimeIso : "missing",
-      ).toBeUndefined();
+      expect(invalid?.success ? invalid.windows.fiveHour.resetTimeIso : "missing").toBeUndefined();
+      expect(invalid?.success ? invalid.windows.weekly.resetTimeIso : "missing").toBeUndefined();
     });
 
     it("reports zero percent when both top-level windows are exhausted", async () => {
@@ -245,133 +238,65 @@ describe("simple API-key provider queries", () => {
         }),
       );
       const result = await querySyntheticQuota();
-      expect(result && result.success ? result.windows : null).toMatchObject({
+      expect(result?.success ? result.windows : null).toMatchObject({
         fiveHour: { used: 100, percentRemaining: 0 },
         weekly: { used: 24, percentRemaining: 0 },
       });
     });
 
-    it("accepts the real weekly shape and ignores legacy subscription fields", async () => {
-      stubJsonFetch(
-        syntheticPayload({
-          rollingFiveHourLimit: {
-            max: 1350,
-            remaining: 1195.5,
-            nextTickAt: "2026-02-06T16:16:18.386Z",
-          },
-          weeklyTokenLimit: {
-            maxCredits: "$24.00",
-            remainingCredits: "$2.02",
-            nextRegenAt: "2026-02-10T00:00:00.000Z",
-            percentRemaining: 8.4552365,
-          },
-          freeToolCalls: { max: 250, remaining: 220 },
-          subscription: { limit: 10, requests: 9, renewsAt: "2027-01-01T00:00:00.000Z" },
-        }),
-      );
-      const result = await querySyntheticQuota();
-      expect(result && result.success ? result.windows : null).toEqual({
-        fiveHour: {
-          limit: 1350,
-          used: 154.5,
-          percentRemaining: 89,
-          resetTimeIso: "2026-02-06T16:16:18.386Z",
-        },
-        weekly: {
-          limit: 24,
-          used: 21.98,
-          percentRemaining: 8,
-          resetTimeIso: "2026-02-10T00:00:00.000Z",
-        },
-      });
-    });
-
     it("treats an authenticated HTTP 200 empty object as no quota data", async () => {
-      const fetchMock = vi.fn(async () => jsonResponse({}));
-      vi.stubGlobal("fetch", fetchMock);
-
+      stubJsonFetch({});
       await expect(querySyntheticQuota()).resolves.toEqual({
         success: false,
         error: "Synthetic returned no quota data for this account.",
       });
-      expect(fetchMock).toHaveBeenCalledWith(
-        "https://api.synthetic.new/v2/quotas",
-        expect.objectContaining({
-          headers: expect.objectContaining({ Authorization: "Bearer test-key" }),
-        }),
-      );
     });
 
     it.each([
-      ["an empty array", []],
-      ["null", null],
-      ["a nonempty object without quota windows", { foo: true }],
-    ] as const)("does not treat %s as the empty-object diagnostic", async (_name, payload) => {
-      stubJsonFetch(payload);
-      await expect(querySyntheticQuota()).resolves.toEqual({
-        success: false,
-        error: "Synthetic API response missing rollingFiveHourLimit quota window",
-      });
-    });
-
-    it.each([
+      ["an empty array", [], "rollingFiveHourLimit"],
+      ["null", null, "rollingFiveHourLimit"],
+      ["a nonempty object without quota windows", { foo: true }, "rollingFiveHourLimit"],
       [
         "malformed rollingFiveHourLimit payloads",
         syntheticPayload({ rollingFiveHourLimit: { max: "1350", remaining: "20" } }),
-        "Synthetic API response missing rollingFiveHourLimit quota window",
+        "rollingFiveHourLimit",
       ],
       [
         "malformed weeklyTokenLimit credit strings",
         syntheticPayload({
-          weeklyTokenLimit: {
-            maxCredits: "24.00",
-            remainingCredits: "$2.02",
-            percentRemaining: 8,
-          },
+          weeklyTokenLimit: { maxCredits: "24.00", remainingCredits: "$2.02", percentRemaining: 8 },
         }),
-        "Synthetic API response missing weeklyTokenLimit quota window",
+        "weeklyTokenLimit",
       ],
       [
         "a missing weekly top-level window",
-        (() => {
-          const { weeklyTokenLimit: _weekly, ...payload } = syntheticPayload();
-          return payload;
-        })(),
-        "Synthetic API response missing weeklyTokenLimit quota window",
+        { rollingFiveHourLimit: syntheticPayload().rollingFiveHourLimit },
+        "weeklyTokenLimit",
       ],
       [
         "legacy subscription-only payloads",
         { subscription: { limit: 200, requests: 50 } },
-        "Synthetic API response missing rollingFiveHourLimit quota window",
+        "rollingFiveHourLimit",
       ],
-    ] as const)("rejects %s", async (_name, payload, error) => {
+    ] as const)("rejects %s as a missing quota window", async (_name, payload, window) => {
       stubJsonFetch(payload);
-      await expect(querySyntheticQuota()).resolves.toEqual({ success: false, error });
+      await expect(querySyntheticQuota()).resolves.toEqual({
+        success: false,
+        error: `Synthetic API response missing ${window} quota window`,
+      });
     });
   });
 
   describe("NanoGPT", () => {
-    const invalidBalanceSiblingCases = [
-      [
-        "USD",
-        { usd_balance: "12junk", nano_balance: "26.71801147" },
-        { nanoBalanceRaw: "26.71801147" },
-        "usd_balance",
-      ],
-      [
-        "NANO",
-        { usd_balance: "12.50", nano_balance: "anything" },
-        { usdBalanceRaw: "12.50" },
-        "nano_balance",
-      ],
-    ] as const;
-
     it("maps usage and balance from both authenticated endpoints", async () => {
-      useNanoGptApiKey();
+      mocks.resolveNanoGptApiKey.mockResolvedValueOnce({
+        key: "nano-key",
+        source: "env:NANOGPT_API_KEY",
+      });
       const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        expect((init?.headers as Record<string, string>)["x-api-key"]).toBe("nano-key");
         if (String(input).includes("/subscription/v1/usage")) {
           expect(init).toMatchObject({ method: "GET" });
-          expect((init?.headers as Record<string, string>)["x-api-key"]).toBe("nano-key");
           return jsonResponse({
             active: true,
             limits: { daily: 5000, monthly: 60000 },
@@ -389,7 +314,6 @@ describe("simple API-key provider queries", () => {
           });
         }
         expect(init).toMatchObject({ method: "POST" });
-        expect((init?.headers as Record<string, string>)["x-api-key"]).toBe("nano-key");
         return jsonResponse({ usd_balance: "129.46956147", nano_balance: "26.71801147" });
       });
       vi.stubGlobal("fetch", fetchMock);
@@ -428,18 +352,9 @@ describe("simple API-key provider queries", () => {
     });
 
     it("keeps derived fallback arithmetic out of provider-reported basis facts", async () => {
-      useNanoGptApiKey();
-      vi.stubGlobal(
-        "fetch",
-        vi.fn(async (input: RequestInfo | URL) =>
-          String(input).includes("/subscription/v1/usage")
-            ? jsonResponse({
-                active: true,
-                daily: { used: 25, remaining: 75 },
-                state: "active",
-              })
-            : jsonResponse({ usd_balance: "12.50" }),
-        ),
+      stubNanoGpt(
+        { active: true, daily: { used: 25, remaining: 75 }, state: "active" },
+        { usd_balance: "12.50" },
       );
 
       const result = await queryNanoGptQuota();
@@ -459,20 +374,15 @@ describe("simple API-key provider queries", () => {
     });
 
     it("uses the billing-period end only as the missing monthly reset fallback", async () => {
-      useNanoGptApiKey();
-      vi.stubGlobal(
-        "fetch",
-        vi.fn(async (input: RequestInfo | URL) =>
-          String(input).includes("/subscription/v1/usage")
-            ? jsonResponse({
-                active: true,
-                limits: { monthly: 1000 },
-                monthly: { used: 100, remaining: 900 },
-                period: { currentPeriodEnd: "2030-02-01T12:34:56.000Z" },
-                state: "active",
-              })
-            : jsonResponse({ usd_balance: "12.50" }),
-        ),
+      stubNanoGpt(
+        {
+          active: true,
+          limits: { monthly: 1000 },
+          monthly: { used: 100, remaining: 900 },
+          period: { currentPeriodEnd: "2030-02-01T12:34:56.000Z" },
+          state: "active",
+        },
+        { usd_balance: "12.50" },
       );
 
       await expect(queryNanoGptQuota()).resolves.toMatchObject({
@@ -484,21 +394,16 @@ describe("simple API-key provider queries", () => {
     });
 
     it("returns partial success when usage succeeds and balance fails", async () => {
-      useNanoGptApiKey();
-      vi.stubGlobal(
-        "fetch",
-        vi.fn(async (input: RequestInfo | URL) =>
-          String(input).includes("/subscription/v1/usage")
-            ? jsonResponse({
-                active: false,
-                limits: { daily: 100, monthly: 1000 },
-                enforceDailyLimit: true,
-                daily: { used: 100, remaining: 0, percentUsed: 1, resetAt: 1_735_776_000_000 },
-                state: "grace",
-                graceUntil: "2026-01-09T00:00:00.000Z",
-              })
-            : new Response("Unauthorized", { status: 401 }),
-        ),
+      stubNanoGpt(
+        {
+          active: false,
+          limits: { daily: 100, monthly: 1000 },
+          enforceDailyLimit: true,
+          daily: { used: 100, remaining: 0, percentUsed: 1, resetAt: 1_735_776_000_000 },
+          state: "grace",
+          graceUntil: "2026-01-09T00:00:00.000Z",
+        },
+        new Response("Unauthorized", { status: 401 }),
       );
       await expect(queryNanoGptQuota()).resolves.toMatchObject({
         success: true,
@@ -508,40 +413,53 @@ describe("simple API-key provider queries", () => {
       });
     });
 
-    it("returns partial success when balance succeeds and usage fails", async () => {
-      useNanoGptApiKey();
-      vi.stubGlobal(
-        "fetch",
-        vi.fn(async (input: RequestInfo | URL) =>
-          String(input).includes("/subscription/v1/usage")
-            ? new Response("bad gateway", { status: 502 })
-            : jsonResponse({ usd_balance: "12.50", nano_balance: "3.25" }),
-        ),
-      );
+    it.each([
+      [
+        "a failed usage endpoint",
+        new Response("bad gateway", { status: 502 }),
+        { usd_balance: "12.50", nano_balance: "3.25" },
+        { usdBalanceRaw: "12.50", nanoBalanceRaw: "3.25" },
+        "NanoGPT API error 502: bad gateway",
+      ],
+      [
+        "an unexpected usage response shape",
+        { nope: true },
+        { usd_balance: "5.00" },
+        { usdBalanceRaw: "5.00" },
+        "NanoGPT usage response returned an unexpected response shape",
+      ],
+    ])("keeps the balance despite %s", async (_name, usage, balance, expectedBalance, message) => {
+      stubNanoGpt(usage, balance);
       await expect(queryNanoGptQuota()).resolves.toEqual({
         success: true,
         subscription: undefined,
-        balance: { usdBalanceRaw: "12.50", nanoBalanceRaw: "3.25" },
-        endpointErrors: [{ endpoint: "usage", message: "NanoGPT API error 502: bad gateway" }],
+        balance: expectedBalance,
+        endpointErrors: [{ endpoint: "usage", message }],
       });
     });
 
-    it.each(
-      invalidBalanceSiblingCases,
-    )("validates the full %s decimal and preserves a valid sibling", async (_label, balancePayload, expectedBalance, invalidField) => {
-      useNanoGptApiKey();
-      vi.stubGlobal(
-        "fetch",
-        vi.fn(async (input: RequestInfo | URL) =>
-          String(input).includes("/subscription/v1/usage")
-            ? jsonResponse({
-                active: true,
-                limits: { daily: 100 },
-                daily: { used: 25, remaining: 75, resetAt: 1_735_776_000_000 },
-                state: "active",
-              })
-            : jsonResponse(balancePayload),
-        ),
+    it.each([
+      [
+        "USD",
+        { usd_balance: "12junk", nano_balance: "26.71801147" },
+        { nanoBalanceRaw: "26.71801147" },
+        "usd_balance",
+      ],
+      [
+        "NANO",
+        { usd_balance: "12.50", nano_balance: "anything" },
+        { usdBalanceRaw: "12.50" },
+        "nano_balance",
+      ],
+    ] as const)("validates the full %s decimal and preserves a valid sibling", async (_label, balancePayload, expectedBalance, invalidField) => {
+      stubNanoGpt(
+        {
+          active: true,
+          limits: { daily: 100 },
+          daily: { used: 25, remaining: 75, resetAt: 1_735_776_000_000 },
+          state: "active",
+        },
+        balancePayload,
       );
 
       await expect(queryNanoGptQuota()).resolves.toMatchObject({
@@ -558,19 +476,14 @@ describe("simple API-key provider queries", () => {
     });
 
     it("keeps valid usage when every returned balance decimal is malformed", async () => {
-      useNanoGptApiKey();
-      vi.stubGlobal(
-        "fetch",
-        vi.fn(async (input: RequestInfo | URL) =>
-          String(input).includes("/subscription/v1/usage")
-            ? jsonResponse({
-                active: true,
-                limits: { monthly: 1000 },
-                monthly: { used: 100, remaining: 900 },
-                state: "active",
-              })
-            : jsonResponse({ usd_balance: "12junk", nano_balance: "anything" }),
-        ),
+      stubNanoGpt(
+        {
+          active: true,
+          limits: { monthly: 1000 },
+          monthly: { used: 100, remaining: 900 },
+          state: "active",
+        },
+        { usd_balance: "12junk", nano_balance: "anything" },
       );
 
       await expect(queryNanoGptQuota()).resolves.toEqual({
@@ -602,27 +515,38 @@ describe("simple API-key provider queries", () => {
       });
     });
 
-    it("returns a combined error when both endpoints fail", async () => {
-      useNanoGptApiKey();
-      vi.stubGlobal(
-        "fetch",
-        vi.fn(
-          async (input: RequestInfo | URL) =>
-            new Response(String(input).includes("/usage") ? "usage failed" : "balance failed", {
-              status: String(input).includes("/usage") ? 500 : 403,
-            }),
-        ),
-      );
+    it.each([
+      [
+        "HTTP errors from both endpoints",
+        async (input: RequestInfo | URL) =>
+          String(input).includes("/usage")
+            ? new Response("usage failed", { status: 500 })
+            : new Response("balance failed", { status: 403 }),
+        "Usage: NanoGPT API error 500: usage failed; Balance: NanoGPT API error 403: balance failed",
+      ],
+      [
+        "caught transport errors without leaking request data",
+        async () => Promise.reject(new Error("network down")),
+        "Usage: network down; Balance: network down",
+      ],
+    ])("returns a combined retryable error for %s", async (_name, fetchImpl, error) => {
+      mocks.resolveNanoGptApiKey.mockResolvedValueOnce({
+        key: "nano-key",
+        source: "env:NANOGPT_API_KEY",
+      });
+      vi.stubGlobal("fetch", vi.fn(fetchImpl));
       await expect(queryNanoGptQuota()).resolves.toEqual({
         success: false,
-        error:
-          "Usage: NanoGPT API error 500: usage failed; Balance: NanoGPT API error 403: balance failed",
+        error,
         retryable: true,
       });
     });
 
     it("preserves non-retryable HTTP status when error bodies cannot be read", async () => {
-      useNanoGptApiKey();
+      mocks.resolveNanoGptApiKey.mockResolvedValueOnce({
+        key: "nano-key",
+        source: "env:NANOGPT_API_KEY",
+      });
       vi.stubGlobal(
         "fetch",
         vi.fn(async () => ({
@@ -638,55 +562,6 @@ describe("simple API-key provider queries", () => {
         retryable: false,
       });
     });
-
-    it("marks a combined transient endpoint failure as retryable", async () => {
-      useNanoGptApiKey();
-      vi.stubGlobal(
-        "fetch",
-        vi.fn(async () => new Response("temporarily unavailable", { status: 503 })),
-      );
-
-      await expect(queryNanoGptQuota()).resolves.toMatchObject({
-        success: false,
-        retryable: true,
-      });
-    });
-
-    it("treats unexpected response shapes as endpoint errors", async () => {
-      useNanoGptApiKey();
-      vi.stubGlobal(
-        "fetch",
-        vi.fn(async (input: RequestInfo | URL) =>
-          String(input).includes("/usage")
-            ? jsonResponse({ nope: true })
-            : jsonResponse({ usd_balance: "5.00" }),
-        ),
-      );
-      await expect(queryNanoGptQuota()).resolves.toEqual({
-        success: true,
-        subscription: undefined,
-        balance: { usdBalanceRaw: "5.00" },
-        endpointErrors: [
-          {
-            endpoint: "usage",
-            message: "NanoGPT usage response returned an unexpected response shape",
-          },
-        ],
-      });
-    });
-
-    it("returns caught transport errors without leaking request data", async () => {
-      useNanoGptApiKey();
-      vi.stubGlobal(
-        "fetch",
-        vi.fn(async () => Promise.reject(new Error("network down"))),
-      );
-      await expect(queryNanoGptQuota()).resolves.toEqual({
-        success: false,
-        error: "Usage: network down; Balance: network down",
-        retryable: true,
-      });
-    });
   });
 
   describe("DeepSeek", () => {
@@ -695,20 +570,17 @@ describe("simple API-key provider queries", () => {
     });
 
     it("maps balance data, supported headers, endpoint, and timeout signal", async () => {
-      const fetchMock = vi.fn(async () =>
-        jsonResponse({
-          is_available: true,
-          balance_infos: [
-            {
-              currency: "USD",
-              total_balance: "12.34",
-              granted_balance: "2.00",
-              topped_up_balance: "10.34",
-            },
-          ],
-        }),
-      );
-      vi.stubGlobal("fetch", fetchMock);
+      const fetchMock = stubJsonFetch({
+        is_available: true,
+        balance_infos: [
+          {
+            currency: "USD",
+            total_balance: "12.34",
+            granted_balance: "2.00",
+            topped_up_balance: "10.34",
+          },
+        ],
+      });
 
       await expect(queryDeepSeekBalance({ requestTimeoutMs: 1234 })).resolves.toEqual({
         success: true,
@@ -760,32 +632,26 @@ describe("simple API-key provider queries", () => {
     });
 
     it.each([
-      ["missing", {}],
-      ["malformed", { is_available: "false" }],
-    ])("preserves %s availability as undefined", async (_case, payload) => {
+      ["missing availability as undefined", {}, undefined, []],
+      ["malformed availability as undefined", { is_available: "false" }, undefined, []],
+      [
+        "only supported currencies, including CNY",
+        {
+          is_available: false,
+          balance_infos: [
+            { currency: "EUR", total_balance: "9.99" },
+            { currency: "cny", total_balance: "88.00" },
+          ],
+        },
+        false,
+        [{ currency: "CNY", totalBalance: "88.00" }],
+      ],
+    ])("keeps %s", async (_name, payload, isAvailable, balanceInfos) => {
       stubJsonFetch(payload);
-
       await expect(queryDeepSeekBalance()).resolves.toEqual({
         success: true,
-        isAvailable: undefined,
-        balanceInfos: [],
-        parseIssues: [],
-      });
-    });
-
-    it("filters unsupported currencies and preserves CNY balances", async () => {
-      stubJsonFetch({
-        is_available: false,
-        balance_infos: [
-          { currency: "EUR", total_balance: "9.99" },
-          { currency: "cny", total_balance: "88.00" },
-        ],
-      });
-      const result = await queryDeepSeekBalance();
-      await expect(result).toEqual({
-        success: true,
-        isAvailable: false,
-        balanceInfos: [{ currency: "CNY", totalBalance: "88.00" }],
+        isAvailable,
+        balanceInfos,
         parseIssues: [],
       });
     });

@@ -16,9 +16,9 @@ import type { QuotaError } from "./types.js";
 
 type NanoGptRecord = Record<string, unknown>;
 
-export type NanoGptEndpoint = "usage" | "balance";
+type NanoGptEndpoint = "usage" | "balance";
 
-export type NanoGptUsageWindow = {
+type NanoGptUsageWindow = {
   used: number;
   limit: number;
   remaining: number;
@@ -31,7 +31,7 @@ export type NanoGptUsageWindow = {
   };
 };
 
-export interface NanoGptSubscription {
+interface NanoGptSubscription {
   active: boolean;
   state: string;
   enforceDailyLimit: boolean;
@@ -41,12 +41,12 @@ export interface NanoGptSubscription {
   graceUntilIso?: string;
 }
 
-export interface NanoGptBalance {
+interface NanoGptBalance {
   usdBalanceRaw?: string;
   nanoBalanceRaw?: string;
 }
 
-export type NanoGptResult =
+type NanoGptResult =
   | {
       success: true;
       subscription?: NanoGptSubscription;
@@ -227,19 +227,18 @@ function parseNanoGptBalance(payload: unknown): {
   return { balance, fieldErrors };
 }
 
-async function fetchNanoGptUsage(
+type NanoGptEndpointFailure = { success: false; message: string; retryable: boolean };
+
+async function fetchNanoGptEndpoint<T extends object>(
+  url: string,
+  method: "GET" | "POST",
   headers: Record<string, string>,
-  requestTimeoutMs?: number,
-): Promise<
-  | { success: true; subscription: NanoGptSubscription }
-  | { success: false; message: string; retryable: boolean }
-> {
+  requestTimeoutMs: number | undefined,
+  parse: (payload: unknown) => T,
+): Promise<({ success: true } & T) | NanoGptEndpointFailure> {
   try {
-    return await fetchWithTimeout(NANOGPT_USAGE_URL, {
-      request: {
-        method: "GET",
-        headers,
-      },
+    return await fetchWithTimeout(url, {
+      request: { method, headers },
       timeoutMs: requestTimeoutMs,
       consume: async (response) => {
         if (!response.ok) {
@@ -256,54 +255,7 @@ async function fetchNanoGptUsage(
           };
         }
 
-        return {
-          success: true as const,
-          subscription: parseNanoGptUsage(await response.json()),
-        };
-      },
-    });
-  } catch (err) {
-    return {
-      success: false,
-      message: sanitizeDisplayText(err instanceof Error ? err.message : String(err)),
-      retryable: true,
-    };
-  }
-}
-
-async function fetchNanoGptBalance(
-  headers: Record<string, string>,
-  requestTimeoutMs?: number,
-): Promise<
-  | { success: true; balance: NanoGptBalance; fieldErrors: string[] }
-  | { success: false; message: string; retryable: boolean }
-> {
-  try {
-    return await fetchWithTimeout(NANOGPT_BALANCE_URL, {
-      request: {
-        method: "POST",
-        headers,
-      },
-      timeoutMs: requestTimeoutMs,
-      consume: async (response) => {
-        if (!response.ok) {
-          let text: string;
-          try {
-            text = await response.text();
-          } catch (error) {
-            text = sanitizeDisplayText(error instanceof Error ? error.message : String(error));
-          }
-          return {
-            success: false as const,
-            message: `NanoGPT API error ${response.status}: ${sanitizeDisplaySnippet(text, 120)}`,
-            retryable: isRetryableHttpStatus(response.status),
-          };
-        }
-
-        return {
-          success: true as const,
-          ...parseNanoGptBalance(await response.json()),
-        };
+        return { success: true as const, ...parse(await response.json()) };
       },
     });
   } catch (err) {
@@ -327,8 +279,22 @@ export async function queryNanoGptQuota(
   };
 
   const [usageResult, balanceResult] = await Promise.all([
-    fetchNanoGptUsage(headers, options.requestTimeoutMs),
-    fetchNanoGptBalance(headers, options.requestTimeoutMs),
+    fetchNanoGptEndpoint(
+      NANOGPT_USAGE_URL,
+      "GET",
+      headers,
+      options.requestTimeoutMs,
+      (payload) => ({
+        subscription: parseNanoGptUsage(payload),
+      }),
+    ),
+    fetchNanoGptEndpoint(
+      NANOGPT_BALANCE_URL,
+      "POST",
+      headers,
+      options.requestTimeoutMs,
+      parseNanoGptBalance,
+    ),
   ]);
 
   const endpointErrors: Array<{ endpoint: NanoGptEndpoint; message: string }> = [];

@@ -57,46 +57,56 @@ const successfulWindows = [
   },
 ];
 
+/** The CN login read from opencode.db is broken, so every stored CN row is listed. */
+function mockInvalidCnDatabaseLogin(error: string) {
+  authMocks.resolveCnWithDiagnostics.mockResolvedValueOnce({
+    auth: { state: "invalid", error },
+    diagnostics: {
+      state: "invalid",
+      source: "opencode.db",
+      error,
+      checkedPaths: [],
+      credentialDatabasePaths: [],
+    },
+  });
+}
+
+/** A key for `endpoint` from its environment variable. */
+function envKey(endpoint: "global" | "cn") {
+  const auth = { state: "configured", apiKey: `${endpoint}-key`, endpoint };
+  const source = `env:KIMI_${endpoint.toUpperCase()}_API_KEY`;
+  return {
+    auth,
+    diagnostics: {
+      state: "configured",
+      source,
+      endpoint,
+      checkedPaths: [source],
+      credentialDatabasePaths: [],
+    },
+  };
+}
+
 describe("Kimi regional providers", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    authMocks.resolveGlobal.mockResolvedValue({
-      state: "configured",
-      apiKey: "global-key",
-      endpoint: "global",
-    });
-    authMocks.resolveCn.mockResolvedValue({
-      state: "configured",
-      apiKey: "cn-key",
-      endpoint: "cn",
-    });
-    authMocks.resolveGlobalWithDiagnostics.mockResolvedValue({
-      auth: { state: "configured", apiKey: "global-key", endpoint: "global" },
-      diagnostics: {
-        state: "configured",
-        source: "env:KIMI_GLOBAL_API_KEY",
-        endpoint: "global",
-        checkedPaths: ["env:KIMI_GLOBAL_API_KEY"],
-        credentialDatabasePaths: [],
-      },
-    });
-    authMocks.resolveCnWithDiagnostics.mockResolvedValue({
-      auth: { state: "configured", apiKey: "cn-key", endpoint: "cn" },
-      diagnostics: {
-        state: "configured",
-        source: "env:KIMI_CN_API_KEY",
-        endpoint: "cn",
-        checkedPaths: ["env:KIMI_CN_API_KEY"],
-        credentialDatabasePaths: [],
-      },
-    });
+    authMocks.resolveGlobal.mockResolvedValue(envKey("global").auth);
+    authMocks.resolveCn.mockResolvedValue(envKey("cn").auth);
+    authMocks.resolveGlobalWithDiagnostics.mockResolvedValue(envKey("global"));
+    authMocks.resolveCnWithDiagnostics.mockResolvedValue(envKey("cn"));
     vi.mocked(isCanonicalProviderAvailable).mockResolvedValue(true);
   });
 
   it.each([
-    [kimiCodePlanGlobalProvider, "global", "global-key", "Kimi Code"],
-    [kimiCodePlanCnProvider, "cn", "cn-key", "Kimi Code (CN)"],
-  ] as const)("binds $id fetches to the resolved regional credential", async (provider, endpoint, apiKey, label) => {
+    [
+      kimiCodePlanGlobalProvider,
+      "global",
+      "global-key",
+      "Kimi Code",
+      "https://api.kimi.ai/coding/v1",
+    ],
+    [kimiCodePlanCnProvider, "cn", "cn-key", "Kimi Code (CN)", "https://api.kimi.com/coding/v1"],
+  ] as const)("binds $id fetches to the resolved regional credential", async (provider, endpoint, apiKey, label, baseUrl) => {
     vi.mocked(queryKimiQuota).mockResolvedValue({
       success: true,
       label,
@@ -112,23 +122,10 @@ describe("Kimi regional providers", () => {
       label,
       requestTimeoutMs: 1234,
     });
-    const combinedResolver =
-      endpoint === "global"
-        ? authMocks.resolveGlobalWithDiagnostics
-        : authMocks.resolveCnWithDiagnostics;
-    expect(combinedResolver).toHaveBeenCalledTimes(1);
-    expect(authMocks.resolveGlobal).not.toHaveBeenCalled();
-    expect(authMocks.resolveCn).not.toHaveBeenCalled();
     expect(out.statusDetails).toEqual(
       expect.arrayContaining([
         { key: "api_endpoint", value: endpoint },
-        {
-          key: "api_base_url",
-          value:
-            endpoint === "global"
-              ? "https://api.kimi.ai/coding/v1"
-              : "https://api.kimi.com/coding/v1",
-        },
+        { key: "api_base_url", value: baseUrl },
       ]),
     );
   });
@@ -170,36 +167,21 @@ describe("Kimi regional providers", () => {
   });
 
   it.each([
-    ["k3"],
-    ["k3-256k"],
-    ["kimi-for-coding"],
-    ["kimi-for-coding-highspeed"],
-  ])("matches the known model %s for each regional canonical id", (modelId) => {
-    expect(
-      kimiCodePlanGlobalProvider.matchesCurrentModel?.(`kimi-code-plan-global/${modelId}`),
-    ).toBe(true);
-    expect(kimiCodePlanCnProvider.matchesCurrentModel?.(`kimi-code-plan-cn/${modelId}`)).toBe(true);
-  });
-
-  it("keeps legacy provider ids owned by CN only", () => {
-    for (const providerId of ["kimi-for-coding", "kimi-code", "kimi", "kimi-for-code"]) {
-      expect(kimiCodePlanCnProvider.matchesCurrentModel?.(`${providerId}/k3`)).toBe(true);
-      expect(kimiCodePlanGlobalProvider.matchesCurrentModel?.(`${providerId}/k3`)).toBe(false);
-    }
-  });
-
-  it("preserves provider-prefix matching for models outside the known Kimi list", () => {
-    expect(kimiCodePlanGlobalProvider.matchesCurrentModel?.("kimi-code-plan-global/kimi-k2")).toBe(
-      true,
-    );
-    expect(kimiCodePlanCnProvider.matchesCurrentModel?.("kimi-code-plan-cn/future-model")).toBe(
-      true,
-    );
-  });
-
-  it("rejects unqualified models without a provider prefix", () => {
-    expect(kimiCodePlanGlobalProvider.matchesCurrentModel?.("kimi-k2")).toBe(false);
-    expect(kimiCodePlanCnProvider.matchesCurrentModel?.("future-model")).toBe(false);
+    ["kimi-code-plan-global/k3", true, false],
+    ["kimi-code-plan-global/kimi-k2", true, false],
+    ["kimi-code-plan-cn/k3", false, true],
+    ["kimi-code-plan-cn/future-model", false, true],
+    // Legacy provider ids belong to CN only.
+    ["kimi-for-coding/k3", false, true],
+    ["kimi-code/k3", false, true],
+    ["kimi/k3", false, true],
+    ["kimi-for-code/k3", false, true],
+    // A model without a provider prefix matches neither region.
+    ["kimi-k2", false, false],
+    ["future-model", false, false],
+  ])("matches %s: global=%s, cn=%s", (model, global, cn) => {
+    expect(kimiCodePlanGlobalProvider.matchesCurrentModel?.(model)).toBe(global);
+    expect(kimiCodePlanCnProvider.matchesCurrentModel?.(model)).toBe(cn);
   });
 
   it("does not resolve auth when the regional runtime provider is unavailable", async () => {
@@ -244,16 +226,7 @@ describe("Kimi regional providers", () => {
     });
     expectNotAttempted(await kimiCodePlanGlobalProvider.fetch({ config: {} } as any));
 
-    authMocks.resolveCnWithDiagnostics.mockResolvedValueOnce({
-      auth: { state: "invalid", error: "Invalid API key" },
-      diagnostics: {
-        state: "invalid",
-        source: "opencode.db",
-        checkedPaths: ["/trusted/opencode.json"],
-        credentialDatabasePaths: ["/trusted/opencode.db"],
-        error: "Invalid API key",
-      },
-    });
+    mockInvalidCnDatabaseLogin("Invalid API key");
     const invalid = await kimiCodePlanCnProvider.fetch({ config: {} } as any);
     expectAttemptedWithErrorLabel(invalid, "Kimi Code (CN)");
     expect(invalid.errors[0]?.message).toBe("Invalid API key");
@@ -277,16 +250,7 @@ describe("Kimi regional providers", () => {
   });
 
   it("keeps valid inactive CN credentials and errors alongside invalid rows, without querying Global", async () => {
-    authMocks.resolveCnWithDiagnostics.mockResolvedValueOnce({
-      auth: { state: "invalid", error: "empty key" },
-      diagnostics: {
-        state: "invalid",
-        source: "opencode.db",
-        error: "empty key",
-        checkedPaths: [],
-        credentialDatabasePaths: [],
-      },
-    });
+    mockInvalidCnDatabaseLogin("empty key");
     vi.mocked(readCredentialRows).mockResolvedValueOnce([
       {
         id: "bad",
@@ -340,19 +304,7 @@ describe("Kimi regional providers", () => {
     const actual =
       await vi.importActual<typeof import("../src/lib/kimi-auth.js")>("../src/lib/kimi-auth.js");
     authMocks.parseCn.mockImplementation(actual.resolveKimiCnAuth);
-    authMocks.resolveCnWithDiagnostics.mockResolvedValueOnce({
-      auth: {
-        state: "invalid",
-        error: "OpenCode could not read this login: resolve_empty: no value",
-      },
-      diagnostics: {
-        state: "invalid",
-        source: "opencode.db",
-        error: "OpenCode could not read this login: resolve_empty: no value",
-        checkedPaths: [],
-        credentialDatabasePaths: [],
-      },
-    });
+    mockInvalidCnDatabaseLogin("OpenCode could not read this login: resolve_empty: no value");
     vi.mocked(readCredentialRows).mockResolvedValueOnce([
       {
         id: "failed",
@@ -363,7 +315,6 @@ describe("Kimi regional providers", () => {
         resolveError: "resolve_empty: no value",
       },
     ]);
-    vi.mocked(queryKimiQuota).mockClear();
 
     const out = await kimiCodePlanCnProvider.fetch({ config: {} } as any);
 

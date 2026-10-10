@@ -14,11 +14,7 @@ import type {
   MimoPlanDetail,
 } from "../lib/mimo.js";
 import { queryMimoDashboard } from "../lib/mimo.js";
-import {
-  DEFAULT_MIMO_CONFIG_CACHE_MAX_AGE_MS,
-  getMimoConfigDiagnostics,
-  resolveMimoConfigCached,
-} from "../lib/mimo-config.js";
+import { getMimoConfigDiagnostics, resolveMimoConfigCached } from "../lib/mimo-config.js";
 import { getQuotaProviderRuntimeIds } from "../lib/provider-metadata.js";
 import { accountingDecimalFromNumber } from "./accounting-decimal.js";
 import {
@@ -38,12 +34,8 @@ const QUOTA_ACCOUNTING: AccountingMetadata = {
   ownership: "maintained",
   authority: "provider_reported",
 };
-const BALANCE_ACCOUNTING: AccountingMetadata = {
-  resultType: "balance",
-  acquisitionMethod: "dashboard_scrape",
-  ownership: "maintained",
-  authority: "provider_reported",
-};
+const BALANCE_ACCOUNTING: AccountingMetadata = { ...QUOTA_ACCOUNTING, resultType: "balance" };
+const TOKEN_UNIT = { kind: "count", unit: "token" } as const;
 
 function getPlanDisplay(detail: MimoEndpointResult<MimoPlanDetail>): string | null {
   if (detail.state !== "success" || detail.data.expired) return null;
@@ -61,13 +53,7 @@ function getPlanDisplay(detail: MimoEndpointResult<MimoPlanDetail>): string | nu
   return planName || planCode || null;
 }
 
-function getGroup(detail: MimoEndpointResult<MimoPlanDetail>): string {
-  const plan = getPlanDisplay(detail);
-  return plan ? `${MIMO_LABEL}: ${plan}` : MIMO_LABEL;
-}
-
 function buildBalanceEntries(balance: MimoBalance, group: string): QuotaToastEntry[] {
-  const entries: QuotaToastEntry[] = [];
   const unit: AccountingUnit = balance.currency
     ? { kind: "currency", code: balance.currency }
     : { kind: "count", unit: "credit" };
@@ -77,6 +63,7 @@ function buildBalanceEntries(balance: MimoBalance, group: string): QuotaToastEnt
     { component: "gift_balance", amount: balance.gift, prominence: "supplementary" },
   ] as const;
 
+  const entries: QuotaToastEntry[] = [];
   for (const row of rows) {
     if (row.amount === null) continue;
     entries.push({
@@ -88,33 +75,23 @@ function buildBalanceEntries(balance: MimoBalance, group: string): QuotaToastEnt
         metric: { kind: "component", component: row.component },
         prominence: row.prominence,
       },
-      quantity: {
-        decimal: accountingDecimalFromNumber(row.amount),
-        unit,
-      },
+      quantity: { decimal: accountingDecimalFromNumber(row.amount), unit },
     });
   }
-
   return entries;
 }
 
 function endpointErrors(result: MimoDashboardResult): QuotaToastError[] {
-  const errors: QuotaToastError[] = [];
-  for (const endpoint of [result.usage, result.detail, result.balance]) {
-    if (endpoint.state === "error") {
-      errors.push({ label: MIMO_LABEL, message: endpoint.error });
-    }
-  }
-  return errors;
+  return [result.usage, result.detail, result.balance].flatMap((endpoint) =>
+    endpoint.state === "error" ? [{ label: MIMO_LABEL, message: endpoint.error }] : [],
+  );
 }
 
 export const xiaomiProvider: QuotaProvider = {
   id: "xiaomi",
 
   async isAvailable(_ctx: QuotaProviderContext): Promise<boolean> {
-    const config = await resolveMimoConfigCached({
-      maxAgeMs: DEFAULT_MIMO_CONFIG_CACHE_MAX_AGE_MS,
-    });
+    const config = await resolveMimoConfigCached();
     return config.state === "configured";
   },
 
@@ -131,9 +108,7 @@ export const xiaomiProvider: QuotaProvider = {
         ? sanitizeSingleLineDisplaySnippet(diagnostics.error, 120)
         : undefined,
     });
-    const config = await resolveMimoConfigCached({
-      maxAgeMs: DEFAULT_MIMO_CONFIG_CACHE_MAX_AGE_MS,
-    });
+    const config = await resolveMimoConfigCached();
 
     if (config.state === "none") return withStatusDetails(notAttemptedResult(), statusDetails);
     if (config.state === "invalid") {
@@ -148,7 +123,8 @@ export const xiaomiProvider: QuotaProvider = {
         ? ctx.config.requestTimeoutMs
         : undefined,
     });
-    const group = getGroup(result.detail);
+    const plan = getPlanDisplay(result.detail);
+    const group = plan ? `${MIMO_LABEL}: ${plan}` : MIMO_LABEL;
     const entries: QuotaToastEntry[] = [];
 
     if (
@@ -167,17 +143,11 @@ export const xiaomiProvider: QuotaProvider = {
         },
         basis: {
           used: {
-            quantity: {
-              decimal: accountingDecimalFromNumber(used),
-              unit: { kind: "count", unit: "token" },
-            },
+            quantity: { decimal: accountingDecimalFromNumber(used), unit: TOKEN_UNIT },
             authority: "provider_reported",
           },
           limit: {
-            quantity: {
-              decimal: accountingDecimalFromNumber(limit),
-              unit: { kind: "count", unit: "token" },
-            },
+            quantity: { decimal: accountingDecimalFromNumber(limit), unit: TOKEN_UNIT },
             authority: "provider_reported",
           },
         },

@@ -1,5 +1,5 @@
-import { homedir } from "os";
-import { join } from "path";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../src/lib/opencode-runtime-paths.js", () => ({
@@ -14,6 +14,8 @@ vi.mock("../src/lib/opencode-runtime-paths.js", () => ({
 vi.mock("fs", () => ({ existsSync: vi.fn() }));
 vi.mock("fs/promises", () => ({ readFile: vi.fn() }));
 
+import { existsSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import {
   bindCredentialSource,
   createIntegrationCredentialSource,
@@ -38,19 +40,33 @@ function source(
   };
 }
 
+const trustedJson = join(homedir(), ".config", "opencode", "opencode.json");
+const trustedJsonc = join(homedir(), ".config", "opencode", "opencode.jsonc");
+const authJson = join(homedir(), ".local", "share", "opencode", "opencode.db");
+const workspaceJson = join(process.cwd(), "opencode.json");
+
+/** Fakes the files on disk: path -> JSON content. Every other path is missing. */
+function files(contents: Record<string, unknown>): void {
+  vi.mocked(existsSync).mockImplementation((path) => String(path) in contents);
+  vi.mocked(readFile).mockImplementation(async (path) => {
+    if (String(path) in contents) return JSON.stringify(contents[String(path)]);
+    throw new Error("missing");
+  });
+}
+
+const providerKeys = (keys: Record<string, string>) => ({
+  provider: Object.fromEntries(
+    Object.entries(keys).map(([id, apiKey]) => [id, { options: { apiKey } }]),
+  ),
+});
+
 describe("quota provider trusted auth binding", () => {
   const originalEnv = { ...process.env };
-  const trustedJson = join(homedir(), ".config", "opencode", "opencode.json");
-  const trustedJsonc = join(homedir(), ".config", "opencode", "opencode.jsonc");
-  const authJson = join(homedir(), ".local", "share", "opencode", "opencode.db");
-  const workspaceJson = join(process.cwd(), "opencode.json");
 
-  beforeEach(async () => {
+  beforeEach(() => {
     process.env = { ...originalEnv };
     delete process.env.EXPLICIT_KEY;
     delete process.env.OTHER_KEY;
-    const { existsSync } = await import("fs");
-    const { readFile } = await import("fs/promises");
     vi.mocked(existsSync).mockReset().mockReturnValue(false);
     vi.mocked(readFile).mockReset().mockRejectedValue(new Error("missing"));
   });
@@ -61,21 +77,9 @@ describe("quota provider trusted auth binding", () => {
 
   it("uses explicit environment auth before trusted config and strict opencode.db", async () => {
     process.env.EXPLICIT_KEY = "env-secret";
-    const { existsSync } = await import("fs");
-    const { readFile } = await import("fs/promises");
-    vi.mocked(existsSync).mockImplementation((path) => path === trustedJson);
-    vi.mocked(readFile).mockImplementation(async (path) => {
-      if (path === trustedJson) {
-        return JSON.stringify({
-          provider: { "provider-one": { options: { apiKey: "config-secret" } } },
-        });
-      }
-      if (path === authJson) {
-        return JSON.stringify({
-          "provider-one": { type: "api", key: "auth-secret" },
-        });
-      }
-      throw new Error("missing");
+    files({
+      [trustedJson]: providerKeys({ "provider-one": "config-secret" }),
+      [authJson]: { "provider-one": { type: "api", key: "auth-secret" } },
     });
 
     const result = await resolveQuotaProviderApiKey(source());
@@ -84,19 +88,11 @@ describe("quota provider trusted auth binding", () => {
   });
 
   it("uses only the exact providerId in trusted global provider config", async () => {
-    const { existsSync } = await import("fs");
-    const { readFile } = await import("fs/promises");
-    vi.mocked(existsSync).mockImplementation((path) => path === trustedJson);
-    vi.mocked(readFile).mockImplementation(async (path) => {
-      if (path === trustedJson) {
-        return JSON.stringify({
-          provider: {
-            "provider-one-alias": { options: { apiKey: "neighbor-secret" } },
-            "provider-one": { options: { apiKey: "exact-secret" } },
-          },
-        });
-      }
-      throw new Error("missing");
+    files({
+      [trustedJson]: providerKeys({
+        "provider-one-alias": "neighbor-secret",
+        "provider-one": "exact-secret",
+      }),
     });
 
     const result = await resolveQuotaProviderApiKey(source());
@@ -107,19 +103,7 @@ describe("quota provider trusted auth binding", () => {
   it("expands a global config env template only for exact explicit apiKeyEnv", async () => {
     process.env.EXPLICIT_KEY = "explicit-secret";
     process.env.OTHER_KEY = "other-secret";
-    const { existsSync } = await import("fs");
-    const { readFile } = await import("fs/promises");
-    vi.mocked(existsSync).mockImplementation((path) => path === trustedJsonc);
-    vi.mocked(readFile).mockImplementation(async (path) => {
-      if (path === trustedJsonc) {
-        return JSON.stringify({
-          provider: {
-            "provider-one": { options: { apiKey: "{env:OTHER_KEY}" } },
-          },
-        });
-      }
-      throw new Error("missing");
-    });
+    files({ [trustedJsonc]: providerKeys({ "provider-one": "{env:OTHER_KEY}" }) });
 
     const result = await resolveQuotaProviderApiKey(source({ apiKeyEnv: "EXPLICIT_KEY" }));
     expect(result.key).toBe("explicit-secret");
@@ -131,15 +115,11 @@ describe("quota provider trusted auth binding", () => {
   });
 
   it("ignores legacy opencode.db entries", async () => {
-    const { readFile } = await import("fs/promises");
-    vi.mocked(readFile).mockImplementation(async (path) => {
-      if (path === authJson) {
-        return JSON.stringify({
-          "provider-one": { type: "api", key: "auth-secret" },
-          "provider-one-alias": { type: "api", key: "neighbor-secret" },
-        });
-      }
-      throw new Error("missing");
+    files({
+      [authJson]: {
+        "provider-one": { type: "api", key: "auth-secret" },
+        "provider-one-alias": { type: "api", key: "neighbor-secret" },
+      },
     });
 
     const result = await resolveQuotaProviderApiKey(source());
@@ -149,17 +129,7 @@ describe("quota provider trusted auth binding", () => {
 
   it("never reads workspace config, SDK config, aliases, or derived env names", async () => {
     process.env.PROVIDER_ONE_API_KEY = "derived-secret";
-    const { existsSync } = await import("fs");
-    const { readFile } = await import("fs/promises");
-    vi.mocked(existsSync).mockImplementation((path) => path === workspaceJson);
-    vi.mocked(readFile).mockImplementation(async (path) => {
-      if (path === workspaceJson) {
-        return JSON.stringify({
-          provider: { "provider-one": { options: { apiKey: "workspace-secret" } } },
-        });
-      }
-      throw new Error("missing");
-    });
+    files({ [workspaceJson]: providerKeys({ "provider-one": "workspace-secret" }) });
 
     const result = await resolveQuotaProviderApiKey(source({ apiKeyEnv: undefined }));
     expect(result.key).toBeUndefined();

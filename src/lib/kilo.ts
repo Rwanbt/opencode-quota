@@ -12,8 +12,11 @@ import { fetchWithTimeout } from "./http.js";
 import { isRecord } from "./json-guards.js";
 import type { QuotaError } from "./types.js";
 
-const KILO_PASS_STATE_ENDPOINT = "https://app.kilo.ai/api/trpc/kiloPass.getState";
-const KILO_BALANCE_ENDPOINT = "https://api.kilo.ai/api/profile/balance";
+const KILO_PASS_STATE_URL = `https://app.kilo.ai/api/trpc/kiloPass.getState?${new URLSearchParams({
+  batch: "1",
+  input: JSON.stringify({ "0": null }),
+})}`;
+const KILO_BALANCE_URL = "https://api.kilo.ai/api/profile/balance";
 const MAX_RESPONSE_BYTES = 64 * 1024;
 
 type KiloPassStateSuccess = {
@@ -36,16 +39,14 @@ type NoActiveKiloPassResult = QuotaError & { reason: "no_active_subscription" };
 type ParsedKiloPassState = KiloPassStateSuccess | QuotaError | NoActiveKiloPassResult;
 type KiloBalanceResult = { success: true; balanceUsd: number } | QuotaError;
 type KiloRequestOptions = { requestTimeoutMs?: number };
+type KiloEndpoint = "state" | "balance";
 
 function sanitizeMessage(text: string, secret?: string, maxLength = 200): string {
   const redacted = secret ? text.split(secret).join("[redacted]") : text;
   return (sanitizeSingleLineDisplayText(redacted) || "unknown").slice(0, maxLength);
 }
 
-async function readResponseText(
-  response: Response,
-  endpoint: "state" | "balance",
-): Promise<string> {
+async function readResponseText(response: Response, endpoint: KiloEndpoint): Promise<string> {
   const reader = response.body?.getReader();
   if (!reader) return "";
 
@@ -92,61 +93,29 @@ function firstValidResetTimeIso(...values: unknown[]): string | undefined {
   return undefined;
 }
 
-function noActiveKiloPass(): NoActiveKiloPassResult {
-  return {
-    success: false,
-    reason: "no_active_subscription",
-    error: "Kilo Gateway state API returned no active Kilo Pass subscription",
-  };
-}
-
-function isNoActiveKiloPassResult(result: ParsedKiloPassState): result is NoActiveKiloPassResult {
-  return !result.success && "reason" in result && result.reason === "no_active_subscription";
+function stateError(error: string): QuotaError {
+  return { success: false, error: `Kilo Gateway state API returned ${error}` };
 }
 
 function parseKiloPassState(payload: unknown): ParsedKiloPassState {
   const item = Array.isArray(payload) ? payload[0] : payload;
-  if (!isRecord(item)) {
-    return {
-      success: false,
-      error: "Kilo Gateway state API returned an unexpected response shape",
-    };
-  }
-
-  const result = item.result;
+  const result = isRecord(item) ? item.result : undefined;
   const data = isRecord(result) ? result.data : undefined;
-  if (!isRecord(data)) {
-    return {
-      success: false,
-      error: "Kilo Gateway state API returned an unexpected response shape",
-    };
+  // The batched tRPC reply wraps the state in `json`; the unbatched one does not.
+  if (!isRecord(data) || ("json" in data && !isRecord(data.json))) {
+    return stateError("an unexpected response shape");
   }
-
-  if ("json" in data && !isRecord(data.json)) {
-    return {
-      success: false,
-      error: "Kilo Gateway state API returned an unexpected response shape",
-    };
-  }
-
   const root = isRecord(data.json) ? data.json : data;
-  if (!isRecord(root)) {
-    return {
-      success: false,
-      error: "Kilo Gateway state API returned an unexpected response shape",
-    };
-  }
 
   const subscription = root.subscription;
   if (subscription === null || !("subscription" in root)) {
-    return noActiveKiloPass();
-  }
-  if (!isRecord(subscription)) {
     return {
       success: false,
-      error: "Kilo Gateway state API returned an invalid Kilo Pass subscription",
+      reason: "no_active_subscription",
+      error: "Kilo Gateway state API returned no active Kilo Pass subscription",
     };
   }
+  if (!isRecord(subscription)) return stateError("an invalid Kilo Pass subscription");
 
   const baseCreditsUsd = nonnegativeNumber(subscription.currentPeriodBaseCreditsUsd);
   const usageUsd = nonnegativeNumber(subscription.currentPeriodUsageUsd);
@@ -156,24 +125,9 @@ function parseKiloPassState(payload: unknown): ParsedKiloPassState {
       ? 0
       : nonnegativeNumber(rawBonusCreditsUsd);
 
-  if (baseCreditsUsd === null) {
-    return {
-      success: false,
-      error: "Kilo Gateway state API returned invalid currentPeriodBaseCreditsUsd",
-    };
-  }
-  if (usageUsd === null) {
-    return {
-      success: false,
-      error: "Kilo Gateway state API returned invalid currentPeriodUsageUsd",
-    };
-  }
-  if (bonusCreditsUsd === null) {
-    return {
-      success: false,
-      error: "Kilo Gateway state API returned invalid currentPeriodBonusCreditsUsd",
-    };
-  }
+  if (baseCreditsUsd === null) return stateError("invalid currentPeriodBaseCreditsUsd");
+  if (usageUsd === null) return stateError("invalid currentPeriodUsageUsd");
+  if (bonusCreditsUsd === null) return stateError("invalid currentPeriodBonusCreditsUsd");
 
   const resetTimeIso = firstValidResetTimeIso(
     subscription.nextBillingAt,
@@ -213,17 +167,15 @@ function parseKiloBalance(payload: unknown): KiloBalanceResult {
   return { success: true, balanceUsd };
 }
 
-async function requestKiloPassState(
+async function requestKiloJson<T extends ParsedKiloPassState | KiloBalanceResult>(
+  url: string,
+  endpoint: KiloEndpoint,
   key: string,
   options: KiloRequestOptions,
-): Promise<ParsedKiloPassState> {
-  const query = new URLSearchParams({
-    batch: "1",
-    input: JSON.stringify({ "0": null }),
-  });
-
+  parse: (payload: unknown) => T,
+): Promise<T | QuotaError> {
   try {
-    return await fetchWithTimeout(`${KILO_PASS_STATE_ENDPOINT}?${query.toString()}`, {
+    return await fetchWithTimeout(url, {
       request: {
         method: "GET",
         headers: {
@@ -234,52 +186,16 @@ async function requestKiloPassState(
         redirect: "manual",
       },
       timeoutMs: options.requestTimeoutMs,
-      consume: async (response) => {
-        const text = await readResponseText(response, "state");
+      consume: async (response): Promise<T | QuotaError> => {
+        const text = await readResponseText(response, endpoint);
         if (!response.ok) {
           return {
             success: false,
-            error: `Kilo Gateway state API error ${response.status}: ${sanitizeMessage(text, key)}`,
+            error: `Kilo Gateway ${endpoint} API error ${response.status}: ${sanitizeMessage(text, key)}`,
           };
         }
 
-        return parseKiloPassState(JSON.parse(text) as unknown);
-      },
-    });
-  } catch (error) {
-    return {
-      success: false,
-      error: sanitizeMessage(error instanceof Error ? error.message : String(error), key),
-    };
-  }
-}
-
-async function requestKiloBalance(
-  key: string,
-  options: KiloRequestOptions,
-): Promise<KiloBalanceResult> {
-  try {
-    return await fetchWithTimeout(KILO_BALANCE_ENDPOINT, {
-      request: {
-        method: "GET",
-        headers: {
-          Accept: "application/json",
-          Authorization: `Bearer ${key}`,
-          "Content-Type": "application/json",
-        },
-        redirect: "manual",
-      },
-      timeoutMs: options.requestTimeoutMs,
-      consume: async (response) => {
-        const text = await readResponseText(response, "balance");
-        if (!response.ok) {
-          return {
-            success: false,
-            error: `Kilo Gateway balance API error ${response.status}: ${sanitizeMessage(text, key)}`,
-          };
-        }
-
-        return parseKiloBalance(JSON.parse(text) as unknown);
+        return parse(JSON.parse(text) as unknown);
       },
     });
   } catch (error) {
@@ -294,15 +210,28 @@ export async function queryKiloQuota(options: KiloRequestOptions = {}): Promise<
   const resolved = await resolveApiKey(API_KEY_VENDORS.kilo);
   if (!resolved) return null;
 
-  const passResult = await requestKiloPassState(resolved.key, options);
+  const passResult = await requestKiloJson(
+    KILO_PASS_STATE_URL,
+    "state",
+    resolved.key,
+    options,
+    parseKiloPassState,
+  );
   if (passResult.success) {
     return { ...passResult, mode: "kilo_pass" };
   }
-  if (!isNoActiveKiloPassResult(passResult)) {
+  // Only a valid reply without an active pass falls back to the balance.
+  if (!("reason" in passResult)) {
     return passResult;
   }
 
-  const balanceResult = await requestKiloBalance(resolved.key, options);
+  const balanceResult = await requestKiloJson(
+    KILO_BALANCE_URL,
+    "balance",
+    resolved.key,
+    options,
+    parseKiloBalance,
+  );
   if (balanceResult.success) {
     return { ...balanceResult, mode: "gateway_balance" };
   }

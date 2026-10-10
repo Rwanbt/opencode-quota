@@ -7,51 +7,34 @@ import { buildSidebarQuotaPanelLines } from "../src/lib/tui-sidebar-format.js";
 
 const usageValue = "Used 100 | Included 80 | Billed 20 ($0.20)";
 
-const data: QuotaRenderData = {
-  entries: [
-    {
-      accounting: {
-        resultType: "usage",
-        acquisitionMethod: "remote_api",
-        ownership: "maintained",
-        authority: "provider_reported",
-      },
-      kind: "value",
-      name: "Copilot AI Credits",
-      group: "Copilot (personal)",
-      label: "Credits:",
-      value: usageValue,
-    },
-  ],
-  errors: [],
-};
-
 describe("Copilot usage-only four-surface formatting", () => {
   it.each([
-    ["[Copilot] (business) (active)"],
-    ["[Copilot sita] (business) (active)"],
-  ])("preserves the credential group %s on command, toast, and sidebar", (group) => {
-    const credentialData: QuotaRenderData = {
-      ...data,
-      entries: data.entries.map((entry) => ({
-        ...entry,
-        name: entry.name.replace("Copilot", group),
-        group,
-      })),
+    // The personal group is implied; credential groups must survive on every surface.
+    ["Copilot (personal)", "Copilot AI Credits", "Copilot"],
+    ...["[Copilot] (business) (active)", "[Copilot sita] (business) (active)"].map((group) => [
+      group,
+      `${group} AI Credits`,
+      group,
+    ]),
+  ])("shows group %s without inventing a remaining percentage or reset", (group, name, shown) => {
+    const data: QuotaRenderData = {
+      entries: [
+        {
+          accounting: {
+            resultType: "usage",
+            acquisitionMethod: "remote_api",
+            ownership: "maintained",
+            authority: "provider_reported",
+          },
+          kind: "value",
+          name,
+          group,
+          label: "Credits:",
+          value: usageValue,
+        },
+      ],
+      errors: [],
     };
-    const outputs = [
-      formatQuotaCommand({ ...credentialData, generatedAtMs: 0 }),
-      formatQuotaRowsGrouped(credentialData),
-      buildSidebarQuotaPanelLines({
-        data: credentialData,
-        config: { formatStyle: "allWindows", percentDisplayMode: "remaining" },
-      }).join("\n"),
-    ];
-
-    for (const output of outputs) expect(output).toContain(group);
-  });
-
-  it("does not invent a remaining percentage or reset on any surface", () => {
     const web = formatQuotaCommand({ ...data, generatedAtMs: 0 });
     const toast = formatQuotaRowsGrouped({
       ...data,
@@ -73,8 +56,7 @@ describe("Copilot usage-only four-surface formatting", () => {
       expect(output).not.toMatch(/\d+%/u);
       expect(output).not.toContain("reset");
     }
-    for (const output of [web, toast, compact]) {
-      expect(output).toContain(usageValue);
-    }
+    for (const output of [web, toast, sidebar]) expect(output).toContain(shown);
+    for (const output of [web, toast, compact]) expect(output).toContain(usageValue);
   });
 });

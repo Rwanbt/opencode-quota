@@ -2,36 +2,17 @@ import type { CostBuckets } from "./modelsdev-pricing.js";
 import { getQuotaProviderRuntimeIds } from "./provider-metadata.js";
 import type { CursorQuotaPlan } from "./types.js";
 
-export type CursorLocalPricingModel =
-  | "auto"
-  | "composer-1"
-  | "composer-1.5"
-  | "composer-2"
-  | "composer-2-fast"
-  | "composer-2.5"
-  | "composer-2.5-fast"
-  | "grok-4.5"
-  | "grok-4.5-fast"
-  | "grok-4.6"
-  | "grok-4.6-fast"
-  | "grok-4.7"
-  | "grok-4.7-fast";
-
 export type CursorResolvedModel =
   | { kind: "local"; model: CursorLocalPricingModel; pool: "auto_composer" }
   | { kind: "official"; providerHint: string; modelHint: string; pool: "api" }
   | { kind: "unknown" };
 
-export const CURSOR_PROVIDER_ID = "cursor";
-export const CURSOR_LEGACY_PROVIDER_ID = "cursor-acp";
-
-export const CURSOR_INCLUDED_API_USD_BY_PLAN: Readonly<
-  Record<Exclude<CursorQuotaPlan, "none">, number>
-> = {
-  pro: 20,
-  "pro-plus": 70,
-  ultra: 400,
-};
+const CURSOR_INCLUDED_API_USD_BY_PLAN: Readonly<Record<Exclude<CursorQuotaPlan, "none">, number>> =
+  {
+    pro: 20,
+    "pro-plus": 70,
+    ultra: 400,
+  };
 
 const CURSOR_PROVIDER_IDS = new Set([
   ...getQuotaProviderRuntimeIds("cursor"),
@@ -39,90 +20,23 @@ const CURSOR_PROVIDER_IDS = new Set([
   "@rama_nigg/open-cursor",
 ]);
 
-const CURSOR_LOCAL_PRICING: Readonly<Record<CursorLocalPricingModel, CostBuckets>> = {
-  auto: {
-    input: 1.25,
-    output: 6,
-    cache_read: 0.25,
-  },
-  "composer-1": {
-    input: 1.25,
-    output: 10,
-    cache_read: 0.125,
-  },
-  "composer-1.5": {
-    input: 3.5,
-    output: 17.5,
-    cache_read: 0.35,
-  },
-  "composer-2": {
-    input: 0.5,
-    output: 2.5,
-    cache_read: 0.2,
-  },
-  "composer-2-fast": {
-    input: 1.5,
-    output: 7.5,
-    cache_read: 0.35,
-  },
-  "composer-2.5": {
-    input: 0.5,
-    output: 2.5,
-    cache_read: 0.2,
-  },
-  "composer-2.5-fast": {
-    input: 3,
-    output: 15,
-    cache_read: 0.5,
-  },
-  "grok-4.5": {
-    input: 2,
-    output: 6,
-    cache_read: 0.5,
-  },
-  "grok-4.5-fast": {
-    input: 4,
-    output: 18,
-    cache_read: 1,
-  },
-  "grok-4.6": {
-    input: 2,
-    output: 6,
-    cache_read: 0.5,
-  },
-  "grok-4.6-fast": {
-    input: 4,
-    output: 12,
-    cache_read: 1,
-  },
-  "grok-4.7": {
-    input: 2,
-    output: 6,
-    cache_read: 0.5,
-  },
-  "grok-4.7-fast": {
-    input: 4,
-    output: 12,
-    cache_read: 1,
-  },
-};
+const CURSOR_LOCAL_PRICING = {
+  auto: { input: 1.25, output: 6, cache_read: 0.25 },
+  "composer-1": { input: 1.25, output: 10, cache_read: 0.125 },
+  "composer-1.5": { input: 3.5, output: 17.5, cache_read: 0.35 },
+  "composer-2": { input: 0.5, output: 2.5, cache_read: 0.2 },
+  "composer-2-fast": { input: 1.5, output: 7.5, cache_read: 0.35 },
+  "composer-2.5": { input: 0.5, output: 2.5, cache_read: 0.2 },
+  "composer-2.5-fast": { input: 3, output: 15, cache_read: 0.5 },
+  "grok-4.5": { input: 2, output: 6, cache_read: 0.5 },
+  "grok-4.5-fast": { input: 4, output: 18, cache_read: 1 },
+  "grok-4.6": { input: 2, output: 6, cache_read: 0.5 },
+  "grok-4.6-fast": { input: 4, output: 12, cache_read: 1 },
+  "grok-4.7": { input: 2, output: 6, cache_read: 0.5 },
+  "grok-4.7-fast": { input: 4, output: 12, cache_read: 1 },
+} satisfies Record<string, CostBuckets>;
 
-const CURSOR_LOCAL_MODEL_ALIASES: Readonly<Record<string, CursorLocalPricingModel>> = {
-  auto: "auto",
-  "default[]": "auto",
-  "composer-1": "composer-1",
-  "composer-1.5": "composer-1.5",
-  "composer-2": "composer-2",
-  "composer-2-fast": "composer-2-fast",
-  "composer-2.5": "composer-2.5",
-  "composer-2.5-fast": "composer-2.5-fast",
-  "grok-4.5": "grok-4.5",
-  "grok-4.5-fast": "grok-4.5-fast",
-  "grok-4.6": "grok-4.6",
-  "grok-4.6-fast": "grok-4.6-fast",
-  "grok-4.7": "grok-4.7",
-  "grok-4.7-fast": "grok-4.7-fast",
-};
+export type CursorLocalPricingModel = keyof typeof CURSOR_LOCAL_PRICING;
 
 export const CURSOR_OFFICIAL_MODEL_ALIASES: Readonly<
   Record<string, { providerHint: string; modelHint: string }>
@@ -205,20 +119,7 @@ export function isCursorProviderId(raw?: string): boolean {
 export function isCursorModelId(raw?: string): boolean {
   if (!raw || typeof raw !== "string") return false;
   const normalized = raw.trim().toLowerCase();
-  return (
-    normalized.startsWith(`${CURSOR_PROVIDER_ID}/`) ||
-    normalized.startsWith(`${CURSOR_LEGACY_PROVIDER_ID}/`)
-  );
-}
-
-export function extractCursorModelPart(rawModelId: string): string {
-  const trimmed = rawModelId.trim();
-  const lastSlash = trimmed.lastIndexOf("/");
-  if (lastSlash === -1) return trimmed.toLowerCase();
-  return trimmed
-    .slice(lastSlash + 1)
-    .trim()
-    .toLowerCase();
+  return normalized.startsWith("cursor/") || normalized.startsWith("cursor-acp/");
 }
 
 export function getCursorPlanDisplayName(plan: CursorQuotaPlan): string | null {
@@ -245,8 +146,7 @@ export function getEffectiveCursorIncludedApiUsd(params: {
   ) {
     return params.overrideUsd;
   }
-  if (params.plan === "none") return undefined;
-  return CURSOR_INCLUDED_API_USD_BY_PLAN[params.plan];
+  return params.plan === "none" ? undefined : CURSOR_INCLUDED_API_USD_BY_PLAN[params.plan];
 }
 
 export function lookupCursorLocalCost(model: string): CostBuckets | null {
@@ -256,16 +156,17 @@ export function lookupCursorLocalCost(model: string): CostBuckets | null {
 export function resolveCursorModel(rawModelId?: string): CursorResolvedModel {
   if (!rawModelId || typeof rawModelId !== "string") return { kind: "unknown" };
 
-  const model = extractCursorModelPart(rawModelId);
-  if (!model) return { kind: "unknown" };
+  // Ids may carry a provider prefix (`cursor/auto`); the last segment names the model.
+  const trimmed = rawModelId.trim();
+  const model = trimmed
+    .slice(trimmed.lastIndexOf("/") + 1)
+    .trim()
+    .toLowerCase();
 
-  const localModel = CURSOR_LOCAL_MODEL_ALIASES[model];
-  if (localModel) {
-    return {
-      kind: "local",
-      model: localModel,
-      pool: "auto_composer",
-    };
+  // `default[]` is another id for Cursor's Auto model.
+  const localModel = model === "default[]" ? "auto" : model;
+  if (Object.hasOwn(CURSOR_LOCAL_PRICING, localModel)) {
+    return { kind: "local", model: localModel as CursorLocalPricingModel, pool: "auto_composer" };
   }
 
   const official = CURSOR_OFFICIAL_MODEL_ALIASES[model];

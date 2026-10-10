@@ -16,29 +16,157 @@ vi.mock("../src/lib/resolved-auth-identity.js", () => ({
 }));
 
 import {
-  DEFAULT_OPENAI_AUTH_CACHE_MAX_AGE_MS,
   hasOpenAIOAuthCached,
+  type OpenAIOAuthLogin,
   queryOpenAIQuota,
   resolveOpenAIAuthIdentity,
   resolveOpenAIOAuth,
 } from "../src/lib/openai.js";
 
-function mockOpenAIUsageResponse(usage: unknown): void {
-  mocks.readAuthFileCached.mockResolvedValueOnce({
-    openai: { type: "oauth", access: "a.b.c", expires: Date.now() + 60_000 },
-  });
-  vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, json: async () => usage })) as any);
+const LOGIN: OpenAIOAuthLogin = { state: "configured", sourceKey: "openai", accessToken: "a.b.c" };
+
+/** A JWT-shaped token with this payload. */
+function jwt(payload: object): string {
+  return `header.${Buffer.from(JSON.stringify(payload)).toString("base64url")}.signature`;
 }
 
-describe("openai auth resolution", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
-  });
+const PROFILE_JWT = jwt({
+  "https://api.openai.com/profile": { email: "user@example.com" },
+  "https://api.openai.com/auth": { chatgpt_account_id: "acct_jwt" },
+});
 
-  afterEach(() => {
-    vi.unstubAllGlobals();
+/** Queries a valid login; the usage reply is passed through as-is, so NaN stays NaN. */
+function queryUsage(usage: unknown) {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => ({ ok: true, json: async () => usage })),
+  );
+  return queryOpenAIQuota({ auth: LOGIN });
+}
+
+const HOURLY_80 = {
+  percentRemaining: 80,
+  resetTimeIso: "2026-01-01T01:00:00.000Z",
+  fixedWindow: {
+    kind: "fixed_window",
+    startedAtIso: "2025-12-31T20:00:00.000Z",
+    observedAtIso: "2026-01-01T00:00:00.000Z",
+    endsAtIso: "2026-01-01T01:00:00.000Z",
+    fullReset: true,
+  },
+};
+/** A rate-limit window as ChatGPT reports it. */
+function rateWindow(
+  usedPercent: unknown,
+  limitWindowSeconds: number,
+  reset: { reset_at?: number; reset_after_seconds?: number },
+) {
+  return { used_percent: usedPercent, limit_window_seconds: limitWindowSeconds, ...reset };
+}
+
+const HOURLY_20_USED = rateWindow(20, 18_000, { reset_after_seconds: 3_600 });
+const BUSINESS_MONTHLY = {
+  percentRemaining: 67,
+  resetTimeIso: new Date(1_786_262_548_000).toISOString(),
+};
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.useRealTimers();
+});
+
+describe("resolveOpenAIOAuth", () => {
+  it.each([
+    ["no supported entry", {}, { state: "none" }],
+    [
+      // OpenCode 2 imports a legacy console login as `methodID: "device"`, often without an orgID.
+      "the Console login under opencode, an API key or a blank token",
+      {
+        codex: { type: "oauth", access: "   " },
+        openai: { type: "api", access: "ignored" },
+        chatgpt: { type: "oauth", access: "   " },
+        opencode: { type: "oauth", methodID: "device", access: "console-token" },
+      },
+      { state: "none" },
+    ],
+    [
+      "openai before legacy compatibility keys",
+      {
+        codex: { type: "oauth", access: "codex-token" },
+        openai: { type: "oauth", access: "openai-token" },
+        chatgpt: { type: "oauth", access: "chatgpt-token" },
+        opencode: { type: "oauth", access: "opencode-token" },
+      },
+      { state: "configured", sourceKey: "openai", accessToken: "openai-token" },
+    ],
+    [
+      "chatgpt when codex and openai are absent",
+      { chatgpt: { type: "oauth", access: "a.b.c" } },
+      { state: "configured", sourceKey: "chatgpt", accessToken: "a.b.c" },
+    ],
+    [
+      "a failed openai login over a later compatibility key, as a configured one would",
+      {
+        openai: { type: "oauth", resolveError: "resolve_empty: no value" },
+        codex: { type: "oauth", access: "codex-token" },
+      },
+      { state: "failed", sourceKey: "openai", error: "resolve_empty: no value" },
+    ],
+    [
+      "email and account id from the JWT, refresh token and expiry from the entry",
+      {
+        openai: {
+          type: "oauth",
+          access: PROFILE_JWT,
+          refresh: "refresh-token",
+          expires: 5,
+          accountId: "acct_stored",
+        },
+      },
+      {
+        state: "configured",
+        sourceKey: "openai",
+        accessToken: PROFILE_JWT,
+        refreshToken: "refresh-token",
+        expiresAt: 5,
+        email: "user@example.com",
+        accountId: "acct_jwt",
+      },
+    ],
+    [
+      "the stored account id without one in the JWT, and no blank refresh token",
+      { openai: { type: "oauth", access: jwt({}), refresh: "  ", accountId: "acct_stored" } },
+      {
+        state: "configured",
+        sourceKey: "openai",
+        accessToken: jwt({}),
+        accountId: "acct_stored",
+      },
+    ],
+  ])("resolves %s", (_name, auth, expected) => {
+    expect(resolveOpenAIOAuth(auth as never)).toEqual(expected);
+  });
+});
+
+describe("cached OpenAI login checks", () => {
+  it.each([
+    [{ openai: { type: "oauth", access: "cached-token" } }, true],
+    [{ openai: { type: "oauth", resolveError: "refresh_failed: HTTP 400" } }, true],
+    [{}, false],
+  ])("reads the OpenAI ids for hasOpenAIOAuthCached (%j)", async (auth, expected) => {
+    mocks.readAuthFileCached.mockResolvedValueOnce(auth);
+
+    await expect(hasOpenAIOAuthCached()).resolves.toBe(expected);
+    expect(mocks.readAuthFileCached).toHaveBeenCalledWith({
+      maxAgeMs: 5_000,
+      integrationIds: ["openai", "codex", "chatgpt"],
+    });
   });
 
   it("prefers the resolved stable account id for opaque cache identity", async () => {
@@ -62,312 +190,243 @@ describe("openai auth resolution", () => {
   });
 
   it("uses the winning credential rather than advisory email when no account id exists", async () => {
-    const emailPayload = Buffer.from(JSON.stringify({ email: "shared@example.com" })).toString(
-      "base64url",
-    );
-    mocks.readAuthFileCached
-      .mockResolvedValueOnce({
-        openai: {
-          type: "oauth",
-          access: `header.${emailPayload}.signature-one`,
-          refresh: "refresh-secret-one",
-        },
-      })
-      .mockResolvedValueOnce({
-        openai: {
-          type: "oauth",
-          access: `header.${emailPayload}.signature-two`,
-          refresh: "refresh-secret-two",
-        },
+    const access = jwt({ email: "shared@example.com" });
+    for (const refresh of ["refresh-secret-one", "refresh-secret-two"]) {
+      mocks.readAuthFileCached.mockResolvedValueOnce({
+        openai: { type: "oauth", access, refresh },
       });
-
-    await resolveOpenAIAuthIdentity();
-    await resolveOpenAIAuthIdentity();
-
-    expect(mocks.deriveResolvedAuthIdentity).toHaveBeenNthCalledWith(1, {
-      providerId: "openai",
-      principal: { kind: "credential", value: "refresh-secret-one" },
-    });
-    expect(mocks.deriveResolvedAuthIdentity).toHaveBeenNthCalledWith(2, {
-      providerId: "openai",
-      principal: { kind: "credential", value: "refresh-secret-two" },
-    });
-  });
-
-  it("returns none when no supported native OpenCode auth entry exists", () => {
-    expect(resolveOpenAIOAuth({})).toEqual({ state: "none" });
-  });
-
-  it("prefers openai before legacy compatibility keys", () => {
-    expect(
-      resolveOpenAIOAuth({
-        codex: { type: "oauth", access: "codex-token" },
-        openai: { type: "oauth", access: "openai-token" },
-        chatgpt: { type: "oauth", access: "chatgpt-token" },
-        opencode: { type: "oauth", access: "opencode-token" },
-      }),
-    ).toMatchObject({
-      state: "configured",
-      sourceKey: "openai",
-      accessToken: "openai-token",
-    });
-  });
-
-  it("keeps a login OpenCode could not return present, with no identity and a clear error", async () => {
-    const failed = { openai: { type: "oauth", resolveError: "refresh_failed: HTTP 400" } };
-    const fetchMock = vi.fn();
-    vi.stubGlobal("fetch", fetchMock);
-
-    expect(resolveOpenAIOAuth(failed)).toEqual({
-      state: "failed",
-      sourceKey: "openai",
-      error: "refresh_failed: HTTP 400",
-    });
-    mocks.readAuthFileCached.mockResolvedValue(failed);
-    await expect(hasOpenAIOAuthCached()).resolves.toBe(true);
-    await expect(resolveOpenAIAuthIdentity()).resolves.toBeNull();
-    await expect(queryOpenAIQuota()).resolves.toEqual({
-      success: false,
-      error:
-        "OpenAI sign-in could not be refreshed: refresh_failed: HTTP 400. Run `opencode auth login openai`.",
-    });
-    expect(fetchMock).not.toHaveBeenCalled();
-    expect(mocks.deriveResolvedAuthIdentity).not.toHaveBeenCalled();
-  });
-
-  it("names the logout command for a failed login with a shell-safe label (#316)", async () => {
-    const failed = resolveOpenAIOAuth({
-      openai: { type: "oauth", resolveError: "refresh_failed: Request failed: 401" },
-    });
-
-    await expect(queryOpenAIQuota({ auth: failed, loginLabel: "default" })).resolves.toEqual({
-      success: false,
-      error:
-        "OpenAI sign-in could not be refreshed: refresh_failed: Request failed: 401. Run `opencode auth logout openai default`, then `opencode auth login openai`.",
-    });
-    for (const loginLabel of ["My work; rm", " Work ", "--help"]) {
-      await expect(queryOpenAIQuota({ auth: failed, loginLabel })).resolves.toEqual({
-        success: false,
-        error:
-          "OpenAI sign-in could not be refreshed: refresh_failed: Request failed: 401. Run `opencode auth login openai`.",
+      await resolveOpenAIAuthIdentity();
+      expect(mocks.deriveResolvedAuthIdentity).toHaveBeenLastCalledWith({
+        providerId: "openai",
+        principal: { kind: "credential", value: refresh },
       });
     }
   });
 
-  it("lets a failed openai login win over a later compatibility key, as a configured one would", () => {
-    expect(
-      resolveOpenAIOAuth({
-        openai: { type: "oauth", resolveError: "resolve_empty: no value" },
-        codex: { type: "oauth", access: "codex-token" },
-      }),
-    ).toEqual({ state: "failed", sourceKey: "openai", error: "resolve_empty: no value" });
-  });
-
-  it("returns null when quota is not configured", async () => {
-    mocks.readAuthFileCached.mockResolvedValueOnce({});
-
-    await expect(queryOpenAIQuota()).resolves.toBeNull();
-    expect(mocks.readAuthFileCached).toHaveBeenCalledWith({
-      maxAgeMs: DEFAULT_OPENAI_AUTH_CACHE_MAX_AGE_MS,
-      integrationIds: ["openai", "codex", "chatgpt"],
-    });
-  });
-
-  it("returns token expired error when expires is in the past", async () => {
-    mocks.readAuthFileCached.mockResolvedValueOnce({
-      openai: { type: "oauth", access: "tok", expires: Date.now() - 1 },
+  it("gives a login OpenCode could not return no identity", async () => {
+    mocks.readAuthFileCached.mockResolvedValue({
+      openai: { type: "oauth", resolveError: "refresh_failed: HTTP 400" },
     });
 
-    const out = await queryOpenAIQuota();
-    expect(out && !out.success ? out.error : "").toContain("Token expired");
+    await expect(resolveOpenAIAuthIdentity()).resolves.toBeNull();
+    expect(mocks.deriveResolvedAuthIdentity).not.toHaveBeenCalled();
   });
+});
 
-  it("does not echo upstream response identity material in errors", async () => {
-    mocks.readAuthFileCached.mockResolvedValueOnce({
-      openai: { type: "oauth", access: "access-secret", expires: Date.now() + 60_000 },
-    });
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(
-        async () =>
-          new Response(
-            JSON.stringify({
-              error: "account alice@example.com account-id-123 access-secret",
-            }),
-            { status: 403 },
-          ),
-      ) as any,
-    );
-
-    const result = await queryOpenAIQuota();
-    expect(result).toEqual({ success: false, error: "OpenAI API error 403" });
-    expect(JSON.stringify(result)).not.toMatch(/alice@example\.com|account-id-123|access-secret/u);
-  });
-
-  it("adds only OpenAI's short error code to an HTTP error (#316)", async () => {
-    const respond = (code: unknown) =>
-      new Response(
-        JSON.stringify({
-          error: {
-            message: "Unauthorized alice@example.com",
-            type: "rejected_by_access_enforcement",
-            code,
-          },
-        }),
-        { status: 401 },
-      );
-    const openai = { type: "oauth", access: "a.b.c", expires: Date.now() + 60_000 };
-    mocks.readAuthFileCached.mockResolvedValue({ openai });
-
-    vi.stubGlobal("fetch", vi.fn(async () => respond("no_matching_rule")) as any);
-    await expect(queryOpenAIQuota()).resolves.toEqual({
-      success: false,
-      error: "OpenAI API error 401 (no_matching_rule)",
-    });
-
-    vi.stubGlobal("fetch", vi.fn(async () => respond("alice@example.com is blocked")) as any);
-    await expect(queryOpenAIQuota()).resolves.toEqual({
-      success: false,
-      error: "OpenAI API error 401",
-    });
-  });
-
-  it("reads auth from chatgpt when codex and openai are absent", async () => {
-    mocks.readAuthFileCached.mockResolvedValueOnce({
-      chatgpt: { type: "oauth", access: "a.b.c", expires: Date.now() + 60_000 },
-    });
-
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(
-        async () =>
-          new Response(
-            JSON.stringify({
-              plan_type: "plus",
-              rate_limit: {
-                limit_reached: false,
-                primary_window: {
-                  used_percent: 20,
-                  limit_window_seconds: 18_000,
-                  reset_after_seconds: 3600,
-                },
-                secondary_window: null,
-              },
-            }),
-            { status: 200 },
-          ),
-      ) as any,
-    );
-
-    const out = await queryOpenAIQuota();
-    expect(out && out.success ? out.windows.hourly?.percentRemaining : -1).toBe(80);
-  });
-
-  it("never treats the OpenCode Console login under opencode as an OpenAI login", async () => {
-    // OpenCode 2 imports a legacy console login as `methodID: "device"`, often without an orgID.
-    mocks.readAuthFileCached.mockResolvedValueOnce({
-      codex: { type: "oauth", access: "   " },
-      openai: { type: "api", access: "ignored" },
-      chatgpt: { type: "oauth", access: "   " },
-      opencode: {
-        type: "oauth",
-        methodID: "device",
-        access: "console-token",
-        expires: Date.now() + 60_000,
-      },
-    } as any);
+describe("queryOpenAIQuota", () => {
+  it.each([
+    [
+      undefined,
+      "refresh_failed: HTTP 400",
+      "OpenAI sign-in could not be refreshed: refresh_failed: HTTP 400. Run `opencode auth login openai`.",
+    ],
+    // #316: name the logout command only for a shell-safe label.
+    [
+      "default",
+      "refresh_failed: Request failed: 401",
+      "OpenAI sign-in could not be refreshed: refresh_failed: Request failed: 401. Run `opencode auth logout openai default`, then `opencode auth login openai`.",
+    ],
+    ...["My work; rm", " Work ", "--help"].map((label) => [
+      label,
+      "refresh_failed: Request failed: 401",
+      "OpenAI sign-in could not be refreshed: refresh_failed: Request failed: 401. Run `opencode auth login openai`.",
+    ]),
+  ])("reports a failed login (label %j) without a request", async (loginLabel, error, expected) => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
 
-    await expect(queryOpenAIQuota()).resolves.toBeNull();
+    await expect(
+      queryOpenAIQuota({ auth: { state: "failed", sourceKey: "openai", error }, loginLabel }),
+    ).resolves.toEqual({ success: false, error: expected });
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("uses cached auth reads for hasOpenAIOAuthCached", async () => {
-    mocks.readAuthFileCached.mockResolvedValueOnce({
-      openai: { type: "oauth", access: "cached-token" },
-    });
-
-    await expect(hasOpenAIOAuthCached()).resolves.toBe(true);
-    expect(mocks.readAuthFileCached).toHaveBeenCalledWith({
-      maxAgeMs: DEFAULT_OPENAI_AUTH_CACHE_MAX_AGE_MS,
-      integrationIds: ["openai", "codex", "chatgpt"],
-    });
+  it("returns token expired error when expires is in the past", async () => {
+    await expect(
+      queryOpenAIQuota({ auth: { ...LOGIN, expiresAt: Date.now() - 1 } }),
+    ).resolves.toEqual({ success: false, error: "Token expired" });
   });
 
-  it("classifies the sanitized Business window as monthly without inventing absent windows", async () => {
-    mocks.readAuthFileCached.mockResolvedValueOnce({
-      openai: { type: "oauth", access: "a.b.c", expires: Date.now() + 60_000 },
-    });
+  it("sends the bearer token and the ChatGPT account id", async () => {
+    const fetchMock = vi.fn(async () => ({ ok: true, json: async () => ({}) }));
+    vi.stubGlobal("fetch", fetchMock);
 
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(
-        async () => new Response(JSON.stringify(businessTeamMonthlyUsage), { status: 200 }),
-      ) as any,
-    );
-
-    const out = await queryOpenAIQuota();
-    expect(out && out.success ? out.label : "").toBe("OpenAI (Business)");
-    expect(out && out.success ? out.windows : {}).toEqual({
-      monthly: {
-        percentRemaining: 67,
-        resetTimeIso: new Date(1_786_262_548_000).toISOString(),
+    await queryOpenAIQuota({ auth: { ...LOGIN, accountId: "acct_1" } });
+    expect(fetchMock).toHaveBeenCalledWith("https://chatgpt.com/backend-api/wham/usage", {
+      headers: {
+        Authorization: "Bearer a.b.c",
+        "User-Agent": "OpenCode-Quota-Toast/1.0",
+        "ChatGPT-Account-Id": "acct_1",
       },
-    });
-  });
-
-  it("parses the sanitized Business individual spend limit as monthly quota", async () => {
-    mockOpenAIUsageResponse(businessIndividualLimitUsage);
-
-    const out = await queryOpenAIQuota();
-
-    expect(out && out.success ? out.label : "").toBe("OpenAI (Business)");
-    expect(out && out.success ? out.windows : {}).toEqual({
-      monthly: {
-        percentRemaining: 100,
-        resetTimeIso: new Date(1_785_542_400_000).toISOString(),
-      },
-    });
-  });
-
-  it("falls back to individual-limit reset_after_seconds when reset_at is absent", async () => {
-    mockOpenAIUsageResponse({
-      ...businessIndividualLimitUsage,
-      spend_control: {
-        individual_limit: {
-          remaining_percent: 80,
-          reset_after_seconds: 60,
-        },
-      },
-    });
-
-    const out = await queryOpenAIQuota();
-
-    expect(out && out.success ? out.windows.monthly : undefined).toEqual({
-      percentRemaining: 80,
-      resetTimeIso: "2026-01-01T00:01:00.000Z",
+      signal: expect.any(AbortSignal),
     });
   });
 
   it.each([
-    { name: "zero", value: 0, expected: 0 },
-    { name: "negative", value: -25, expected: 0 },
-    { name: "above 100", value: 140, expected: 100 },
-  ])("clamps $name Business individual-limit percentages", async ({ value, expected }) => {
-    mockOpenAIUsageResponse({
-      ...businessIndividualLimitUsage,
-      spend_control: {
-        individual_limit: {
-          ...businessIndividualLimitUsage.spend_control.individual_limit,
-          remaining_percent: value,
+    // The free-text body can echo account details, so it never reaches the error.
+    [
+      403,
+      { error: "account alice@example.com account-id-123 access-secret" },
+      "OpenAI API error 403",
+    ],
+    // #316: only OpenAI's short error code is added.
+    [
+      401,
+      {
+        error: {
+          message: "Unauthorized alice@example.com",
+          type: "rejected_by_access_enforcement",
+          code: "no_matching_rule",
         },
       },
-    });
+      "OpenAI API error 401 (no_matching_rule)",
+    ],
+    [401, { error: { code: "alice@example.com is blocked" } }, "OpenAI API error 401"],
+  ])("reports HTTP %i without echoing the body", async (status, body, error) => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify(body), { status })),
+    );
 
-    const out = await queryOpenAIQuota();
+    const result = await queryOpenAIQuota({ auth: LOGIN });
+    expect(result).toEqual({ success: false, error });
+    expect(JSON.stringify(result)).not.toMatch(/alice@example\.com|account-id-123|access-secret/u);
+  });
 
-    expect(out && out.success ? out.windows.monthly?.percentRemaining : -1).toBe(expected);
+  it.each([
+    {
+      name: "classifies the sanitized Business window as monthly without inventing absent windows",
+      usage: businessTeamMonthlyUsage,
+      label: "OpenAI (Business)",
+      windows: { monthly: BUSINESS_MONTHLY },
+    },
+    {
+      name: "parses the sanitized Business individual spend limit as monthly quota",
+      usage: businessIndividualLimitUsage,
+      label: "OpenAI (Business)",
+      windows: {
+        monthly: { percentRemaining: 100, resetTimeIso: new Date(1_785_542_400_000).toISOString() },
+      },
+    },
+    {
+      name: "falls back to individual-limit reset_after_seconds when reset_at is absent",
+      usage: {
+        ...businessIndividualLimitUsage,
+        spend_control: { individual_limit: { remaining_percent: 80, reset_after_seconds: 60 } },
+      },
+      label: "OpenAI (Business)",
+      windows: { monthly: { percentRemaining: 80, resetTimeIso: "2026-01-01T00:01:00.000Z" } },
+    },
+    ...[
+      { name: "zero", value: 0, expected: 0 },
+      { name: "negative", value: -25, expected: 0 },
+      { name: "above 100", value: 140, expected: 100 },
+    ].map(({ name, value, expected }) => ({
+      name: `clamps ${name} Business individual-limit percentages`,
+      usage: {
+        ...businessIndividualLimitUsage,
+        spend_control: {
+          individual_limit: {
+            ...businessIndividualLimitUsage.spend_control.individual_limit,
+            remaining_percent: value,
+          },
+        },
+      },
+      label: "OpenAI (Business)",
+      windows: {
+        monthly: {
+          percentRemaining: expected,
+          resetTimeIso: new Date(1_785_542_400_000).toISOString(),
+        },
+      },
+    })),
+    {
+      name: "keeps an existing Business monthly rate-limit window authoritative",
+      usage: {
+        ...businessTeamMonthlyUsage,
+        spend_control: { individual_limit: { remaining_percent: 5, reset_at: 1_800_000_000 } },
+      },
+      label: "OpenAI (Business)",
+      windows: { monthly: BUSINESS_MONTHLY },
+    },
+    {
+      name: "classifies known windows by duration when their positions are reversed",
+      usage: {
+        plan_type: "pro",
+        rate_limit: {
+          primary_window: rateWindow(10, 604_800, { reset_after_seconds: 604_800 }),
+          secondary_window: rateWindow(70, 18_000, { reset_after_seconds: 18_000 }),
+        },
+      },
+      label: "OpenAI (Pro)",
+      windows: {
+        hourly: { percentRemaining: 30, resetTimeIso: "2026-01-01T05:00:00.000Z" },
+        weekly: { percentRemaining: 90, resetTimeIso: "2026-01-08T00:00:00.000Z" },
+      },
+    },
+    {
+      name: "omits an unknown duration while preserving a valid sibling",
+      usage: {
+        plan_type: "pro",
+        rate_limit: {
+          primary_window: rateWindow(10, 3_600, { reset_after_seconds: 3_600 }),
+          secondary_window: rateWindow(70, 604_800, { reset_after_seconds: 604_800 }),
+        },
+      },
+      label: "OpenAI (Pro)",
+      windows: { weekly: { percentRemaining: 30, resetTimeIso: "2026-01-08T00:00:00.000Z" } },
+    },
+    {
+      name: "omits a malformed window while preserving a valid sibling",
+      usage: {
+        plan_type: "team",
+        rate_limit: {
+          primary_window: rateWindow("33", 2_628_000, { reset_after_seconds: 2_585_763 }),
+          secondary_window: rateWindow(25, 18_000, { reset_after_seconds: 18_000 }),
+        },
+      },
+      label: "OpenAI (Business)",
+      windows: { hourly: { percentRemaining: 75, resetTimeIso: "2026-01-01T05:00:00.000Z" } },
+    },
+    {
+      name: "collapses equivalent duplicate durations",
+      usage: {
+        plan_type: "pro",
+        rate_limit: {
+          primary_window: rateWindow(10, 604_800, { reset_at: 1_768_435_200 }),
+          secondary_window: rateWindow(10, 604_800, { reset_at: 1_768_435_200 }),
+        },
+      },
+      label: "OpenAI (Pro)",
+      windows: { weekly: { percentRemaining: 90, resetTimeIso: "2026-01-15T00:00:00.000Z" } },
+    },
+    {
+      name: "omits conflicting duplicate durations while preserving an unrelated valid window",
+      usage: {
+        plan_type: "pro",
+        rate_limit: {
+          primary_window: rateWindow(10, 604_800, { reset_at: 1_768_435_200 }),
+          secondary_window: rateWindow(20, 604_800, { reset_at: 1_768_435_200 }),
+        },
+        code_review_rate_limit: { primary_window: { used_percent: 5, reset_after_seconds: 60 } },
+      },
+      label: "OpenAI (Pro)",
+      windows: { codeReview: { percentRemaining: 95, resetTimeIso: "2026-01-01T00:01:00.000Z" } },
+    },
+    {
+      name: "isolates unrepresentable reset dates and falls back when possible",
+      usage: {
+        plan_type: "pro",
+        rate_limit: {
+          primary_window: { ...HOURLY_20_USED, reset_at: Number.MAX_VALUE },
+          secondary_window: rateWindow(70, 604_800, { reset_after_seconds: Number.MAX_VALUE }),
+        },
+      },
+      label: "OpenAI (Pro)",
+      windows: { hourly: HOURLY_80, weekly: { percentRemaining: 30, resetTimeIso: undefined } },
+    },
+  ])("$name", async ({ usage, label, windows }) => {
+    await expect(queryUsage(usage)).resolves.toEqual({ success: true, label, windows });
   });
 
   it.each([
@@ -383,75 +442,22 @@ describe("openai auth resolution", () => {
   ])("omits $name while preserving personal, credits, and code-review paths", async ({
     spendControl,
   }) => {
-    mockOpenAIUsageResponse({
+    const out = await queryUsage({
       plan_type: "plus",
-      rate_limit: {
-        primary_window: {
-          used_percent: 20,
-          limit_window_seconds: 18_000,
-          reset_after_seconds: 3_600,
-        },
-        secondary_window: null,
-      },
-      code_review_rate_limit: {
-        primary_window: {
-          used_percent: 5,
-          reset_after_seconds: 60,
-        },
-      },
-      credits: {
-        has_credits: true,
-        unlimited: false,
-        balance: "12.34",
-      },
+      rate_limit: { primary_window: HOURLY_20_USED, secondary_window: null },
+      code_review_rate_limit: { primary_window: { used_percent: 5, reset_after_seconds: 60 } },
+      credits: { has_credits: true, unlimited: false, balance: "12.34" },
       ...(spendControl === undefined ? {} : { spend_control: spendControl }),
     });
 
-    const out = await queryOpenAIQuota();
-
-    expect(out && out.success ? out.windows : {}).toEqual({
-      hourly: {
-        percentRemaining: 80,
-        resetTimeIso: "2026-01-01T01:00:00.000Z",
-        fixedWindow: {
-          kind: "fixed_window",
-          startedAtIso: "2025-12-31T20:00:00.000Z",
-          observedAtIso: "2026-01-01T00:00:00.000Z",
-          endsAtIso: "2026-01-01T01:00:00.000Z",
-          fullReset: true,
-        },
+    expect(out).toEqual({
+      success: true,
+      label: "OpenAI (Plus)",
+      windows: {
+        hourly: HOURLY_80,
+        codeReview: { percentRemaining: 95, resetTimeIso: "2026-01-01T00:01:00.000Z" },
       },
-      codeReview: {
-        percentRemaining: 95,
-        resetTimeIso: "2026-01-01T00:01:00.000Z",
-      },
-    });
-    expect(out && out.success ? out.credits : undefined).toEqual({
-      hasCredits: true,
-      unlimited: false,
-      balance: "12.34",
-    });
-  });
-
-  it("keeps an existing Business monthly rate-limit window authoritative", async () => {
-    mockOpenAIUsageResponse({
-      ...businessTeamMonthlyUsage,
-      spend_control: {
-        individual_limit: {
-          remaining_percent: 5,
-          reset_at: 1_800_000_000,
-        },
-      },
-    });
-
-    const out = await queryOpenAIQuota();
-
-    expect(out && out.success ? out.label : "").toBe("OpenAI (Business)");
-    expect(out && out.success ? out.windows : {}).toEqual({
-      monthly: {
-        percentRemaining: 67,
-        resetTimeIso: new Date(1_786_262_548_000).toISOString(),
-      },
+      credits: { hasCredits: true, unlimited: false, balance: "12.34" },
     });
   });
 
@@ -463,323 +469,15 @@ describe("openai auth resolution", () => {
     ["plus", "OpenAI (Plus)"],
     ["pro", "OpenAI (Pro)"],
   ])("derives the plan label for %j", async (planType, expectedLabel) => {
-    mocks.readAuthFileCached.mockResolvedValueOnce({
-      openai: { type: "oauth", access: "a.b.c", expires: Date.now() + 60_000 },
-    });
-
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(
-        async () =>
-          new Response(
-            JSON.stringify({
-              plan_type: planType,
-              rate_limit: {
-                limit_reached: false,
-                primary_window: {
-                  used_percent: 20,
-                  limit_window_seconds: 18_000,
-                  reset_after_seconds: 3_600,
-                },
-                secondary_window: null,
-              },
-            }),
-            { status: 200 },
-          ),
-      ) as any,
-    );
-
-    const out = await queryOpenAIQuota();
-    expect(out && out.success ? out.label : "").toBe(expectedLabel);
+    await expect(
+      queryUsage({ plan_type: planType, rate_limit: { primary_window: HOURLY_20_USED } }),
+    ).resolves.toMatchObject({ success: true, label: expectedLabel });
   });
 
-  it("classifies known windows by duration when their positions are reversed", async () => {
-    mocks.readAuthFileCached.mockResolvedValueOnce({
-      openai: { type: "oauth", access: "a.b.c", expires: Date.now() + 60_000 },
+  it("reports a reply without any quota window", async () => {
+    await expect(queryUsage({ plan_type: "plus", rate_limit: null })).resolves.toEqual({
+      success: false,
+      error: "No quota data",
     });
-
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(
-        async () =>
-          new Response(
-            JSON.stringify({
-              plan_type: "pro",
-              rate_limit: {
-                limit_reached: false,
-                primary_window: {
-                  used_percent: 10,
-                  limit_window_seconds: 604_800,
-                  reset_after_seconds: 604_800,
-                },
-                secondary_window: {
-                  used_percent: 70,
-                  limit_window_seconds: 18_000,
-                  reset_after_seconds: 18_000,
-                },
-              },
-            }),
-            { status: 200 },
-          ),
-      ) as any,
-    );
-
-    const out = await queryOpenAIQuota();
-    expect(out && out.success ? out.windows.hourly?.percentRemaining : -1).toBe(30);
-    expect(out && out.success ? out.windows.weekly?.percentRemaining : -1).toBe(90);
-  });
-
-  it("omits an unknown duration while preserving a valid sibling", async () => {
-    mocks.readAuthFileCached.mockResolvedValueOnce({
-      openai: { type: "oauth", access: "a.b.c", expires: Date.now() + 60_000 },
-    });
-
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(
-        async () =>
-          new Response(
-            JSON.stringify({
-              plan_type: "pro",
-              rate_limit: {
-                limit_reached: false,
-                primary_window: {
-                  used_percent: 10,
-                  limit_window_seconds: 3_600,
-                  reset_after_seconds: 3_600,
-                },
-                secondary_window: {
-                  used_percent: 70,
-                  limit_window_seconds: 604_800,
-                  reset_after_seconds: 604_800,
-                },
-              },
-            }),
-            { status: 200 },
-          ),
-      ) as any,
-    );
-
-    const out = await queryOpenAIQuota();
-    expect(out && out.success ? out.windows : {}).toEqual({
-      weekly: {
-        percentRemaining: 30,
-        resetTimeIso: "2026-01-08T00:00:00.000Z",
-      },
-    });
-  });
-
-  it("omits a malformed window while preserving a valid sibling", async () => {
-    mocks.readAuthFileCached.mockResolvedValueOnce({
-      openai: { type: "oauth", access: "a.b.c", expires: Date.now() + 60_000 },
-    });
-
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(
-        async () =>
-          new Response(
-            JSON.stringify({
-              plan_type: "team",
-              rate_limit: {
-                limit_reached: false,
-                primary_window: {
-                  used_percent: "33",
-                  limit_window_seconds: 2_628_000,
-                  reset_after_seconds: 2_585_763,
-                },
-                secondary_window: {
-                  used_percent: 25,
-                  limit_window_seconds: 18_000,
-                  reset_after_seconds: 18_000,
-                },
-              },
-            }),
-            { status: 200 },
-          ),
-      ) as any,
-    );
-
-    const out = await queryOpenAIQuota();
-    expect(out && out.success ? out.windows : {}).toEqual({
-      hourly: {
-        percentRemaining: 75,
-        resetTimeIso: "2026-01-01T05:00:00.000Z",
-      },
-    });
-  });
-
-  it("collapses equivalent duplicate durations", async () => {
-    mocks.readAuthFileCached.mockResolvedValueOnce({
-      openai: { type: "oauth", access: "a.b.c", expires: Date.now() + 60_000 },
-    });
-
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(
-        async () =>
-          new Response(
-            JSON.stringify({
-              plan_type: "pro",
-              rate_limit: {
-                limit_reached: false,
-                primary_window: {
-                  used_percent: 10,
-                  limit_window_seconds: 604_800,
-                  reset_at: 1_768_435_200,
-                },
-                secondary_window: {
-                  used_percent: 10,
-                  limit_window_seconds: 604_800,
-                  reset_at: 1_768_435_200,
-                },
-              },
-            }),
-            { status: 200 },
-          ),
-      ) as any,
-    );
-
-    const out = await queryOpenAIQuota();
-    expect(out && out.success ? out.windows : {}).toEqual({
-      weekly: {
-        percentRemaining: 90,
-        resetTimeIso: "2026-01-15T00:00:00.000Z",
-      },
-    });
-  });
-
-  it("omits conflicting duplicate durations while preserving an unrelated valid window", async () => {
-    mocks.readAuthFileCached.mockResolvedValueOnce({
-      openai: { type: "oauth", access: "a.b.c", expires: Date.now() + 60_000 },
-    });
-
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(
-        async () =>
-          new Response(
-            JSON.stringify({
-              plan_type: "pro",
-              rate_limit: {
-                limit_reached: false,
-                primary_window: {
-                  used_percent: 10,
-                  limit_window_seconds: 604_800,
-                  reset_at: 1_768_435_200,
-                },
-                secondary_window: {
-                  used_percent: 20,
-                  limit_window_seconds: 604_800,
-                  reset_at: 1_768_435_200,
-                },
-              },
-              code_review_rate_limit: {
-                primary_window: {
-                  used_percent: 5,
-                  reset_after_seconds: 60,
-                },
-              },
-            }),
-            { status: 200 },
-          ),
-      ) as any,
-    );
-
-    const out = await queryOpenAIQuota();
-    expect(out && out.success ? out.windows : {}).toEqual({
-      codeReview: {
-        percentRemaining: 95,
-        resetTimeIso: "2026-01-01T00:01:00.000Z",
-      },
-    });
-  });
-
-  it("isolates unrepresentable reset dates and falls back when possible", async () => {
-    mocks.readAuthFileCached.mockResolvedValueOnce({
-      openai: { type: "oauth", access: "a.b.c", expires: Date.now() + 60_000 },
-    });
-
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(
-        async () =>
-          new Response(
-            JSON.stringify({
-              plan_type: "pro",
-              rate_limit: {
-                limit_reached: false,
-                primary_window: {
-                  used_percent: 20,
-                  limit_window_seconds: 18_000,
-                  reset_at: Number.MAX_VALUE,
-                  reset_after_seconds: 3_600,
-                },
-                secondary_window: {
-                  used_percent: 70,
-                  limit_window_seconds: 604_800,
-                  reset_after_seconds: Number.MAX_VALUE,
-                },
-              },
-            }),
-            { status: 200 },
-          ),
-      ) as any,
-    );
-
-    const out = await queryOpenAIQuota();
-    expect(out && out.success ? out.windows : {}).toEqual({
-      hourly: {
-        percentRemaining: 80,
-        resetTimeIso: "2026-01-01T01:00:00.000Z",
-        fixedWindow: {
-          kind: "fixed_window",
-          startedAtIso: "2025-12-31T20:00:00.000Z",
-          observedAtIso: "2026-01-01T00:00:00.000Z",
-          endsAtIso: "2026-01-01T01:00:00.000Z",
-          fullReset: true,
-        },
-      },
-      weekly: {
-        percentRemaining: 30,
-        resetTimeIso: undefined,
-      },
-    });
-  });
-
-  it("returns separate hourly and weekly windows", async () => {
-    mocks.readAuthFileCached.mockResolvedValueOnce({
-      openai: { type: "oauth", access: "a.b.c", expires: Date.now() + 60_000 },
-    });
-
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(
-        async () =>
-          new Response(
-            JSON.stringify({
-              plan_type: "pro",
-              rate_limit: {
-                limit_reached: false,
-                primary_window: {
-                  used_percent: 10,
-                  limit_window_seconds: 18_000,
-                  reset_after_seconds: 3600,
-                },
-                secondary_window: {
-                  used_percent: 70,
-                  limit_window_seconds: 604_800,
-                  reset_after_seconds: 604_800,
-                },
-              },
-            }),
-            { status: 200 },
-          ),
-      ) as any,
-    );
-
-    const out = await queryOpenAIQuota();
-    expect(out && out.success ? out.windows.hourly?.percentRemaining : -1).toBe(90);
-    expect(out && out.success ? out.windows.weekly?.percentRemaining : -1).toBe(30);
   });
 });

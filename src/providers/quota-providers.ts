@@ -2,11 +2,12 @@ import type {
   QuotaProvider,
   QuotaProviderContext,
   QuotaProviderDiagnostic,
-  QuotaProviderMatchContext,
   QuotaProviderResult,
+  QuotaToastEntry,
 } from "../lib/entries.js";
 import { mapWithConcurrency } from "../lib/map-with-concurrency.js";
 import type {
+  LocalEstimateQuotaProviderDefinition,
   QuotaProviderDefinition,
   RemoteApiQuotaProviderDefinition,
 } from "../lib/quota-providers.js";
@@ -22,36 +23,23 @@ import {
 } from "../lib/quota-providers-local.js";
 import {
   fetchRemoteQuotaProvider,
-  QUOTA_PROVIDER_CONCURRENCY,
+  type QuotaProviderAuthSource,
   resolveQuotaProviderApiKey,
 } from "../lib/quota-providers-remote.js";
 import { fetchQuotaProviderResult } from "../lib/quota-state.js";
 import { resolveQuotaProviderDefinitionAuthIdentity } from "./cache-policies.js";
 
-export const QUOTA_PROVIDERS_PROVIDER_ID = QUOTA_PROVIDERS_AGGREGATE_ID;
-export const selectEligibleQuotaProviders = selectEligibleQuotaProviderDefinitions;
+const DEFINITION_CONCURRENCY = 4;
 
-function matchesConfiguredCurrentSelection(
-  model: string,
-  context?: QuotaProviderMatchContext,
-): boolean {
-  const identity = resolveQuotaProviderSessionModelIdentity({
-    currentModel: model,
-    currentProviderID: context?.currentProviderID,
-  });
-  if (!identity) return false;
-  return Boolean(
-    customQuotaProviderDefinitions(context?.quotaProviders ?? []).some(
-      (definition) =>
-        definition.providerId === identity.providerId &&
-        (definition.modelIds === undefined || definition.modelIds.includes(identity.modelId)),
-    ),
-  );
-}
-
-async function getAvailableProviderIds(ctx: QuotaProviderContext): Promise<ReadonlySet<string>> {
-  return ctx.resolveRuntimeProviderIds();
-}
+const CREDENTIAL_SOURCES: Record<
+  QuotaProviderAuthSource,
+  QuotaProviderDiagnostic["credentialSource"]
+> = {
+  env: "explicit_env",
+  "opencode.json": "global_opencode_json",
+  "opencode.jsonc": "global_opencode_jsonc",
+  "opencode.db": "opencode_db",
+};
 
 type InstanceResult = {
   entries: QuotaProviderResult["entries"];
@@ -59,12 +47,19 @@ type InstanceResult = {
   diagnostic: QuotaProviderDiagnostic;
 };
 
-function buildDiagnosticIdentity(
-  definition: QuotaProviderDefinition,
-): Pick<
+type DiagnosticOutcome = Pick<
   QuotaProviderDiagnostic,
-  "sourceId" | "providerId" | "mode" | "format" | "modelIds" | "apiKeyEnv" | "selected"
-> {
+  "attempted" | "credentialSource" | "outcome" | "httpStatus" | "entryCount"
+>;
+
+function buildDiagnostic(
+  definition: QuotaProviderDefinition,
+  outcome: DiagnosticOutcome,
+  paths: Pick<QuotaProviderDiagnostic, "checkedPaths" | "credentialDatabasePaths"> = {
+    checkedPaths: [],
+    credentialDatabasePaths: [],
+  },
+): QuotaProviderDiagnostic {
   return {
     sourceId: definition.id,
     providerId: definition.providerId,
@@ -73,29 +68,26 @@ function buildDiagnosticIdentity(
     modelIds: definition.modelIds ? [...definition.modelIds] : null,
     apiKeyEnv: definition.mode === "remote-api" ? (definition.apiKeyEnv ?? null) : null,
     selected: true,
+    ...outcome,
+    checkedPaths: [...paths.checkedPaths],
+    credentialDatabasePaths: [...paths.credentialDatabasePaths],
   };
 }
 
-function mapCredentialSource(
-  source: "env" | "opencode.json" | "opencode.jsonc" | "opencode.db" | null,
-): QuotaProviderDiagnostic["credentialSource"] {
-  switch (source) {
-    case "env":
-      return "explicit_env";
-    case "opencode.json":
-      return "global_opencode_json";
-    case "opencode.jsonc":
-      return "global_opencode_jsonc";
-    case "opencode.db":
-      return "opencode_db";
-    default:
-      return null;
-  }
+function selectDefinitions(
+  ctx: QuotaProviderContext,
+  availableProviderIds: ReadonlySet<string>,
+): QuotaProviderDefinition[] {
+  return selectEligibleQuotaProviderDefinitions({
+    definitions: ctx.config.quotaProviders ?? [],
+    availableProviderIds,
+    onlyCurrentModel: ctx.config.onlyCurrentModel,
+    currentModel: ctx.config.currentModel,
+    currentProviderID: ctx.config.currentProviderID,
+  });
 }
 
-function classifyRuntimeError(
-  error: string,
-): Pick<QuotaProviderDiagnostic, "outcome" | "httpStatus"> {
+function classifyRuntimeError(error: string): Pick<DiagnosticOutcome, "outcome" | "httpStatus"> {
   if (error === "Redirect rejected") return { outcome: "redirect_error" };
   if (error.startsWith("Request timeout after ")) return { outcome: "timeout" };
   if (error === "Response exceeded 262144 bytes") return { outcome: "body_too_large" };
@@ -116,32 +108,25 @@ async function executeRemote(
     return {
       entries: [],
       errors: [{ label: definition.label, message: "API key not configured" }],
-      diagnostic: {
-        ...buildDiagnosticIdentity(definition),
-        attempted: false,
-        credentialSource: null,
-        outcome: "missing_credential",
-        entryCount: 0,
-        checkedPaths: [...auth.checkedPaths],
-        credentialDatabasePaths: [...auth.credentialDatabasePaths],
-      },
+      diagnostic: buildDiagnostic(
+        definition,
+        { attempted: false, credentialSource: null, outcome: "missing_credential", entryCount: 0 },
+        auth,
+      ),
     };
   }
 
+  const credentialSource = auth.source ? CREDENTIAL_SOURCES[auth.source] : null;
   const result = await fetchRemoteQuotaProvider(definition, auth.key, requestTimeoutMs);
   if (!result.success) {
     return {
       entries: [],
       errors: [{ label: definition.label, message: result.error }],
-      diagnostic: {
-        ...buildDiagnosticIdentity(definition),
-        attempted: true,
-        credentialSource: mapCredentialSource(auth.source),
-        ...classifyRuntimeError(result.error),
-        entryCount: 0,
-        checkedPaths: [...auth.checkedPaths],
-        credentialDatabasePaths: [...auth.credentialDatabasePaths],
-      },
+      diagnostic: buildDiagnostic(
+        definition,
+        { attempted: true, credentialSource, ...classifyRuntimeError(result.error), entryCount: 0 },
+        auth,
+      ),
     };
   }
 
@@ -150,28 +135,22 @@ async function executeRemote(
       ...entry,
       accounting: { ...entry.accounting, sourceId: definition.id },
     })),
-    errors: (result.rowErrors ?? []).map((message) => ({
-      label: definition.label,
-      message,
-    })),
-    diagnostic: {
-      ...buildDiagnosticIdentity(definition),
-      attempted: true,
-      credentialSource: mapCredentialSource(auth.source),
-      outcome: "success",
-      entryCount: result.entries.length,
-      checkedPaths: [...auth.checkedPaths],
-      credentialDatabasePaths: [...auth.credentialDatabasePaths],
-    },
+    errors: (result.rowErrors ?? []).map((message) => ({ label: definition.label, message })),
+    diagnostic: buildDiagnostic(
+      definition,
+      { attempted: true, credentialSource, outcome: "success", entryCount: result.entries.length },
+      auth,
+    ),
   };
 }
 
+/** Each remote definition gets its own cache entry, keyed by the credential that won. */
 async function executeRemoteWithCache(
   definition: RemoteApiQuotaProviderDefinition,
   ctx: QuotaProviderContext,
 ): Promise<InstanceResult> {
   const remoteProvider: QuotaProvider = {
-    id: `${QUOTA_PROVIDERS_PROVIDER_ID}:${definition.id}`,
+    id: `${QUOTA_PROVIDERS_AGGREGATE_ID}:${definition.id}`,
     isAvailable: async () => true,
     cachePolicy: {
       kind: "resolved-auth",
@@ -189,105 +168,92 @@ async function executeRemoteWithCache(
   };
   const result = await fetchQuotaProviderResult({
     provider: remoteProvider,
-    ctx: {
-      ...ctx,
-      config: {
-        ...ctx.config,
-        quotaProviders: [definition],
-      },
-    },
+    ctx: { ...ctx, config: { ...ctx.config, quotaProviders: [definition] } },
     ttlMs: ctx.config.providerCacheTtlMs ?? 0,
   });
   return {
     entries: result.entries,
     errors: result.errors,
-    diagnostic: result.diagnostics?.[0] ?? {
-      ...buildDiagnosticIdentity(definition),
-      attempted: true,
-      credentialSource: null,
-      outcome: "network_error",
-      entryCount: 0,
-      checkedPaths: [],
-      credentialDatabasePaths: [],
-    },
+    diagnostic:
+      result.diagnostics?.[0] ??
+      buildDiagnostic(definition, {
+        attempted: true,
+        credentialSource: null,
+        outcome: "network_error",
+        entryCount: 0,
+      }),
   };
 }
 
-async function executeDefinition(
-  definition: QuotaProviderDefinition,
-  ctx: QuotaProviderContext,
+async function executeLocal(
+  definition: LocalEstimateQuotaProviderDefinition,
 ): Promise<InstanceResult> {
-  if (definition.mode === "remote-api") {
-    return executeRemoteWithCache(definition, ctx);
-  }
-
+  let entries: QuotaToastEntry[] | null;
   try {
-    const result = await collectLocalQuotaProviderEstimate(definition);
-    const state = await inspectLocalQuotaProviderState(definition);
-    return {
-      entries: result.entries,
-      errors: [],
-      diagnostic: {
-        ...buildDiagnosticIdentity(definition),
-        attempted: true,
-        credentialSource: null,
-        outcome: "success",
-        entryCount: result.entries.length,
-        checkedPaths: [],
-        credentialDatabasePaths: [],
-        statePath: state.path,
-        stateHealth: state.health,
-        stateVersion: state.version,
-        stateLastUpdatedAt: state.lastUpdatedAt,
-      },
-    };
+    entries = (await collectLocalQuotaProviderEstimate(definition)).entries;
   } catch {
-    const state = await inspectLocalQuotaProviderState(definition);
+    entries = null;
+  }
+  const state = await inspectLocalQuotaProviderState(definition);
+  const stateFields = {
+    statePath: state.path,
+    stateHealth: state.health,
+    stateVersion: state.version,
+    stateLastUpdatedAt: state.lastUpdatedAt,
+  };
+  if (!entries) {
     return {
       entries: [],
       errors: [{ label: definition.label, message: "Failed to update local accounting state" }],
       diagnostic: {
-        ...buildDiagnosticIdentity(definition),
-        attempted: true,
-        credentialSource: null,
-        outcome: "local_state_error",
-        entryCount: 0,
-        checkedPaths: [],
-        credentialDatabasePaths: [],
-        statePath: state.path,
-        stateHealth: state.health,
-        stateVersion: state.version,
-        stateLastUpdatedAt: state.lastUpdatedAt,
+        ...buildDiagnostic(definition, {
+          attempted: true,
+          credentialSource: null,
+          outcome: "local_state_error",
+          entryCount: 0,
+        }),
+        ...stateFields,
       },
     };
   }
+  return {
+    entries,
+    errors: [],
+    diagnostic: {
+      ...buildDiagnostic(definition, {
+        attempted: true,
+        credentialSource: null,
+        outcome: "success",
+        entryCount: entries.length,
+      }),
+      ...stateFields,
+    },
+  };
 }
 
 export const quotaProvidersProvider: QuotaProvider = {
-  id: QUOTA_PROVIDERS_PROVIDER_ID,
+  id: QUOTA_PROVIDERS_AGGREGATE_ID,
 
   async isAvailable(ctx): Promise<boolean> {
-    const definitions = ctx.config.quotaProviders ?? [];
-    if (customQuotaProviderDefinitions(definitions).length === 0) return false;
-    const availableProviderIds = await getAvailableProviderIds(ctx);
-    return (
-      selectEligibleQuotaProviders({
-        definitions,
-        availableProviderIds,
-        onlyCurrentModel: ctx.config.onlyCurrentModel,
-        currentModel: ctx.config.currentModel,
-        currentProviderID: ctx.config.currentProviderID,
-      }).length > 0
-    );
+    if (customQuotaProviderDefinitions(ctx.config.quotaProviders ?? []).length === 0) return false;
+    return selectDefinitions(ctx, await ctx.resolveRuntimeProviderIds()).length > 0;
   },
 
   matchesCurrentModel(model, context): boolean {
-    return matchesConfiguredCurrentSelection(model, context);
+    const identity = resolveQuotaProviderSessionModelIdentity({
+      currentModel: model,
+      currentProviderID: context?.currentProviderID,
+    });
+    if (!identity) return false;
+    return customQuotaProviderDefinitions(context?.quotaProviders ?? []).some(
+      (definition) =>
+        definition.providerId === identity.providerId &&
+        (definition.modelIds === undefined || definition.modelIds.includes(identity.modelId)),
+    );
   },
 
   async fetch(ctx, cacheContext): Promise<QuotaProviderResult> {
-    const definitions = ctx.config.quotaProviders ?? [];
-    if (customQuotaProviderDefinitions(definitions).length === 0) {
+    if (customQuotaProviderDefinitions(ctx.config.quotaProviders ?? []).length === 0) {
       return { attempted: false, entries: [], errors: [] };
     }
 
@@ -295,7 +261,7 @@ export const quotaProvidersProvider: QuotaProvider = {
     if (!selected) {
       let availableProviderIds: ReadonlySet<string>;
       try {
-        availableProviderIds = await getAvailableProviderIds(ctx);
+        availableProviderIds = await ctx.resolveRuntimeProviderIds();
       } catch {
         return {
           attempted: true,
@@ -308,14 +274,7 @@ export const quotaProvidersProvider: QuotaProvider = {
           ],
         };
       }
-
-      selected = selectEligibleQuotaProviders({
-        definitions,
-        availableProviderIds,
-        onlyCurrentModel: ctx.config.onlyCurrentModel,
-        currentModel: ctx.config.currentModel,
-        currentProviderID: ctx.config.currentProviderID,
-      });
+      selected = selectDefinitions(ctx, availableProviderIds);
     }
     if (selected.length === 0) {
       return { attempted: false, entries: [], errors: [] };
@@ -323,24 +282,23 @@ export const quotaProvidersProvider: QuotaProvider = {
 
     const results = await mapWithConcurrency(
       selected,
-      QUOTA_PROVIDER_CONCURRENCY,
-      async (definition) => {
+      DEFINITION_CONCURRENCY,
+      async (definition): Promise<InstanceResult> => {
         try {
-          return await executeDefinition(definition, ctx);
+          return definition.mode === "remote-api"
+            ? await executeRemoteWithCache(definition, ctx)
+            : await executeLocal(definition);
         } catch {
           return {
             entries: [],
             errors: [{ label: definition.label, message: "Provider execution failed" }],
-            diagnostic: {
-              ...buildDiagnosticIdentity(definition),
+            diagnostic: buildDiagnostic(definition, {
               attempted: true,
               credentialSource: null,
               outcome: "network_error",
               entryCount: 0,
-              checkedPaths: [],
-              credentialDatabasePaths: [],
-            },
-          } satisfies InstanceResult;
+            }),
+          };
         }
       },
     );

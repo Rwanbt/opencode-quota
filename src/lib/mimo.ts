@@ -2,9 +2,7 @@ import { sanitizeSingleLineDisplaySnippet } from "./display-sanitize.js";
 import { fetchWithTimeout } from "./http.js";
 import { isRecord } from "./json-guards.js";
 
-const MIMO_USAGE_URL = "https://platform.xiaomimimo.com/api/v1/tokenPlan/usage";
-const MIMO_DETAIL_URL = "https://platform.xiaomimimo.com/api/v1/tokenPlan/detail";
-const MIMO_BALANCE_URL = "https://platform.xiaomimimo.com/api/v1/balance";
+const MIMO_ORIGIN = "https://platform.xiaomimimo.com";
 const MIMO_REQUEST_TIMEOUT_MS = 10_000;
 const MIMO_RESPONSE_MAX_BYTES = 256 * 1024;
 const MIMO_USER_AGENT =
@@ -38,6 +36,8 @@ export interface MimoDashboardResult {
   balance: MimoEndpointResult<MimoBalance>;
 }
 
+type MimoRequestContext = { cookie: string; timeoutMs: number; timeZone: string };
+
 function parseEnvelope(json: unknown): Record<string, unknown> {
   if (!isRecord(json) || json.code !== 0 || !isRecord(json.data)) {
     throw new Error("invalid envelope");
@@ -49,13 +49,18 @@ function parseNonNegativeNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
 }
 
-function parseBalanceNumber(value: unknown): number | null {
-  if (typeof value === "number") {
-    return Number.isFinite(value) && value >= 0 ? value : null;
-  }
-  if (typeof value !== "string" || !/^\d+(?:\.\d+)?$/u.test(value.trim())) return null;
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : null;
+/** Balances arrive as decimal strings ("50.00") or numbers; a missing or empty field is not reported. */
+function parseOptionalBalance(value: unknown): number | null {
+  if (value === undefined || value === null || value === "") return null;
+  const amount = parseNonNegativeNumber(
+    typeof value === "string" && /^\d+(?:\.\d+)?$/u.test(value.trim()) ? Number(value) : value,
+  );
+  if (amount === null) throw new Error("invalid balance");
+  return amount;
+}
+
+function nonBlankStringOrNull(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value : null;
 }
 
 export function parseMimoUsageResponse(json: unknown): MimoMonthlyQuota {
@@ -83,41 +88,22 @@ export function parseMimoDetailResponse(json: unknown): MimoPlanDetail {
   if (typeof data.expired !== "boolean") throw new Error("invalid plan state");
 
   return {
-    planName: typeof data.planName === "string" && data.planName.trim() ? data.planName : null,
-    planCode: typeof data.planCode === "string" && data.planCode.trim() ? data.planCode : null,
+    planName: nonBlankStringOrNull(data.planName),
+    planCode: nonBlankStringOrNull(data.planCode),
     expired: data.expired,
   };
 }
 
 export function parseMimoBalanceResponse(json: unknown): MimoBalance {
   const data = parseEnvelope(json);
-  const fields = [
-    ["balance", data.balance],
-    ["cashBalance", data.cashBalance],
-    ["giftBalance", data.giftBalance],
-  ] as const;
-
-  const parsed = new Map<string, number | null>();
-  for (const [name, value] of fields) {
-    if (value === undefined || value === null || value === "") {
-      parsed.set(name, null);
-      continue;
-    }
-    const amount = parseBalanceNumber(value);
-    if (amount === null) throw new Error("invalid balance");
-    parsed.set(name, amount);
-  }
-
-  const currency =
-    typeof data.currency === "string" && /^[A-Za-z]{3}$/u.test(data.currency.trim())
-      ? data.currency.trim().toUpperCase()
-      : null;
-
   return {
-    total: parsed.get("balance") ?? null,
-    cash: parsed.get("cashBalance") ?? null,
-    gift: parsed.get("giftBalance") ?? null,
-    currency,
+    total: parseOptionalBalance(data.balance),
+    cash: parseOptionalBalance(data.cashBalance),
+    gift: parseOptionalBalance(data.giftBalance),
+    currency:
+      typeof data.currency === "string" && /^[A-Za-z]{3}$/u.test(data.currency.trim())
+        ? data.currency.trim().toUpperCase()
+        : null,
   };
 }
 
@@ -154,14 +140,7 @@ async function readBoundedJson(response: Response): Promise<unknown> {
     reader.releaseLock();
   }
 
-  const body = new Uint8Array(byteLength);
-  let offset = 0;
-  for (const chunk of chunks) {
-    body.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-
-  return JSON.parse(new TextDecoder().decode(body));
+  return JSON.parse(new TextDecoder().decode(Buffer.concat(chunks)));
 }
 
 export function formatMimoDashboardTimeZone(timezoneOffsetMinutes?: number): string {
@@ -174,82 +153,68 @@ export function formatMimoDashboardTimeZone(timezoneOffsetMinutes?: number): str
   return `UTC${sign}${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
 }
 
-function getCookieValues(cookie: string): string[] {
-  return cookie
+/** Redacts the whole cookie and each cookie value, since request errors can echo them. */
+function sanitizeRequestError(error: unknown, cookie: string): string {
+  const cookieValues = cookie
     .split(";")
     .map((part) => part.slice(part.indexOf("=") + 1).trim())
     .filter(Boolean);
-}
-
-function sanitizeRequestError(error: unknown, cookie: string): string {
   let message = error instanceof Error ? error.message : String(error);
-  for (const secret of [cookie, ...getCookieValues(cookie)]) {
+  for (const secret of [cookie, ...cookieValues]) {
     message = message.split(secret).join("[redacted]");
   }
   return sanitizeSingleLineDisplaySnippet(message, 120) || "request failed";
 }
 
-async function fetchMimoEndpoint<T>(params: {
-  name: "usage" | "detail" | "balance";
-  url: string;
-  cookie: string;
-  requestTimeoutMs: number;
-  timeZone: string;
-  parse: (json: unknown) => T;
-}): Promise<MimoEndpointResult<T>> {
+async function fetchMimoEndpoint<T>(
+  name: "usage" | "detail" | "balance",
+  path: string,
+  parse: (json: unknown) => T,
+  context: MimoRequestContext,
+): Promise<MimoEndpointResult<T>> {
+  const fail = (problem: string): MimoEndpointResult<T> => ({
+    state: "error",
+    error: `Xiaomi MiMo ${name} ${problem}`,
+  });
+
   try {
-    return await fetchWithTimeout(params.url, {
+    return await fetchWithTimeout(`${MIMO_ORIGIN}/api/v1${path}`, {
       request: {
         method: "GET",
         redirect: "manual",
         headers: {
           Accept: "application/json, text/plain, */*",
           "Accept-Language": "en-US,en;q=0.9",
-          Cookie: params.cookie,
-          Origin: "https://platform.xiaomimimo.com",
-          Referer: "https://platform.xiaomimimo.com/#/console/balance",
+          Cookie: context.cookie,
+          Origin: MIMO_ORIGIN,
+          Referer: `${MIMO_ORIGIN}/#/console/balance`,
           "User-Agent": MIMO_USER_AGENT,
-          "x-timeZone": params.timeZone,
+          "x-timeZone": context.timeZone,
         },
       },
-      timeoutMs: params.requestTimeoutMs,
+      timeoutMs: context.timeoutMs,
       consume: async (response, timeoutSignal): Promise<MimoEndpointResult<T>> => {
-        if (response.status >= 300 && response.status < 400) {
-          return { state: "error", error: `Xiaomi MiMo ${params.name} request requires login` };
-        }
-        if (!response.ok) {
-          return {
-            state: "error",
-            error: `Xiaomi MiMo ${params.name} request failed (HTTP ${response.status})`,
-          };
-        }
+        if (response.status >= 300 && response.status < 400) return fail("request requires login");
+        if (!response.ok) return fail(`request failed (HTTP ${response.status})`);
 
         let json: unknown;
         try {
           json = await readBoundedJson(response);
         } catch (error) {
+          // Let a timeout reach the outer catch so it is reported as a timeout.
           if (timeoutSignal.aborted) throw error;
-          return {
-            state: "error",
-            error: `Xiaomi MiMo ${params.name} response could not be parsed`,
-          };
+          return fail("response could not be parsed");
         }
 
         try {
-          return { state: "success", data: params.parse(json) };
+          return { state: "success", data: parse(json) };
         } catch {
-          return {
-            state: "error",
-            error: `Xiaomi MiMo ${params.name} response did not match the expected schema`,
-          };
+          return fail("response did not match the expected schema");
         }
       },
     });
   } catch (error) {
-    return {
-      state: "error",
-      error: `Xiaomi MiMo ${params.name} request failed: ${sanitizeRequestError(error, params.cookie)}`,
-    };
+    return fail(`request failed: ${sanitizeRequestError(error, context.cookie)}`);
   }
 }
 
@@ -257,34 +222,15 @@ export async function queryMimoDashboard(
   cookie: string,
   options: { requestTimeoutMs?: number } = {},
 ): Promise<MimoDashboardResult> {
-  const requestTimeoutMs = options.requestTimeoutMs ?? MIMO_REQUEST_TIMEOUT_MS;
-  const timeZone = formatMimoDashboardTimeZone();
+  const context: MimoRequestContext = {
+    cookie,
+    timeoutMs: options.requestTimeoutMs ?? MIMO_REQUEST_TIMEOUT_MS,
+    timeZone: formatMimoDashboardTimeZone(),
+  };
   const [usage, detail, balance] = await Promise.all([
-    fetchMimoEndpoint({
-      name: "usage",
-      url: MIMO_USAGE_URL,
-      cookie,
-      requestTimeoutMs,
-      timeZone,
-      parse: parseMimoUsageResponse,
-    }),
-    fetchMimoEndpoint({
-      name: "detail",
-      url: MIMO_DETAIL_URL,
-      cookie,
-      requestTimeoutMs,
-      timeZone,
-      parse: parseMimoDetailResponse,
-    }),
-    fetchMimoEndpoint({
-      name: "balance",
-      url: MIMO_BALANCE_URL,
-      cookie,
-      requestTimeoutMs,
-      timeZone,
-      parse: parseMimoBalanceResponse,
-    }),
+    fetchMimoEndpoint("usage", "/tokenPlan/usage", parseMimoUsageResponse, context),
+    fetchMimoEndpoint("detail", "/tokenPlan/detail", parseMimoDetailResponse, context),
+    fetchMimoEndpoint("balance", "/balance", parseMimoBalanceResponse, context),
   ]);
-
   return { usage, detail, balance };
 }

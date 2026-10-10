@@ -9,47 +9,19 @@ import { API_KEY_VENDORS, resolveApiKey } from "./api-key-resolver.js";
 import { sanitizeDisplaySnippet, sanitizeDisplayText } from "./display-sanitize.js";
 import { clampPercent } from "./format-utils.js";
 import { fetchWithTimeout } from "./http.js";
+import { asRecord, nonEmptyString } from "./json-guards.js";
 import type { QuotaError, SyntheticQuotaWindow, SyntheticResult } from "./types.js";
 
 const SYNTHETIC_QUOTA_URL = "https://api.synthetic.new/v2/quotas";
 const SYNTHETIC_CREDIT_AMOUNT_PATTERN = /^\$(\d+)(?:\.(\d{1,2}))?$/;
 
-function asRecord(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === "object" ? (value as Record<string, unknown>) : null;
-}
-
-function isEmptyPlainObject(value: unknown): boolean {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    !Array.isArray(value) &&
-    Object.keys(value).length === 0
-  );
-}
-
-function invalidSyntheticResponse(message: string): QuotaError {
-  return {
-    success: false,
-    error: message,
-  };
-}
+const MISSING_FIVE_HOUR_WINDOW = "Synthetic API response missing rollingFiveHourLimit quota window";
+const MISSING_WEEKLY_WINDOW = "Synthetic API response missing weeklyTokenLimit quota window";
 
 function normalizeResetTimeIso(value: unknown): string | undefined {
-  if (typeof value !== "string") {
-    return undefined;
-  }
-
-  const trimmed = value.trim();
-  if (!trimmed) {
-    return undefined;
-  }
-
-  const parsed = Date.parse(trimmed);
-  if (!Number.isFinite(parsed)) {
-    return undefined;
-  }
-
-  return new Date(parsed).toISOString();
+  const raw = nonEmptyString(value);
+  const parsed = raw ? Date.parse(raw) : Number.NaN;
+  return Number.isFinite(parsed) ? new Date(parsed).toISOString() : undefined;
 }
 
 function normalizeSyntheticAmount(value: number): number {
@@ -57,58 +29,36 @@ function normalizeSyntheticAmount(value: number): number {
   return Number(value.toFixed(6));
 }
 
+/** "$12.5" -> 12.5; anything else (no "$", more than two decimals) -> null. */
 function parseSyntheticCreditAmount(value: unknown): number | null {
-  if (typeof value !== "string") {
-    return null;
-  }
-
-  const trimmed = value.trim();
-  const match = SYNTHETIC_CREDIT_AMOUNT_PATTERN.exec(trimmed);
-  if (!match) {
-    return null;
-  }
+  const match =
+    typeof value === "string" ? SYNTHETIC_CREDIT_AMOUNT_PATTERN.exec(value.trim()) : null;
+  if (!match) return null;
 
   const whole = Number.parseInt(match[1] ?? "0", 10);
-  const fractionalDigits = (match[2] ?? "").padEnd(2, "0");
-  const fractional = fractionalDigits ? Number.parseInt(fractionalDigits, 10) : 0;
-  if (!Number.isFinite(whole) || !Number.isFinite(fractional)) {
-    return null;
-  }
+  const fractional = Number.parseInt((match[2] ?? "").padEnd(2, "0"), 10);
+  // A very long digit run parses to Infinity.
+  if (!Number.isFinite(whole)) return null;
 
   return normalizeSyntheticAmount((whole * 100 + fractional) / 100);
 }
 
+function isNonNegativeNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
 function buildRollingFiveHourWindow(
-  payload: Record<string, unknown>,
+  payload: Record<string, unknown> | null,
 ): SyntheticQuotaWindow | QuotaError {
-  const rolling = asRecord(payload.rollingFiveHourLimit);
-  if (!rolling) {
-    return invalidSyntheticResponse(
-      "Synthetic API response missing rollingFiveHourLimit quota window",
-    );
-  }
-
-  const max = rolling.max;
-  const remaining = rolling.remaining;
-
-  if (typeof max !== "number" || !Number.isFinite(max) || max <= 0) {
-    return invalidSyntheticResponse(
-      "Synthetic API response missing rollingFiveHourLimit quota window",
-    );
-  }
-
-  if (typeof remaining !== "number" || !Number.isFinite(remaining) || remaining < 0) {
-    return invalidSyntheticResponse(
-      "Synthetic API response missing rollingFiveHourLimit quota window",
-    );
+  const rolling = asRecord(payload?.rollingFiveHourLimit);
+  const max = rolling?.max;
+  const remaining = rolling?.remaining;
+  if (!rolling || !isNonNegativeNumber(max) || max === 0 || !isNonNegativeNumber(remaining)) {
+    return { success: false, error: MISSING_FIVE_HOUR_WINDOW };
   }
 
   const used = normalizeSyntheticAmount(max - remaining);
-  if (!Number.isFinite(used) || used < 0) {
-    return invalidSyntheticResponse(
-      "Synthetic API response missing rollingFiveHourLimit quota window",
-    );
-  }
+  if (used < 0) return { success: false, error: MISSING_FIVE_HOUR_WINDOW };
 
   return {
     limit: max,
@@ -119,33 +69,23 @@ function buildRollingFiveHourWindow(
 }
 
 function buildWeeklyTokenWindow(
-  payload: Record<string, unknown>,
+  payload: Record<string, unknown> | null,
 ): SyntheticQuotaWindow | QuotaError {
-  const weekly = asRecord(payload.weeklyTokenLimit);
-  if (!weekly) {
-    return invalidSyntheticResponse("Synthetic API response missing weeklyTokenLimit quota window");
-  }
-
-  const limit = parseSyntheticCreditAmount(weekly.maxCredits);
-  const remaining = parseSyntheticCreditAmount(weekly.remainingCredits);
-  if (limit === null || limit <= 0 || remaining === null || remaining < 0) {
-    return invalidSyntheticResponse("Synthetic API response missing weeklyTokenLimit quota window");
+  const weekly = asRecord(payload?.weeklyTokenLimit);
+  const limit = parseSyntheticCreditAmount(weekly?.maxCredits);
+  const remaining = parseSyntheticCreditAmount(weekly?.remainingCredits);
+  if (!weekly || limit === null || limit <= 0 || remaining === null) {
+    return { success: false, error: MISSING_WEEKLY_WINDOW };
   }
 
   const used = normalizeSyntheticAmount(limit - remaining);
-  if (!Number.isFinite(used) || used < 0) {
-    return invalidSyntheticResponse("Synthetic API response missing weeklyTokenLimit quota window");
-  }
+  if (used < 0) return { success: false, error: MISSING_WEEKLY_WINDOW };
 
-  const payloadPercentRemaining = weekly.percentRemaining;
-  const hasValidPayloadPercentRemaining =
-    typeof payloadPercentRemaining === "number" &&
-    Number.isFinite(payloadPercentRemaining) &&
-    payloadPercentRemaining >= 0 &&
-    payloadPercentRemaining <= 100;
-  const percentRemaining = hasValidPayloadPercentRemaining
-    ? clampPercent(payloadPercentRemaining)
-    : clampPercent((remaining / limit) * 100);
+  const reported = weekly.percentRemaining;
+  const percentRemaining =
+    isNonNegativeNumber(reported) && reported <= 100
+      ? clampPercent(reported)
+      : clampPercent((remaining / limit) * 100);
 
   return {
     limit,
@@ -171,7 +111,7 @@ export async function querySyntheticQuota(
         },
       },
       timeoutMs: options.requestTimeoutMs,
-      consume: async (resp) => {
+      consume: async (resp): Promise<SyntheticResult> => {
         if (!resp.ok) {
           const text = await resp.text();
           return {
@@ -180,35 +120,17 @@ export async function querySyntheticQuota(
           };
         }
 
-        const data = (await resp.json()) as unknown;
-        if (isEmptyPlainObject(data)) {
-          return invalidSyntheticResponse("Synthetic returned no quota data for this account.");
+        const payload = asRecord(await resp.json());
+        if (payload && Object.keys(payload).length === 0) {
+          return { success: false, error: "Synthetic returned no quota data for this account." };
         }
 
-        const record = asRecord(data);
-        if (!record) {
-          return invalidSyntheticResponse(
-            "Synthetic API response missing rollingFiveHourLimit quota window",
-          );
-        }
+        const fiveHour = buildRollingFiveHourWindow(payload);
+        if ("error" in fiveHour) return fiveHour;
+        const weekly = buildWeeklyTokenWindow(payload);
+        if ("error" in weekly) return weekly;
 
-        const rollingFiveHour = buildRollingFiveHourWindow(record);
-        if (!("limit" in rollingFiveHour)) {
-          return rollingFiveHour;
-        }
-
-        const weekly = buildWeeklyTokenWindow(record);
-        if (!("limit" in weekly)) {
-          return weekly;
-        }
-
-        return {
-          success: true,
-          windows: {
-            fiveHour: rollingFiveHour,
-            weekly,
-          },
-        };
+        return { success: true, windows: { fiveHour, weekly } };
       },
     });
   } catch (err) {

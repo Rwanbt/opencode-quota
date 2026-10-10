@@ -19,7 +19,7 @@ import {
 import { getKimiQuotaEndpoint, type KimiQuotaEndpointId } from "../lib/kimi-endpoints.js";
 import { isCanonicalProviderAvailable } from "../lib/provider-availability.js";
 import { normalizeQuotaProviderId } from "../lib/provider-metadata.js";
-import type { AuthData } from "../lib/types.js";
+import type { AuthData, KimiQuotaWindow } from "../lib/types.js";
 import { readKeyLoginRows } from "./key-login-rows.js";
 import {
   apiKeyStatusDetails,
@@ -29,10 +29,6 @@ import {
   statusDetailsFromRecord,
   withStatusDetails,
 } from "./result-helpers.js";
-
-function formatUsageRight(window: { used: number; limit: number }): string {
-  return `${window.used}/${window.limit}`;
-}
 
 type KimiProviderSpec = {
   id: "kimi-code-plan-global" | "kimi-code-plan-cn";
@@ -46,10 +42,26 @@ type KimiProviderSpec = {
   }) => Promise<ResolvedKimiAuthWithDiagnostics>;
 };
 
-function matchesKimiCurrentModel(model: string, spec: KimiProviderSpec): boolean {
-  const [provider = "", modelId] = model.toLowerCase().split("/", 2);
-  if (!modelId) return false;
-  return normalizeQuotaProviderId(provider) === spec.id;
+function toKimiEntries(
+  windows: KimiQuotaWindow[],
+  group: string,
+  sourceId?: string,
+): QuotaToastEntry[] {
+  return windows.map((window) => ({
+    accounting: {
+      resultType: "quota",
+      acquisitionMethod: "remote_api",
+      ownership: "maintained",
+      authority: "provider_reported",
+      ...(sourceId === undefined ? {} : { sourceId }),
+    },
+    name: `${group} ${window.label}`,
+    group,
+    label: `${window.label}:`,
+    right: `${window.used}/${window.limit}`,
+    percentRemaining: window.percentRemaining,
+    resetTimeIso: window.resetTimeIso,
+  }));
 }
 
 function createKimiProvider(spec: KimiProviderSpec): QuotaProvider {
@@ -71,7 +83,8 @@ function createKimiProvider(spec: KimiProviderSpec): QuotaProvider {
     },
 
     matchesCurrentModel(model: string): boolean {
-      return matchesKimiCurrentModel(model, spec);
+      const [provider = "", modelId] = model.toLowerCase().split("/", 2);
+      return Boolean(modelId) && normalizeQuotaProviderId(provider) === spec.id;
     },
 
     async fetch(ctx: QuotaProviderContext): Promise<QuotaProviderResult> {
@@ -119,23 +132,7 @@ function createKimiProvider(spec: KimiProviderSpec): QuotaProvider {
               errors.push({ label: group, message: result.error });
               continue;
             }
-            entries.push(
-              ...result.windows.map((window) => ({
-                accounting: {
-                  resultType: "quota" as const,
-                  acquisitionMethod: "remote_api" as const,
-                  ownership: "maintained" as const,
-                  authority: "provider_reported" as const,
-                  sourceId: row.id,
-                },
-                name: `${group} ${window.label}`,
-                group,
-                label: `${window.label}:`,
-                right: formatUsageRight(window),
-                percentRemaining: window.percentRemaining,
-                resetTimeIso: window.resetTimeIso,
-              })),
-            );
+            entries.push(...toKimiEntries(result.windows, group, row.id));
           }
           return withStatusDetails(attemptedResult(entries, errors), authDetails);
         }
@@ -159,23 +156,8 @@ function createKimiProvider(spec: KimiProviderSpec): QuotaProvider {
         ]);
       }
 
-      const entries: QuotaToastEntry[] = result.windows.map((window) => ({
-        accounting: {
-          resultType: "quota",
-          acquisitionMethod: "remote_api",
-          ownership: "maintained",
-          authority: "provider_reported",
-        },
-        name: `${result.label} ${window.label}`,
-        group: result.label,
-        label: `${window.label}:`,
-        right: formatUsageRight(window),
-        percentRemaining: window.percentRemaining,
-        resetTimeIso: window.resetTimeIso,
-      }));
-
       return withStatusDetails(
-        attemptedResult(entries, [], {
+        attemptedResult(toKimiEntries(result.windows, result.label), [], {
           singleWindowDisplayName: result.label,
         }),
         [
@@ -184,9 +166,6 @@ function createKimiProvider(spec: KimiProviderSpec): QuotaProvider {
             key: window.label.toLowerCase().replace(/\s+/g, "_"),
             value: `used=${window.used}/${window.limit} percent_remaining=${window.percentRemaining} reset_at=${window.resetTimeIso ?? "(none)"}`,
           })),
-          ...(result.windows.length === 0
-            ? [{ key: "live_state", value: `no reportable ${spec.label} quota` }]
-            : []),
         ],
       );
     },

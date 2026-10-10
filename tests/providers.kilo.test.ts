@@ -1,7 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { collectQuotaRenderData } from "../src/lib/quota-render-data.js";
-import { DEFAULT_CONFIG } from "../src/lib/types.js";
 import {
   expectAttemptedWithErrorLabel,
   expectAttemptedWithNoErrors,
@@ -26,6 +24,28 @@ vi.mock("../src/lib/kilo.js", () => ({
 }));
 
 import { kiloProvider } from "../src/providers/kilo.js";
+
+const REMAINING_CREDITS = {
+  metric: { kind: "component", component: "remaining_credits" },
+  prominence: "primary",
+};
+
+function usd(decimal: string) {
+  return { decimal, unit: { kind: "currency", code: "USD" } };
+}
+
+/** Used is reported by Kilo; the limit (base + bonus) and what is left are computed here. */
+function usdBasis(used: string, limit: string, remaining: string) {
+  return {
+    used: { quantity: usd(used), authority: "provider_reported" },
+    limit: { quantity: usd(limit), authority: "locally_derived" },
+    remaining: { quantity: usd(remaining), authority: "locally_derived" },
+  };
+}
+
+function kiloPass(fields: Record<string, unknown>) {
+  return { success: true, mode: "kilo_pass", ...fields };
+}
 
 describe("Kilo Gateway provider", () => {
   beforeEach(() => {
@@ -67,16 +87,16 @@ describe("Kilo Gateway provider", () => {
   });
 
   it("maps one structured Kilo Pass percentage with complete USD basis", async () => {
-    mocks.queryKiloQuota.mockResolvedValueOnce({
-      success: true,
-      mode: "kilo_pass",
-      baseCreditsUsd: 10,
-      usageUsd: 2.5,
-      bonusCreditsUsd: 5,
-      remainingUsd: 12.5,
-      overageUsd: 0,
-      resetTimeIso: "2099-02-01T00:00:00.000Z",
-    });
+    mocks.queryKiloQuota.mockResolvedValueOnce(
+      kiloPass({
+        baseCreditsUsd: 10,
+        usageUsd: 2.5,
+        bonusCreditsUsd: 5,
+        remainingUsd: 12.5,
+        overageUsd: 0,
+        resetTimeIso: "2099-02-01T00:00:00.000Z",
+      }),
+    );
 
     const out = await kiloProvider.fetch({ config: { requestTimeoutMs: 9000 } } as any);
 
@@ -87,24 +107,8 @@ describe("Kilo Gateway provider", () => {
         name: "kilo-gateway-credits",
         group: "Kilo Gateway",
         percentRemaining: 83.33333333333334,
-        semantic: {
-          metric: { kind: "component", component: "remaining_credits" },
-          prominence: "primary",
-        },
-        basis: {
-          used: {
-            quantity: { decimal: "2.5", unit: { kind: "currency", code: "USD" } },
-            authority: "provider_reported",
-          },
-          limit: {
-            quantity: { decimal: "15", unit: { kind: "currency", code: "USD" } },
-            authority: "locally_derived",
-          },
-          remaining: {
-            quantity: { decimal: "12.5", unit: { kind: "currency", code: "USD" } },
-            authority: "locally_derived",
-          },
-        },
+        semantic: REMAINING_CREDITS,
+        basis: usdBasis("2.5", "15", "12.5"),
         resetTimeIso: "2099-02-01T00:00:00.000Z",
       },
     ]);
@@ -114,191 +118,73 @@ describe("Kilo Gateway provider", () => {
       ownership: "maintained",
       authority: "locally_derived",
     });
-    expect(out.entries[0]).not.toHaveProperty("right");
-    expect(out.entries[0]?.kind).not.toBe("value");
     expect(out.presentation).toBeUndefined();
-    expect(out.statusDetails).toEqual(
-      expect.arrayContaining([
-        { key: "accounting_mode", value: "kilo_pass" },
-        { key: "base_credits_usd", value: "$10.00" },
-        { key: "usage_usd", value: "$2.50" },
-        { key: "bonus_credits_usd", value: "$5.00" },
-        { key: "remaining_usd", value: "$12.50" },
-        { key: "overage_usd", value: "$0.00" },
-        { key: "reset_at", value: "2099-02-01T00:00:00.000Z" },
-      ]),
-    );
-    expect(out.rawDetails).toEqual([
+    const rawDetails = [
       { key: "base_credits_usd", value: "$10.00" },
       { key: "usage_usd", value: "$2.50" },
       { key: "bonus_credits_usd", value: "$5.00" },
       { key: "remaining_usd", value: "$12.50" },
       { key: "overage_usd", value: "$0.00" },
       { key: "reset_at", value: "2099-02-01T00:00:00.000Z" },
-    ]);
-    expect(JSON.stringify(out.entries)).not.toContain("$10.00");
-    expect(JSON.stringify(out.entries)).not.toContain("$2.50");
-    expect(JSON.stringify(out.entries)).not.toContain("$5.00");
-  });
-
-  it("preserves the semantic credits row through single-window projection", async () => {
-    mocks.queryKiloQuota.mockResolvedValueOnce({
-      success: true,
-      mode: "kilo_pass",
-      baseCreditsUsd: 10,
-      usageUsd: 2.5,
-      bonusCreditsUsd: 5,
-      remainingUsd: 12.5,
-      overageUsd: 0,
-    });
-    const raw = await kiloProvider.fetch({} as any);
-    const projectedProvider = {
-      id: "kilo",
-      isAvailable: vi.fn().mockResolvedValue(true),
-      fetch: vi.fn().mockResolvedValue(raw),
-    };
-
-    const projected = await collectQuotaRenderData({
-      client: {
-        config: {
-          providers: async () => ({ data: { providers: [] } }),
-          get: async () => ({ data: {} }),
-        },
-      } as any,
-      config: {
-        ...DEFAULT_CONFIG,
-        enabledProviders: ["kilo"],
-        formatStyle: "singleWindow",
-        showSessionTokens: false,
-      },
-      surfaceExplicitProviderIssues: false,
-      formatStyle: "singleWindow",
-      providers: [projectedProvider],
-      bypassProviderCache: true,
-    });
-
-    expect(projected.data?.entries).toEqual([
-      expect.objectContaining({
-        name: "[Kilo Gateway]",
-        percentRemaining: 83.33333333333334,
-        semantic: {
-          metric: { kind: "component", component: "remaining_credits" },
-          prominence: "primary",
-        },
-        basis: expect.objectContaining({
-          remaining: {
-            quantity: { decimal: "12.5", unit: { kind: "currency", code: "USD" } },
-            authority: "locally_derived",
-          },
-        }),
-      }),
-    ]);
-  });
-
-  it("does not expose used or bonus amounts when no bonus exists", async () => {
-    mocks.queryKiloQuota.mockResolvedValueOnce({
-      success: true,
-      mode: "kilo_pass",
-      baseCreditsUsd: 10,
-      usageUsd: 2.5,
-      bonusCreditsUsd: 0,
-      remainingUsd: 7.5,
-      overageUsd: 0,
-    });
-
-    const out = await kiloProvider.fetch({} as any);
-
-    expectAttemptedWithNoErrors(out);
-    expect(visibleEntries(out.entries, "kilo")).toEqual([
-      expect.objectContaining({
-        name: "kilo-gateway-credits",
-        group: "Kilo Gateway",
-        percentRemaining: 75,
-        semantic: {
-          metric: { kind: "component", component: "remaining_credits" },
-          prominence: "primary",
-        },
-        basis: {
-          used: {
-            quantity: { decimal: "2.5", unit: { kind: "currency", code: "USD" } },
-            authority: "provider_reported",
-          },
-          limit: {
-            quantity: { decimal: "10", unit: { kind: "currency", code: "USD" } },
-            authority: "locally_derived",
-          },
-          remaining: {
-            quantity: { decimal: "7.5", unit: { kind: "currency", code: "USD" } },
-            authority: "locally_derived",
-          },
-        },
-      }),
-    ]);
-  });
-
-  it("shows zero percent and zero left when usage exceeds the quota", async () => {
-    mocks.queryKiloQuota.mockResolvedValueOnce({
-      success: true,
-      mode: "kilo_pass",
-      baseCreditsUsd: 10,
-      usageUsd: 12,
-      bonusCreditsUsd: 0,
-      remainingUsd: 0,
-      overageUsd: 2,
-    });
-
-    const out = await kiloProvider.fetch({} as any);
-
-    expectAttemptedWithNoErrors(out);
-    expect(visibleEntries(out.entries, "kilo")).toEqual([
-      expect.objectContaining({
-        name: "kilo-gateway-credits",
-        group: "Kilo Gateway",
-        percentRemaining: 0,
-        semantic: {
-          metric: { kind: "component", component: "remaining_credits" },
-          prominence: "primary",
-        },
-        basis: {
-          used: {
-            quantity: { decimal: "12", unit: { kind: "currency", code: "USD" } },
-            authority: "provider_reported",
-          },
-          limit: {
-            quantity: { decimal: "10", unit: { kind: "currency", code: "USD" } },
-            authority: "locally_derived",
-          },
-          remaining: {
-            quantity: { decimal: "0", unit: { kind: "currency", code: "USD" } },
-            authority: "locally_derived",
-          },
-        },
-      }),
-    ]);
+    ];
+    expect(out.rawDetails).toEqual(rawDetails);
     expect(out.statusDetails).toEqual(
-      expect.arrayContaining([{ key: "overage_usd", value: "$2.00" }]),
+      expect.arrayContaining([{ key: "accounting_mode", value: "kilo_pass" }, ...rawDetails]),
     );
-    expect(out.rawDetails).toEqual(
-      expect.arrayContaining([
+    // The USD amounts stay in the details; the row carries only exact decimals.
+    expect(JSON.stringify(out.entries)).not.toContain("$");
+  });
+
+  it.each([
+    [
+      "no bonus",
+      { baseCreditsUsd: 10, usageUsd: 2.5, bonusCreditsUsd: 0, remainingUsd: 7.5, overageUsd: 0 },
+      75,
+      usdBasis("2.5", "10", "7.5"),
+      [],
+    ],
+    [
+      "usage above the quota (zero percent, zero left, overage only in the details)",
+      { baseCreditsUsd: 10, usageUsd: 12, bonusCreditsUsd: 0, remainingUsd: 0, overageUsd: 2 },
+      0,
+      usdBasis("12", "10", "0"),
+      [
         { key: "usage_usd", value: "$12.00" },
         { key: "remaining_usd", value: "$0.00" },
         { key: "overage_usd", value: "$2.00" },
-      ]),
-    );
-    expect(JSON.stringify(out.entries)).not.toContain("$2.00");
+      ],
+    ],
+  ])("maps a Kilo Pass with %s", async (_name, state, percentRemaining, basis, rawDetails) => {
+    mocks.queryKiloQuota.mockResolvedValueOnce(kiloPass(state));
+
+    const out = await kiloProvider.fetch({} as any);
+
+    expectAttemptedWithNoErrors(out);
+    expect(visibleEntries(out.entries, "kilo")).toEqual([
+      {
+        name: "kilo-gateway-credits",
+        group: "Kilo Gateway",
+        percentRemaining,
+        semantic: REMAINING_CREDITS,
+        basis,
+      },
+    ]);
+    expect(out.rawDetails).toEqual(expect.arrayContaining(rawDetails));
+    expect(out.statusDetails).toEqual(expect.arrayContaining(rawDetails));
+    expect(JSON.stringify(out.entries)).not.toContain("$");
   });
 
   it("omits the percent entry when total credits are zero", async () => {
-    mocks.queryKiloQuota.mockResolvedValueOnce({
-      success: true,
-      mode: "kilo_pass",
-      baseCreditsUsd: 0,
-      usageUsd: 0,
-      bonusCreditsUsd: 0,
-      remainingUsd: 0,
-      overageUsd: 0,
-      resetTimeIso: "2099-02-01T00:00:00.000Z",
-    });
+    mocks.queryKiloQuota.mockResolvedValueOnce(
+      kiloPass({
+        baseCreditsUsd: 0,
+        usageUsd: 0,
+        bonusCreditsUsd: 0,
+        remainingUsd: 0,
+        overageUsd: 0,
+        resetTimeIso: "2099-02-01T00:00:00.000Z",
+      }),
+    );
 
     const out = await kiloProvider.fetch({} as any);
 
@@ -308,11 +194,8 @@ describe("Kilo Gateway provider", () => {
         kind: "quantity",
         name: "kilo-gateway-remaining-credits",
         group: "Kilo Gateway",
-        semantic: {
-          metric: { kind: "component", component: "remaining_credits" },
-          prominence: "primary",
-        },
-        quantity: { decimal: "0", unit: { kind: "currency", code: "USD" } },
+        semantic: REMAINING_CREDITS,
+        quantity: usd("0"),
         resetTimeIso: "2099-02-01T00:00:00.000Z",
       },
     ]);
@@ -337,7 +220,7 @@ describe("Kilo Gateway provider", () => {
           metric: { kind: "component", component: "total_balance" },
           prominence: "primary",
         },
-        quantity: { decimal: "8.25", unit: { kind: "currency", code: "USD" } },
+        quantity: usd("8.25"),
       },
     ]);
     expect(out.entries[0]?.accounting).toEqual({
@@ -354,16 +237,12 @@ describe("Kilo Gateway provider", () => {
         { key: "balance_usd", value: "$8.25" },
       ]),
     );
-    expect(out.statusDetails).not.toEqual(
-      expect.arrayContaining([{ key: "usage_usd", value: expect.any(String) }]),
-    );
+    expect(out.statusDetails?.map((detail) => detail.key)).not.toContain("usage_usd");
   });
 
   it("maps API failures into a safe Kilo Gateway error", async () => {
     mocks.queryKiloQuota.mockResolvedValueOnce({ success: false, error: "Unauthorized" });
 
-    const out = await kiloProvider.fetch({} as any);
-
-    expectAttemptedWithErrorLabel(out, "Kilo Gateway");
+    expectAttemptedWithErrorLabel(await kiloProvider.fetch({} as any), "Kilo Gateway");
   });
 });

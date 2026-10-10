@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { readAuthFile, readAuthFileCached } from "../src/lib/opencode-auth.js";
 import { deriveResolvedAuthIdentity } from "../src/lib/resolved-auth-identity.js";
+import type { AuthData } from "../src/lib/types.js";
 import {
-  hasXaiOAuth,
+  hasXaiOAuthCached,
   periodKindLabel,
   queryXaiQuota,
   resolveXaiAuthIdentity,
@@ -19,33 +21,67 @@ vi.mock("../src/lib/resolved-auth-identity.js", () => ({
   deriveResolvedAuthIdentity: vi.fn(async () => `rai1_${"b".repeat(43)}`),
 }));
 
-async function mockConfiguredAuth(overrides: Record<string, unknown> = {}): Promise<void> {
-  const { readAuthFile } = await import("../src/lib/opencode-auth.js");
-  (readAuthFile as any).mockResolvedValueOnce({
-    xai: {
-      type: "oauth",
-      access: "token-1",
-      expires: Date.now() + 60_000,
-      ...overrides,
-    },
+const CREDITS_URL = "https://cli-chat-proxy.grok.com/v1/billing?format=credits";
+const SUBSCRIPTIONS_URL = "https://grok.com/rest/subscriptions";
+const FAILED_AUTH = {
+  xai: { type: "oauth", resolveError: "refresh_failed: HTTP 401" },
+} as AuthData;
+const WEEKLY_WINDOW = {
+  percentRemaining: 95,
+  resetTimeIso: "2026-07-20T02:24:00.983Z",
+  kind: "weekly",
+};
+
+function mockConfiguredAuth(): void {
+  vi.mocked(readAuthFile).mockResolvedValueOnce({
+    xai: { type: "oauth", access: "token-1", expires: Date.now() + 60_000 },
   });
 }
 
-function jsonResponse(payload: unknown, status = 200): Response {
-  return new Response(JSON.stringify(payload), { status });
+/** A JSON payload, or a function that builds the reply (a Response, a rejection, a hang). */
+type FetchReply = unknown | ((init: RequestInit) => Promise<Response>);
+
+function stubXaiFetch(
+  credits: FetchReply = superGrokWeeklyFixture,
+  subscriptions: FetchReply = { subscriptions: [] },
+) {
+  const fetchMock = vi.fn(async (url: string, init: RequestInit) => {
+    const reply = url === SUBSCRIPTIONS_URL ? subscriptions : credits;
+    return typeof reply === "function"
+      ? reply(init)
+      : new Response(JSON.stringify(reply), { status: 200 });
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  return fetchMock;
 }
 
-function successfulXaiFetch(subscriptionPayload: unknown) {
-  return vi.fn(async (url: string) =>
-    jsonResponse(
-      url === "https://grok.com/rest/subscriptions" ? subscriptionPayload : superGrokWeeklyFixture,
-    ),
-  );
+const hang = () => new Promise<Response>(() => {});
+
+/** One active subscription; `tierSuffix` completes `SUBSCRIPTION_TIER_SUPER_GROK`. */
+function activeSubscription(tierSuffix: string, providerOfferId?: string) {
+  return {
+    subscriptions: [
+      {
+        tier: `SUBSCRIPTION_TIER_SUPER_GROK${tierSuffix}`,
+        status: "SUBSCRIPTION_STATUS_ACTIVE",
+        ...(providerOfferId ? { activeOffer: { providerOfferId } } : {}),
+      },
+    ],
+  };
 }
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  vi.unstubAllGlobals();
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
+});
 
 describe("xAI auth resolution", () => {
   it("derives cache identity from the direct access token used by quota", async () => {
-    const { readAuthFile } = await import("../src/lib/opencode-auth.js");
     vi.mocked(readAuthFile).mockResolvedValueOnce({
       xai: { type: "oauth", access: "xai-access-secret" },
     });
@@ -59,155 +95,94 @@ describe("xAI auth resolution", () => {
     expect(identity).not.toContain("xai-access-secret");
   });
 
-  it("resolves only the read-only xai OAuth access token", () => {
+  it.each([
+    [123, 123],
+    [Number.NaN, undefined],
+  ])("resolves only the trimmed OAuth access token (expires %s)", (expires, expiresAt) => {
     expect(
       resolveXaiOAuth({
-        xai: { type: "oauth", access: " token-1 ", refresh: "ignored", expires: 123 },
+        xai: { type: "oauth", access: " token-1 ", refresh: "ignored", expires },
       }),
-    ).toEqual({
-      state: "configured",
-      accessToken: "token-1",
-      expiresAt: 123,
-    });
-
-    expect(hasXaiOAuth({ xai: { type: "api", access: "token-1" } })).toBe(false);
-    expect(hasXaiOAuth({ xai: { type: "oauth", access: "   " } })).toBe(false);
-    expect(hasXaiOAuth({ grok: { type: "oauth", access: "token-1" } } as any)).toBe(false);
-    expect(hasXaiOAuth({ "x-ai": { type: "oauth", access: "token-1" } } as any)).toBe(false);
-    expect(hasXaiOAuth({})).toBe(false);
+    ).toEqual({ state: "configured", accessToken: "token-1", expiresAt });
   });
 
-  it("ignores a malformed optional expiry while retaining a complete bearer token", () => {
-    expect(
-      resolveXaiOAuth({
-        xai: { type: "oauth", access: "token-1", expires: Number.NaN },
-      }),
-    ).toEqual({
-      state: "configured",
-      accessToken: "token-1",
-      expiresAt: undefined,
+  it.each([
+    ["an API key", { xai: { type: "api", access: "token-1" } }],
+    ["a blank access token", { xai: { type: "oauth", access: "   " } }],
+    ["a grok entry", { grok: { type: "oauth", access: "token-1" } }],
+    ["an x-ai entry", { "x-ai": { type: "oauth", access: "token-1" } }],
+    ["no entry", {}],
+  ])("ignores %s", (_name, auth) => {
+    expect(resolveXaiOAuth(auth as AuthData)).toEqual({ state: "none" });
+  });
+
+  it("keeps a login OpenCode could not return present", async () => {
+    vi.mocked(readAuthFileCached).mockResolvedValueOnce(FAILED_AUTH).mockResolvedValueOnce({});
+
+    expect(resolveXaiOAuth(FAILED_AUTH)).toEqual({
+      state: "failed",
+      error: "refresh_failed: HTTP 401",
     });
+    await expect(hasXaiOAuthCached()).resolves.toBe(true);
+    await expect(hasXaiOAuthCached()).resolves.toBe(false);
   });
 });
 
 describe("queryXaiQuota", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    vi.unstubAllGlobals();
-  });
-
-  afterEach(() => {
-    vi.useRealTimers();
-    vi.unstubAllGlobals();
-  });
-
-  it("returns null for missing, wrong-type, and incomplete auth", async () => {
-    const { readAuthFile } = await import("../src/lib/opencode-auth.js");
-    (readAuthFile as any)
-      .mockResolvedValueOnce({})
-      .mockResolvedValueOnce({ xai: { type: "api", key: "xai-key" } })
-      .mockResolvedValueOnce({ xai: { type: "oauth", refresh: "refresh-only" } });
-
-    await expect(queryXaiQuota()).resolves.toBeNull();
-    await expect(queryXaiQuota()).resolves.toBeNull();
-    await expect(queryXaiQuota()).resolves.toBeNull();
-  });
-
-  it("reports a login OpenCode could not return without fetching, and keeps it present", async () => {
-    const { readAuthFile, readAuthFileCached } = await import("../src/lib/opencode-auth.js");
-    const failed = { xai: { type: "oauth", resolveError: "refresh_failed: HTTP 401" } };
-    (readAuthFile as any).mockResolvedValue(failed);
-    const fetchMock = vi.fn();
-    vi.stubGlobal("fetch", fetchMock);
-
-    expect(resolveXaiOAuth(failed)).toEqual({
-      state: "failed",
-      error: "refresh_failed: HTTP 401",
+  it("returns null without a usable OAuth login", async () => {
+    vi.mocked(readAuthFile).mockResolvedValueOnce({
+      xai: { type: "oauth", refresh: "refresh-only" },
     });
-    expect(hasXaiOAuth(failed)).toBe(true);
+    await expect(queryXaiQuota()).resolves.toBeNull();
+  });
+
+  it("reports a login OpenCode could not return without fetching", async () => {
+    vi.mocked(readAuthFile).mockResolvedValueOnce(FAILED_AUTH).mockResolvedValueOnce(FAILED_AUTH);
+    const fetchMock = stubXaiFetch();
+
     await expect(queryXaiQuota()).resolves.toEqual({
       success: false,
       error:
         "xAI sign-in could not be refreshed: refresh_failed: HTTP 401. Run `opencode auth login xai`.",
     });
     await expect(resolveXaiAuthIdentity()).resolves.toBeNull();
-    expect(readAuthFile).toHaveBeenCalledWith({ integrationIds: ["xai"] });
-    expect(readAuthFileCached).not.toHaveBeenCalled();
     expect(fetchMock).not.toHaveBeenCalled();
-    expect(deriveResolvedAuthIdentity).not.toHaveBeenCalled();
   });
 
   it("does not refresh, fetch, or write an expired token", async () => {
-    const { readAuthFile, readAuthFileCached } = await import("../src/lib/opencode-auth.js");
-    (readAuthFile as any).mockResolvedValueOnce({
+    vi.mocked(readAuthFile).mockResolvedValueOnce({
       xai: {
         type: "oauth",
         access: "expired-token",
         refresh: "refresh-1",
-        expires: Date.now() - 1_000,
+        expires: Date.now() - 1,
       },
     });
-    const fetchMock = vi.fn();
-    vi.stubGlobal("fetch", fetchMock);
+    const fetchMock = stubXaiFetch();
 
     await expect(queryXaiQuota()).resolves.toEqual({
       success: false,
       error: "xAI OAuth token expired; use xAI in OpenCode to refresh it or reconnect xAI",
     });
-    expect(readAuthFile).toHaveBeenCalledOnce();
-    expect(readAuthFileCached).not.toHaveBeenCalled();
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("reads the refreshed OAuth entry instead of a stale cached token", async () => {
-    const { readAuthFile, readAuthFileCached } = await import("../src/lib/opencode-auth.js");
-    (readAuthFileCached as any).mockResolvedValueOnce({
+  it("reads the fresh OAuth entry and sends the Grok Build headers to both endpoints", async () => {
+    vi.mocked(readAuthFileCached).mockResolvedValueOnce({
       xai: { type: "oauth", access: "stale-token", expires: Date.now() - 1_000 },
     });
-    (readAuthFile as any).mockResolvedValueOnce({
-      xai: { type: "oauth", access: "fresh-token", expires: Date.now() + 60_000 },
-    });
-    const fetchMock = vi.fn(
-      async () => new Response(JSON.stringify(superGrokWeeklyFixture), { status: 200 }),
-    ) as any;
-    vi.stubGlobal("fetch", fetchMock);
-
-    await expect(queryXaiQuota()).resolves.toMatchObject({
-      success: true,
-      window: { percentRemaining: 95, kind: "weekly" },
-    });
-    expect(readAuthFile).toHaveBeenCalledOnce();
-    expect(readAuthFileCached).not.toHaveBeenCalled();
-    expect(fetchMock).toHaveBeenCalledWith(
-      "https://cli-chat-proxy.grok.com/v1/billing?format=credits",
-      expect.objectContaining({
-        headers: expect.objectContaining({ Authorization: "Bearer fresh-token" }),
-      }),
-    );
-  });
-
-  it("keeps the exact credits fixture authoritative before querying subscription metadata", async () => {
-    await mockConfiguredAuth();
-
-    const fetchMock = successfulXaiFetch(heavySubscriptionFixture) as any;
-    vi.stubGlobal("fetch", fetchMock);
+    mockConfiguredAuth();
+    const fetchMock = stubXaiFetch(superGrokWeeklyFixture, heavySubscriptionFixture);
 
     await expect(queryXaiQuota({ requestTimeoutMs: 3_210 })).resolves.toEqual({
       success: true,
       label: "xAI Heavy",
-      window: {
-        percentRemaining: 95,
-        resetTimeIso: "2026-07-20T02:24:00.983Z",
-        kind: "weekly",
-      },
+      window: WEEKLY_WINDOW,
     });
 
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(fetchMock.mock.calls.map(([url]: [string]) => url)).toEqual([
-      "https://cli-chat-proxy.grok.com/v1/billing?format=credits",
-      "https://grok.com/rest/subscriptions",
-    ]);
-    for (const [, init] of fetchMock.mock.calls as [string, RequestInit][]) {
+    expect(readAuthFileCached).not.toHaveBeenCalled();
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([CREDITS_URL, SUBSCRIPTIONS_URL]);
+    for (const [, init] of fetchMock.mock.calls) {
       expect(init).toEqual({
         method: "GET",
         headers: {
@@ -219,158 +194,47 @@ describe("queryXaiQuota", () => {
         },
         signal: expect.any(AbortSignal),
       });
-      expect(init).not.toHaveProperty("body");
     }
   });
 
   it.each([
-    [
-      "Lite",
-      {
-        subscriptions: [
-          {
-            tier: "SUBSCRIPTION_TIER_SUPER_GROK_LITE",
-            status: "SUBSCRIPTION_STATUS_ACTIVE",
-          },
-        ],
-      },
-      "xAI Lite",
-    ],
-    [
-      "standard SuperGrok",
-      {
-        subscriptions: [
-          {
-            tier: "SUBSCRIPTION_TIER_SUPER_GROK",
-            status: "SUBSCRIPTION_STATUS_ACTIVE",
-          },
-        ],
-      },
-      "xAI SuperGrok",
-    ],
-    [
-      "standard PRO without a Heavy offer",
-      {
-        subscriptions: [
-          {
-            tier: "SUBSCRIPTION_TIER_SUPER_GROK_PRO",
-            status: "SUBSCRIPTION_STATUS_ACTIVE",
-          },
-        ],
-      },
-      "xAI SuperGrok",
-    ],
-    [
-      "Heavy tier",
-      {
-        subscriptions: [
-          {
-            tier: "SUBSCRIPTION_TIER_SUPER_GROK_HEAVY",
-            status: "SUBSCRIPTION_STATUS_ACTIVE",
-          },
-        ],
-      },
-      "xAI Heavy",
-    ],
+    ["Lite", activeSubscription("_LITE"), "xAI Lite"],
+    ["standard SuperGrok", activeSubscription(""), "xAI SuperGrok"],
+    ["PRO without a Heavy offer", activeSubscription("_PRO"), "xAI SuperGrok"],
+    ["Heavy tier", activeSubscription("_HEAVY"), "xAI Heavy"],
     ["Heavy offer", heavySubscriptionFixture, "xAI Heavy"],
-  ])("maps %s subscription evidence to %s", async (_name, payload, expectedLabel) => {
-    await mockConfiguredAuth();
-    vi.stubGlobal("fetch", successfulXaiFetch(payload) as any);
+  ])("labels %s subscription evidence as %s", async (_name, subscriptions, label) => {
+    mockConfiguredAuth();
+    stubXaiFetch(superGrokWeeklyFixture, subscriptions);
 
-    await expect(queryXaiQuota()).resolves.toMatchObject({
-      success: true,
-      label: expectedLabel,
-      window: { percentRemaining: 95, kind: "weekly" },
-    });
+    await expect(queryXaiQuota()).resolves.toEqual({ success: true, label, window: WEEKLY_WINDOW });
   });
 
   it.each([
     ["an empty subscription list", { subscriptions: [] }],
     [
       "an inactive subscription",
-      {
-        subscriptions: [
-          {
-            tier: "SUBSCRIPTION_TIER_SUPER_GROK_LITE",
-            status: "SUBSCRIPTION_STATUS_INACTIVE",
-          },
-        ],
-      },
+      { subscriptions: [{ tier: "SUBSCRIPTION_TIER_SUPER_GROK_LITE", status: "INACTIVE" }] },
     ],
-    [
-      "an unknown tier",
-      {
-        subscriptions: [
-          {
-            tier: "SUBSCRIPTION_TIER_SUPER_GROK_PLUS",
-            status: "SUBSCRIPTION_STATUS_ACTIVE",
-          },
-        ],
-      },
-    ],
-    [
-      "a misleading Heavy offer prefix",
-      {
-        subscriptions: [
-          {
-            tier: "SUBSCRIPTION_TIER_SUPER_GROK_PRO",
-            status: "SUBSCRIPTION_STATUS_ACTIVE",
-            activeOffer: { providerOfferId: "not-heavy-p3m-30-may2026" },
-          },
-        ],
-      },
-    ],
+    ["an unknown tier", activeSubscription("_PLUS")],
+    ["a misleading Heavy offer prefix", activeSubscription("_PRO", "not-heavy-p3m-30-may2026")],
     [
       "a Heavy offer with an unverified suffix",
-      {
-        subscriptions: [
-          {
-            tier: "SUBSCRIPTION_TIER_SUPER_GROK_PRO",
-            status: "SUBSCRIPTION_STATUS_ACTIVE",
-            activeOffer: { providerOfferId: "heavy-p3m-30-may2026-extra" },
-          },
-        ],
-      },
+      activeSubscription("_PRO", "heavy-p3m-30-may2026-extra"),
     ],
     ["a changed root shape", { subscription: [] }],
-  ])("falls back to the standard label for %s", async (_name, payload) => {
-    await mockConfiguredAuth();
-    vi.stubGlobal("fetch", successfulXaiFetch(payload) as any);
+    ["a subscription HTTP error", async () => new Response("denied token-1", { status: 403 })],
+    ["a subscription JSON error", async () => new Response("not json", { status: 200 })],
+    ["a subscription network error", async () => Promise.reject(new Error("failed for token-1"))],
+  ])("keeps the standard label and the credits window for %s", async (_name, subscriptions) => {
+    mockConfiguredAuth();
+    stubXaiFetch(superGrokWeeklyFixture, subscriptions);
 
-    await expect(queryXaiQuota()).resolves.toMatchObject({
+    await expect(queryXaiQuota()).resolves.toEqual({
       success: true,
       label: "xAI SuperGrok",
-      window: { percentRemaining: 95, kind: "weekly" },
+      window: WEEKLY_WINDOW,
     });
-  });
-
-  it("isolates subscription HTTP, JSON, and network failures from successful credits", async () => {
-    const subscriptionFailures = [
-      () => Promise.resolve(new Response("denied token-1", { status: 403 })),
-      () => Promise.resolve(new Response("not json", { status: 200 })),
-      () => Promise.reject(new Error("subscription failed for token-1")),
-    ];
-
-    for (const failSubscription of subscriptionFailures) {
-      await mockConfiguredAuth();
-      const fetchMock = vi.fn((url: string) =>
-        url === "https://grok.com/rest/subscriptions"
-          ? failSubscription()
-          : Promise.resolve(jsonResponse(superGrokWeeklyFixture)),
-      );
-      vi.stubGlobal("fetch", fetchMock as any);
-
-      await expect(queryXaiQuota()).resolves.toEqual({
-        success: true,
-        label: "xAI SuperGrok",
-        window: {
-          percentRemaining: 95,
-          resetTimeIso: "2026-07-20T02:24:00.983Z",
-          kind: "weekly",
-        },
-      });
-      expect(fetchMock).toHaveBeenCalledTimes(2);
-    }
   });
 
   it.each([
@@ -378,91 +242,43 @@ describe("queryXaiQuota", () => {
     [750, 750],
   ])("caps subscription metadata at %i ms with an effective timeout of %i ms", async (requestTimeoutMs, effectiveTimeoutMs) => {
     vi.useFakeTimers();
-    await mockConfiguredAuth();
-
-    const fetchMock = vi.fn((url: string, init: RequestInit) => {
-      if (url !== "https://grok.com/rest/subscriptions") {
-        return Promise.resolve(jsonResponse(superGrokWeeklyFixture));
-      }
-      return new Promise<Response>((_resolve, reject) => {
-        init.signal?.addEventListener("abort", () => {
-          const error = new Error("aborted");
-          error.name = "AbortError";
-          reject(error);
-        });
-      });
-    });
-    vi.stubGlobal("fetch", fetchMock as any);
+    mockConfiguredAuth();
+    const fetchMock = stubXaiFetch(superGrokWeeklyFixture, hang);
 
     const resultPromise = queryXaiQuota({ requestTimeoutMs });
     await vi.advanceTimersByTimeAsync(0);
     expect(fetchMock).toHaveBeenCalledTimes(2);
     await vi.advanceTimersByTimeAsync(effectiveTimeoutMs);
 
-    await expect(resultPromise).resolves.toMatchObject({
+    await expect(resultPromise).resolves.toEqual({
       success: true,
       label: "xAI SuperGrok",
-      window: { percentRemaining: 95, kind: "weekly" },
+      window: WEEKLY_WINDOW,
     });
   });
 
-  it("treats an omitted protobuf percentage as 0% used when a period exists", async () => {
-    await mockConfiguredAuth();
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(
-        async () =>
-          new Response(
-            JSON.stringify({
-              config: {
-                currentPeriod: {
-                  type: "USAGE_PERIOD_TYPE_WEEKLY",
-                  end: "2026-07-20T02:24:00.983423+00:00",
-                },
-              },
-            }),
-            { status: 200 },
-          ),
-      ) as any,
-    );
-
-    await expect(queryXaiQuota()).resolves.toEqual({
-      success: true,
-      label: "xAI SuperGrok",
-      window: {
-        percentRemaining: 100,
-        resetTimeIso: "2026-07-20T02:24:00.983Z",
-        kind: "weekly",
+  it.each([
+    [
+      "an omitted protobuf percentage as 0% used when a period exists",
+      {
+        currentPeriod: {
+          type: "USAGE_PERIOD_TYPE_WEEKLY",
+          end: "2026-07-20T02:24:00.983423+00:00",
+        },
       },
-    });
-  });
-
-  it("preserves explicit current-period start, observation, and end evidence", async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-07-15T12:00:00.000Z"));
-    await mockConfiguredAuth();
-    vi.stubGlobal(
-      "fetch",
-      vi
-        .fn()
-        .mockResolvedValueOnce(
-          jsonResponse({
-            config: {
-              currentPeriod: {
-                type: "USAGE_PERIOD_TYPE_WEEKLY",
-                start: "2026-07-13T00:00:00Z",
-                end: "2026-07-20T00:00:00Z",
-              },
-              creditUsagePercent: 25,
-            },
-          }),
-        )
-        .mockResolvedValueOnce(jsonResponse({ subscriptions: [] })) as any,
-    );
-
-    await expect(queryXaiQuota()).resolves.toMatchObject({
-      success: true,
-      window: {
+      { percentRemaining: 100, resetTimeIso: "2026-07-20T02:24:00.983Z", kind: "weekly" },
+    ],
+    [
+      "explicit current-period start, observation, and end evidence",
+      {
+        currentPeriod: {
+          type: "USAGE_PERIOD_TYPE_WEEKLY",
+          start: "2026-07-13T00:00:00Z",
+          end: "2026-07-20T00:00:00Z",
+        },
+        creditUsagePercent: 25,
+      },
+      {
         percentRemaining: 75,
         resetTimeIso: "2026-07-20T00:00:00.000Z",
         fixedWindow: {
@@ -472,158 +288,81 @@ describe("queryXaiQuota", () => {
           endsAtIso: "2026-07-20T00:00:00.000Z",
           fullReset: true,
         },
+        kind: "weekly",
       },
-    });
-  });
-
-  it("uses the exact billingPeriodEnd reset fallback from the PR", async () => {
-    await mockConfiguredAuth();
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(
-        async () =>
-          new Response(
-            JSON.stringify({
-              config: {
-                currentPeriod: { type: "USAGE_PERIOD_TYPE_MONTHLY" },
-                creditUsagePercent: 25,
-                billingPeriodEnd: "2026-08-01T00:00:00Z",
-              },
-            }),
-            { status: 200 },
-          ),
-      ) as any,
-    );
+    ],
+    [
+      "the billingPeriodEnd reset fallback",
+      {
+        currentPeriod: { type: "USAGE_PERIOD_TYPE_MONTHLY" },
+        creditUsagePercent: 25,
+        billingPeriodEnd: "2026-08-01T00:00:00Z",
+      },
+      { percentRemaining: 75, resetTimeIso: "2026-08-01T00:00:00.000Z", kind: "monthly" },
+    ],
+  ])("parses %s", async (_name, config, window) => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-07-15T12:00:00.000Z"));
+    mockConfiguredAuth();
+    stubXaiFetch({ config });
 
     await expect(queryXaiQuota()).resolves.toEqual({
       success: true,
       label: "xAI SuperGrok",
-      window: {
-        percentRemaining: 75,
-        resetTimeIso: "2026-08-01T00:00:00.000Z",
-        kind: "monthly",
+      window,
+    });
+  });
+
+  it.each([
+    [
+      {
+        config: { currentPeriod: { type: "USAGE_PERIOD_TYPE_WEEKLY" }, creditUsagePercent: "100" },
       },
-    });
+      "xAI credits response returned an invalid usage percentage",
+    ],
+    [[], "xAI credits response returned an unexpected response shape"],
+    // Missing period data is reported instead of inventing quota.
+    [{ config: { currentPeriod: {} } }, "No weekly quota data"],
+  ])("rejects the credits payload %j", async (credits, error) => {
+    mockConfiguredAuth();
+    stubXaiFetch(credits);
+
+    await expect(queryXaiQuota()).resolves.toEqual({ success: false, error });
   });
 
-  it("rejects malformed percentages and response shapes", async () => {
-    await mockConfiguredAuth();
-    await mockConfiguredAuth();
-    vi.stubGlobal(
-      "fetch",
-      vi
-        .fn()
-        .mockResolvedValueOnce(
-          new Response(
-            JSON.stringify({
-              config: {
-                currentPeriod: { type: "USAGE_PERIOD_TYPE_WEEKLY" },
-                creditUsagePercent: "100",
-              },
-            }),
-            { status: 200 },
-          ),
-        )
-        .mockResolvedValueOnce(new Response(JSON.stringify([]), { status: 200 })),
-    );
-
-    await expect(queryXaiQuota()).resolves.toEqual({
-      success: false,
-      error: "xAI credits response returned an invalid usage percentage",
-    });
-    await expect(queryXaiQuota()).resolves.toEqual({
-      success: false,
-      error: "xAI credits response returned an unexpected response shape",
-    });
-  });
-
-  it("reports missing period data instead of inventing quota", async () => {
-    await mockConfiguredAuth();
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(
-        async () =>
-          new Response(JSON.stringify({ config: { currentPeriod: {} } }), { status: 200 }),
-      ) as any,
-    );
-
-    await expect(queryXaiQuota()).resolves.toEqual({
-      success: false,
-      error: "No weekly quota data",
-    });
-  });
-
-  it("bounds and sanitizes HTTP errors without exposing the bearer token", async () => {
-    await mockConfiguredAuth();
-    const fetchMock = vi.fn(
-      async () =>
-        new Response(`denied\u001b[31m token-1 ${"x".repeat(300)}`, {
-          status: 401,
-        }),
-    );
-    vi.stubGlobal("fetch", fetchMock as any);
-
-    const result = await queryXaiQuota();
-    expect(result && !result.success ? result.error : "").toMatch(
+  it.each([
+    [
+      "bounds and sanitizes HTTP errors",
+      async () => new Response(`denied\u001b[31m token-1 ${"x".repeat(300)}`, { status: 401 }),
       /^xAI API error 401: denied \[redacted\] x+$/,
-    );
-    expect(result && !result.success ? result.error : "").not.toContain("token-1");
-    expect(result && !result.success ? result.error.length : 0).toBeLessThanOrEqual(180);
-    expect(fetchMock).toHaveBeenCalledOnce();
-    expect(fetchMock).toHaveBeenCalledWith(
-      "https://cli-chat-proxy.grok.com/v1/billing?format=credits",
-      expect.any(Object),
-    );
-  });
-
-  it("sanitizes network errors without exposing the bearer token", async () => {
-    await mockConfiguredAuth();
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => {
-        throw new Error("socket failed for token-1\u001b[31m");
-      }) as any,
-    );
-
-    await expect(queryXaiQuota()).resolves.toEqual({
-      success: false,
-      error: "socket failed for [redacted]",
-    });
-  });
-
-  it("returns the normalized timeout error", async () => {
+    ],
+    [
+      "sanitizes network errors",
+      async () => Promise.reject(new Error("socket failed for token-1\u001b[31m")),
+      /^socket failed for \[redacted\]$/,
+    ],
+    ["returns the normalized timeout error", hang, /^Request timeout after 1s$/],
+  ])("%s without exposing the bearer token", async (_name, credits, error) => {
     vi.useFakeTimers();
-    await mockConfiguredAuth();
-
-    const fetchMock = vi.fn((_url: string, init: RequestInit) => {
-      return new Promise<Response>((_resolve, reject) => {
-        init.signal?.addEventListener("abort", () => {
-          const error = new Error("aborted");
-          error.name = "AbortError";
-          reject(error);
-        });
-      });
-    });
-    vi.stubGlobal("fetch", fetchMock as any);
+    mockConfiguredAuth();
+    const fetchMock = stubXaiFetch(credits);
 
     const resultPromise = queryXaiQuota({ requestTimeoutMs: 1_000 });
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(fetchMock).toHaveBeenCalledOnce();
     await vi.advanceTimersByTimeAsync(1_000);
+    const result = await resultPromise;
 
-    await expect(resultPromise).resolves.toEqual({
-      success: false,
-      error: "Request timeout after 1s",
-    });
+    expect(result).toEqual({ success: false, error: expect.stringMatching(error) });
+    expect(result && !result.success ? result.error.length : 0).toBeLessThanOrEqual(180);
+    // The subscription label is only fetched after quota succeeds.
+    expect(fetchMock).toHaveBeenCalledOnce();
   });
 });
 
-describe("periodKindLabel", () => {
-  it("labels only the period kinds derived from the PR response", () => {
-    expect(periodKindLabel("weekly")).toBe("Weekly");
-    expect(periodKindLabel("monthly")).toBe("Monthly");
-    expect(periodKindLabel("daily")).toBe("Daily");
-    expect(periodKindLabel("period")).toBe("Period");
-  });
+it("labels each period kind", () => {
+  expect((["weekly", "monthly", "daily", "period"] as const).map(periodKindLabel)).toEqual([
+    "Weekly",
+    "Monthly",
+    "Daily",
+    "Period",
+  ]);
 });

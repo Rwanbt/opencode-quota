@@ -83,16 +83,10 @@ function buildLimitLabel(
   return `Limit #${index + 1}`;
 }
 
-function toUsageRow(
+function toUsageWindow(
   data: Record<string, unknown>,
   defaultLabel: string,
-): {
-  label: string;
-  used: number;
-  limit: number;
-  percentRemaining: number;
-  resetTimeIso?: string;
-} | null {
+): KimiQuotaWindow | null {
   const limit = getFiniteNumber(data.limit);
   let used = getFiniteNumber(data.used);
 
@@ -121,123 +115,34 @@ function toUsageRow(
   };
 }
 
-function extractPayloadData(payload: Record<string, unknown>): {
-  usage: unknown;
-  limits: unknown;
-  topLevelKeys: string[];
-} {
-  const topLevelKeys = Object.keys(payload);
-
-  if (payload.data !== null && typeof payload.data === "object") {
-    const data = payload.data as Record<string, unknown>;
-    return {
-      usage: data.usage ?? payload.usage,
-      limits: data.limits ?? payload.limits,
-      topLevelKeys,
-    };
-  }
-
-  return { usage: payload.usage, limits: payload.limits, topLevelKeys };
+function asObject(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === "object"
+    ? (value as Record<string, unknown>)
+    : undefined;
 }
 
-function describeUnexpectedPayload(topLevelKeys: string[]): string {
-  const keys = topLevelKeys.length ? topLevelKeys.join(", ") : "(empty)";
-  return `Unexpected response structure (keys: ${keys})`;
-}
-
-function parseKimiUsagePayload(payload: Record<string, unknown>): {
-  windows: KimiQuotaWindow[];
-  topLevelKeys: string[];
-} {
-  const { usage, limits, topLevelKeys } = extractPayloadData(payload);
+/** The weekly `usage` row, then one row per `limits` item (each may sit under `data`). */
+function parseKimiWindows(payload: Record<string, unknown>): KimiQuotaWindow[] {
+  const data = asObject(payload.data);
+  const usage = asObject(data?.usage ?? payload.usage);
+  const limits = data?.limits ?? payload.limits;
   const windows: KimiQuotaWindow[] = [];
 
-  if (usage !== null && typeof usage === "object") {
-    const row = toUsageRow(usage as Record<string, unknown>, "Weekly limit");
-    if (row) {
-      windows.push({
-        label: row.label,
-        used: row.used,
-        limit: row.limit,
-        percentRemaining: row.percentRemaining,
-        resetTimeIso: row.resetTimeIso,
-      });
-    }
-  }
+  const usageWindow = usage ? toUsageWindow(usage, "Weekly limit") : null;
+  if (usageWindow) windows.push(usageWindow);
 
   if (Array.isArray(limits)) {
-    for (let i = 0; i < limits.length; i++) {
-      const item = limits[i];
-      if (item === null || typeof item !== "object") continue;
-      const itemMap = item as Record<string, unknown>;
-
-      const detailRaw = itemMap.detail;
-      const detail =
-        detailRaw !== null && typeof detailRaw === "object"
-          ? (detailRaw as Record<string, unknown>)
-          : itemMap;
-
-      const windowRaw = itemMap.window;
-      const window =
-        windowRaw !== null && typeof windowRaw === "object"
-          ? (windowRaw as Record<string, unknown>)
-          : {};
-
-      const label = buildLimitLabel(itemMap, detail, window, i);
-      const row = toUsageRow(detail, label);
-      if (row) {
-        windows.push({
-          label: row.label,
-          used: row.used,
-          limit: row.limit,
-          percentRemaining: row.percentRemaining,
-          resetTimeIso: row.resetTimeIso,
-        });
-      }
+    for (const [index, item] of limits.entries()) {
+      const itemMap = asObject(item);
+      if (!itemMap) continue;
+      const detail = asObject(itemMap.detail) ?? itemMap;
+      const window = asObject(itemMap.window) ?? {};
+      const limitWindow = toUsageWindow(detail, buildLimitLabel(itemMap, detail, window, index));
+      if (limitWindow) windows.push(limitWindow);
     }
   }
 
-  return { windows, topLevelKeys };
-}
-
-type FetchResult =
-  | { ok: true; windows: KimiQuotaWindow[]; topLevelKeys: string[] }
-  | { ok: false; error: string };
-
-async function fetchKimiQuotaFromUrl(
-  url: string,
-  apiKey: string,
-  requestTimeoutMs?: number,
-): Promise<FetchResult> {
-  try {
-    return await fetchWithTimeout(url, {
-      request: {
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          "User-Agent": USER_AGENT,
-        },
-      },
-      timeoutMs: requestTimeoutMs,
-      consume: async (resp): Promise<FetchResult> => {
-        if (!resp.ok) {
-          const text = await resp.text();
-          return {
-            ok: false,
-            error: `Kimi API error ${resp.status}: ${sanitizeDisplaySnippet(text, 120)}`,
-          };
-        }
-
-        const payload = (await resp.json()) as Record<string, unknown>;
-        const { windows, topLevelKeys } = parseKimiUsagePayload(payload);
-        return { ok: true, windows, topLevelKeys };
-      },
-    });
-  } catch (err) {
-    return {
-      ok: false,
-      error: sanitizeDisplayText(err instanceof Error ? err.message : String(err)),
-    };
-  }
+  return windows;
 }
 
 export async function queryKimiQuota(options: {
@@ -247,26 +152,39 @@ export async function queryKimiQuota(options: {
   requestTimeoutMs?: number;
 }): Promise<KimiResult> {
   const endpoint = getKimiQuotaEndpoint(options.endpoint);
-  const result = await fetchKimiQuotaFromUrl(
-    endpoint.quotaUrl,
-    options.apiKey,
-    options.requestTimeoutMs,
-  );
-  if (result.ok && result.windows.length > 0) {
+  const label = options.label ?? endpoint.label;
+  try {
+    return await fetchWithTimeout(endpoint.quotaUrl, {
+      request: {
+        headers: {
+          Authorization: `Bearer ${options.apiKey}`,
+          "User-Agent": USER_AGENT,
+        },
+      },
+      timeoutMs: options.requestTimeoutMs,
+      consume: async (resp): Promise<KimiResult> => {
+        if (!resp.ok) {
+          const text = await resp.text();
+          return {
+            success: false,
+            error: `Kimi API error ${resp.status}: ${sanitizeDisplaySnippet(text, 120)}`,
+          };
+        }
+
+        const payload = (await resp.json()) as Record<string, unknown>;
+        // Read the keys first: a `null` body must fail with Object.keys' error.
+        const topLevelKeys = Object.keys(payload);
+        const windows = parseKimiWindows(payload);
+        if (windows.length > 0) return { success: true, label, windows };
+
+        const keys = topLevelKeys.length ? topLevelKeys.join(", ") : "(empty)";
+        return { success: false, error: `Unexpected response structure (keys: ${keys})` };
+      },
+    });
+  } catch (err) {
     return {
-      success: true,
-      label: options.label ?? endpoint.label,
-      windows: result.windows,
+      success: false,
+      error: sanitizeDisplayText(err instanceof Error ? err.message : String(err)),
     };
   }
-
-  if (!result.ok) {
-    return { success: false, error: result.error };
-  }
-
-  // Succeeded structurally but had no usable windows.
-  return {
-    success: false,
-    error: describeUnexpectedPayload(result.topLevelKeys),
-  };
 }

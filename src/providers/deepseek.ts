@@ -8,7 +8,6 @@
 import { API_KEY_VENDORS, getApiKeyDiagnostics, hasApiKey } from "../lib/api-key-resolver.js";
 import { queryDeepSeekBalance } from "../lib/deepseek.js";
 import type {
-  AccountingComponent,
   AccountingMetadata,
   QuotaProvider,
   QuotaProviderContext,
@@ -41,47 +40,28 @@ type DeepSeekBalanceSuccess = Extract<
   { success: true }
 >;
 
+const BALANCE_COMPONENTS = [
+  ["total_balance", "totalBalance", "primary"],
+  ["granted_balance", "grantedBalance", "supplementary"],
+  ["topped_up_balance", "toppedUpBalance", "supplementary"],
+] as const;
+
 function buildDeepSeekResult(result: DeepSeekBalanceSuccess): QuotaProviderResult {
   const entries: QuotaToastEntry[] = [];
   let hasTotalBalance = false;
 
   for (const info of result.balanceInfos) {
-    const unit = { kind: "currency", code: info.currency } as const;
-    const rows: Array<{
-      component: AccountingComponent;
-      decimal: string | undefined;
-      prominence: "primary" | "supplementary";
-    }> = [
-      {
-        component: "total_balance",
-        decimal: info.totalBalance,
-        prominence: "primary",
-      },
-      {
-        component: "granted_balance",
-        decimal: info.grantedBalance,
-        prominence: "supplementary",
-      },
-      {
-        component: "topped_up_balance",
-        decimal: info.toppedUpBalance,
-        prominence: "supplementary",
-      },
-    ];
-
-    for (const row of rows) {
-      if (row.decimal === undefined) continue;
-      if (row.component === "total_balance") hasTotalBalance = true;
+    for (const [component, field, prominence] of BALANCE_COMPONENTS) {
+      const decimal = info[field];
+      if (decimal === undefined) continue;
+      if (component === "total_balance") hasTotalBalance = true;
       entries.push({
         kind: "quantity",
         accounting: BALANCE_ACCOUNTING,
-        name: `deepseek-${info.currency.toLowerCase()}-${row.component.replaceAll("_", "-")}`,
+        name: `deepseek-${info.currency.toLowerCase()}-${component.replaceAll("_", "-")}`,
         group: DEEPSEEK_GROUP,
-        semantic: {
-          metric: { kind: "component", component: row.component },
-          prominence: row.prominence,
-        },
-        quantity: { decimal: row.decimal, unit },
+        semantic: { metric: { kind: "component", component }, prominence },
+        quantity: { decimal, unit: { kind: "currency", code: info.currency } },
       });
     }
   }
@@ -113,7 +93,6 @@ export const deepseekProvider: QuotaProvider = {
   id: "deepseek",
 
   async isAvailable(ctx: QuotaProviderContext): Promise<boolean> {
-    // Check if the deepseek provider exists in opencode config
     const providerAvailable = await isCanonicalProviderAvailable({
       ctx,
       providerId: "deepseek",

@@ -53,7 +53,6 @@ export async function queryChutesQuota(
 
         const data = (await resp.json()) as ChutesQuotaResponse;
 
-        // Chutes returns used and quota.
         const used = typeof data.used === "number" ? data.used : 0;
         const quota = typeof data.quota === "number" ? data.quota : 0;
         const percentRemaining = quota > 0 ? clampPercent(((quota - used) / quota) * 100) : 0;

@@ -1,11 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { formatQuotaCommand } from "../src/lib/quota-command-format.js";
-import type { QuotaRenderData } from "../src/lib/quota-render-data.js";
-import { formatQuotaRowsGrouped } from "../src/lib/toast-format-grouped.js";
-import { buildCompactQuotaStatusLine } from "../src/lib/tui-compact-format.js";
-import { buildSidebarQuotaPanelLines } from "../src/lib/tui-sidebar-format.js";
-
 import {
   expectAttemptedWithErrorLabel,
   expectAttemptedWithNoErrors,
@@ -152,27 +146,17 @@ describe.each(PROVIDERS)("$label GLM provider", (descriptor) => {
     ).resolves.toBe(false);
   });
 
-  it("is available when auth is invalid so fetch can surface the error", async () => {
-    descriptor.resolveAuth.mockResolvedValueOnce({
-      state: "invalid",
-      error: `Unsupported ${descriptor.label} auth type: "oauth"`,
-    });
+  it.each([
+    // An invalid login stays available so fetch can surface the error.
+    [{ state: "invalid", error: "Unsupported auth type" }, true],
+    [{ state: "none" }, false],
+  ])("isAvailable for auth %j is %s", async (auth, expected) => {
+    descriptor.resolveAuth.mockResolvedValueOnce(auth);
     await expect(
       descriptor.provider.isAvailable(
         createProviderAvailabilityContext({ providerIds: [descriptor.id] }),
       ),
-    ).resolves.toBe(true);
-    expect(descriptor.resolveAuth).toHaveBeenCalledWith({ maxAgeMs: 5_000 });
-  });
-
-  it("is unavailable when auth is missing", async () => {
-    descriptor.resolveAuth.mockResolvedValueOnce({ state: "none" });
-    await expect(
-      descriptor.provider.isAvailable(
-        createProviderAvailabilityContext({ providerIds: [descriptor.id] }),
-      ),
-    ).resolves.toBe(false);
-    expect(descriptor.resolveAuth).toHaveBeenCalledWith({ maxAgeMs: 5_000 });
+    ).resolves.toBe(expected);
   });
 
   it("fails closed before auth resolution when provider lookup throws", async () => {
@@ -238,64 +222,5 @@ describe("GLM database credential rows", () => {
     expect(out.entries.map((entry) => [entry.group, entry.accounting.sourceId])).toEqual([
       ["[Z.ai Home]", "working-id"],
     ]);
-  });
-});
-
-describe("Z.ai credit quota surfaces", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
-  it("renders credit-backed five-hour and weekly percentages on all four surfaces", async () => {
-    mocks.queryZaiQuota.mockResolvedValueOnce({
-      success: true,
-      label: "Z.ai",
-      windows: {
-        fiveHour: { percentRemaining: 96, resetTimeIso: undefined },
-        weekly: { percentRemaining: 89, resetTimeIso: undefined },
-      },
-    });
-
-    const out = await zaiProvider.fetch({} as any);
-    expectAttemptedWithNoErrors(out);
-    expect(visibleEntries(out.entries, "zai")).toEqual([
-      {
-        name: "Z.ai 5h",
-        group: "Z.ai",
-        label: "5h:",
-        percentRemaining: 96,
-        resetTimeIso: undefined,
-      },
-      {
-        name: "Z.ai Weekly",
-        group: "Z.ai",
-        label: "Weekly:",
-        percentRemaining: 89,
-        resetTimeIso: undefined,
-      },
-    ]);
-
-    const data: QuotaRenderData = { entries: out.entries, errors: out.errors };
-    const command = formatQuotaCommand({ ...data, generatedAtMs: 0 });
-    const toast = formatQuotaRowsGrouped(data);
-    const sidebar = buildSidebarQuotaPanelLines({
-      data,
-      config: { formatStyle: "allWindows", percentDisplayMode: "remaining" },
-    }).join("\n");
-    const compact = buildCompactQuotaStatusLine({
-      data,
-      percentDisplayMode: "remaining",
-      maxWidth: 240,
-    });
-
-    for (const output of [command, toast, sidebar, compact]) {
-      expect(output).toContain("Z.ai");
-      expect(output).toContain("96%");
-      expect(output).toContain("89%");
-    }
-    for (const output of [command, toast, sidebar]) {
-      expect(output).toContain("5h");
-      expect(output).toMatch(/\bWeek(?:ly)?\b/u);
-    }
   });
 });

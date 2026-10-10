@@ -13,6 +13,7 @@ import {
 } from "../lib/opencode-auth.js";
 import { isCanonicalProviderAvailable } from "../lib/provider-availability.js";
 import type { CanonicalQuotaProviderId } from "../lib/provider-metadata.js";
+import type { ZaiQuotaResult, ZaiResult } from "../lib/types.js";
 import {
   apiKeyStatusDetails,
   attemptedResult,
@@ -22,30 +23,22 @@ import {
   withStatusDetails,
 } from "./result-helpers.js";
 
-type GlmQuotaWindow = {
-  percentRemaining: number;
-  resetTimeIso?: string;
-};
+type GlmQuotaWindow = ZaiQuotaResult["windows"]["weekly"];
 
-type GlmQuotaResult = {
-  success: true;
-  label: string;
-  windows: {
-    fiveHour?: GlmQuotaWindow;
-    weekly?: GlmQuotaWindow;
-    mcp?: GlmQuotaWindow;
-  };
-};
+function glmWindowRows(quota: ZaiQuotaResult) {
+  return [
+    { window: quota.windows.fiveHour, suffix: "5h", label: "5h:" },
+    { window: quota.windows.weekly, suffix: "Weekly", label: "Weekly:" },
+    { window: quota.windows.mcp, suffix: "MCP", label: "MCP:" },
+  ];
+}
 
 export function createGlmCodingPlanProvider(params: {
   id: "zai" | "zhipu";
   providerId: CanonicalQuotaProviderId;
   errorLabel: string;
   auth: ApiKeyLoginSpec;
-  queryQuota: (params: {
-    requestTimeoutMs?: number;
-    apiKey?: string;
-  }) => Promise<GlmQuotaResult | { success: false; error: string } | null>;
+  queryQuota: (params: { requestTimeoutMs?: number; apiKey?: string }) => Promise<ZaiResult>;
   matchesCurrentModel: (model: string) => boolean;
 }): QuotaProvider {
   return {
@@ -96,12 +89,10 @@ export function createGlmCodingPlanProvider(params: {
                     }),
             })),
           );
+          // A successful query is labelled `errorLabel` too, so it is every row's fallback name.
           const names = formatCredentialDisplayNames(
             params.errorLabel,
-            results.map(({ row, result }) => ({
-              row,
-              fallbackName: result?.success ? result.label : params.errorLabel,
-            })),
+            results.map(({ row }) => ({ row, fallbackName: params.errorLabel })),
           );
           const entries = [];
           const errors = [];
@@ -120,11 +111,7 @@ export function createGlmCodingPlanProvider(params: {
                       authority: "provider_reported",
                       sourceId: row.id,
                     },
-                    windows: [
-                      { window: quota.windows.fiveHour, suffix: "5h", label: "5h:" },
-                      { window: quota.windows.weekly, suffix: "Weekly", label: "Weekly:" },
-                      { window: quota.windows.mcp, suffix: "MCP", label: "MCP:" },
-                    ],
+                    windows: glmWindowRows(quota),
                   }),
                 ),
             });
@@ -147,11 +134,7 @@ export function createGlmCodingPlanProvider(params: {
                 ownership: "maintained",
                 authority: "provider_reported",
               },
-              windows: [
-                { window: quota.windows.fiveHour, suffix: "5h", label: "5h:" },
-                { window: quota.windows.weekly, suffix: "Weekly", label: "Weekly:" },
-                { window: quota.windows.mcp, suffix: "MCP", label: "MCP:" },
-              ],
+              windows: glmWindowRows(quota),
             }),
             [],
             { singleWindowDisplayName: quota.label },

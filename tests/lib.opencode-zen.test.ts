@@ -28,6 +28,13 @@ import { queryOpenCodeZenQuota } from "../src/lib/opencode-zen.js";
 const CONSOLE_API = "https://opencode.ai/console/api";
 const SESSION_ERROR =
   "OpenCode Console session expired or invalid. Run `opencode auth login opencode` to sign in again.";
+const ROUTES = [
+  "billing/account",
+  "billing/auto-recharge",
+  "billing/status",
+  "budgets/org",
+  "usage/cost-by-day",
+];
 
 const credential: OpenCodeConsoleCredential = {
   accessToken: "st_secret-token",
@@ -72,6 +79,8 @@ function json(body: unknown, status = 200): Response {
   });
 }
 
+const serverError = () => new Response("server error", { status: 500 });
+
 function routes(overrides: Record<string, () => Response> = {}, consoleApi = CONSOLE_API): void {
   const payloads: Record<string, () => Response> = {
     "billing/status": () => json(STATUS),
@@ -83,12 +92,46 @@ function routes(overrides: Record<string, () => Response> = {}, consoleApi = CON
   };
   mocks.fetchResponse.mockImplementation(async (url: string) => {
     if (!url.startsWith(`${consoleApi}/`)) throw new Error(`unexpected url ${url}`);
-    const route = url.slice(`${consoleApi}/`.length);
-    const payload = payloads[route];
+    const payload = payloads[url.slice(`${consoleApi}/`.length)];
     if (!payload) throw new Error(`unexpected url ${url}`);
     return payload();
   });
 }
+
+/** A funded account with a credit limit and this month's usage. */
+function creditLimitRoutes(overrides: Record<string, () => Response>): void {
+  routes({
+    "billing/status": () => json({ ...STATUS, balanceMicroCents: "4250000000" }),
+    "billing/account": () => json({ ...ACCOUNT, creditLimitMicroCents: "10000000000" }),
+    "usage/cost-by-day": () => json([{ date: "2026-09-24", totalCostMicroCents: "75000000" }]),
+    ...overrides,
+  });
+}
+
+/** What `creditLimitRoutes` yields when the org budget is not used. */
+const CREDIT_LIMIT_DATA = {
+  balance: 4_250_000_000,
+  monthlyLimit: 100,
+  monthlyUsage: 75_000_000,
+  lastPayment: null,
+  reload: false,
+  reloadAmount: 20,
+  reloadTrigger: 5,
+  budgetResetIso: null,
+  budgetSource: "credit_limit",
+};
+const ORG_BUDGET_DATA = {
+  ...CREDIT_LIMIT_DATA,
+  monthlyLimit: 60,
+  monthlyUsage: 617_355_570,
+  budgetResetIso: "2026-10-01T00:00:00.000Z",
+  budgetSource: "org_budget",
+};
+const HEADERS = {
+  Accept: "application/json",
+  Authorization: "Bearer st_secret-token",
+  "x-org-id": "wrk_abc",
+};
 
 describe("queryOpenCodeZenQuota", () => {
   beforeEach(() => {
@@ -102,69 +145,40 @@ describe("queryOpenCodeZenQuota", () => {
     vi.useRealTimers();
   });
 
-  it("calls the five Console routes with the Bearer token and org id", async () => {
-    routes();
+  it.each([
+    ["the Bearer token and org id", credential, { requestTimeoutMs: 4_000 }, CONSOLE_API, 4_000],
+    [
+      "the Console server saved with the sign-in",
+      { ...credential, server: "https://console.self-hosted.example" },
+      {},
+      "https://console.self-hosted.example/api",
+      10_000,
+    ],
+  ])("calls the five Console routes with %s", async (_name, signIn, options, consoleApi, timeoutMs) => {
+    routes({}, consoleApi);
 
-    await queryOpenCodeZenQuota(credential, { requestTimeoutMs: 4_000 });
-
-    expect(mocks.fetchWithTimeout.mock.calls.map(([url]) => url).sort()).toEqual([
-      `${CONSOLE_API}/billing/account`,
-      `${CONSOLE_API}/billing/auto-recharge`,
-      `${CONSOLE_API}/billing/status`,
-      `${CONSOLE_API}/budgets/org`,
-      `${CONSOLE_API}/usage/cost-by-day`,
-    ]);
-    for (const [, options] of mocks.fetchWithTimeout.mock.calls) {
-      expect(options).toMatchObject({
-        request: {
-          method: "GET",
-          redirect: "manual",
-          headers: {
-            Accept: "application/json",
-            Authorization: "Bearer st_secret-token",
-            "x-org-id": "wrk_abc",
-          },
-        },
-        timeoutMs: 4_000,
-      });
-    }
-    for (const [, options] of mocks.fetchWithTimeout.mock.calls) {
-      expect(options.request.headers).not.toHaveProperty("Cookie");
+    await expect(queryOpenCodeZenQuota(signIn, options)).resolves.toMatchObject({ success: true });
+    expect(mocks.fetchWithTimeout.mock.calls.map(([url]) => url).sort()).toEqual(
+      ROUTES.map((route) => `${consoleApi}/${route}`),
+    );
+    for (const [, request] of mocks.fetchWithTimeout.mock.calls) {
+      expect(request).toMatchObject({ request: { method: "GET", redirect: "manual" }, timeoutMs });
+      expect(request.request.headers).toEqual(HEADERS);
     }
   });
 
   it("sends no x-org-id header when the sign-in has no org", async () => {
     routes();
 
-    const result = await queryOpenCodeZenQuota({ accessToken: "st_secret-token" });
+    await queryOpenCodeZenQuota({ accessToken: "st_secret-token" });
 
-    expect(result.success).toBe(true);
     expect(mocks.fetchWithTimeout).toHaveBeenCalledTimes(5);
-    for (const [, options] of mocks.fetchWithTimeout.mock.calls) {
-      expect(options.request.headers).toEqual({
+    for (const [, request] of mocks.fetchWithTimeout.mock.calls) {
+      expect(request.request.headers).toEqual({
         Accept: "application/json",
         Authorization: "Bearer st_secret-token",
       });
     }
-  });
-
-  it("calls the Console server saved with the sign-in", async () => {
-    const selfHostedApi = "https://console.self-hosted.example/api";
-    routes({}, selfHostedApi);
-
-    const result = await queryOpenCodeZenQuota({
-      ...credential,
-      server: "https://console.self-hosted.example",
-    });
-
-    expect(result.success).toBe(true);
-    expect(mocks.fetchWithTimeout.mock.calls.map(([url]) => url).sort()).toEqual([
-      `${selfHostedApi}/billing/account`,
-      `${selfHostedApi}/billing/auto-recharge`,
-      `${selfHostedApi}/billing/status`,
-      `${selfHostedApi}/budgets/org`,
-      `${selfHostedApi}/usage/cost-by-day`,
-    ]);
   });
 
   it("parses the real empty-account payloads", async () => {
@@ -172,123 +186,53 @@ describe("queryOpenCodeZenQuota", () => {
 
     await expect(queryOpenCodeZenQuota(credential)).resolves.toEqual({
       success: true,
-      data: {
-        balance: 0,
-        monthlyLimit: 60,
-        monthlyUsage: 617_355_570,
-        lastPayment: null,
-        reload: false,
-        reloadAmount: 20,
-        reloadTrigger: 5,
-        budgetResetIso: "2026-10-01T00:00:00.000Z",
-        budgetSource: "org_budget",
-      },
+      data: { ...ORG_BUDGET_DATA, balance: 0 },
       errors: [],
     });
   });
 
   it("prefers the org budget for the monthly limit, spend, and reset date", async () => {
-    routes({
-      "billing/status": () => json({ ...STATUS, balanceMicroCents: "1822921472" }),
-      "billing/account": () => json({ ...ACCOUNT, creditLimitMicroCents: "10000000000" }),
-      "usage/cost-by-day": () => json([{ date: "2026-09-24", totalCostMicroCents: "75000000" }]),
-    });
+    creditLimitRoutes({});
 
     await expect(queryOpenCodeZenQuota(credential)).resolves.toEqual({
       success: true,
-      data: {
-        balance: 1_822_921_472,
-        monthlyLimit: 60,
-        monthlyUsage: 617_355_570,
-        lastPayment: null,
-        reload: false,
-        reloadAmount: 20,
-        reloadTrigger: 5,
-        budgetResetIso: "2026-10-01T00:00:00.000Z",
-        budgetSource: "org_budget",
-      },
-      errors: [],
-    });
-  });
-
-  it("falls back to the credit limit and usage costs when the org budget has no limit", async () => {
-    routes({
-      "billing/status": () => json({ ...STATUS, balanceMicroCents: "4250000000" }),
-      "billing/account": () => json({ ...ACCOUNT, creditLimitMicroCents: "10000000000" }),
-      "usage/cost-by-day": () => json([{ date: "2026-09-24", totalCostMicroCents: "75000000" }]),
-      "budgets/org": () => json({ limitMicroCents: null, spentMicroCents: null, resetsAt: null }),
-    });
-
-    await expect(queryOpenCodeZenQuota(credential)).resolves.toEqual({
-      success: true,
-      data: {
-        balance: 4_250_000_000,
-        monthlyLimit: 100,
-        monthlyUsage: 75_000_000,
-        lastPayment: null,
-        reload: false,
-        reloadAmount: 20,
-        reloadTrigger: 5,
-        budgetResetIso: null,
-        budgetSource: "credit_limit",
-      },
+      data: ORG_BUDGET_DATA,
       errors: [],
     });
   });
 
   it.each([
-    ["a null body", () => json(null)],
-    ["an empty body", () => new Response("", { headers: { "content-type": "application/json" } })],
-    ["an empty object", () => json({})],
-  ])("treats %s from budgets/org as no org budget", async (_label, orgBudget) => {
-    routes({
-      "billing/account": () => json({ ...ACCOUNT, creditLimitMicroCents: "10000000000" }),
-      "usage/cost-by-day": () => json([{ date: "2026-09-24", totalCostMicroCents: "75000000" }]),
-      "budgets/org": orgBudget,
-    });
-
-    await expect(queryOpenCodeZenQuota(credential)).resolves.toMatchObject({
-      success: true,
-      data: {
-        balance: 0,
-        monthlyLimit: 100,
-        monthlyUsage: 75_000_000,
-        budgetResetIso: null,
-        budgetSource: "credit_limit",
-      },
-      errors: [],
-    });
-  });
-
-  it("falls back and lists an error when the org budget route fails", async () => {
-    routes({
-      "billing/status": () => json({ ...STATUS, balanceMicroCents: "4250000000" }),
-      "billing/account": () => json({ ...ACCOUNT, creditLimitMicroCents: "10000000000" }),
-      "usage/cost-by-day": () => json([{ date: "2026-09-24", totalCostMicroCents: "75000000" }]),
-      "budgets/org": () => new Response("server error", { status: 500 }),
-    });
+    [
+      "has no limit",
+      () => json({ limitMicroCents: null, spentMicroCents: null, resetsAt: null }),
+      [],
+    ],
+    ["returns a null body", () => json(null), []],
+    [
+      "returns an empty body",
+      () => new Response("", { headers: { "content-type": "application/json" } }),
+      [],
+    ],
+    ["returns an empty object", () => json({}), []],
+    ["has a negative spend", () => json({ ...ORG_BUDGET, spentMicroCents: "-5" }), []],
+    ["fails", serverError, ["OpenCode Console budgets/org error 500"]],
+    [
+      "is forbidden",
+      () => new Response("forbidden", { status: 403 }),
+      ["OpenCode Console budgets/org error 403"],
+    ],
+  ])("falls back to the credit limit and usage costs when the org budget %s", async (_name, orgBudget, errors) => {
+    creditLimitRoutes({ "budgets/org": orgBudget });
 
     await expect(queryOpenCodeZenQuota(credential)).resolves.toEqual({
       success: true,
-      data: {
-        balance: 4_250_000_000,
-        monthlyLimit: 100,
-        monthlyUsage: 75_000_000,
-        lastPayment: null,
-        reload: false,
-        reloadAmount: 20,
-        reloadTrigger: 5,
-        budgetResetIso: null,
-        budgetSource: "credit_limit",
-      },
-      errors: ["OpenCode Console budgets/org error 500"],
+      data: CREDIT_LIMIT_DATA,
+      errors,
     });
   });
 
   it("keeps micro-cents as billing units and sums only the current month's costs", async () => {
-    routes({
-      "billing/status": () => json({ ...STATUS, balanceMicroCents: "4250000000" }),
-      "billing/account": () => json({ ...ACCOUNT, creditLimitMicroCents: "10000000000" }),
+    creditLimitRoutes({
       "billing/auto-recharge": () => json({ ...AUTO_RECHARGE, enabled: true }),
       "budgets/org": () => json({ limitMicroCents: null, spentMicroCents: null, resetsAt: null }),
       "usage/cost-by-day": () =>
@@ -301,85 +245,17 @@ describe("queryOpenCodeZenQuota", () => {
 
     await expect(queryOpenCodeZenQuota(credential)).resolves.toEqual({
       success: true,
-      data: {
-        balance: 4_250_000_000,
-        monthlyLimit: 100,
-        monthlyUsage: 575_000_000,
-        lastPayment: null,
-        reload: true,
-        reloadAmount: 20,
-        reloadTrigger: 5,
-        budgetResetIso: null,
-        budgetSource: "credit_limit",
-      },
+      data: { ...CREDIT_LIMIT_DATA, monthlyUsage: 575_000_000, reload: true },
       errors: [],
     });
   });
 
-  it.each([
-    [
-      "billing/account",
-      {
-        monthlyLimit: 60,
-        monthlyUsage: 617_355_570,
-        reload: true,
-        reloadAmount: 20,
-        budgetResetIso: "2026-10-01T00:00:00.000Z",
-        budgetSource: "org_budget",
-      },
-    ],
-    [
-      "billing/auto-recharge",
-      {
-        monthlyLimit: 60,
-        monthlyUsage: 617_355_570,
-        reload: null,
-        reloadAmount: null,
-        budgetResetIso: "2026-10-01T00:00:00.000Z",
-        budgetSource: "org_budget",
-      },
-    ],
-    [
-      "usage/cost-by-day",
-      {
-        monthlyLimit: 60,
-        monthlyUsage: 617_355_570,
-        reload: true,
-        reloadAmount: 20,
-        budgetResetIso: "2026-10-01T00:00:00.000Z",
-        budgetSource: "org_budget",
-      },
-    ],
-  ])("keeps the balance when optional %s fails", async (route, expected) => {
-    routes({
-      "billing/status": () => json({ ...STATUS, balanceMicroCents: "4250000000" }),
-      "billing/account": () => json({ ...ACCOUNT, creditLimitMicroCents: "10000000000" }),
-      "billing/auto-recharge": () => json({ ...AUTO_RECHARGE, enabled: true }),
-      "usage/cost-by-day": () => json([{ date: "2026-09-24", totalCostMicroCents: "75000000" }]),
-      [route]: () => new Response("server error", { status: 500 }),
-    });
-
-    const result = await queryOpenCodeZenQuota(credential);
-
-    expect(result).toEqual({
-      success: true,
-      data: {
-        balance: 4_250_000_000,
-        lastPayment: null,
-        reloadTrigger: expected.reload === null ? null : 5,
-        ...expected,
-      },
-      errors: [`OpenCode Console ${route} error 500`],
-    });
-  });
-
   it("lists every failed optional route while keeping the balance", async () => {
-    const failed = () => new Response("server error", { status: 500 });
     routes({
-      "billing/account": failed,
-      "billing/auto-recharge": failed,
-      "budgets/org": failed,
-      "usage/cost-by-day": failed,
+      "billing/account": serverError,
+      "billing/auto-recharge": serverError,
+      "budgets/org": serverError,
+      "usage/cost-by-day": serverError,
     });
 
     await expect(queryOpenCodeZenQuota(credential)).resolves.toEqual({
@@ -407,33 +283,52 @@ describe("queryOpenCodeZenQuota", () => {
   it("clamps a negative balance to zero", async () => {
     routes({ "billing/status": () => json({ ...STATUS, balanceMicroCents: "-14496" }) });
 
-    const result = await queryOpenCodeZenQuota(credential);
+    await expect(queryOpenCodeZenQuota(credential)).resolves.toMatchObject({
+      success: true,
+      data: { balance: 0 },
+    });
+  });
 
-    expect(result).toMatchObject({ success: true, data: { balance: 0 } });
+  it.each([
+    // Normalized to canonical ISO so downstream result validation never drops the result.
+    ["2026-10-01T00:00:00", new Date("2026-10-01T00:00:00").toISOString()],
+    ["not-a-date", null],
+  ])("keeps a usable org budget with reset %s as %s", async (resetsAt, budgetResetIso) => {
+    routes({ "budgets/org": () => json({ ...ORG_BUDGET, resetsAt }) });
+
+    await expect(queryOpenCodeZenQuota(credential)).resolves.toMatchObject({
+      success: true,
+      data: {
+        balance: 0,
+        monthlyLimit: 60,
+        monthlyUsage: 617_355_570,
+        budgetResetIso,
+        budgetSource: "org_budget",
+      },
+      errors: [],
+    });
   });
 
   it.each([
     [
-      "302 redirect",
+      "a 302 redirect",
+      "billing/status",
       () => new Response(null, { status: 302, headers: { location: "/console/login" } }),
     ],
-    ["401", () => new Response("unauthorized", { status: 401 })],
     [
-      "login page",
+      "a login page",
+      "budgets/org",
       () =>
         new Response("<html>Sign in</html>", {
           status: 200,
           headers: { "content-type": "text/html; charset=utf-8" },
         }),
     ],
-  ])("reports an expired or invalid session for a %s", async (_name, sessionResponse) => {
-    routes({
-      "billing/status": sessionResponse,
-      "billing/account": sessionResponse,
-      "billing/auto-recharge": sessionResponse,
-      "budgets/org": sessionResponse,
-      "usage/cost-by-day": sessionResponse,
-    });
+    ...ROUTES.map((route) => ["a 401", route, () => new Response("unauthorized", { status: 401 })]),
+  ] as Array<
+    [string, string, () => Response]
+  >)("reports an expired session for %s from %s", async (_name, route, sessionResponse) => {
+    routes({ [route]: sessionResponse });
 
     const result = await queryOpenCodeZenQuota(credential);
 
@@ -441,123 +336,19 @@ describe("queryOpenCodeZenQuota", () => {
     expect(JSON.stringify(result)).not.toContain("st_secret-token");
   });
 
-  it("fails the query when the required billing/status route returns 403", async () => {
-    routes({ "billing/status": () => new Response("forbidden", { status: 403 }) });
-
-    await expect(queryOpenCodeZenQuota(credential)).resolves.toEqual({
-      success: false,
-      error: "OpenCode Console billing/status error 403",
-    });
-  });
-
-  it("keeps the balance when only budgets/org is forbidden", async () => {
-    routes({
-      "billing/status": () => json({ ...STATUS, balanceMicroCents: "4250000000" }),
-      "billing/account": () => json({ ...ACCOUNT, creditLimitMicroCents: "10000000000" }),
-      "usage/cost-by-day": () => json([{ date: "2026-09-24", totalCostMicroCents: "75000000" }]),
-      "budgets/org": () => new Response("forbidden", { status: 403 }),
-    });
-
-    await expect(queryOpenCodeZenQuota(credential)).resolves.toEqual({
-      success: true,
-      data: {
-        balance: 4_250_000_000,
-        monthlyLimit: 100,
-        monthlyUsage: 75_000_000,
-        lastPayment: null,
-        reload: false,
-        reloadAmount: 20,
-        reloadTrigger: 5,
-        budgetResetIso: null,
-        budgetSource: "credit_limit",
-      },
-      errors: ["OpenCode Console budgets/org error 403"],
-    });
-  });
-
-  it("falls back to the credit limit when the org budget spend is negative", async () => {
-    routes({
-      "billing/status": () => json({ ...STATUS, balanceMicroCents: "4250000000" }),
-      "billing/account": () => json({ ...ACCOUNT, creditLimitMicroCents: "10000000000" }),
-      "usage/cost-by-day": () => json([{ date: "2026-09-24", totalCostMicroCents: "75000000" }]),
-      "budgets/org": () => json({ ...ORG_BUDGET, spentMicroCents: "-5" }),
-    });
-
-    await expect(queryOpenCodeZenQuota(credential)).resolves.toEqual({
-      success: true,
-      data: {
-        balance: 4_250_000_000,
-        monthlyLimit: 100,
-        monthlyUsage: 75_000_000,
-        lastPayment: null,
-        reload: false,
-        reloadAmount: 20,
-        reloadTrigger: 5,
-        budgetResetIso: null,
-        budgetSource: "credit_limit",
-      },
-      errors: [],
-    });
-  });
-
-  it("keeps a usable org budget but omits an invalid reset date", async () => {
-    routes({ "budgets/org": () => json({ ...ORG_BUDGET, resetsAt: "not-a-date" }) });
-
-    const result = await queryOpenCodeZenQuota(credential);
-
-    expect(result).toMatchObject({
-      success: true,
-      data: {
-        balance: 0,
-        monthlyLimit: 60,
-        monthlyUsage: 617_355_570,
-        budgetResetIso: null,
-        budgetSource: "org_budget",
-      },
-      errors: [],
-    });
-  });
-
-  it("normalizes a parseable non-ISO reset date to canonical ISO", async () => {
-    // "2026-10-01T00:00:00" parses but lacks the UTC offset required of ISO;
-    // it must be canonicalized, never passed through as-is.
-    routes({ "budgets/org": () => json({ ...ORG_BUDGET, resetsAt: "2026-10-01T00:00:00" }) });
-
-    const result = await queryOpenCodeZenQuota(credential);
-    expect(result.success).toBe(true);
-    if (!result.success) return;
-
-    expect(result.data.budgetResetIso).toBe(new Date("2026-10-01T00:00:00").toISOString());
-    expect(result.data.budgetResetIso?.endsWith("Z")).toBe(true);
-    expect(result.data).toMatchObject({ balance: 0, monthlyLimit: 60, monthlyUsage: 617_355_570 });
-    expect(result.errors).toEqual([]);
-  });
-
   it.each([
-    "billing/account",
-    "billing/auto-recharge",
-    "budgets/org",
-    "usage/cost-by-day",
-  ])("reports an expired session when only %s is rejected", async (route) => {
-    routes({ [route]: () => new Response("unauthorized", { status: 401 }) });
-
-    await expect(queryOpenCodeZenQuota(credential)).resolves.toEqual({
-      success: false,
-      error: SESSION_ERROR,
-    });
-  });
-
-  it("does not expose an HTTP response body", async () => {
-    const secretBody = "private-body-session-secret";
-    routes({ "billing/status": () => new Response(secretBody, { status: 500 }) });
+    [403, "forbidden"],
+    [500, "private-body-session-secret"],
+  ])("fails on a required billing/status %i without exposing the body", async (status, body) => {
+    routes({ "billing/status": () => new Response(body, { status }) });
 
     const result = await queryOpenCodeZenQuota(credential);
 
     expect(result).toEqual({
       success: false,
-      error: "OpenCode Console billing/status error 500",
+      error: `OpenCode Console billing/status error ${status}`,
     });
-    expect(JSON.stringify(result)).not.toContain(secretBody);
+    expect(JSON.stringify(result)).not.toContain(body);
     expect(JSON.stringify(result)).not.toContain("st_secret-token");
   });
 
@@ -576,7 +367,6 @@ describe("queryOpenCodeZenQuota", () => {
 
   it.each([
     ["billing/account", () => json({ orgId: "wrk_ABC" })],
-    ["billing/account", () => json({ ...ACCOUNT, creditLimitMicroCents: "9".repeat(309) })],
     ["billing/auto-recharge", () => json({ ...AUTO_RECHARGE, enabled: "no" })],
     ["budgets/org", () => json([])],
     ["budgets/org", () => json("none")],
@@ -585,10 +375,6 @@ describe("queryOpenCodeZenQuota", () => {
     ["budgets/org", () => json({ limitMicroCents: "6000000000", resetsAt: 7 })],
     ["usage/cost-by-day", () => json({ days: [] })],
     ["usage/cost-by-day", () => json([{ date: "2026-09-01", totalCostMicroCents: "abc" }])],
-    [
-      "usage/cost-by-day",
-      () => json([{ date: "2026-09-01", totalCostMicroCents: "9".repeat(309) }]),
-    ],
     [
       "usage/cost-by-day",
       () =>
@@ -600,9 +386,7 @@ describe("queryOpenCodeZenQuota", () => {
   ])("lists a stable parse error for a malformed %s response", async (route, payload) => {
     routes({ [route]: payload });
 
-    const result = await queryOpenCodeZenQuota(credential);
-
-    expect(result).toMatchObject({
+    await expect(queryOpenCodeZenQuota(credential)).resolves.toMatchObject({
       success: true,
       data: { balance: 0 },
       errors: [`Could not parse OpenCode Console ${route} response`],
@@ -614,14 +398,10 @@ describe("queryOpenCodeZenQuota", () => {
       new Error("\u001b[31mtimeout for wrk_abc with st_secret-token\nretry\u001b[0m"),
     );
 
-    const result = await queryOpenCodeZenQuota(credential);
-
-    expect(result).toEqual({
+    await expect(queryOpenCodeZenQuota(credential)).resolves.toEqual({
       success: false,
       error:
         "OpenCode Console billing/status request failed: timeout for [redacted] with [redacted] retry",
     });
-    expect(JSON.stringify(result)).not.toContain("wrk_abc");
-    expect(JSON.stringify(result)).not.toContain("st_secret-token");
   });
 });

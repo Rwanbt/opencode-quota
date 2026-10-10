@@ -75,6 +75,12 @@ function parseWindow(value: unknown): OllamaCloudWindow | undefined {
   };
 }
 
+const OLLAMA_CLOUD_WINDOWS = [
+  ["session", "Session"],
+  ["weekly", "Weekly"],
+  ["monthly", "Monthly"],
+] as const;
+
 function parseOllamaCloudUsage(payload: unknown): OllamaCloudResult {
   if (!isRecord(payload)) {
     return {
@@ -83,26 +89,16 @@ function parseOllamaCloudUsage(payload: unknown): OllamaCloudResult {
     };
   }
 
+  const limits = isRecord(payload.limits) ? payload.limits : {};
+  const windows: Partial<Record<"session" | "weekly" | "monthly", OllamaCloudWindow>> = {};
   const rowErrors: string[] = [];
-  const limits = isRecord(payload.limits) ? payload.limits : undefined;
-  const session = parseWindow(limits?.session);
-  const weekly = parseWindow(limits?.weekly);
-  const monthly = parseWindow(limits?.monthly);
-
-  if (limits?.session !== undefined && !session) {
-    rowErrors.push("Session: ignored invalid usage fraction");
-  }
-  if (limits?.weekly !== undefined && !weekly) {
-    rowErrors.push("Weekly: ignored invalid usage fraction");
-  }
-  if (limits?.monthly !== undefined && !monthly) {
-    rowErrors.push("Monthly: ignored invalid usage fraction");
-  }
-  if (!limits) {
-    rowErrors.push("Limits: expected an object");
+  for (const [key, name] of OLLAMA_CLOUD_WINDOWS) {
+    const window = parseWindow(limits[key]);
+    if (window) windows[key] = window;
+    else if (limits[key] !== undefined) rowErrors.push(`${name}: ignored invalid usage fraction`);
   }
 
-  if (!session && !weekly && !monthly) {
+  if (!windows.session && !windows.weekly && !windows.monthly) {
     return {
       success: false,
       error: "Ollama Cloud usage API returned no usable usage data",
@@ -111,9 +107,7 @@ function parseOllamaCloudUsage(payload: unknown): OllamaCloudResult {
 
   return {
     success: true,
-    ...(session ? { session } : {}),
-    ...(weekly ? { weekly } : {}),
-    ...(monthly ? { monthly } : {}),
+    ...windows,
     ...(rowErrors.length > 0 ? { rowErrors } : {}),
   };
 }
@@ -155,5 +149,3 @@ export async function queryOllamaCloudQuota(
     };
   }
 }
-
-export { parseOllamaCloudUsage as _parseOllamaCloudUsage };

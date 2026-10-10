@@ -12,7 +12,6 @@ import type {
 } from "../lib/entries.js";
 import { isCanonicalProviderAvailable } from "../lib/provider-availability.js";
 import { modelProviderMatchesRuntimeId } from "../lib/provider-model-matching.js";
-import { REQUEST_TIMEOUT_MS } from "../lib/types.js";
 import {
   attemptedErrorResult,
   attemptedResult,
@@ -46,22 +45,18 @@ function windowEntry(
 
 function statusDetailsFromResult(
   result: AlibabaTokenPlanClosedResult,
-  platform: NodeJS.Platform,
 ): ReturnType<typeof statusDetailsFromRecord> {
   if (result.ok) {
-    const windows = [
-      result.fiveHour ? "5h" : undefined,
-      result.weekly ? "weekly" : undefined,
-    ].filter((value): value is string => value !== undefined);
+    const windows = [result.fiveHour ? "5h" : "", result.weekly ? "weekly" : ""].filter(Boolean);
     return statusDetailsFromRecord({
       cli_available: "true",
-      platform,
+      platform: process.platform,
       windows: windows.join(",") || "(none)",
     });
   }
   return statusDetailsFromRecord({
     cli_available: result.error.kind === "executable_not_found" ? "false" : "true",
-    platform,
+    platform: process.platform,
     failure_kind: result.error.kind,
   });
 }
@@ -84,6 +79,7 @@ function mapClosedResult(result: AlibabaTokenPlanClosedResult): QuotaProviderRes
 export const alibabaTokenPlanProvider: QuotaProvider = {
   id: "alibaba-token-plan",
 
+  // Never probes PATH: availability comes from selection or the current runtime identity.
   async isAvailable(ctx: QuotaProviderContext): Promise<boolean> {
     if (!isAlibabaTokenPlanSupportedPlatform()) return false;
 
@@ -92,12 +88,9 @@ export const alibabaTokenPlanProvider: QuotaProvider = {
       providerId: "alibaba-token-plan",
       fallbackOnError: false,
     });
-    if (selected) return true;
-    if (ctx.config.currentProviderID === "alibaba-token-plan") return true;
+    if (selected || ctx.config.currentProviderID === "alibaba-token-plan") return true;
     const currentModel = ctx.config.currentModel;
-    return typeof currentModel === "string" && currentModel.length > 0
-      ? modelProviderMatchesRuntimeId(currentModel, "alibaba-token-plan")
-      : false;
+    return !!currentModel && modelProviderMatchesRuntimeId(currentModel, "alibaba-token-plan");
   },
 
   matchesCurrentModel(model: string, context): boolean {
@@ -109,12 +102,9 @@ export const alibabaTokenPlanProvider: QuotaProvider = {
 
   async fetch(ctx: QuotaProviderContext): Promise<QuotaProviderResult> {
     const result = await queryAlibabaTokenPlanQuota({
-      requestTimeoutMs: ctx.config?.requestTimeoutMs ?? REQUEST_TIMEOUT_MS,
+      requestTimeoutMs: ctx.config.requestTimeoutMs,
       runtime: { cwd: ctx.workspaceRoot },
     });
-    return withStatusDetails(
-      mapClosedResult(result),
-      statusDetailsFromResult(result, process.platform),
-    );
+    return withStatusDetails(mapClosedResult(result), statusDetailsFromResult(result));
   },
 };

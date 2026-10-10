@@ -1,7 +1,3 @@
-/**
- * NanoGPT provider wrapper.
- */
-
 import { API_KEY_VENDORS, getApiKeyDiagnostics, hasApiKey } from "../lib/api-key-resolver.js";
 import type {
   AccountingPercentageBasis,
@@ -145,13 +141,9 @@ function mapNanoGptSuccess(result: NanoGptQuotaSuccess): QuotaProviderResult {
       : undefined;
   const statusDetails = [
     ...statusDetailsFromRecord({
-      subscription_active: subscription ? (subscription.active ? "true" : "false") : undefined,
+      subscription_active: subscription ? String(subscription.active) : undefined,
       subscription_state: subscription?.state,
-      enforce_daily_limit: subscription
-        ? subscription.enforceDailyLimit
-          ? "true"
-          : "false"
-        : undefined,
+      enforce_daily_limit: subscription ? String(subscription.enforceDailyLimit) : undefined,
       daily_usage: formatSubscriptionUsage(subscription?.daily),
       monthly_usage: formatSubscriptionUsage(subscription?.monthly),
       billing_period_end: subscription ? (subscription.currentPeriodEndIso ?? "(none)") : undefined,

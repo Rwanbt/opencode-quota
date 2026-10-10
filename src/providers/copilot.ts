@@ -7,6 +7,7 @@
 
 import {
   COPILOT_AUTH_KEYS,
+  type CopilotQuotaAuthDiagnostics,
   getCopilotQuotaAuthDiagnostics,
   hasCopilotQuotaRuntimeAvailable,
   queryCopilotQuota,
@@ -17,8 +18,10 @@ import type {
   QuotaProviderContext,
   QuotaProviderResult,
   QuotaToastEntry,
+  QuotaToastError,
 } from "../lib/entries.js";
 import {
+  type CredentialRow,
   credentialRowAuthEntry,
   formatCredentialDisplayNames,
   readAuthFileCached,
@@ -42,6 +45,12 @@ import {
   withStatusDetails,
 } from "./result-helpers.js";
 
+type CopilotSuccessResult =
+  | CopilotQuotaResult
+  | CopilotPlanResult
+  | CopilotOrganizationUsageResult
+  | CopilotEnterpriseUsageResult;
+
 function remoteAccounting(
   resultType: AccountingMetadata["resultType"],
   authority: AccountingMetadata["authority"],
@@ -58,10 +67,7 @@ function formatBillingPeriod(period: { year: number; month: number }): string {
   return `${period.year}-${String(period.month).padStart(2, "0")}`;
 }
 
-function getCopilotGroup(
-  mode: "user_quota" | "user_plan" | "organization_usage" | "enterprise_usage",
-  plan?: string,
-): string {
+function getCopilotGroup(mode: CopilotSuccessResult["mode"], plan?: string): string {
   if (mode === "organization_usage" || mode === "enterprise_usage") {
     return "Copilot (business)";
   }
@@ -111,13 +117,16 @@ function makeBudgetEntry(
   group: string,
   resetTimeIso?: string,
 ): QuotaToastEntry {
+  const base = {
+    accounting: remoteAccounting("budget", budget.authority),
+    name: "Copilot Additional Usage",
+    group,
+    label: "Budget:",
+  };
   const spent = budget.spentUsd;
   if (budget.percentRemaining !== undefined && spent !== undefined && budget.amountUsd > 0) {
     return {
-      accounting: remoteAccounting("budget", budget.authority),
-      name: "Copilot Additional Usage",
-      group,
-      label: "Budget:",
+      ...base,
       right: `${formatUsd(spent)}/${formatUsd(budget.amountUsd)}`,
       percentRemaining: budget.percentRemaining,
       resetTimeIso,
@@ -128,34 +137,10 @@ function makeBudgetEntry(
     spent === undefined
       ? `${formatUsd(budget.amountUsd)} limit | scope=${budget.scope}`
       : `${formatUsd(spent)} spent | ${formatUsd(budget.amountUsd)} budget | scope=${budget.scope}`;
-  return {
-    kind: "value",
-    accounting: remoteAccounting("budget", budget.authority),
-    name: "Copilot Additional Usage",
-    group,
-    label: "Budget:",
-    value,
-    resetTimeIso,
-  };
+  return { kind: "value", ...base, value, resetTimeIso };
 }
 
-function planEntries(result: CopilotPlanResult): QuotaToastEntry[] {
-  return [
-    {
-      kind: "value",
-      accounting: remoteAccounting("quota", result.authority),
-      name: "Copilot",
-      group: getCopilotGroup(result.mode, result.plan),
-      label: "Plan:",
-      value: result.plan
-        ? `${result.plan} | usage needs billing token`
-        : "Usage needs billing token",
-      resetTimeIso: result.resetTimeIso,
-    },
-  ];
-}
-
-function personalEntries(result: CopilotQuotaResult): QuotaToastEntry[] {
+function personalEntry(result: CopilotQuotaResult): QuotaToastEntry {
   const group = getCopilotGroup(result.mode, result.plan);
   const name =
     result.unit === "ai_credits"
@@ -165,22 +150,18 @@ function personalEntries(result: CopilotQuotaResult): QuotaToastEntry[] {
         : "Copilot Premium Requests";
 
   if (result.unlimited) {
-    return [
-      {
-        kind: "value",
-        accounting: remoteAccounting("quota", result.authority),
-        name,
-        group,
-        label: "Quota:",
-        value: "Unlimited",
-        resetTimeIso: result.resetTimeIso,
-      },
-    ];
+    return {
+      kind: "value",
+      accounting: remoteAccounting("quota", result.authority),
+      name,
+      group,
+      label: "Quota:",
+      value: "Unlimited",
+      resetTimeIso: result.resetTimeIso,
+    };
   }
-
-  const entries: QuotaToastEntry[] = [];
   if (result.total !== undefined && result.total > 0 && result.percentRemaining !== undefined) {
-    entries.push({
+    return {
       accounting: remoteAccounting("quota", result.authority),
       name,
       group,
@@ -188,32 +169,63 @@ function personalEntries(result: CopilotQuotaResult): QuotaToastEntry[] {
       right: `${formatNumber(result.used)}/${formatNumber(result.total)}`,
       percentRemaining: result.percentRemaining,
       resetTimeIso: result.resetTimeIso,
-    });
-  } else {
-    entries.push({
-      kind: "value",
-      accounting: remoteAccounting("usage", result.authority),
-      name,
-      group,
-      label: result.unit === "ai_credits" ? "Credits:" : "Usage:",
-      value:
-        result.unit === "ai_credits"
-          ? formatAiCreditUsageValue(result)
-          : `Used ${formatNumber(result.used)}`,
-      resetTimeIso: result.resetTimeIso,
-    });
+    };
+  }
+  return {
+    kind: "value",
+    accounting: remoteAccounting("usage", result.authority),
+    name,
+    group,
+    label: result.unit === "ai_credits" ? "Credits:" : "Usage:",
+    value:
+      result.unit === "ai_credits"
+        ? formatAiCreditUsageValue(result)
+        : `Used ${formatNumber(result.used)}`,
+    resetTimeIso: result.resetTimeIso,
+  };
+}
+
+function resultEntries(result: CopilotSuccessResult): QuotaToastEntry[] {
+  if (result.mode === "user_quota") return [personalEntry(result)];
+  if (result.mode === "user_plan") {
+    return [
+      {
+        kind: "value",
+        accounting: remoteAccounting("quota", result.authority),
+        name: "Copilot",
+        group: getCopilotGroup(result.mode, result.plan),
+        label: "Plan:",
+        value: result.plan
+          ? `${result.plan} | usage needs billing token`
+          : "Usage needs billing token",
+        resetTimeIso: result.resetTimeIso,
+      },
+    ];
   }
 
+  const group = getCopilotGroup(result.mode);
+  const entries: QuotaToastEntry[] = [
+    {
+      kind: "value",
+      accounting: remoteAccounting("usage", result.authority),
+      name: "Copilot AI Credits",
+      group,
+      label: "Credits:",
+      value: formatAiCreditUsageValue(result),
+      resetTimeIso: result.resetTimeIso,
+    },
+  ];
   if (result.budget) {
     entries.push(makeBudgetEntry(result.budget, group, result.resetTimeIso));
   }
   return entries;
 }
 
-async function getCopilotStatusDetails() {
-  const diagnostics = getCopilotQuotaAuthDiagnostics(
-    await readAuthFileCached({ maxAgeMs: 5_000, integrationIds: COPILOT_AUTH_KEYS }),
-  );
+function resultWarnings(result: CopilotSuccessResult): string[] {
+  return result.mode === "user_plan" ? [] : (result.warnings ?? []);
+}
+
+function copilotStatusDetails(diagnostics: CopilotQuotaAuthDiagnostics) {
   const managedBilling =
     diagnostics.billingMode === "organization_usage" ||
     diagnostics.billingMode === "enterprise_usage";
@@ -245,7 +257,6 @@ async function getCopilotStatusDetails() {
     remaining_quota_note: managedBilling
       ? "the usage report exposes included-pool consumption and billed usage, but no included-pool denominator; percentages require a real budget"
       : undefined,
-    billing_target_error: diagnostics.billingTargetError,
     token_compatibility_error: diagnostics.tokenCompatibilityError,
     pat_error: diagnostics.pat.error,
     pat_checked_paths: diagnostics.pat.checkedPaths.join(" | ") || "(none)",
@@ -256,25 +267,45 @@ async function getCopilotStatusDetails() {
   });
 }
 
-function managedEntries(
-  result: CopilotOrganizationUsageResult | CopilotEnterpriseUsageResult,
-): QuotaToastEntry[] {
-  const group = getCopilotGroup(result.mode);
-  const entries: QuotaToastEntry[] = [
-    {
-      kind: "value",
-      accounting: remoteAccounting("usage", result.authority),
-      name: "Copilot AI Credits",
-      group,
-      label: "Credits:",
-      value: formatAiCreditUsageValue(result),
-      resetTimeIso: result.resetTimeIso,
-    },
-  ];
-  if (result.budget) {
-    entries.push(makeBudgetEntry(result.budget, group, result.resetTimeIso));
+/** One query per OpenCode Copilot login, each shown under its own credential name. */
+async function fetchPerCredential(
+  credentials: CredentialRow[],
+  requestTimeoutMs?: number,
+): Promise<QuotaProviderResult> {
+  // A failed login stays in the list so it shows as its own error row.
+  const results = await Promise.all(
+    credentials.map(async (row) => ({
+      row,
+      result: await queryCopilotQuota({
+        requestTimeoutMs,
+        authData: { [row.integrationId]: credentialRowAuthEntry(row) } as AuthData,
+      }),
+    })),
+  );
+  const names = formatCredentialDisplayNames(
+    "Copilot",
+    results.map(({ row, result }) => ({
+      row,
+      fallbackName: result?.success
+        ? getCopilotGroup(result.mode, "plan" in result ? result.plan : undefined)
+        : "Copilot",
+    })),
+  );
+  const entries: QuotaToastEntry[] = [];
+  const errors: QuotaToastError[] = [];
+  for (const [index, { row, result }] of results.entries()) {
+    if (!result) continue;
+    const group = names[index] ?? "Copilot";
+    if (!result.success) {
+      errors.push({ label: group, message: result.error });
+      continue;
+    }
+    for (const entry of resultEntries(result)) {
+      entries.push({ ...entry, group, accounting: { ...entry.accounting, sourceId: row.id } });
+    }
+    for (const message of resultWarnings(result)) errors.push({ label: group, message });
   }
-  return entries;
+  return attemptedResult(entries, errors);
 }
 
 export const copilotProvider: QuotaProvider = {
@@ -301,95 +332,37 @@ export const copilotProvider: QuotaProvider = {
   },
 
   async fetch(ctx: QuotaProviderContext): Promise<QuotaProviderResult> {
-    const statusDetails = await getCopilotStatusDetails();
-    const authData = await readAuthFileCached({
-      maxAgeMs: 5_000,
-      integrationIds: COPILOT_AUTH_KEYS,
-    });
-    if (getCopilotQuotaAuthDiagnostics(authData).effectiveSource === "oauth") {
-      const credentials = (
-        await readCredentialRows(COPILOT_AUTH_KEYS, { methods: ["oauth"] })
-      ).filter((row) =>
-        ["github-copilot", "copilot", "copilot-chat", "github-copilot-chat"].includes(
-          row.integrationId,
-        ),
-      );
+    const requestTimeoutMs = ctx.config?.requestTimeoutMs;
+    const diagnostics = getCopilotQuotaAuthDiagnostics(
+      await readAuthFileCached({ maxAgeMs: 5_000, integrationIds: COPILOT_AUTH_KEYS }),
+    );
+    const statusDetails = copilotStatusDetails(diagnostics);
+    if (diagnostics.effectiveSource === "oauth") {
+      const credentials = await readCredentialRows(COPILOT_AUTH_KEYS, { methods: ["oauth"] });
       if (credentials.length > 0) {
-        // A failed login stays in the list so it shows as its own error row.
-        const results = await Promise.all(
-          credentials.map(async (row) => ({
-            row,
-            result: await queryCopilotQuota({
-              requestTimeoutMs: ctx.config?.requestTimeoutMs,
-              authData: { [row.integrationId]: credentialRowAuthEntry(row) } as AuthData,
-            }),
-          })),
+        return withStatusDetails(
+          await fetchPerCredential(credentials, requestTimeoutMs),
+          statusDetails,
         );
-        const names = formatCredentialDisplayNames(
-          "Copilot",
-          results.map(({ row, result }) => ({
-            row,
-            fallbackName: result?.success
-              ? getCopilotGroup(result.mode, "plan" in result ? result.plan : undefined)
-              : "Copilot",
-          })),
-        );
-        const entries: QuotaToastEntry[] = [];
-        const errors: QuotaProviderResult["errors"] = [];
-        for (const [index, { row, result }] of results.entries()) {
-          const group = names[index] ?? "Copilot";
-          if (!result) continue;
-          if (!result.success) {
-            errors.push({ label: group, message: result.error });
-            continue;
-          }
-          const resultEntries =
-            result.mode === "user_plan"
-              ? planEntries(result)
-              : result.mode === "user_quota"
-                ? personalEntries(result)
-                : managedEntries(result);
-          entries.push(
-            ...resultEntries.map((entry) => ({
-              ...entry,
-              name: entry.group ? entry.name.replace(entry.group, group) : entry.name,
-              group,
-              accounting: { ...entry.accounting, sourceId: row.id },
-            })),
-          );
-          errors.push(
-            ...("warnings" in result ? (result.warnings ?? []) : []).map((message) => ({
-              label: group,
-              message,
-            })),
-          );
-        }
-        return withStatusDetails(attemptedResult(entries, errors), statusDetails);
       }
     }
-    const result = await queryCopilotQuota({ requestTimeoutMs: ctx.config?.requestTimeoutMs });
+
+    const result = await queryCopilotQuota({ requestTimeoutMs });
     if (!result) return withStatusDetails(notAttemptedResult(), statusDetails);
     if (!result.success) {
       return withStatusDetails(attemptedErrorResult("Copilot", result.error), statusDetails);
     }
 
-    const entries =
-      result.mode === "user_plan"
-        ? planEntries(result)
-        : result.mode === "user_quota"
-          ? personalEntries(result)
-          : managedEntries(result);
-    const errors = ("warnings" in result ? (result.warnings ?? []) : []).map((message) => ({
-      label: "Copilot",
-      message,
-    }));
+    const errors = resultWarnings(result).map((message) => ({ label: "Copilot", message }));
     const presentation =
       result.mode === "enterprise_usage"
         ? { singleWindowDisplayName: `Copilot Enterprise (${result.enterprise})` }
         : result.mode === "organization_usage"
           ? { singleWindowDisplayName: `Copilot Org (${result.organization})` }
           : undefined;
-
-    return withStatusDetails(attemptedResult(entries, errors, presentation), statusDetails);
+    return withStatusDetails(
+      attemptedResult(resultEntries(result), errors, presentation),
+      statusDetails,
+    );
   },
 };

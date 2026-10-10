@@ -29,7 +29,6 @@ const HEAVY_OFFER_ID_RE = /^heavy-p\d+m-\d{1,2}-[a-z]{3}\d{4}$/i;
 const USER_AGENT = "OpenCode-Quota-Toast/1.0";
 
 export type XaiPeriodKind = "weekly" | "monthly" | "daily" | "period";
-export type XaiSubscriptionTier = "Lite" | "SuperGrok" | "Heavy";
 export type XaiLabel = "xAI Lite" | "xAI SuperGrok" | "xAI Heavy";
 
 export interface XaiWindowValue {
@@ -57,6 +56,13 @@ export type ResolvedXaiOAuth =
       expiresAt?: number;
     };
 
+const PERIOD_KIND_LABELS: Record<XaiPeriodKind, string> = {
+  weekly: "Weekly",
+  monthly: "Monthly",
+  daily: "Daily",
+  period: "Period",
+};
+
 function isoOrUndefined(value: unknown): string | undefined {
   const raw = nonEmptyString(value);
   if (!raw) return undefined;
@@ -74,16 +80,7 @@ function periodKindFromType(value: unknown): XaiPeriodKind {
 }
 
 export function periodKindLabel(kind: XaiPeriodKind): string {
-  switch (kind) {
-    case "weekly":
-      return "Weekly";
-    case "monthly":
-      return "Monthly";
-    case "daily":
-      return "Daily";
-    default:
-      return "Period";
-  }
+  return PERIOD_KIND_LABELS[kind];
 }
 
 export function resolveXaiOAuth(auth: AuthData | null | undefined): ResolvedXaiOAuth {
@@ -104,16 +101,13 @@ export function resolveXaiOAuth(auth: AuthData | null | undefined): ResolvedXaiO
   };
 }
 
-export function hasXaiOAuth(auth: AuthData | null | undefined): boolean {
-  return resolveXaiOAuth(auth).state !== "none";
-}
-
+/** A login OpenCode could not return counts too, so it can show as its own error. */
 export async function hasXaiOAuthCached(params?: { maxAgeMs?: number }): Promise<boolean> {
   const auth = await readAuthFileCached({
     maxAgeMs: Math.max(0, params?.maxAgeMs ?? DEFAULT_XAI_AUTH_CACHE_MAX_AGE_MS),
     integrationIds: ["xai"],
   });
-  return hasXaiOAuth(auth);
+  return resolveXaiOAuth(auth).state !== "none";
 }
 
 export async function resolveXaiAuthIdentity(): Promise<ResolvedAuthIdentity | null> {
@@ -125,7 +119,7 @@ export async function resolveXaiAuthIdentity(): Promise<ResolvedAuthIdentity | n
   });
 }
 
-function parseCreditsWindow(payload: unknown, observedAtMs: number): XaiWindowValue | null {
+function parseCreditsWindow(payload: unknown): XaiWindowValue | null {
   if (!isRecord(payload) || !isRecord(payload.config)) {
     throw new Error("xAI credits response returned an unexpected response shape");
   }
@@ -138,36 +132,33 @@ function parseCreditsWindow(payload: unknown, observedAtMs: number): XaiWindowVa
   );
   if (!hasPeriod && !hasUsage) return null;
 
-  if (
-    hasUsage &&
-    (typeof config.creditUsagePercent !== "number" || !Number.isFinite(config.creditUsagePercent))
-  ) {
+  // Protobuf JSON omits zero-valued fields, so an absent percentage with a
+  // current period means 0% used rather than missing quota.
+  const usedPercent = hasUsage ? config.creditUsagePercent : 0;
+  if (typeof usedPercent !== "number" || !Number.isFinite(usedPercent)) {
     throw new Error("xAI credits response returned an invalid usage percentage");
   }
 
-  // Protobuf JSON omits zero-valued fields, so an absent percentage with a
-  // current period means 0% used rather than missing quota.
-  const usedPercent = hasUsage ? (config.creditUsagePercent as number) : 0;
-
   const startedAtIso = isoOrUndefined(period?.start);
-  const periodEndsAtIso = isoOrUndefined(period?.end);
-  const resetTimeIso = periodEndsAtIso ?? isoOrUndefined(config.billingPeriodEnd);
-  const startedAtMs = startedAtIso ? Date.parse(startedAtIso) : Number.NaN;
-  const endsAtMs = periodEndsAtIso ? Date.parse(periodEndsAtIso) : Number.NaN;
-  const fixedWindow =
-    Number.isFinite(startedAtMs) && startedAtMs < observedAtMs && observedAtMs < endsAtMs
-      ? ({
+  const endsAtIso = isoOrUndefined(period?.end);
+  const observedAtMs = Date.now();
+  const fixedWindow: FixedWindowProjectionEvidence | undefined =
+    startedAtIso !== undefined &&
+    endsAtIso !== undefined &&
+    Date.parse(startedAtIso) < observedAtMs &&
+    observedAtMs < Date.parse(endsAtIso)
+      ? {
           kind: "fixed_window",
-          startedAtIso: new Date(startedAtMs).toISOString(),
+          startedAtIso,
           observedAtIso: new Date(observedAtMs).toISOString(),
-          endsAtIso: new Date(endsAtMs).toISOString(),
+          endsAtIso,
           fullReset: true,
-        } as const)
+        }
       : undefined;
 
   return {
     percentRemaining: clampPercent(100 - usedPercent),
-    resetTimeIso,
+    resetTimeIso: endsAtIso ?? isoOrUndefined(config.billingPeriodEnd),
     ...(fixedWindow ? { fixedWindow } : {}),
     kind: periodKindFromType(period?.type),
   };
@@ -183,69 +174,45 @@ function xaiHeaders(accessToken: string): Record<string, string> {
   };
 }
 
-function parseXaiSubscriptionTier(payload: unknown): XaiSubscriptionTier | null {
-  if (!isRecord(payload) || !Array.isArray(payload.subscriptions)) return null;
-
-  const active = payload.subscriptions.find(
+function parseXaiLabel(payload: unknown): XaiLabel {
+  const subscriptions =
+    isRecord(payload) && Array.isArray(payload.subscriptions) ? payload.subscriptions : [];
+  const active = subscriptions.find(
     (subscription) =>
       isRecord(subscription) && subscription.status === "SUBSCRIPTION_STATUS_ACTIVE",
   );
-  if (!isRecord(active)) return null;
+  if (!isRecord(active)) return "xAI SuperGrok";
 
-  const tier = nonEmptyString(active.tier);
   const activeOffer = isRecord(active.activeOffer) ? active.activeOffer : null;
   const providerOfferId = nonEmptyString(activeOffer?.providerOfferId);
+  if (providerOfferId && HEAVY_OFFER_ID_RE.test(providerOfferId)) return "xAI Heavy";
 
-  if (providerOfferId && HEAVY_OFFER_ID_RE.test(providerOfferId)) return "Heavy";
-
-  switch (tier) {
-    case "SUBSCRIPTION_TIER_SUPER_GROK_HEAVY":
-      return "Heavy";
-    case "SUBSCRIPTION_TIER_SUPER_GROK_LITE":
-      return "Lite";
-    case "SUBSCRIPTION_TIER_SUPER_GROK":
-    case "SUBSCRIPTION_TIER_SUPER_GROK_PRO":
-      return "SuperGrok";
-    default:
-      return null;
-  }
+  const tier = nonEmptyString(active.tier);
+  if (tier === "SUBSCRIPTION_TIER_SUPER_GROK_HEAVY") return "xAI Heavy";
+  if (tier === "SUBSCRIPTION_TIER_SUPER_GROK_LITE") return "xAI Lite";
+  // SUPER_GROK, SUPER_GROK_PRO, and unknown tiers keep the standard label.
+  return "xAI SuperGrok";
 }
 
-function xaiLabelForTier(tier: XaiSubscriptionTier | null): XaiLabel {
-  switch (tier) {
-    case "Lite":
-      return "xAI Lite";
-    case "Heavy":
-      return "xAI Heavy";
-    default:
-      return "xAI SuperGrok";
-  }
-}
-
-async function queryXaiSubscriptionTier(
-  accessToken: string,
-  requestTimeoutMs?: number,
-): Promise<XaiSubscriptionTier | null> {
+/** Subscription metadata only refines the label, so any failure keeps the standard one. */
+async function queryXaiLabel(accessToken: string, requestTimeoutMs?: number): Promise<XaiLabel> {
   try {
-    return await fetchWithTimeout(SUBSCRIPTIONS_URL, {
+    return await fetchWithTimeout<XaiLabel>(SUBSCRIPTIONS_URL, {
       request: {
         method: "GET",
         headers: xaiHeaders(accessToken),
       },
       timeoutMs: Math.min(requestTimeoutMs ?? SUBSCRIPTIONS_TIMEOUT_MS, SUBSCRIPTIONS_TIMEOUT_MS),
-      consume: async (response) => {
-        if (!response.ok) return null;
-        return parseXaiSubscriptionTier(await response.json());
-      },
+      consume: async (response) =>
+        response.ok ? parseXaiLabel(await response.json()) : "xAI SuperGrok",
     });
   } catch {
-    return null;
+    return "xAI SuperGrok";
   }
 }
 
 function safeErrorText(message: string, accessToken: string): string {
-  const redacted = accessToken ? message.split(accessToken).join("[redacted]") : message;
-  return sanitizeSingleLineDisplaySnippet(redacted, 160);
+  return sanitizeSingleLineDisplaySnippet(message.split(accessToken).join("[redacted]"), 160);
 }
 
 export async function queryXaiQuota(
@@ -289,17 +256,16 @@ export async function queryXaiQuota(
           };
         }
 
-        const payload = await response.json();
-        const window = parseCreditsWindow(payload, Date.now());
-        if (!window) return { success: false, error: "No weekly quota data" };
-
-        return { success: true, window };
+        const window = parseCreditsWindow(await response.json());
+        return window
+          ? { success: true, window }
+          : { success: false, error: "No weekly quota data" };
       },
     });
     if (!creditsResult.success) return creditsResult;
 
-    const tier = await queryXaiSubscriptionTier(resolvedAuth.accessToken, options.requestTimeoutMs);
-    return { success: true, label: xaiLabelForTier(tier), window: creditsResult.window };
+    const label = await queryXaiLabel(resolvedAuth.accessToken, options.requestTimeoutMs);
+    return { success: true, label, window: creditsResult.window };
   } catch (error) {
     return {
       success: false,

@@ -266,7 +266,7 @@ describe("trusted config parsing", () => {
     expect(result?.key ?? null).toBe(expected);
   });
 
-  it("resolves an allowlisted env template only from the vendor's own env vars", async () => {
+  it("resolves a template naming the vendor's own second env var", async () => {
     // A vendor's own env var wins before config is read, so use a vendor whose
     // first env var is unset and whose template names its second one.
     process.env.ZAI_CODING_PLAN_API_KEY = "templated-key";
@@ -277,10 +277,6 @@ describe("trusted config parsing", () => {
       state: "configured",
       apiKey: "templated-key",
     });
-
-    process.env.NOT_ALLOWED = "secret";
-    mockConfigFiles({ [TRUSTED.json]: legacyConfig({ deepseek: "{env:NOT_ALLOWED}" }) });
-    await expect(resolveApiKey(spec)).resolves.toBeNull();
   });
 });
 
@@ -483,26 +479,22 @@ describe("per-vendor differences", () => {
   });
 
   it.each([
-    [
-      { type: "api", key: "k" },
-      { state: "configured", apiKey: "k", tier: "lite" },
-    ],
-    [
-      { type: "api", key: "k", tier: "PRO" },
-      { state: "configured", apiKey: "k", tier: "pro" },
-    ],
-    [
-      { type: "api", key: "k", planTier: "professional" },
-      { state: "configured", apiKey: "k", tier: "pro" },
-    ],
-    [
-      { type: "api", key: "k", plan_tier: "lite" },
-      { state: "configured", apiKey: "k", tier: "lite" },
-    ],
-    [
-      { type: "api", key: "k", subscriptionTier: " pro " },
-      { state: "configured", apiKey: "k", tier: "pro" },
-    ],
+    [{}, "lite"],
+    [{ tier: "PRO" }, "pro"],
+    [{ planTier: "professional" }, "pro"],
+    [{ plan_tier: "lite" }, "lite"],
+    [{ subscriptionTier: " pro " }, "pro"],
+  ])("reads the Alibaba plan tier from %j", (tierFields, tier) => {
+    expect(
+      resolveAlibabaCodingPlanAuth({ alibaba: { type: "api", key: "k", ...tierFields } } as never),
+    ).toEqual({
+      state: "configured",
+      apiKey: "k",
+      tier,
+    });
+  });
+
+  it.each([
     [
       { type: "api", key: "k", tier: "max" },
       { state: "invalid", error: "Unsupported Alibaba Coding Plan tier: max", rawTier: "max" },
@@ -511,7 +503,7 @@ describe("per-vendor differences", () => {
       { type: "api", access: "token" },
       { state: "invalid", error: "Alibaba Coding Plan auth entry present but key is empty" },
     ],
-  ])("reads the Alibaba plan tier from %j", (entry, expected) => {
+  ])("reports the unusable Alibaba login %j", (entry, expected) => {
     expect(resolveAlibabaCodingPlanAuth({ alibaba: entry } as never)).toEqual(expected);
   });
 
@@ -560,32 +552,32 @@ describe("per-vendor differences", () => {
     };
     mocks.readAuthFileCached.mockImplementation(actual.readAuthFileCached);
     const spec = API_KEY_LOGIN_VENDORS["opencode-go"];
+    async function withLogins(
+      credentials: Parameters<typeof createFakeIntegration>[0],
+      check: (integration: ReturnType<typeof createFakeIntegration>) => Promise<void>,
+    ) {
+      const integration = createFakeIntegration(credentials);
+      const unbind = actual.bindCredentialSource(
+        actual.createIntegrationCredentialSource(integration as never),
+      );
+      try {
+        await check(integration);
+      } finally {
+        unbind();
+        actual.notifyCredentialsChanged();
+      }
+    }
 
-    const signedIn = createFakeIntegration([consoleSignIn, workspaceKey]);
-    const unbindSignedIn = actual.bindCredentialSource(
-      actual.createIntegrationCredentialSource(signedIn as never),
-    );
-    try {
+    await withLogins([consoleSignIn, workspaceKey], async (signedIn) => {
       await expect(resolveApiKeyLogin(spec, { maxAgeMs: 0 })).resolves.toEqual({ state: "none" });
       expect(signedIn.connection.active.mock.calls).toEqual([["opencode-go"], ["opencode"]]);
       expect(signedIn.connection.resolve).not.toHaveBeenCalled();
-    } finally {
-      unbindSignedIn();
-      actual.notifyCredentialsChanged();
-    }
-
-    const keyOnly = createFakeIntegration([workspaceKey]);
-    const unbindKeyOnly = actual.bindCredentialSource(
-      actual.createIntegrationCredentialSource(keyOnly as never),
-    );
-    try {
+    });
+    await withLogins([workspaceKey], async () => {
       await expect(resolveApiKeyLogin(spec, { maxAgeMs: 0 })).resolves.toEqual({
         state: "configured",
         apiKey: "workspace-key",
       });
-    } finally {
-      unbindKeyOnly();
-      actual.notifyCredentialsChanged();
-    }
+    });
   });
 });

@@ -7,6 +7,7 @@ import type {
   QuotaProviderContext,
   QuotaProviderMatchContext,
   QuotaProviderResult,
+  QuotaToastEntry,
 } from "../lib/entries.js";
 import {
   credentialRowAuthEntry,
@@ -22,8 +23,27 @@ import {
   periodKindLabel,
   queryXaiQuota,
   resolveXaiOAuth,
+  type XaiWindowValue,
 } from "../lib/xai.js";
 import { attemptedResult, mapNullableProviderResult } from "./result-helpers.js";
+
+function xaiQuotaEntry(group: string, window: XaiWindowValue, sourceId?: string): QuotaToastEntry {
+  const period = periodKindLabel(window.kind);
+  return {
+    accounting: {
+      resultType: "quota",
+      acquisitionMethod: "remote_api",
+      ownership: "maintained",
+      authority: "provider_reported",
+      ...(sourceId === undefined ? {} : { sourceId }),
+    },
+    name: `${group} ${period}`,
+    group,
+    label: `${period}:`,
+    percentRemaining: window.percentRemaining,
+    resetTimeIso: window.resetTimeIso,
+  };
+}
 
 export const xaiProvider: QuotaProvider = {
   id: "xai",
@@ -34,9 +54,9 @@ export const xaiProvider: QuotaProvider = {
       providerId: "xai",
       fallbackOnError: false,
     });
-    if (providerAvailable) return hasXaiOAuthCached({ maxAgeMs: 0 });
-
-    return hasXaiOAuthCached({ maxAgeMs: DEFAULT_XAI_AUTH_CACHE_MAX_AGE_MS });
+    return hasXaiOAuthCached({
+      maxAgeMs: providerAvailable ? 0 : DEFAULT_XAI_AUTH_CACHE_MAX_AGE_MS,
+    });
   },
 
   matchesCurrentModel(model: string, context?: QuotaProviderMatchContext): boolean {
@@ -47,88 +67,55 @@ export const xaiProvider: QuotaProvider = {
   },
 
   async fetch(ctx: QuotaProviderContext): Promise<QuotaProviderResult> {
+    const requestTimeoutMs = ctx.config?.requestTimeoutMs;
     // A failed login stays in the list so it shows as its own error row.
     const credentials = (await readCredentialRows(["xai"], { methods: ["oauth"] })).flatMap(
       (row) => {
-        if (row.integrationId !== "xai") return [];
         const auth = resolveXaiOAuth({ xai: credentialRowAuthEntry(row) } as AuthData);
         return auth.state === "none" ? [] : [{ row, auth }];
       },
     );
-    if (credentials.length > 0) {
-      const results = await Promise.all(
-        credentials.map(async ({ row, auth }) => ({
-          row,
-          result: await queryXaiQuota({ requestTimeoutMs: ctx.config?.requestTimeoutMs, auth }),
-        })),
-      );
-      const names = formatCredentialDisplayNames(
-        "xAI",
-        results.map(({ row, result }) => ({
-          row,
-          fallbackName: result?.success ? result.label : "xAI",
-        })),
-      );
-      const entries: QuotaProviderResult["entries"] = [];
-      const errors: QuotaProviderResult["errors"] = [];
-      for (const [index, { row, result }] of results.entries()) {
-        const group = names[index] ?? "xAI";
-        const mapped = mapNullableProviderResult(result, {
-          errorLabel: group,
-          onSuccess: (result) => {
-            const period = periodKindLabel(result.window.kind);
-            return attemptedResult([
-              {
-                accounting: {
-                  resultType: "quota",
-                  acquisitionMethod: "remote_api",
-                  ownership: "maintained",
-                  authority: "provider_reported",
-                  sourceId: row.id,
-                },
-                name: `${group} ${period}`,
-                group,
-                label: `${period}:`,
-                percentRemaining: result.window.percentRemaining,
-                resetTimeIso: result.window.resetTimeIso,
-              },
-            ]);
-          },
-        });
-        entries.push(...mapped.entries);
-        errors.push(...mapped.errors);
-      }
-      return attemptedResult(entries, errors);
-    }
-    const result = await queryXaiQuota({ requestTimeoutMs: ctx.config?.requestTimeoutMs });
 
-    return mapNullableProviderResult(result, {
-      errorLabel: "xAI",
-      onSuccess: (result) => {
-        const period = periodKindLabel(result.window.kind);
-        return attemptedResult(
-          [
-            {
-              accounting: {
-                resultType: "quota",
-                acquisitionMethod: "remote_api",
-                ownership: "maintained",
-                authority: "provider_reported",
+    if (credentials.length === 0) {
+      const result = await queryXaiQuota({ requestTimeoutMs });
+      return mapNullableProviderResult(result, {
+        errorLabel: "xAI",
+        onSuccess: ({ label, window }) =>
+          attemptedResult(
+            [
+              {
+                ...xaiQuotaEntry(label, window),
+                ...(window.fixedWindow ? { fixedWindow: { ...window.fixedWindow } } : {}),
               },
-              name: `${result.label} ${period}`,
-              group: result.label,
-              label: `${period}:`,
-              percentRemaining: result.window.percentRemaining,
-              resetTimeIso: result.window.resetTimeIso,
-              ...(result.window.fixedWindow
-                ? { fixedWindow: { ...result.window.fixedWindow } }
-                : {}),
-            },
-          ],
-          [],
-          { singleWindowDisplayName: result.label },
-        );
-      },
-    });
+            ],
+            [],
+            { singleWindowDisplayName: label },
+          ),
+      });
+    }
+
+    const results = await Promise.all(
+      credentials.map(async ({ row, auth }) => ({
+        row,
+        result: await queryXaiQuota({ requestTimeoutMs, auth }),
+      })),
+    );
+    const names = formatCredentialDisplayNames(
+      "xAI",
+      results.map(({ row, result }) => ({
+        row,
+        fallbackName: result?.success ? result.label : "xAI",
+      })),
+    );
+    const mapped = results.map(({ row, result }, index) =>
+      mapNullableProviderResult(result, {
+        errorLabel: names[index],
+        onSuccess: ({ window }) => attemptedResult([xaiQuotaEntry(names[index], window, row.id)]),
+      }),
+    );
+    return attemptedResult(
+      mapped.flatMap(({ entries }) => entries),
+      mapped.flatMap(({ errors }) => errors),
+    );
   },
 };

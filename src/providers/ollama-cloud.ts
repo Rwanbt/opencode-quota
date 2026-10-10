@@ -1,9 +1,3 @@
-/**
- * Ollama Cloud provider wrapper.
- *
- * Queries the Ollama Cloud usage API and reports session/weekly/monthly quota.
- */
-
 import { API_KEY_VENDORS, getApiKeyDiagnostics, hasApiKey } from "../lib/api-key-resolver.js";
 import type {
   QuotaProvider,
@@ -23,78 +17,52 @@ import {
 } from "./result-helpers.js";
 
 const OLLAMA_CLOUD_PROVIDER_LABEL = "Ollama Cloud";
-const REMOTE_API_ACCOUNTING = {
-  acquisitionMethod: "remote_api",
-  ownership: "maintained",
-  authority: "provider_reported",
-} as const;
+const OLLAMA_CLOUD_WINDOWS = [
+  ["session", "Session"],
+  ["weekly", "Weekly"],
+  ["monthly", "Monthly"],
+] as const;
 
 type OllamaCloudSuccess = Extract<OllamaCloudResult, { success: true }>;
 
 function mapOllamaCloudSuccess(result: OllamaCloudSuccess): QuotaProviderResult {
-  const entries: QuotaToastEntry[] = [];
-
-  if (result.session) {
-    entries.push({
-      accounting: {
-        resultType: "quota",
-        ...REMOTE_API_ACCOUNTING,
+  const entries: QuotaToastEntry[] = OLLAMA_CLOUD_WINDOWS.flatMap(([key, name]) => {
+    const window = result[key];
+    if (!window) return [];
+    return [
+      {
+        accounting: {
+          resultType: "quota",
+          acquisitionMethod: "remote_api",
+          ownership: "maintained",
+          authority: "provider_reported",
+        },
+        name: `${OLLAMA_CLOUD_PROVIDER_LABEL} ${name}`,
+        group: OLLAMA_CLOUD_PROVIDER_LABEL,
+        label: `${name}:`,
+        percentRemaining: window.percentRemaining,
       },
-      name: `${OLLAMA_CLOUD_PROVIDER_LABEL} Session`,
-      group: OLLAMA_CLOUD_PROVIDER_LABEL,
-      label: "Session:",
-      percentRemaining: result.session.percentRemaining,
-    });
-  }
+    ];
+  });
+  const rowErrors = result.rowErrors ?? [];
 
-  if (result.weekly) {
-    entries.push({
-      accounting: {
-        resultType: "quota",
-        ...REMOTE_API_ACCOUNTING,
-      },
-      name: `${OLLAMA_CLOUD_PROVIDER_LABEL} Weekly`,
-      group: OLLAMA_CLOUD_PROVIDER_LABEL,
-      label: "Weekly:",
-      percentRemaining: result.weekly.percentRemaining,
-    });
-  }
-
-  if (result.monthly) {
-    entries.push({
-      accounting: {
-        resultType: "quota",
-        ...REMOTE_API_ACCOUNTING,
-      },
-      name: `${OLLAMA_CLOUD_PROVIDER_LABEL} Monthly`,
-      group: OLLAMA_CLOUD_PROVIDER_LABEL,
-      label: "Monthly:",
-      percentRemaining: result.monthly.percentRemaining,
-    });
-  }
-
-  const errors = (result.rowErrors ?? []).map((message) => ({
-    label: OLLAMA_CLOUD_PROVIDER_LABEL,
-    message,
-  }));
-  if (entries.length === 0) {
-    errors.push({
-      label: OLLAMA_CLOUD_PROVIDER_LABEL,
-      message: "No usable Ollama Cloud usage data",
-    });
-  }
-
-  return withStatusDetails(attemptedResult(entries, errors), [
-    ...statusDetailsFromRecord({
-      session_usage_fraction: result.session?.usageFraction.toString(),
-      weekly_usage_fraction: result.weekly?.usageFraction.toString(),
-      monthly_usage_fraction: result.monthly?.usageFraction.toString(),
-    }),
-    ...(result.rowErrors ?? []).map((message, index) => ({
-      key: `live_error_${index + 1}`,
-      value: message,
-    })),
-  ]);
+  return withStatusDetails(
+    attemptedResult(
+      entries,
+      rowErrors.map((message) => ({ label: OLLAMA_CLOUD_PROVIDER_LABEL, message })),
+    ),
+    [
+      ...statusDetailsFromRecord(
+        Object.fromEntries(
+          OLLAMA_CLOUD_WINDOWS.map(([key]) => [
+            `${key}_usage_fraction`,
+            result[key]?.usageFraction.toString(),
+          ]),
+        ),
+      ),
+      ...rowErrors.map((message, index) => ({ key: `live_error_${index + 1}`, value: message })),
+    ],
+  );
 }
 
 export const ollamaCloudProvider: QuotaProvider = {

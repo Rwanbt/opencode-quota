@@ -1,62 +1,39 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const mocks = vi.hoisted(() => {
-  const fetchResponse = vi.fn();
-  return {
-    fetchResponse,
-    resolveApiKey: vi.fn(),
-    fetchWithTimeout: vi.fn(
-      async (
-        _url: string,
-        options: {
-          consume: (response: Response, signal: AbortSignal) => Promise<unknown> | unknown;
-        },
-      ) => {
-        const response = await fetchResponse();
-        return await options.consume(response, new AbortController().signal);
-      },
-    ),
-  };
-});
+const mocks = vi.hoisted(() => ({ resolveApiKey: vi.fn(), fetchWithTimeout: vi.fn() }));
 
-vi.mock("../src/lib/http.js", () => ({
-  fetchWithTimeout: mocks.fetchWithTimeout,
-}));
-
+vi.mock("../src/lib/http.js", () => ({ fetchWithTimeout: mocks.fetchWithTimeout }));
 vi.mock("../src/lib/api-key-resolver.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/lib/api-key-resolver.js")>()),
   resolveApiKey: mocks.resolveApiKey,
 }));
 
-import { _parseOllamaCloudUsage, queryOllamaCloudQuota } from "../src/lib/ollama-cloud.js";
+import { queryOllamaCloudQuota } from "../src/lib/ollama-cloud.js";
 
+/** Queue one reply without a body stream; `text()` throws `textError` when given. */
 function mockResponse(params: {
-  ok: boolean;
-  status: number;
+  status?: number;
   json?: unknown;
   text?: string;
-  jsonError?: Error;
+  textError?: Error;
 }) {
-  mocks.fetchResponse.mockResolvedValueOnce({
-    ok: params.ok,
-    status: params.status,
-    text: async () => {
-      if (params.jsonError) throw params.jsonError;
-      return params.text ?? JSON.stringify(params.json);
-    },
-  });
+  const status = params.status ?? 200;
+  mocks.fetchWithTimeout.mockImplementationOnce(async (_url, options) =>
+    options.consume({
+      ok: status < 400,
+      status,
+      text: async () => {
+        if (params.textError) throw params.textError;
+        return params.text ?? JSON.stringify(params.json);
+      },
+    }),
+  );
 }
 
 const usagePayload = {
   limits: {
-    session: {
-      usage: 0.25,
-      models: [{ name: "glm-5.3-flash", request_count: 57 }],
-    },
-    weekly: {
-      usage: 0.405,
-      models: [{ name: "glm-5.3-flash", request_count: 162 }],
-    },
+    session: { usage: 0.25, models: [{ name: "glm-5.3-flash", request_count: 57 }] },
+    weekly: { usage: 0.405, models: [{ name: "glm-5.3-flash", request_count: 162 }] },
   },
 };
 
@@ -78,6 +55,11 @@ const monthlyUsagePayload = {
   },
 };
 
+const UNEXPECTED_SHAPE = {
+  success: false,
+  error: "Ollama Cloud usage API returned an unexpected response shape",
+};
+
 describe("queryOllamaCloudQuota", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -94,183 +76,114 @@ describe("queryOllamaCloudQuota", () => {
     expect(mocks.fetchWithTimeout).not.toHaveBeenCalled();
   });
 
-  it("sends the exact usage request with the raw Authorization value", async () => {
-    mockResponse({ ok: true, status: 200, json: usagePayload });
+  it("sends the exact usage request with the raw Authorization value and timeout", async () => {
+    mockResponse({ json: usagePayload });
 
-    await queryOllamaCloudQuota();
+    await queryOllamaCloudQuota({ requestTimeoutMs: 1234 });
 
+    // Ollama takes the key as-is, without "Bearer ".
     expect(mocks.fetchWithTimeout).toHaveBeenCalledWith(
       "https://ollama.com/api/usage",
       expect.objectContaining({
         request: {
           method: "GET",
-          headers: {
-            Accept: "application/json",
-            Authorization: "ollama-secret-key",
-          },
+          headers: { Accept: "application/json", Authorization: "ollama-secret-key" },
           redirect: "manual",
         },
-        timeoutMs: undefined,
+        timeoutMs: 1234,
         consume: expect.any(Function),
       }),
     );
-    const request = mocks.fetchWithTimeout.mock.calls[0]?.[1]?.request;
-    expect(request.headers.Authorization).not.toContain("Bearer ");
   });
 
-  it("passes a configured request timeout", async () => {
-    mockResponse({ ok: true, status: 200, json: usagePayload });
-
-    await queryOllamaCloudQuota({ requestTimeoutMs: 1234 });
-
-    expect(mocks.fetchWithTimeout).toHaveBeenCalledWith(
-      expect.any(String),
-      expect.objectContaining({ timeoutMs: 1234 }),
-    );
-  });
-
-  it("maps usage fractions from a real nested Ollama response", async () => {
-    mockResponse({ ok: true, status: 200, json: usagePayload });
-
-    const out = await queryOllamaCloudQuota();
-    expect(out).toEqual({
-      success: true,
-      session: {
-        usageFraction: 0.25,
-        usagePercent: 25,
-        percentRemaining: 75,
+  it.each([
+    [
+      "a real nested response",
+      usagePayload,
+      {
+        success: true,
+        session: { usageFraction: 0.25, usagePercent: 25, percentRemaining: 75 },
+        weekly: { usageFraction: 0.405, usagePercent: 40.5, percentRemaining: 59.5 },
       },
-      weekly: {
-        usageFraction: 0.405,
-        usagePercent: 40.5,
-        percentRemaining: 59.5,
+    ],
+    [
+      "a monthly-only plan",
+      monthlyUsagePayload,
+      {
+        success: true,
+        monthly: { usageFraction: 0.043, usagePercent: 4.3, percentRemaining: 95.7 },
       },
-    });
-    expect(out?.success ? out.rowErrors : undefined).toBeUndefined();
-  });
-
-  it("maps the monthly usage pool from a monthly-only plan response", async () => {
-    mockResponse({ ok: true, status: 200, json: monthlyUsagePayload });
-
-    const out = await queryOllamaCloudQuota();
-    expect(out).toEqual({
-      success: true,
-      monthly: {
-        usageFraction: 0.043,
-        usagePercent: 4.3,
-        percentRemaining: 95.7,
+    ],
+    [
+      "the zero and fully-used boundaries",
+      { limits: { session: { usage: 0 }, weekly: { usage: 1 } } },
+      {
+        success: true,
+        session: { usageFraction: 0, usagePercent: 0, percentRemaining: 100 },
+        weekly: { usageFraction: 1, usagePercent: 100, percentRemaining: 0 },
       },
-    });
-  });
-
-  it("preserves zero and fully-used fraction boundaries", () => {
-    expect(
-      _parseOllamaCloudUsage({
-        limits: {
-          session: { usage: 0 },
-          weekly: { usage: 1 },
-        },
-      }),
-    ).toEqual({
-      success: true,
-      session: { usageFraction: 0, usagePercent: 0, percentRemaining: 100 },
-      weekly: { usageFraction: 1, usagePercent: 100, percentRemaining: 0 },
-    });
-  });
-
-  it("reports invalid independent usage windows", () => {
-    const out = _parseOllamaCloudUsage({
-      limits: {
-        session: { usage: 0.2 },
-        weekly: { usage: 1.5 },
+    ],
+    [
+      "an invalid weekly fraction next to a valid one",
+      { limits: { session: { usage: 0.2 }, weekly: { usage: 1.5 } } },
+      {
+        success: true,
+        session: { usageFraction: 0.2, usagePercent: 20, percentRemaining: 80 },
+        rowErrors: ["Weekly: ignored invalid usage fraction"],
       },
-    });
-
-    expect(out).toMatchObject({
-      success: true,
-      session: { usageFraction: 0.2, usagePercent: 20, percentRemaining: 80 },
-    });
-    expect(out?.success ? out.rowErrors : []).toEqual(["Weekly: ignored invalid usage fraction"]);
-  });
-
-  it("reports an invalid monthly usage window", () => {
-    const out = _parseOllamaCloudUsage({
-      limits: {
-        weekly: { usage: 0.3 },
-        monthly: { usage: "0.5" },
+    ],
+    [
+      "an invalid monthly fraction next to a valid one",
+      { limits: { weekly: { usage: 0.3 }, monthly: { usage: "0.5" } } },
+      {
+        success: true,
+        weekly: { usageFraction: 0.3, usagePercent: 30, percentRemaining: 70 },
+        rowErrors: ["Monthly: ignored invalid usage fraction"],
       },
-    });
+    ],
+    [
+      "no usable fraction",
+      { limits: { session: { usage: -1 }, weekly: { usage: Number.NaN }, monthly: { usage: 2 } } },
+      { success: false, error: "Ollama Cloud usage API returned no usable usage data" },
+    ],
+    ["a null root", null, UNEXPECTED_SHAPE],
+    ["an array root", [], UNEXPECTED_SHAPE],
+    ["a string root", "invalid", UNEXPECTED_SHAPE],
+  ])("maps %s", async (_name, json, expected) => {
+    mockResponse({ json });
 
-    expect(out).toMatchObject({
-      success: true,
-      weekly: { usageFraction: 0.3, usagePercent: 30, percentRemaining: 70 },
-    });
-    expect(out?.success ? out.monthly : undefined).toBeUndefined();
-    expect(out?.success ? out.rowErrors : []).toEqual(["Monthly: ignored invalid usage fraction"]);
-  });
-
-  it.each([null, [], "invalid"])("rejects an invalid root payload: %j", (payload) => {
-    expect(_parseOllamaCloudUsage(payload)).toEqual({
-      success: false,
-      error: "Ollama Cloud usage API returned an unexpected response shape",
-    });
-  });
-
-  it("rejects an object with no usable usage data", () => {
-    expect(
-      _parseOllamaCloudUsage({
-        limits: {
-          session: { usage: -1 },
-          weekly: { usage: Number.NaN },
-          monthly: { usage: 2 },
-        },
-      }),
-    ).toEqual({
-      success: false,
-      error: "Ollama Cloud usage API returned no usable usage data",
-    });
+    await expect(queryOllamaCloudQuota()).resolves.toEqual(expected);
   });
 
   it("reports non-success responses without leaking the API key", async () => {
-    mockResponse({
-      ok: false,
-      status: 401,
-      text: "Unauthorized\nollama-secret-key\u001b[31m",
+    mockResponse({ status: 401, text: "Unauthorized\nollama-secret-key\u001b[31m" });
+
+    await expect(queryOllamaCloudQuota()).resolves.toEqual({
+      success: false,
+      error: "Ollama Cloud usage API error 401: Unauthorized [redacted]",
     });
-
-    const out = await queryOllamaCloudQuota();
-    const error = out && !out.success ? out.error : "";
-
-    expect(error).toBe("Ollama Cloud usage API error 401: Unauthorized [redacted]");
-    expect(error).not.toContain("ollama-secret-key");
-    expect(error).not.toContain("\u001b");
   });
 
   it("rejects an oversized response before parsing it", async () => {
-    mockResponse({
-      ok: true,
-      status: 200,
-      text: "x".repeat(256 * 1024 + 1),
-    });
+    mockResponse({ text: "x".repeat(256 * 1024 + 1) });
 
-    const out = await queryOllamaCloudQuota();
-    expect(out && !out.success ? out.error : "").toBe(
-      "Ollama Cloud usage API response exceeded 262144 bytes",
-    );
+    await expect(queryOllamaCloudQuota()).resolves.toEqual({
+      success: false,
+      error: "Ollama Cloud usage API response exceeded 262144 bytes",
+    });
   });
 
   it("sanitizes malformed JSON and transport errors without leaking the API key", async () => {
-    mockResponse({
-      ok: true,
-      status: 200,
-      jsonError: new Error("bad JSON ollama-secret-key\nnext"),
+    mockResponse({ textError: new Error("bad JSON ollama-secret-key\nnext") });
+    await expect(queryOllamaCloudQuota()).resolves.toEqual({
+      success: false,
+      error: "bad JSON [redacted] next",
     });
 
-    const malformed = await queryOllamaCloudQuota();
-    expect(malformed && !malformed.success ? malformed.error : "").toBe("bad JSON [redacted] next");
-
     mocks.fetchWithTimeout.mockRejectedValueOnce(new Error("timeout ollama-secret-key\u001b[31m"));
-    const timedOut = await queryOllamaCloudQuota();
-    expect(timedOut && !timedOut.success ? timedOut.error : "").toBe("timeout [redacted]");
+    await expect(queryOllamaCloudQuota()).resolves.toEqual({
+      success: false,
+      error: "timeout [redacted]",
+    });
   });
 });

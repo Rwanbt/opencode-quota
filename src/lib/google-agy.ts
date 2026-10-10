@@ -1,29 +1,20 @@
 import crypto from "node:crypto";
-import { readGlobalProviderConfigString } from "./api-key-resolver.js";
+import { agyCompanion, type GoogleCompanionPresence } from "./google-companion-credentials.js";
 import {
-  type AgyConfiguredCredentials,
-  clearAgyCompanionCacheForTests,
-  inspectAgyCompanionPresence,
-  resolveAgyClientCredentials,
-} from "./google-agy-companion.js";
-import {
-  getCachedAccessToken,
-  makeAccountCacheKey,
-  setCachedAccessToken,
-} from "./google-token-cache.js";
-import { fetchWithTimeout } from "./http.js";
+  type GoogleAccount,
+  type GoogleAuthPresence,
+  type GoogleQuotaFlavor,
+  hasGoogleQuotaRuntimeAvailable,
+  inspectGoogleAuthPresence,
+  queryGoogleQuota,
+  resolveGoogleAccounts,
+  resolveGoogleAuthIdentity,
+  resolveGoogleConfiguredProjectId,
+} from "./google-oauth-quota.js";
 import { nonEmptyString } from "./json-guards.js";
-import { mapWithConcurrency } from "./map-with-concurrency.js";
-import { readAuthFileCached } from "./opencode-auth.js";
-import {
-  composeResolvedAuthIdentities,
-  deriveResolvedAuthIdentity,
-  type ResolvedAuthIdentity,
-} from "./resolved-auth-identity.js";
+import type { ResolvedAuthIdentity } from "./resolved-auth-identity.js";
 import type {
   AuthData,
-  GeminiCliOAuthAuthData,
-  GoogleAccountError,
   GoogleAgyAuthSourceKey,
   GoogleAgyQuotaBucket,
   GoogleAgyQuotaSummaryBucket,
@@ -31,669 +22,181 @@ import type {
   GoogleAgyResult,
 } from "./types.js";
 
-export const DEFAULT_AGY_AUTH_CACHE_MAX_AGE_MS = 5_000;
-
 export const AGY_AUTH_KEYS = [
   "google-agy",
   "opencode-agy-auth",
   "google-agy-auth",
 ] as const satisfies readonly GoogleAgyAuthSourceKey[];
 
-const AGY_CODE_ASSIST_ENDPOINT = "https://daily-cloudcode-pa.googleapis.com";
-const AGY_QUOTA_SUMMARY_API_URL = `${AGY_CODE_ASSIST_ENDPOINT}/v1internal:retrieveUserQuotaSummary`;
-const AGY_TOKEN_REFRESH_URL = "https://oauth2.googleapis.com/token";
-const AGY_TOKEN_TIMEOUT_MS = 8_000;
-const AGY_QUOTA_TIMEOUT_MS = 6_000;
-const AGY_ACCOUNTS_CONCURRENCY = 3;
-const AGY_USER_AGENT = "antigravity/cli/1.3.2 darwin/amd64";
+type AgyAccount = GoogleAccount<GoogleAgyAuthSourceKey>;
 
-function createAgyActivityRequestId(): string {
-  return crypto.randomUUID();
-}
-
-type RefreshParts = {
-  refreshToken: string;
-  projectId?: string;
-  managedProjectId?: string;
+const AGY: GoogleQuotaFlavor<
+  GoogleAgyAuthSourceKey,
+  GoogleAgyQuotaSummaryResponse,
+  GoogleAgyQuotaBucket
+> = {
+  providerId: "google-agy",
+  name: "Google AGY",
+  authKeys: AGY_AUTH_KEYS,
+  projectIdEnvVar: "OPENCODE_AGY_PROJECT_ID",
+  projectIdConfigProvider: "google-agy",
+  failedLoginCountsAsPresent: false,
+  companion: agyCompanion,
+  quotaUrl: "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary",
+  quotaHeaders: () => ({
+    "User-Agent": "antigravity/cli/1.3.2 darwin/amd64",
+    "x-activity-request-id": crypto.randomUUID(),
+  }),
+  toBuckets: toAgyBuckets,
 };
 
-export type AgyAccount = {
-  sourceKey: GoogleAgyAuthSourceKey;
-  refreshToken: string;
-  projectId: string;
-  email?: string;
-  accessToken?: string;
-  expiresAt?: number;
-};
-
-export type AgyAuthPresence =
-  | {
-      state: "missing";
-      sourceKey?: undefined;
-      accountCount: 0;
-      validAccountCount: 0;
-    }
-  | {
-      state: "present";
-      sourceKey: GoogleAgyAuthSourceKey;
-      accountCount: number;
-      validAccountCount: number;
-    }
-  | {
-      state: "invalid";
-      sourceKey?: GoogleAgyAuthSourceKey;
-      accountCount: number;
-      validAccountCount: number;
-      error: string;
-    };
-
-export function parseAgyRefreshParts(refresh: string | undefined): RefreshParts {
-  const [refreshToken = "", projectId = "", managedProjectId = ""] = (refresh ?? "").split("|");
-  return {
-    refreshToken: refreshToken.trim(),
-    ...(nonEmptyString(projectId) ? { projectId: projectId.trim() } : {}),
-    ...(nonEmptyString(managedProjectId) ? { managedProjectId: managedProjectId.trim() } : {}),
-  };
-}
-
-export function resolveAgyAccounts(
-  auth: AuthData | null | undefined,
-  configuredProjectId?: string,
-): AgyAccount[] {
-  if (!auth) {
-    return [];
-  }
-
-  const accounts: AgyAccount[] = [];
-  const seen = new Set<string>();
-
-  for (const sourceKey of AGY_AUTH_KEYS) {
-    const entry = auth[sourceKey] as GeminiCliOAuthAuthData | undefined;
-    if (!entry || entry.type !== "oauth") {
-      continue;
-    }
-
-    const parts = parseAgyRefreshParts(entry.refresh);
-    if (!parts.refreshToken) {
-      continue;
-    }
-
-    const projectId =
-      nonEmptyString(entry.managedProjectId) ??
-      nonEmptyString(entry.quotaProjectId) ??
-      parts.managedProjectId ??
-      nonEmptyString(entry.projectId) ??
-      nonEmptyString(entry.projectID) ??
-      parts.projectId ??
-      nonEmptyString(configuredProjectId);
-
-    if (!projectId) {
-      continue;
-    }
-
-    const email =
-      nonEmptyString(entry.email) ??
-      nonEmptyString(entry.accountEmail) ??
-      nonEmptyString(entry.login);
-
-    const key = `${parts.refreshToken}\n${projectId}`;
-    if (seen.has(key)) {
-      continue;
-    }
-    seen.add(key);
-
-    accounts.push({
-      sourceKey,
-      refreshToken: parts.refreshToken,
-      projectId,
-      ...(email ? { email } : {}),
-      ...(nonEmptyString(entry.access) ? { accessToken: entry.access!.trim() } : {}),
-      ...(typeof entry.expires === "number" ? { expiresAt: entry.expires } : {}),
-    });
-  }
-
-  return accounts;
-}
-
-export async function resolveAgyConfiguredProjectId(): Promise<string | undefined> {
-  const explicitEnvProjectId = nonEmptyString(process.env.OPENCODE_AGY_PROJECT_ID);
-  if (explicitEnvProjectId) {
-    return explicitEnvProjectId;
-  }
-
-  const configProjectId = await readGlobalProviderConfigString("google-agy", "projectId");
-  if (configProjectId) {
-    return configProjectId;
-  }
-
-  return (
-    nonEmptyString(process.env.GOOGLE_CLOUD_PROJECT) ??
-    nonEmptyString(process.env.GOOGLE_CLOUD_PROJECT_ID)
-  );
-}
-
-export async function resolveGoogleAgyAuthIdentity(): Promise<ResolvedAuthIdentity | null> {
-  const [auth, configuredProjectId, credentials] = await Promise.all([
-    readAuthFileCached({
-      maxAgeMs: DEFAULT_AGY_AUTH_CACHE_MAX_AGE_MS,
-      integrationIds: AGY_AUTH_KEYS,
-    }),
-    resolveAgyConfiguredProjectId(),
-    resolveAgyClientCredentials(),
-  ]);
-  const accounts = resolveAgyAccounts(auth, configuredProjectId);
-  if (accounts.length === 0 || credentials.state !== "configured") return null;
-
-  const accountIdentities = await Promise.all(
-    accounts.map((account) =>
-      deriveResolvedAuthIdentity({
-        providerId: "google-agy",
-        principal: { kind: "credential" as const, value: account.refreshToken },
-        qualifiers: [account.projectId],
-      }),
-    ),
-  );
-  if (accountIdentities.some((identity) => identity === null)) return null;
-
-  const companionIdentity = await deriveResolvedAuthIdentity({
-    providerId: "google-agy:companion",
-    principal: { kind: "credential", value: credentials.clientSecret },
-    qualifiers: [credentials.clientId],
-  });
-  if (!companionIdentity) return null;
-
-  return composeResolvedAuthIdentities({
-    providerId: "google-agy",
-    identities: [...(accountIdentities as ResolvedAuthIdentity[]), companionIdentity],
-  });
-}
-
-export async function inspectAgyAuthPresence(): Promise<AgyAuthPresence> {
-  const [auth, configuredProjectId] = await Promise.all([
-    readAuthFileCached({
-      maxAgeMs: DEFAULT_AGY_AUTH_CACHE_MAX_AGE_MS,
-      integrationIds: AGY_AUTH_KEYS,
-    }),
-    resolveAgyConfiguredProjectId(),
-  ]);
-
-  let accountCount = 0;
-  if (auth) {
-    for (const sourceKey of AGY_AUTH_KEYS) {
-      const entry = auth[sourceKey];
-      if (entry && entry.type === "oauth") {
-        accountCount++;
-      }
-    }
-  }
-
-  if (accountCount === 0) {
-    return { state: "missing", accountCount: 0, validAccountCount: 0 };
-  }
-
-  const accounts = resolveAgyAccounts(auth, configuredProjectId);
-  const sourceKey =
-    accounts[0]?.sourceKey ?? AGY_AUTH_KEYS.find((key) => auth?.[key]?.type === "oauth");
-
-  if (accounts.length === 0) {
-    return {
-      state: "invalid",
-      ...(sourceKey ? { sourceKey } : {}),
-      accountCount,
-      validAccountCount: 0,
-      error: "Google AGY OAuth auth is missing a refresh token or project id",
-    };
-  }
-
-  return {
-    state: "present",
-    sourceKey: accounts[0]!.sourceKey,
-    accountCount,
-    validAccountCount: accounts.length,
-  };
-}
-
-export async function hasAgyQuotaRuntimeAvailable(): Promise<boolean> {
-  const [authPresence, companionPresence] = await Promise.all([
-    inspectAgyAuthPresence(),
-    inspectAgyCompanionPresence(),
-  ]);
-
-  return (
-    authPresence.state === "present" &&
-    authPresence.validAccountCount > 0 &&
-    companionPresence.state === "present"
-  );
-}
-
-async function refreshAccessToken(params: {
-  refreshToken: string;
-  clientId: string;
-  clientSecret: string;
-  timeoutMs?: number;
-}): Promise<{ accessToken: string; expiresIn: number } | { error: string }> {
-  try {
-    return await fetchWithTimeout(AGY_TOKEN_REFRESH_URL, {
-      request: {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: new URLSearchParams({
-          client_id: params.clientId,
-          client_secret: params.clientSecret,
-          refresh_token: params.refreshToken,
-          grant_type: "refresh_token",
-        }),
-      },
-      timeoutMs: params.timeoutMs ?? AGY_TOKEN_TIMEOUT_MS,
-      consume: async (response, timeoutSignal) => {
-        if (!response.ok) {
-          try {
-            const errorData = (await response.json()) as {
-              error?: string;
-              error_description?: string;
-            };
-            if (errorData.error === "invalid_grant") {
-              return { error: "Token revoked" };
-            }
-            return { error: errorData.error_description || `HTTP ${response.status}` };
-          } catch (error) {
-            if (timeoutSignal.aborted) throw error;
-            return { error: `HTTP ${response.status}` };
-          }
-        }
-
-        const data = (await response.json()) as {
-          access_token: string;
-          expires_in: number;
-        };
-
-        return {
-          accessToken: data.access_token,
-          expiresIn: data.expires_in,
-        };
-      },
-    });
-  } catch (err) {
-    if (err instanceof Error && err.message.includes("timeout")) {
-      return { error: "Token refresh timeout" };
-    }
-    return { error: "Token refresh failed" };
-  }
-}
-
-async function refreshAgyAccessTokenWithCache(params: {
-  account: AgyAccount;
-  credentials: AgyConfiguredCredentials;
-  skewMs?: number;
-  force?: boolean;
-  timeoutMs?: number;
-}): Promise<{ accessToken: string } | { error: string }> {
-  const skewMs = params.skewMs ?? 2 * 60_000;
-  const key = makeAccountCacheKey({
-    refreshToken: params.account.refreshToken,
-    projectId: params.account.projectId,
-  });
-
-  if (!params.force) {
-    const cached = await getCachedAccessToken({ key, skewMs });
-    if (cached) return { accessToken: cached.accessToken };
-
-    if (
-      params.account.accessToken &&
-      typeof params.account.expiresAt === "number" &&
-      params.account.expiresAt > Date.now() + skewMs
-    ) {
-      return { accessToken: params.account.accessToken };
-    }
-  }
-
-  const refreshed = await refreshAccessToken({
-    refreshToken: params.account.refreshToken,
-    clientId: params.credentials.clientId,
-    clientSecret: params.credentials.clientSecret,
-    timeoutMs: params.timeoutMs,
-  });
-  if ("error" in refreshed) return refreshed;
-
-  await setCachedAccessToken({
-    key,
-    entry: {
-      accessToken: refreshed.accessToken,
-      expiresAt: Date.now() + Math.max(1, refreshed.expiresIn) * 1000,
-    },
-  });
-
-  return { accessToken: refreshed.accessToken };
-}
-
-async function retrieveGoogleAgyQuotaSummary(
-  accessToken: string,
-  projectId: string,
-  timeoutMs: number = AGY_QUOTA_TIMEOUT_MS,
-): Promise<GoogleAgyQuotaSummaryResponse> {
-  return await fetchWithTimeout(AGY_QUOTA_SUMMARY_API_URL, {
-    request: {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${accessToken}`,
-        "User-Agent": AGY_USER_AGENT,
-        "x-activity-request-id": createAgyActivityRequestId(),
-      },
-      body: JSON.stringify({ project: projectId }),
-    },
-    timeoutMs,
-    consume: async (response) => {
-      if (!response.ok) {
-        if (response.status === 401 || response.status === 403) {
-          throw new Error(`Google AGY quota auth error: ${response.status}`);
-        }
-        throw new Error(`Google AGY quota API error: ${response.status}`);
-      }
-
-      return (await response.json()) as GoogleAgyQuotaSummaryResponse;
-    },
-  });
-}
-
-function normalizeSummaryWindow(
+function normalizeWindow(
   value: unknown,
 ): Pick<GoogleAgyQuotaBucket, "window" | "windowLabel"> | undefined {
   const normalized = nonEmptyString(value)
     ?.toUpperCase()
     .replace(/[\s-]+/gu, "_");
-  if (normalized === "WEEKLY") {
-    return { window: "weekly", windowLabel: "Weekly" };
-  }
+  if (normalized === "WEEKLY") return { window: "weekly", windowLabel: "Weekly" };
   if (normalized === "FIVE_HOUR" || normalized === "5H") {
     return { window: "five_hour", windowLabel: "5h" };
   }
   return undefined;
 }
 
-function normalizeSummaryFamily(value: unknown): string | undefined {
+function normalizeFamily(value: unknown): string | undefined {
   const displayName = nonEmptyString(value);
-  if (!displayName) {
-    return undefined;
-  }
+  if (!displayName) return undefined;
   const normalized = displayName.toLowerCase();
-  if (normalized.includes("gemini")) {
-    return "Gemini Models";
-  }
-  if (normalized.includes("claude") || normalized.includes("gpt")) {
-    return "Claude and GPT models";
-  }
+  if (normalized.includes("gemini")) return "Gemini Models";
+  if (normalized.includes("claude") || normalized.includes("gpt")) return "Claude and GPT models";
   return displayName;
 }
 
-function normalizeResetTimeIso(value: unknown): string | undefined {
-  const raw = nonEmptyString(value);
-  if (!raw) return undefined;
-  const timestamp = Date.parse(raw);
-  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : undefined;
-}
-
-function summaryFamilyRank(family: string): number {
+function familyRank(family: string): number {
   if (family === "Gemini Models") return 0;
   if (family === "Claude and GPT models") return 1;
   return 2;
 }
 
-function summaryWindowRank(window: GoogleAgyQuotaBucket["window"]): number {
-  return window === "weekly" ? 0 : 1;
+/** Account, then Gemini before Claude/GPT before other families, then weekly before 5h. */
+export function compareAgyBuckets(left: GoogleAgyQuotaBucket, right: GoogleAgyQuotaBucket): number {
+  return (
+    left.accountIndex - right.accountIndex ||
+    familyRank(left.family) - familyRank(right.family) ||
+    left.family.localeCompare(right.family) ||
+    (left.window === "weekly" ? 0 : 1) - (right.window === "weekly" ? 0 : 1) ||
+    (left.bucketLabel ?? "").localeCompare(right.bucketLabel ?? "") ||
+    (left.bucketId ?? "").localeCompare(right.bucketId ?? "")
+  );
 }
 
-function compareSummaryBuckets(left: GoogleAgyQuotaBucket, right: GoogleAgyQuotaBucket): number {
-  if (left.accountIndex !== right.accountIndex) {
-    return left.accountIndex - right.accountIndex;
-  }
+function toAgyBucket(
+  bucket: GoogleAgyQuotaSummaryBucket,
+  family: string,
+  account: AgyAccount,
+  accountIndex: number,
+): GoogleAgyQuotaBucket | undefined {
+  if (!bucket || typeof bucket !== "object" || bucket.disabled) return undefined;
 
-  const familyRank = summaryFamilyRank(left.family) - summaryFamilyRank(right.family);
-  if (familyRank !== 0) {
-    return familyRank;
-  }
-
-  const familyName = left.family.localeCompare(right.family);
-  if (familyName !== 0) {
-    return familyName;
-  }
-
-  const windowRank = summaryWindowRank(left.window) - summaryWindowRank(right.window);
-  if (windowRank !== 0) {
-    return windowRank;
-  }
-
-  const bucketLabel = (left.bucketLabel ?? "").localeCompare(right.bucketLabel ?? "");
-  if (bucketLabel !== 0) {
-    return bucketLabel;
-  }
-  return (left.bucketId ?? "").localeCompare(right.bucketId ?? "");
-}
-
-function normalizeSummaryBucket(params: {
-  bucket: GoogleAgyQuotaSummaryBucket;
-  family: string;
-  account: AgyAccount;
-  accountIndex: number;
-}): GoogleAgyQuotaBucket | undefined {
-  if (params.bucket.disabled) {
-    return undefined;
-  }
-
-  const window = normalizeSummaryWindow(params.bucket.window);
-  const remainingFraction = params.bucket.remainingFraction;
+  const window = normalizeWindow(bucket.window);
+  const remainingFraction = bucket.remainingFraction;
   if (!window || typeof remainingFraction !== "number" || !Number.isFinite(remainingFraction)) {
     return undefined;
   }
 
-  const bucketId = nonEmptyString(params.bucket.bucketId);
-  const bucketLabel = nonEmptyString(params.bucket.displayName);
+  const bucketId = nonEmptyString(bucket.bucketId);
+  const bucketLabel = nonEmptyString(bucket.displayName);
   const remainingAmount =
-    nonEmptyString(params.bucket.remainingAmount) ?? nonEmptyString(params.bucket.remaining);
-  const resetTimeIso = normalizeResetTimeIso(params.bucket.resetTime);
-
+    nonEmptyString(bucket.remainingAmount) ?? nonEmptyString(bucket.remaining);
+  const resetTimeMs = Date.parse(nonEmptyString(bucket.resetTime) ?? "");
   return {
-    family: params.family,
+    family,
     ...window,
     ...(bucketId ? { bucketId } : {}),
     ...(bucketLabel ? { bucketLabel } : {}),
     remainingFraction,
     percentRemaining: Math.round(Math.min(1, Math.max(0, remainingFraction)) * 100),
-    ...(resetTimeIso ? { resetTimeIso } : {}),
+    ...(Number.isFinite(resetTimeMs) ? { resetTimeIso: new Date(resetTimeMs).toISOString() } : {}),
     ...(remainingAmount ? { remainingAmount } : {}),
-    ...(params.account.email ? { accountEmail: params.account.email } : {}),
-    accountIndex: params.accountIndex,
-    sourceKey: params.account.sourceKey,
+    ...(account.email ? { accountEmail: account.email } : {}),
+    accountIndex,
+    sourceKey: account.sourceKey,
   };
 }
 
-function mapSummaryBuckets(
+/**
+ * Rows of the grouped summary, or of the top-level buckets when no group has a
+ * usable row. Duplicate rows keep the most constrained one.
+ */
+function toAgyBuckets(
   response: GoogleAgyQuotaSummaryResponse,
   account: AgyAccount,
   accountIndex: number,
 ): GoogleAgyQuotaBucket[] {
-  if (!response || typeof response !== "object") {
-    return [];
-  }
-
-  const normalized: GoogleAgyQuotaBucket[] = [];
-
-  for (const group of Array.isArray(response.groups) ? response.groups : []) {
-    const family = normalizeSummaryFamily(group?.displayName);
-    if (!family || !Array.isArray(group?.buckets)) {
-      continue;
+  const rows: GoogleAgyQuotaBucket[] = [];
+  const addRows = (buckets: unknown, family: string | undefined): void => {
+    if (!family || !Array.isArray(buckets)) return;
+    for (const bucket of buckets) {
+      const row = toAgyBucket(bucket, family, account, accountIndex);
+      if (row) rows.push(row);
     }
-    for (const bucket of group.buckets) {
-      if (!bucket || typeof bucket !== "object") {
-        continue;
-      }
-      const row = normalizeSummaryBucket({ bucket, family, account, accountIndex });
-      if (row) {
-        normalized.push(row);
-      }
-    }
-  }
+  };
 
-  if (normalized.length === 0 && Array.isArray(response.buckets)) {
-    const family = normalizeSummaryFamily(response.description) ?? "Quota Summary";
-    for (const bucket of response.buckets) {
-      if (!bucket || typeof bucket !== "object") {
-        continue;
-      }
-      const row = normalizeSummaryBucket({ bucket, family, account, accountIndex });
-      if (row) {
-        normalized.push(row);
-      }
+  if (response && typeof response === "object") {
+    for (const group of Array.isArray(response.groups) ? response.groups : []) {
+      addRows(group?.buckets, normalizeFamily(group?.displayName));
+    }
+    if (rows.length === 0) {
+      addRows(response.buckets, normalizeFamily(response.description) ?? "Quota Summary");
     }
   }
 
   const deduplicated = new Map<string, GoogleAgyQuotaBucket>();
-  for (const bucket of normalized) {
-    const bucketIdentity = bucket.bucketId ?? bucket.bucketLabel ?? bucket.window;
-    const identity = `${bucket.family}\0${bucket.window}\0${bucketIdentity}`;
+  for (const row of rows) {
+    const identity = `${row.family}\0${row.window}\0${row.bucketId ?? row.bucketLabel ?? row.window}`;
     const existing = deduplicated.get(identity);
-    if (!existing || bucket.remainingFraction < existing.remainingFraction) {
-      deduplicated.set(identity, bucket);
+    if (!existing || row.remainingFraction < existing.remainingFraction) {
+      deduplicated.set(identity, row);
     }
   }
-
-  return Array.from(deduplicated.values()).sort(compareSummaryBuckets);
+  // A summary without one usable row fails this account.
+  if (deduplicated.size === 0) throw new Error("Quota summary API unavailable");
+  return [...deduplicated.values()].sort(compareAgyBuckets);
 }
 
-async function fetchAccountQuota(params: {
-  account: AgyAccount;
-  accountIndex: number;
-  credentials: AgyConfiguredCredentials;
-  timeoutMs?: number;
-}): Promise<{
-  success: boolean;
-  buckets?: GoogleAgyQuotaBucket[];
-  error?: string;
-  accountEmail?: string;
-}> {
-  const accountEmail = params.account.email || params.account.sourceKey;
-
-  try {
-    const tokenResult = await refreshAgyAccessTokenWithCache({
-      account: params.account,
-      credentials: params.credentials,
-      timeoutMs: params.timeoutMs,
-    });
-    if ("error" in tokenResult) {
-      return { success: false, error: tokenResult.error, accountEmail };
-    }
-
-    let summary: GoogleAgyQuotaSummaryResponse;
-    try {
-      summary = await retrieveGoogleAgyQuotaSummary(
-        tokenResult.accessToken,
-        params.account.projectId,
-        params.timeoutMs,
-      );
-    } catch (err) {
-      if (err instanceof Error && err.message.includes("auth error")) {
-        const retryToken = await refreshAgyAccessTokenWithCache({
-          account: params.account,
-          credentials: params.credentials,
-          force: true,
-          timeoutMs: params.timeoutMs,
-        });
-        if ("error" in retryToken) {
-          return { success: false, error: retryToken.error, accountEmail };
-        }
-        summary = await retrieveGoogleAgyQuotaSummary(
-          retryToken.accessToken,
-          params.account.projectId,
-          params.timeoutMs,
-        );
-      } else {
-        throw err;
-      }
-    }
-
-    const buckets = mapSummaryBuckets(summary, params.account, params.accountIndex);
-    if (buckets.length === 0) {
-      return {
-        success: false,
-        error: "Quota summary API unavailable",
-        accountEmail,
-      };
-    }
-
-    return { success: true, buckets, accountEmail };
-  } catch (err) {
-    if (err instanceof Error && err.message.includes("timeout")) {
-      return { success: false, error: "API timeout", accountEmail };
-    }
-    return {
-      success: false,
-      error: err instanceof Error ? err.message : String(err),
-      accountEmail,
-    };
-  }
+export function resolveAgyAccounts(
+  auth: AuthData | null | undefined,
+  configuredProjectId?: string,
+): AgyAccount[] {
+  return resolveGoogleAccounts(AGY, auth, configuredProjectId);
 }
 
-export async function queryGoogleAgyQuota(
+export function resolveAgyConfiguredProjectId(): Promise<string | undefined> {
+  return resolveGoogleConfiguredProjectId(AGY);
+}
+
+export function resolveGoogleAgyAuthIdentity(): Promise<ResolvedAuthIdentity | null> {
+  return resolveGoogleAuthIdentity(AGY);
+}
+
+export function inspectAgyAuthPresence(): Promise<GoogleAuthPresence<GoogleAgyAuthSourceKey>> {
+  return inspectGoogleAuthPresence(AGY);
+}
+
+export function inspectAgyCompanionPresence(): Promise<GoogleCompanionPresence> {
+  return agyCompanion.inspect();
+}
+
+export function hasAgyQuotaRuntimeAvailable(): Promise<boolean> {
+  return hasGoogleQuotaRuntimeAvailable(AGY);
+}
+
+export function queryGoogleAgyQuota(
   options: { requestTimeoutMs?: number; authData?: AuthData } = {},
 ): Promise<GoogleAgyResult> {
-  const [auth, configuredProjectId] = await Promise.all([
-    options.authData ??
-      readAuthFileCached({
-        maxAgeMs: DEFAULT_AGY_AUTH_CACHE_MAX_AGE_MS,
-        integrationIds: AGY_AUTH_KEYS,
-      }),
-    resolveAgyConfiguredProjectId(),
-  ]);
-  const accounts = resolveAgyAccounts(auth, configuredProjectId);
-  if (accounts.length === 0) {
-    return null;
-  }
-
-  const credentials = await resolveAgyClientCredentials();
-  if (credentials.state !== "configured") {
-    return {
-      success: false,
-      error: credentials.error || "Google AGY companion auth plugin not found",
-    };
-  }
-
-  const results = await mapWithConcurrency(
-    accounts,
-    AGY_ACCOUNTS_CONCURRENCY,
-    async (account, accountIndex) =>
-      fetchAccountQuota({
-        account,
-        accountIndex,
-        credentials,
-        timeoutMs: options.requestTimeoutMs,
-      }),
-  );
-
-  const allBuckets: GoogleAgyQuotaBucket[] = [];
-  const errors: GoogleAccountError[] = [];
-
-  for (const result of results) {
-    if (result.success && result.buckets && result.buckets.length > 0) {
-      allBuckets.push(...result.buckets);
-    } else if (!result.success && result.error && result.accountEmail) {
-      errors.push({ email: result.accountEmail, error: result.error });
-    }
-  }
-
-  if (allBuckets.length === 0 && errors.length === 0) {
-    return {
-      success: false,
-      error: "No Google AGY quota data available",
-    };
-  }
-
-  return {
-    success: true,
-    buckets: allBuckets.sort(compareSummaryBuckets),
-    errors: errors.length > 0 ? errors : undefined,
-  };
+  return queryGoogleQuota(AGY, options);
 }
 
 export function clearAgyRuntimeCacheForTests(): void {
-  clearAgyCompanionCacheForTests();
+  agyCompanion.clearCacheForTests();
 }

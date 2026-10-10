@@ -5,6 +5,7 @@
  */
 
 import {
+  type AnthropicQuotaResult,
   getAnthropicDiagnostics,
   hasAnthropicCredentialsConfigured,
   queryAnthropicQuota,
@@ -13,6 +14,7 @@ import {
 import { resolveAnthropicOAuth } from "../lib/anthropic-auth.js";
 import { sanitizeDisplayText } from "../lib/display-sanitize.js";
 import type {
+  QuotaPercentEntry,
   QuotaProvider,
   QuotaProviderContext,
   QuotaProviderResult,
@@ -33,8 +35,72 @@ import {
   withStatusDetails,
 } from "./result-helpers.js";
 
+type AcquisitionMethod = QuotaToastEntry["accounting"]["acquisitionMethod"];
+
 export function getAnthropicNoDataMessage(): string {
   return "Quota unavailable via local Claude CLI or OAuth credentials";
+}
+
+function formatWindowDetail(
+  window: { percentRemaining: number; resetTimeIso?: string } | undefined,
+): string | undefined {
+  return window
+    ? `${window.percentRemaining}% reset_at=${window.resetTimeIso ?? "(none)"}`
+    : undefined;
+}
+
+/** The 5h, Weekly, Usage Credits and Fable weekly rows for one Claude account. */
+function quotaEntries(
+  quota: AnthropicQuotaResult,
+  group: string,
+  acquisitionMethod: AcquisitionMethod,
+  sourceId?: string,
+): QuotaToastEntry[] {
+  const rows: Omit<QuotaPercentEntry, "accounting">[] = [
+    {
+      name: `${group} 5h`,
+      group,
+      label: "5h:",
+      percentRemaining: quota.five_hour.percentRemaining,
+      resetTimeIso: quota.five_hour.resetTimeIso,
+    },
+    {
+      name: `${group} Weekly`,
+      group,
+      label: "Weekly:",
+      percentRemaining: quota.seven_day.percentRemaining,
+      resetTimeIso: quota.seven_day.resetTimeIso,
+    },
+  ];
+  if (quota.extra_usage) {
+    rows.push({
+      name: `${group} Usage Credits`,
+      group: `${group} Usage Credits`,
+      label: "Monthly:",
+      percentRemaining: quota.extra_usage.percentRemaining,
+    });
+  }
+  if (quota.fable_weekly) {
+    rows.push({
+      name: `${group} Fable Weekly`,
+      group,
+      label: "Fable:",
+      semantic: { metric: { kind: "named", name: "Fable weekly" }, prominence: "primary" },
+      percentRemaining: quota.fable_weekly.percentRemaining,
+      resetTimeIso: quota.fable_weekly.resetTimeIso,
+    });
+  }
+
+  return rows.map((row) => ({
+    accounting: {
+      resultType: "quota",
+      acquisitionMethod,
+      ownership: "maintained",
+      authority: "provider_reported",
+      ...(sourceId === undefined ? {} : { sourceId }),
+    },
+    ...row,
+  }));
 }
 
 export const anthropicProvider: QuotaProvider = {
@@ -46,9 +112,7 @@ export const anthropicProvider: QuotaProvider = {
       providerId: "anthropic",
       fallbackOnError: false,
     });
-    if (!providerAvailable) {
-      return false;
-    }
+    if (!providerAvailable) return false;
 
     return await hasAnthropicCredentialsConfigured({
       binaryPath: ctx.config?.anthropicBinaryPath,
@@ -65,7 +129,7 @@ export const anthropicProvider: QuotaProvider = {
       requestTimeoutMs: ctx.config?.requestTimeoutMs,
     };
     let statusDetails;
-    let acquisitionMethod: QuotaToastEntry["accounting"]["acquisitionMethod"] = "local_cli";
+    let acquisitionMethod: AcquisitionMethod = "local_cli";
     // A failed login stays in the list so it shows as its own error row.
     const databaseCredentials = (
       await readCredentialRows(["anthropic"], { methods: ["oauth"] })
@@ -90,15 +154,9 @@ export const anthropicProvider: QuotaProvider = {
         oauth_credential_source: diagnostics.oauthCredentialSource ?? "(none)",
         checked_commands: diagnostics.checkedCommands.join(" | ") || "(none)",
         message: diagnostics.message,
-        five_hour_remaining: quota
-          ? `${quota.five_hour.percentRemaining}% reset_at=${quota.five_hour.resetTimeIso ?? "(none)"}`
-          : undefined,
-        seven_day_remaining: quota
-          ? `${quota.seven_day.percentRemaining}% reset_at=${quota.seven_day.resetTimeIso ?? "(none)"}`
-          : undefined,
-        fable_weekly_remaining: quota?.fable_weekly
-          ? `${quota.fable_weekly.percentRemaining}% reset_at=${quota.fable_weekly.resetTimeIso ?? "(none)"}`
-          : undefined,
+        five_hour_remaining: formatWindowDetail(quota?.five_hour),
+        seven_day_remaining: formatWindowDetail(quota?.seven_day),
+        fable_weekly_remaining: formatWindowDetail(quota?.fable_weekly),
       });
     } catch (error) {
       statusDetails = statusDetailsFromRecord({
@@ -132,136 +190,19 @@ export const anthropicProvider: QuotaProvider = {
           if (result) errors.push({ label: group, message: result.error });
           continue;
         }
-        entries.push(
-          ...[["5h", result.five_hour] as const, ["Weekly", result.seven_day] as const].map(
-            ([label, window]) => ({
-              accounting: {
-                resultType: "quota" as const,
-                acquisitionMethod: "remote_api" as const,
-                ownership: "maintained" as const,
-                authority: "provider_reported" as const,
-                sourceId: row.id,
-              },
-              name: `${group} ${label}`,
-              group,
-              label: `${label}:`,
-              percentRemaining: window.percentRemaining,
-              resetTimeIso: window.resetTimeIso,
-            }),
-          ),
-        );
-        if (result.extra_usage) {
-          entries.push({
-            accounting: {
-              resultType: "quota",
-              acquisitionMethod: "remote_api",
-              ownership: "maintained",
-              authority: "provider_reported",
-              sourceId: row.id,
-            },
-            name: `${group} Usage Credits`,
-            group: `${group} Usage Credits`,
-            label: "Monthly:",
-            percentRemaining: result.extra_usage.percentRemaining,
-          });
-        }
-        if (result.fable_weekly) {
-          entries.push({
-            accounting: {
-              resultType: "quota",
-              acquisitionMethod: "remote_api",
-              ownership: "maintained",
-              authority: "provider_reported",
-              sourceId: row.id,
-            },
-            name: `${group} Fable Weekly`,
-            group,
-            label: "Fable:",
-            semantic: {
-              metric: { kind: "named", name: "Fable weekly" },
-              prominence: "primary",
-            },
-            percentRemaining: result.fable_weekly.percentRemaining,
-            resetTimeIso: result.fable_weekly.resetTimeIso,
-          });
-        }
+        entries.push(...quotaEntries(result, group, "remote_api", row.id));
       }
       return withStatusDetails(attemptedResult(entries, errors), statusDetails);
     }
 
     const result = await queryAnthropicQuota(options);
-    if (!result) {
-      return withStatusDetails(notAttemptedResult(), statusDetails);
-    }
-
+    if (!result) return withStatusDetails(notAttemptedResult(), statusDetails);
     if (!result.success) {
       return withStatusDetails(attemptedErrorResult("Claude", result.error), statusDetails);
     }
-
-    const entries: QuotaToastEntry[] = [
-      {
-        accounting: {
-          resultType: "quota",
-          acquisitionMethod,
-          ownership: "maintained",
-          authority: "provider_reported",
-        },
-        name: "Claude 5h",
-        group: "Claude",
-        label: "5h:",
-        percentRemaining: result.five_hour.percentRemaining,
-        resetTimeIso: result.five_hour.resetTimeIso,
-      },
-      {
-        accounting: {
-          resultType: "quota",
-          acquisitionMethod,
-          ownership: "maintained",
-          authority: "provider_reported",
-        },
-        name: "Claude Weekly",
-        group: "Claude",
-        label: "Weekly:",
-        percentRemaining: result.seven_day.percentRemaining,
-        resetTimeIso: result.seven_day.resetTimeIso,
-      },
-    ];
-
-    if (result.extra_usage) {
-      entries.push({
-        accounting: {
-          resultType: "quota",
-          acquisitionMethod,
-          ownership: "maintained",
-          authority: "provider_reported",
-        },
-        name: "Claude Usage Credits",
-        group: "Claude Usage Credits",
-        label: "Monthly:",
-        percentRemaining: result.extra_usage.percentRemaining,
-      });
-    }
-
-    if (result.fable_weekly) {
-      entries.push({
-        accounting: {
-          resultType: "quota",
-          acquisitionMethod,
-          ownership: "maintained",
-          authority: "provider_reported",
-        },
-        name: "Claude Fable Weekly",
-        group: "Claude",
-        label: "Fable:",
-        semantic: {
-          metric: { kind: "named", name: "Fable weekly" },
-          prominence: "primary",
-        },
-        percentRemaining: result.fable_weekly.percentRemaining,
-        resetTimeIso: result.fable_weekly.resetTimeIso,
-      });
-    }
-
-    return withStatusDetails(attemptedResult(entries), statusDetails);
+    return withStatusDetails(
+      attemptedResult(quotaEntries(result, "Claude", acquisitionMethod)),
+      statusDetails,
+    );
   },
 };

@@ -9,106 +9,49 @@ const mocks = vi.hoisted(() => ({
   queryGoogleAgyQuota: vi.fn(),
 }));
 
-vi.mock("../src/lib/google-agy.js", () => ({
-  AGY_AUTH_KEYS: ["google-agy", "opencode-agy-auth", "google-agy-auth"],
-  hasAgyQuotaRuntimeAvailable: vi.fn(async () => true),
+vi.mock("../src/lib/google-agy.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/lib/google-agy.js")>()),
   queryGoogleAgyQuota: mocks.queryGoogleAgyQuota,
   inspectAgyAuthPresence: vi.fn(async () => ({
     state: "missing",
-    sourceKey: null,
     accountCount: 0,
     validAccountCount: 0,
   })),
-}));
-
-vi.mock("../src/lib/google-agy-companion.js", () => ({
   inspectAgyCompanionPresence: vi.fn(async () => ({
     state: "missing",
     error: "companion unavailable",
   })),
 }));
 
-function bucket(params: {
-  family: "Gemini Models" | "Claude and GPT models";
-  window: "weekly" | "five_hour";
-  percentRemaining: number;
-  accountEmail: string;
-  accountIndex: number;
-}) {
-  return {
-    ...params,
-    windowLabel: params.window === "weekly" ? "Weekly" : "5h",
-    sourceKey: "google-agy",
-  };
-}
+// percentRemaining per account, in input order: Gemini 5h, Gemini weekly, Claude/GPT 5h, Claude/GPT weekly.
+const ACCOUNTS = [
+  { accountEmail: "alice@example.com", percents: [100, 99, 100, 82] },
+  { accountEmail: "bob@example.com", percents: [90, 75, 80, 60] },
+];
+const SLOTS = [
+  { family: "Gemini Models", window: "five_hour", windowLabel: "5h" },
+  { family: "Gemini Models", window: "weekly", windowLabel: "Weekly" },
+  { family: "Claude and GPT models", window: "five_hour", windowLabel: "5h" },
+  { family: "Claude and GPT models", window: "weekly", windowLabel: "Weekly" },
+];
 
 describe("Google AGY provider surfaces", () => {
   it("keeps two accounts, both families, and both windows distinct on every surface", async () => {
     mocks.queryGoogleAgyQuota.mockResolvedValueOnce({
       success: true,
-      buckets: [
-        bucket({
-          family: "Gemini Models",
-          window: "five_hour",
-          percentRemaining: 100,
-          accountEmail: "alice@example.com",
-          accountIndex: 0,
-        }),
-        bucket({
-          family: "Gemini Models",
-          window: "weekly",
-          percentRemaining: 99,
-          accountEmail: "alice@example.com",
-          accountIndex: 0,
-        }),
-        bucket({
-          family: "Claude and GPT models",
-          window: "five_hour",
-          percentRemaining: 100,
-          accountEmail: "alice@example.com",
-          accountIndex: 0,
-        }),
-        bucket({
-          family: "Claude and GPT models",
-          window: "weekly",
-          percentRemaining: 82,
-          accountEmail: "alice@example.com",
-          accountIndex: 0,
-        }),
-        bucket({
-          family: "Gemini Models",
-          window: "five_hour",
-          percentRemaining: 90,
-          accountEmail: "bob@example.com",
-          accountIndex: 1,
-        }),
-        bucket({
-          family: "Gemini Models",
-          window: "weekly",
-          percentRemaining: 75,
-          accountEmail: "bob@example.com",
-          accountIndex: 1,
-        }),
-        bucket({
-          family: "Claude and GPT models",
-          window: "five_hour",
-          percentRemaining: 80,
-          accountEmail: "bob@example.com",
-          accountIndex: 1,
-        }),
-        bucket({
-          family: "Claude and GPT models",
-          window: "weekly",
-          percentRemaining: 60,
-          accountEmail: "bob@example.com",
-          accountIndex: 1,
-        }),
-      ],
+      buckets: ACCOUNTS.flatMap(({ accountEmail, percents }, accountIndex) =>
+        SLOTS.map((slot, slotIndex) => ({
+          ...slot,
+          percentRemaining: percents[slotIndex],
+          accountEmail,
+          accountIndex,
+          sourceKey: "google-agy",
+        })),
+      ),
       errors: [],
     });
 
-    const result = await googleAgyProvider.fetch({ client: {} } as any);
-    const { entries, errors } = result;
+    const { entries, errors } = await googleAgyProvider.fetch({ client: {} } as never);
     const headers = [
       "[AGY (ali…): Gemini]",
       "[AGY (ali…): Claude/GPT]",

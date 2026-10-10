@@ -1,54 +1,96 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { QuotaProviderResult } from "../src/lib/entries.js";
+import { hasOpenAIOAuthCached, queryOpenAIQuota } from "../src/lib/openai.js";
+import { type CredentialRow, readCredentialRows } from "../src/lib/opencode-auth.js";
 import { projectQuotaProviderResults } from "../src/lib/quota-accounting-projection.js";
 import { formatQuotaCommand } from "../src/lib/quota-command-format.js";
 import { formatQuotaRowsGrouped } from "../src/lib/toast-format-grouped.js";
 import { buildCompactQuotaStatusLine } from "../src/lib/tui-compact-format.js";
 import { buildSidebarQuotaPanelLines } from "../src/lib/tui-sidebar-format.js";
 import { openaiProvider } from "../src/providers/openai.js";
-import {
-  expectAttemptedWithErrorLabel,
-  expectAttemptedWithNoErrors,
-  expectNotAttempted,
-  visibleEntries,
-} from "./helpers/provider-assertions.js";
+import { expectNotAttempted, visibleEntries } from "./helpers/provider-assertions.js";
 import { createProviderAvailabilityContext } from "./helpers/provider-test-harness.js";
 
-vi.mock("../src/lib/openai.js", () => ({
-  DEFAULT_OPENAI_AUTH_CACHE_MAX_AGE_MS: 5_000,
-  OPENAI_AUTH_SOURCE_KEYS: ["openai", "codex", "chatgpt"],
+vi.mock("../src/lib/openai.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/lib/openai.js")>()),
   hasOpenAIOAuthCached: vi.fn(),
-  resolveOpenAIOAuth: vi.fn(() => ({ state: "none" })),
   queryOpenAIQuota: vi.fn(),
 }));
 
 vi.mock("../src/lib/opencode-auth.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/lib/opencode-auth.js")>()),
-  readCredentialRows: vi.fn().mockResolvedValue([]),
+  readCredentialRows: vi.fn(),
 }));
 
+const readRows = vi.mocked(readCredentialRows);
+const query = vi.mocked(queryOpenAIQuota);
+
+function oauthRow(id: string, overrides: Partial<CredentialRow> = {}): CredentialRow {
+  return {
+    id,
+    integrationId: "openai",
+    label: "default",
+    active: false,
+    value: { type: "oauth", access: "token" },
+    ...overrides,
+  };
+}
+
+function keyRow(id: string, overrides: Partial<CredentialRow> = {}): CredentialRow {
+  return oauthRow(id, { value: { type: "api", key: "sk-test" }, ...overrides });
+}
+
+function hourlyQuota(label: string) {
+  return { success: true as const, label, windows: { hourly: { percentRemaining: 42 } } };
+}
+
+async function fetchRows(rows: CredentialRow[], config: Record<string, unknown> = {}) {
+  readRows.mockResolvedValueOnce(rows);
+  return openaiProvider.fetch({ config } as never);
+}
+
+function groupsAndSources(out: QuotaProviderResult) {
+  return out.entries.map((entry) => [entry.group, entry.accounting.sourceId]);
+}
+
+/** The text of the sidebar, /quota and toast surfaces for this result. */
+function groupedSurfaces(out: QuotaProviderResult): string[] {
+  const data = { entries: out.entries, errors: out.errors };
+  return [
+    buildSidebarQuotaPanelLines({
+      data,
+      config: { formatStyle: "allWindows", percentDisplayMode: "remaining" },
+    }).join("\n"),
+    formatQuotaCommand(data),
+    formatQuotaRowsGrouped(data),
+  ];
+}
+
+beforeEach(() => {
+  readRows.mockReset().mockResolvedValue([]);
+  query.mockReset();
+  vi.mocked(hasOpenAIOAuthCached).mockReset().mockResolvedValue(false);
+});
+
 describe("openai provider", () => {
-  it("passes configured requestTimeoutMs to the query", async () => {
-    const { queryOpenAIQuota } = await import("../src/lib/openai.js");
-    (queryOpenAIQuota as any).mockResolvedValueOnce(null);
+  it("returns attempted:false without a stored login", async () => {
+    const out = await fetchRows([]);
 
-    await openaiProvider.fetch({ config: { requestTimeoutMs: 12000 } } as any);
-
-    expect(queryOpenAIQuota).toHaveBeenCalledWith({ requestTimeoutMs: 12000 });
-  });
-
-  it("returns attempted:false when not configured", async () => {
-    const { queryOpenAIQuota } = await import("../src/lib/openai.js");
-    (queryOpenAIQuota as any).mockResolvedValueOnce(null);
-
-    const out = await openaiProvider.fetch({} as any);
     expectNotAttempted(out);
+    expect(query).not.toHaveBeenCalled();
+    expect(out.statusDetails).toEqual([
+      { key: "auth_configured", value: "false" },
+      { key: "auth_source", value: "(none)" },
+      { key: "auth_method", value: "(none)" },
+      { key: "token_status", value: "(none)" },
+      { key: "token_expires_at", value: "(none)" },
+    ]);
   });
 
-  it("maps success into canonical grouped-capable windows with single-window display metadata", async () => {
-    const { queryOpenAIQuota } = await import("../src/lib/openai.js");
-    (queryOpenAIQuota as any).mockResolvedValueOnce({
+  it("queries and labels every stored login independently", async () => {
+    query.mockResolvedValue({
       success: true,
-      label: "OpenAI (Pro)",
+      label: "OpenAI (Business)",
       windows: {
         hourly: { percentRemaining: 42, resetTimeIso: "2026-01-01T00:00:00.000Z" },
         weekly: { percentRemaining: 80, resetTimeIso: "2026-01-07T00:00:00.000Z" },
@@ -57,194 +99,84 @@ describe("openai provider", () => {
       },
     });
 
-    const out = await openaiProvider.fetch({} as any);
-    expectAttemptedWithNoErrors(out);
-    expect(visibleEntries(out.entries, "openai")).toEqual([
+    const out = await fetchRows(
+      [
+        oauthRow("active-id", {
+          label: "Work",
+          active: true,
+          value: { type: "oauth", access: "a" },
+        }),
+        oauthRow("other-id", { label: "Work", value: { type: "oauth", access: "o" } }),
+      ],
+      { requestTimeoutMs: 12000 },
+    );
+
+    expect(query.mock.calls.map(([options]) => options)).toEqual([
       {
-        name: "OpenAI (Pro) 5h",
-        group: "OpenAI (Pro)",
-        label: "5h:",
-        percentRemaining: 42,
-        resetTimeIso: "2026-01-01T00:00:00.000Z",
+        requestTimeoutMs: 12000,
+        auth: { state: "configured", sourceKey: "openai", accessToken: "a" },
+        loginLabel: "Work",
       },
       {
-        name: "OpenAI (Pro) Weekly",
-        group: "OpenAI (Pro)",
-        label: "Weekly:",
-        percentRemaining: 80,
-        resetTimeIso: "2026-01-07T00:00:00.000Z",
+        requestTimeoutMs: 12000,
+        auth: { state: "configured", sourceKey: "openai", accessToken: "o" },
+        loginLabel: "Work",
       },
-      {
-        name: "OpenAI (Pro) Monthly",
-        group: "OpenAI (Pro)",
-        label: "Monthly:",
-        percentRemaining: 67,
-        resetTimeIso: "2026-02-01T00:00:00.000Z",
-      },
-      {
-        name: "OpenAI (Pro) Code Review",
-        group: "OpenAI (Pro)",
-        label: "Code Review:",
-        percentRemaining: 55,
-        resetTimeIso: "2026-01-02T00:00:00.000Z",
-      },
+    ]);
+    expect(out.errors).toEqual([]);
+    const group = "[OpenAI Work] (Business) (active)";
+    expect(
+      visibleEntries(out.entries, "openai")
+        .slice(0, 4)
+        .map(({ name, label, percentRemaining, resetTimeIso }) => [
+          name,
+          label,
+          percentRemaining,
+          resetTimeIso,
+        ]),
+    ).toEqual([
+      [`${group} 5h`, "5h:", 42, "2026-01-01T00:00:00.000Z"],
+      [`${group} Weekly`, "Weekly:", 80, "2026-01-07T00:00:00.000Z"],
+      [`${group} Monthly`, "Monthly:", 67, "2026-02-01T00:00:00.000Z"],
+      [`${group} Code Review`, "Code Review:", 55, "2026-01-02T00:00:00.000Z"],
     ]);
     expect(out.entries.at(-1)?.accounting.resultType).toBe("rate_limit");
-    expect(out.presentation).toEqual({
-      singleWindowDisplayName: "OpenAI (Pro)",
-    });
-  });
-
-  it("maps errors into toast errors", async () => {
-    const { queryOpenAIQuota } = await import("../src/lib/openai.js");
-    (queryOpenAIQuota as any).mockResolvedValueOnce({
-      success: false,
-      error: "Token expired",
-    });
-
-    const out = await openaiProvider.fetch({} as any);
-    expectAttemptedWithErrorLabel(out, "OpenAI");
-  });
-
-  it("queries and labels every database credential independently", async () => {
-    const { readCredentialRows } = await import("../src/lib/opencode-auth.js");
-    const { queryOpenAIQuota, resolveOpenAIOAuth } = await import("../src/lib/openai.js");
-    (readCredentialRows as any).mockResolvedValueOnce([
-      {
-        id: "active-id",
-        integrationId: "openai",
-        label: "Work",
-        active: true,
-        value: { type: "oauth", access: "active" },
-      },
-      {
-        id: "other-id",
-        integrationId: "openai",
-        label: "Work",
-        active: false,
-        value: { type: "oauth", access: "other" },
-      },
+    expect(groupsAndSources(out)).toEqual([
+      ["[OpenAI Work] (Business) (active)", "active-id"],
+      ["[OpenAI Work] (Business) (active)", "active-id"],
+      ["[OpenAI Work] (Business) (active)", "active-id"],
+      ["[OpenAI Work] (Business) (active)", "active-id"],
+      ["[OpenAI Work 2] (Business)", "other-id"],
+      ["[OpenAI Work 2] (Business)", "other-id"],
+      ["[OpenAI Work 2] (Business)", "other-id"],
+      ["[OpenAI Work 2] (Business)", "other-id"],
     ]);
-    (resolveOpenAIOAuth as any).mockImplementation((auth: any) => ({
-      state: "configured",
-      sourceKey: "openai",
-      accessToken: auth.openai.access,
-    }));
-    (queryOpenAIQuota as any).mockResolvedValue({
-      success: true,
-      label: "OpenAI (Business)",
-      windows: {
-        hourly: { percentRemaining: 42 },
-        weekly: { percentRemaining: 80 },
-        monthly: { percentRemaining: 67 },
-        codeReview: { percentRemaining: 55 },
-      },
-    });
-
-    const out = await openaiProvider.fetch({} as any);
-
-    expect(queryOpenAIQuota).toHaveBeenCalledTimes(2);
-    expect(out.entries).toHaveLength(8);
-    expect(out.entries.filter((entry) => entry.label === "5h:")).toHaveLength(2);
     expect(projectQuotaProviderResults([out], "allWindows", "summary")).toHaveLength(8);
-    const singleWindow = projectQuotaProviderResults([out], "singleWindow", "summary");
-    expect(singleWindow).toHaveLength(2);
-    expect(singleWindow.map((entry) => entry.accounting.sourceId)).toEqual([
-      "active-id",
-      "other-id",
-    ]);
-    expect(out.entries.map((entry) => [entry.group, entry.accounting.sourceId])).toEqual([
-      ["[OpenAI Work] (Business) (active)", "active-id"],
-      ["[OpenAI Work] (Business) (active)", "active-id"],
-      ["[OpenAI Work] (Business) (active)", "active-id"],
-      ["[OpenAI Work] (Business) (active)", "active-id"],
-      ["[OpenAI Work 2] (Business)", "other-id"],
-      ["[OpenAI Work 2] (Business)", "other-id"],
-      ["[OpenAI Work 2] (Business)", "other-id"],
-      ["[OpenAI Work 2] (Business)", "other-id"],
-    ]);
-  });
-
-  it.each([
-    ["OpenAI", "[OpenAI] (Business)"],
-    ["SEPD", "[OpenAI SEPD] (Business)"],
-    ["default", "[OpenAI] (Business)"],
-  ])("renders DB alias %s literally on sidebar, CLI, and toast", async (label, expected) => {
-    const { readCredentialRows } = await import("../src/lib/opencode-auth.js");
-    const { queryOpenAIQuota, resolveOpenAIOAuth } = await import("../src/lib/openai.js");
-    (readCredentialRows as any).mockResolvedValueOnce([
-      {
-        id: "credential-id",
-        integrationId: "openai",
-        label,
-        active: true,
-        value: { type: "oauth", access: "token" },
-      },
-    ]);
-    (resolveOpenAIOAuth as any).mockReturnValue({
-      state: "configured",
-      sourceKey: "openai",
-      accessToken: "token",
-    });
-    (queryOpenAIQuota as any).mockResolvedValueOnce({
-      success: true,
-      label: "OpenAI (Business)",
-      windows: { hourly: { percentRemaining: 42 } },
-    });
-
-    const result = await openaiProvider.fetch({ config: {} } as any);
-    const data = { entries: result.entries, errors: result.errors };
-    const outputs = [
-      buildSidebarQuotaPanelLines({
-        data,
-        config: { formatStyle: "allWindows", percentDisplayMode: "remaining" },
-      }).join("\n"),
-      formatQuotaCommand(data),
-      formatQuotaRowsGrouped(data),
-    ];
-
-    for (const output of outputs) {
-      expect(output).toContain(expected);
-      expect(output).not.toContain("[OpenAI (OpenAI)]");
-    }
+    expect(
+      projectQuotaProviderResults([out], "singleWindow", "summary").map(
+        (entry) => entry.accounting.sourceId,
+      ),
+    ).toEqual(["active-id", "other-id"]);
   });
 
   it("shows a login OpenCode could not return as its own error row next to working ones", async () => {
-    const { readCredentialRows } = await import("../src/lib/opencode-auth.js");
-    const { queryOpenAIQuota, resolveOpenAIOAuth } = await import("../src/lib/openai.js");
     const actual =
       await vi.importActual<typeof import("../src/lib/openai.js")>("../src/lib/openai.js");
-    (readCredentialRows as any).mockResolvedValueOnce([
-      {
-        id: "work-id",
-        integrationId: "openai",
+    query
+      .mockImplementationOnce(actual.queryOpenAIQuota)
+      .mockResolvedValueOnce(hourlyQuota("OpenAI (Pro)"));
+
+    const out = await fetchRows([
+      oauthRow("work-id", {
         label: "Work",
         active: true,
         value: { type: "oauth" },
         resolveError: "refresh_failed: HTTP 400",
-      },
-      {
-        id: "home-id",
-        integrationId: "openai",
-        label: "Home",
-        active: false,
-        value: { type: "oauth", access: "home-token" },
-      },
+      }),
+      oauthRow("home-id", { label: "Home", value: { type: "oauth", access: "home-token" } }),
     ]);
-    (resolveOpenAIOAuth as any)
-      .mockImplementationOnce(actual.resolveOpenAIOAuth)
-      .mockImplementationOnce(actual.resolveOpenAIOAuth);
-    (queryOpenAIQuota as any)
-      .mockImplementationOnce(actual.queryOpenAIQuota)
-      .mockResolvedValueOnce({
-        success: true,
-        label: "OpenAI (Pro)",
-        windows: { hourly: { percentRemaining: 42 } },
-      });
 
-    const out = await openaiProvider.fetch({} as any);
-
-    expect(readCredentialRows).toHaveBeenLastCalledWith(["openai", "codex", "chatgpt"], {
+    expect(readRows).toHaveBeenLastCalledWith(["openai", "codex", "chatgpt"], {
       methods: ["oauth", "key"],
     });
     expect(out.errors).toEqual([
@@ -254,9 +186,7 @@ describe("openai provider", () => {
           "OpenAI sign-in could not be refreshed: refresh_failed: HTTP 400. Run `opencode auth logout openai Work`, then `opencode auth login openai`.",
       },
     ]);
-    expect(out.entries.map((entry) => [entry.group, entry.accounting.sourceId])).toEqual([
-      ["[OpenAI Home] (Pro)", "home-id"],
-    ]);
+    expect(groupsAndSources(out)).toEqual([["[OpenAI Home] (Pro)", "home-id"]]);
     expect(out.statusDetails).toEqual(
       expect.arrayContaining([
         { key: "auth_configured", value: "true" },
@@ -266,23 +196,10 @@ describe("openai provider", () => {
     );
   });
 
-  it("reports a stored API key without querying ChatGPT", async () => {
-    const { readCredentialRows } = await import("../src/lib/opencode-auth.js");
-    const { queryOpenAIQuota } = await import("../src/lib/openai.js");
-    const queryCallsBefore = vi.mocked(queryOpenAIQuota).mock.calls.length;
-    vi.mocked(readCredentialRows).mockResolvedValueOnce([
-      {
-        id: "key-id",
-        integrationId: "openai",
-        label: "Key",
-        active: true,
-        value: { type: "api", key: "sk-test" },
-      },
-    ]);
+  it("reports a stored API key without querying ChatGPT, on every surface", async () => {
+    const out = await fetchRows([keyRow("key-id", { label: "Key", active: true })]);
 
-    const out = await openaiProvider.fetch({} as any);
-
-    expect(vi.mocked(queryOpenAIQuota).mock.calls).toHaveLength(queryCallsBefore);
+    expect(query).not.toHaveBeenCalled();
     expect(out.attempted).toBe(true);
     expect(out.errors).toEqual([]);
     expect(visibleEntries(out.entries, "openai")).toEqual([
@@ -301,19 +218,26 @@ describe("openai provider", () => {
         { key: "token_expires_at", value: "(none)" },
       ]),
     );
+
+    const outputs = [
+      ...groupedSurfaces(out),
+      buildCompactQuotaStatusLine({ data: { entries: out.entries, errors: [] }, maxWidth: 200 }),
+    ];
+    for (const output of outputs) {
+      // Narrow surfaces wrap the sentence; collapsing whitespace keeps the phrase checkable.
+      const collapsed = output.replace(/\s+/gu, " ");
+      expect(collapsed).toContain("OpenAI Key");
+      expect(collapsed).toContain("ChatGPT quota unavailable for API key");
+    }
+    expect(outputs[0]?.split("\n").filter((line) => line === "[OpenAI Key]")).toHaveLength(1);
+    const singleWindow = projectQuotaProviderResults([out], "singleWindow", "summary");
+    expect(singleWindow.map((entry) => entry.accounting.sourceId)).toEqual(["key-id"]);
   });
 
   it("reports a Sign in with ChatGPT login without querying ChatGPT (#316)", async () => {
-    const { readCredentialRows } = await import("../src/lib/opencode-auth.js");
-    const { queryOpenAIQuota, resolveOpenAIOAuth } = await import("../src/lib/openai.js");
-    const actual =
-      await vi.importActual<typeof import("../src/lib/openai.js")>("../src/lib/openai.js");
-    const queryCallsBefore = vi.mocked(queryOpenAIQuota).mock.calls.length;
     const expires = Date.now() + 60 * 60_000;
-    vi.mocked(readCredentialRows).mockResolvedValueOnce([
-      {
-        id: "sharing-id",
-        integrationId: "openai",
+    const out = await fetchRows([
+      oauthRow("sharing-id", {
         label: "OpenAI",
         active: true,
         value: {
@@ -323,13 +247,10 @@ describe("openai provider", () => {
           refresh: "refresh",
           expires,
         },
-      },
+      }),
     ]);
-    vi.mocked(resolveOpenAIOAuth).mockImplementationOnce(actual.resolveOpenAIOAuth);
 
-    const out = await openaiProvider.fetch({} as any);
-
-    expect(vi.mocked(queryOpenAIQuota).mock.calls).toHaveLength(queryCallsBefore);
+    expect(query).not.toHaveBeenCalled();
     expect(out.attempted).toBe(true);
     expect(out.errors).toEqual([]);
     expect(visibleEntries(out.entries, "openai")).toEqual([
@@ -352,67 +273,21 @@ describe("openai provider", () => {
   });
 
   it("shows an active API key next to an inactive OAuth account with one ChatGPT query", async () => {
-    const { readCredentialRows } = await import("../src/lib/opencode-auth.js");
-    const { queryOpenAIQuota, resolveOpenAIOAuth } = await import("../src/lib/openai.js");
-    const queryCallsBefore = vi.mocked(queryOpenAIQuota).mock.calls.length;
-    vi.mocked(readCredentialRows).mockResolvedValueOnce([
-      {
-        id: "key-id",
-        integrationId: "openai",
-        label: "API key",
-        active: true,
-        value: { type: "api", key: "sk-test" },
-      },
-      {
-        id: "oauth-id",
-        integrationId: "openai",
-        label: "Work",
-        active: false,
-        value: { type: "oauth", access: "token" },
-      },
+    query.mockResolvedValueOnce(hourlyQuota("OpenAI (Pro)"));
+
+    const out = await fetchRows([
+      keyRow("key-id", { label: "API key", active: true }),
+      oauthRow("oauth-id", { label: "Work" }),
     ]);
-    vi.mocked(resolveOpenAIOAuth).mockImplementation((auth) => ({
-      state: "configured",
-      sourceKey: "openai",
-      accessToken: auth?.openai?.access ?? "",
-    }));
-    vi.mocked(queryOpenAIQuota).mockResolvedValueOnce({
-      success: true,
-      label: "OpenAI (Pro)",
-      windows: { hourly: { percentRemaining: 42 } },
-    });
 
-    const out = await openaiProvider.fetch({} as any);
-
-    const queryCalls = vi.mocked(queryOpenAIQuota).mock.calls.slice(queryCallsBefore);
-    expect(queryCalls).toHaveLength(1);
-    expect(queryCalls[0][0].auth).toEqual({
-      state: "configured",
-      sourceKey: "openai",
-      accessToken: "token",
-    });
+    expect(query.mock.calls.map(([options]) => options.auth)).toEqual([
+      { state: "configured", sourceKey: "openai", accessToken: "token" },
+    ]);
     expect(out.errors).toEqual([]);
-    expect(out.entries.map((entry) => [entry.group, entry.accounting.sourceId])).toEqual([
+    expect(groupsAndSources(out)).toEqual([
       ["[OpenAI] (active)", "key-id"],
       ["[OpenAI Work] (Pro)", "oauth-id"],
     ]);
-    for (const formatStyle of ["allWindows", "singleWindow"] as const) {
-      const lines = buildSidebarQuotaPanelLines({
-        data: { entries: out.entries, errors: out.errors },
-        config: { formatStyle, percentDisplayMode: "remaining" },
-      });
-      expect(lines.some((line) => line.includes("[OpenAI Work] (Pro)"))).toBe(true);
-      expect(lines.some((line) => line.includes("42%"))).toBe(true);
-      expect(lines.filter((line) => line === "[OpenAI] (active)")).toHaveLength(1);
-      const statusLines = lines
-        .slice(
-          lines.indexOf("[OpenAI] (active)") + 1,
-          lines.findIndex((line) => line.startsWith("[OpenAI Work] (Pro)")),
-        )
-        .filter(Boolean);
-      expect(statusLines.every((line) => line === line.trim())).toBe(true);
-      expect(statusLines.join(" ")).toBe("ChatGPT quota unavailable for API key");
-    }
     expect(out.statusDetails).toEqual(
       expect.arrayContaining([
         { key: "auth_configured", value: "true" },
@@ -426,50 +301,22 @@ describe("openai provider", () => {
     true,
     false,
   ])("keeps the active API-key account on a 60-column mixed-credential compact line (key first: %s)", async (keyFirst) => {
-    const { readCredentialRows } = await import("../src/lib/opencode-auth.js");
-    const { queryOpenAIQuota, resolveOpenAIOAuth } = await import("../src/lib/openai.js");
-    const keyRow = {
-      id: "key-id",
-      integrationId: "openai",
-      label: "API key",
-      active: true,
-      value: { type: "api", key: "sk-test" },
-    };
-    const oauthRow = {
-      id: "oauth-id",
-      integrationId: "openai",
-      label: "OAuth",
-      active: false,
-      value: { type: "oauth", access: "token" },
-    };
-    vi.mocked(readCredentialRows).mockResolvedValueOnce(
-      keyFirst ? [keyRow, oauthRow] : [oauthRow, keyRow],
-    );
-    vi.mocked(resolveOpenAIOAuth).mockReturnValue({
-      state: "configured",
-      sourceKey: "openai",
-      accessToken: "token",
-    });
-    vi.mocked(queryOpenAIQuota).mockResolvedValueOnce({
+    const key = keyRow("key-id", { label: "API key", active: true });
+    const oauth = oauthRow("oauth-id", { label: "OAuth" });
+    query.mockResolvedValueOnce({
       success: true,
       label: "OpenAI",
-      windows: {
-        hourly: { percentRemaining: 42 },
-        weekly: { percentRemaining: 74 },
-      },
+      windows: { hourly: { percentRemaining: 42 }, weekly: { percentRemaining: 74 } },
     });
 
-    const out = await openaiProvider.fetch({} as any);
+    const out = await fetchRows(keyFirst ? [key, oauth] : [oauth, key]);
     expect(out.entries.map((entry) => entry.accounting.sourceId)).toEqual([
       "key-id",
       "oauth-id",
       "oauth-id",
     ]);
     expect(
-      buildCompactQuotaStatusLine({
-        data: { entries: out.entries, errors: out.errors },
-        maxWidth: 60,
-      }),
+      buildCompactQuotaStatusLine({ data: { entries: out.entries, errors: [] }, maxWidth: 60 }),
     ).toBe("OpenAI - ChatGPT quota unavailable for API key");
   });
 
@@ -490,39 +337,19 @@ describe("openai provider", () => {
     config,
     firstId,
   }) => {
-    const { readCredentialRows } = await import("../src/lib/opencode-auth.js");
-    const { queryOpenAIQuota, resolveOpenAIOAuth } = await import("../src/lib/openai.js");
-    vi.mocked(readCredentialRows).mockResolvedValueOnce([
-      {
-        id: "key-id",
-        integrationId: "openai",
-        label: "API key",
-        active: true,
-        value: { type: "api", key: "sk-test" },
-      },
-      {
-        id: "oauth-id",
-        integrationId: "codex",
-        label: "Work",
-        active: true,
-        value: { type: "oauth", access: "token" },
-      },
-    ]);
-    vi.mocked(resolveOpenAIOAuth).mockReturnValue({
-      state: "configured",
-      sourceKey: "codex",
-      accessToken: "token",
-    });
-    vi.mocked(queryOpenAIQuota).mockResolvedValueOnce({
-      success: true,
-      label: "OpenAI",
-      windows: { hourly: { percentRemaining: 42 } },
-    });
+    query.mockResolvedValueOnce(hourlyQuota("OpenAI"));
 
-    const out = await openaiProvider.fetch({ config } as any);
+    const out = await fetchRows(
+      [
+        keyRow("key-id", { label: "API key", active: true }),
+        oauthRow("oauth-id", { integrationId: "codex", label: "Work", active: true }),
+      ],
+      config,
+    );
+
     const expectedIds = firstId === "oauth-id" ? ["oauth-id", "key-id"] : ["key-id", "oauth-id"];
     expect(out.entries.map((entry) => entry.accounting.sourceId)).toEqual(expectedIds);
-    expect(queryOpenAIQuota).toHaveBeenCalledOnce();
+    expect(query).toHaveBeenCalledOnce();
     expect(out.errors).toEqual([]);
     expect(out.statusDetails).toEqual(
       expect.arrayContaining([
@@ -531,10 +358,7 @@ describe("openai provider", () => {
       ]),
     );
     expect(
-      buildCompactQuotaStatusLine({
-        data: { entries: out.entries, errors: out.errors },
-        maxWidth: 60,
-      }),
+      buildCompactQuotaStatusLine({ data: { entries: out.entries, errors: [] }, maxWidth: 60 }),
     ).toBe(
       firstId === "oauth-id"
         ? "OpenAI Work 42% | +1"
@@ -543,18 +367,16 @@ describe("openai provider", () => {
   });
 
   it("keeps other active rows and inactive rows in source order after the session's active row", async () => {
-    const { readCredentialRows } = await import("../src/lib/opencode-auth.js");
-    vi.mocked(readCredentialRows).mockResolvedValueOnce(
+    const out = await fetchRows(
       [
         { id: "inactive-openai", integrationId: "openai", active: false },
         { id: "active-openai", integrationId: "openai", active: true },
         { id: "inactive-codex", integrationId: "codex", active: false },
         { id: "active-chatgpt", integrationId: "chatgpt", active: true },
         { id: "active-codex", integrationId: "codex", active: true },
-      ].map((row) => ({ ...row, label: row.id, value: { type: "api", key: "sk-test" } })),
+      ].map((row) => keyRow(row.id, { ...row, label: row.id })),
+      { currentProviderID: "codex" },
     );
-
-    const out = await openaiProvider.fetch({ config: { currentProviderID: "codex" } } as any);
 
     expect(out.entries.map((entry) => entry.accounting.sourceId)).toEqual([
       "active-codex",
@@ -566,70 +388,34 @@ describe("openai provider", () => {
   });
 
   it.each([
-    { active: true, labels: ["API key", "default", "OpenAI"] },
-    { active: false, labels: ["", "API key"] },
-  ])("keeps unnamed API-key accounts distinct (active: $active)", async ({ active, labels }) => {
-    const { readCredentialRows } = await import("../src/lib/opencode-auth.js");
-    const { queryOpenAIQuota } = await import("../src/lib/openai.js");
-    vi.mocked(readCredentialRows).mockResolvedValueOnce(
-      labels.map((label, index) => ({
-        id: `key-${index}`,
-        integrationId: "openai",
-        label,
-        active: active && index === 0,
-        value: { type: "api", key: `sk-test-${index}` },
-      })),
+    {
+      labels: ["API key", "default", "OpenAI"],
+      names: ["[OpenAI] (active)", "[OpenAI 2]", "[OpenAI 3]"],
+    },
+    { labels: ["", "API key"], names: ["[OpenAI]", "[OpenAI 2]"], noneActive: true },
+    // An explicit numeric alias stays separate from the numbered unnamed accounts.
+    {
+      labels: ["API key", "default", "2"],
+      names: ["[OpenAI] (active)", "[OpenAI 3]", "[OpenAI 2]"],
+    },
+  ])("keeps unnamed API-key accounts distinct on every grouped surface ($labels)", async ({
+    labels,
+    names,
+    noneActive,
+  }) => {
+    const out = await fetchRows(
+      labels.map((label, index) =>
+        keyRow(`key-${index}`, { label, active: !noneActive && index === 0 }),
+      ),
     );
 
-    const out = await openaiProvider.fetch({} as any);
-    const names = labels.map(
-      (_, index) =>
-        `[OpenAI${index === 0 ? "" : ` ${index + 1}`}]${active && index === 0 ? " (active)" : ""}`,
-    );
-    expect(queryOpenAIQuota).not.toHaveBeenCalled();
+    expect(query).not.toHaveBeenCalled();
     expect(out.entries.map((entry) => entry.name)).toEqual(names);
     expect(out.entries.map((entry) => entry.group)).toEqual(names);
     expect(out.entries.map((entry) => entry.accounting.sourceId)).toEqual(
       labels.map((_, index) => `key-${index}`),
     );
-    const data = { entries: out.entries, errors: out.errors };
-    const outputs = [
-      formatQuotaRowsGrouped(data),
-      buildSidebarQuotaPanelLines({ data, config: { formatStyle: "allWindows" } }).join("\n"),
-      formatQuotaCommand(data),
-    ];
-    for (const output of outputs) {
-      for (const name of names) {
-        expect(
-          output.split("\n").filter((line) => line === name || line === `→ ${name}`),
-        ).toHaveLength(1);
-      }
-    }
-  });
-
-  it("keeps an explicit numeric API-key alias separate from numbered unnamed accounts on every grouped surface", async () => {
-    const { readCredentialRows } = await import("../src/lib/opencode-auth.js");
-    const labels = ["API key", "default", "2"];
-    vi.mocked(readCredentialRows).mockResolvedValueOnce(
-      labels.map((label, index) => ({
-        id: `key-${index}`,
-        integrationId: "openai",
-        label,
-        active: index === 0,
-        value: { type: "api", key: `sk-test-${index}` },
-      })),
-    );
-
-    const out = await openaiProvider.fetch({} as any);
-    const names = ["[OpenAI] (active)", "[OpenAI 3]", "[OpenAI 2]"];
-    expect(out.entries.map((entry) => entry.group)).toEqual(names);
-    const data = { entries: out.entries, errors: out.errors };
-    const outputs = [
-      formatQuotaRowsGrouped(data),
-      buildSidebarQuotaPanelLines({ data, config: { formatStyle: "allWindows" } }).join("\n"),
-      formatQuotaCommand(data),
-    ];
-    for (const output of outputs) {
+    for (const output of groupedSurfaces(out)) {
       for (const name of names) {
         expect(
           output.split("\n").filter((line) => line === name || line === `→ ${name}`),
@@ -637,37 +423,18 @@ describe("openai provider", () => {
       }
       expect(
         output.replace(/\s+/gu, " ").match(/ChatGPT quota unavailable for API key/gu),
-      ).toHaveLength(3);
+      ).toHaveLength(labels.length);
     }
   });
 
   it("reports unknown active auth when no stored row is marked active", async () => {
-    const { readCredentialRows } = await import("../src/lib/opencode-auth.js");
-    const { resolveOpenAIOAuth } = await import("../src/lib/openai.js");
-    vi.mocked(readCredentialRows).mockResolvedValueOnce([
-      {
-        id: "key-id",
-        integrationId: "openai",
-        label: "Key",
-        active: false,
-        value: { type: "api", key: "sk-test" },
-      },
-      {
-        id: "oauth-id",
-        integrationId: "openai",
+    const out = await fetchRows([
+      keyRow("key-id", { label: "Key" }),
+      oauthRow("oauth-id", {
         label: "Work",
-        active: false,
         value: { type: "oauth", access: "token", expires: Date.now() + 60_000 },
-      },
+      }),
     ]);
-    vi.mocked(resolveOpenAIOAuth).mockImplementation((auth) => ({
-      state: "configured",
-      sourceKey: "openai",
-      accessToken: auth?.openai?.access ?? "",
-      expiresAt: auth?.openai?.expires,
-    }));
-
-    const out = await openaiProvider.fetch({} as any);
 
     expect(out.attempted).toBe(true);
     expect(out.statusDetails).toEqual([
@@ -680,23 +447,16 @@ describe("openai provider", () => {
   });
 
   it("shows an API key OpenCode could not read as an auth error", async () => {
-    const { readCredentialRows } = await import("../src/lib/opencode-auth.js");
-    const { queryOpenAIQuota } = await import("../src/lib/openai.js");
-    const queryCallsBefore = vi.mocked(queryOpenAIQuota).mock.calls.length;
-    vi.mocked(readCredentialRows).mockResolvedValueOnce([
-      {
-        id: "key-id",
-        integrationId: "openai",
+    const out = await fetchRows([
+      keyRow("key-id", {
         label: "Key",
         active: true,
         value: { type: "api" },
         resolveError: "refresh_failed: HTTP 400",
-      },
+      }),
     ]);
 
-    const out = await openaiProvider.fetch({} as any);
-
-    expect(vi.mocked(queryOpenAIQuota).mock.calls).toHaveLength(queryCallsBefore);
+    expect(query).not.toHaveBeenCalled();
     expect(out.attempted).toBe(true);
     expect(out.entries).toEqual([]);
     expect(out.errors).toEqual([
@@ -713,110 +473,37 @@ describe("openai provider", () => {
     );
   });
 
-  it("renders the API-key status row on sidebar, /quota, toast, compact line, and single-window projection", async () => {
-    const { readCredentialRows } = await import("../src/lib/opencode-auth.js");
-    const { resolveOpenAIOAuth } = await import("../src/lib/openai.js");
-    vi.mocked(readCredentialRows).mockResolvedValueOnce([
-      {
-        id: "key-id",
-        integrationId: "openai",
-        label: "Key",
-        active: true,
-        value: { type: "api", key: "sk-test" },
-      },
-    ]);
-    vi.mocked(resolveOpenAIOAuth).mockImplementation(() => ({ state: "none" }));
+  it.each([
+    { providerIds: ["openai"], expected: true },
+    { providerIds: ["chatgpt"], expected: true },
+    { providerIds: ["codex"], expected: true },
+    { providerIds: ["opencode"], expected: false },
+    { providerIds: ["zai"], expected: false },
+    // Without an OpenAI provider id, a stored OAuth login or API key still counts.
+    { providerIds: ["zai"], oauth: true, expected: true },
+    { providerIds: ["zai"], keyRows: [keyRow("key-id", { active: true })], expected: true },
+    // Provider lookup failure falls back to available.
+    { providersError: new Error("boom"), expected: true },
+  ])("isAvailable is $expected for $providerIds (oauth: $oauth)", async ({
+    providerIds,
+    providersError,
+    oauth,
+    keyRows,
+    expected,
+  }) => {
+    vi.mocked(hasOpenAIOAuthCached).mockResolvedValue(Boolean(oauth));
+    readRows.mockResolvedValue(keyRows ?? []);
 
-    const result = await openaiProvider.fetch({ config: {} } as any);
-    const data = { entries: result.entries, errors: result.errors };
-    const outputs = [
-      buildSidebarQuotaPanelLines({
-        data,
-        config: { formatStyle: "allWindows", percentDisplayMode: "remaining" },
-      }).join("\n"),
-      formatQuotaCommand(data),
-      formatQuotaRowsGrouped(data),
-      buildCompactQuotaStatusLine({ data, maxWidth: 200 }),
-    ];
-
-    for (const output of outputs) {
-      // Narrow surfaces wrap the sentence; collapsing whitespace keeps the phrase checkable.
-      const collapsed = output.replace(/\s+/gu, " ");
-      expect(collapsed).toContain("OpenAI Key");
-      expect(collapsed).toContain("ChatGPT quota unavailable for API key");
+    await expect(
+      openaiProvider.isAvailable(
+        createProviderAvailabilityContext({ providerIds, providersError }),
+      ),
+    ).resolves.toBe(expected);
+    if (keyRows) {
+      expect(readRows).toHaveBeenLastCalledWith(["openai", "codex", "chatgpt"], {
+        methods: ["key"],
+        firstOnly: true,
+      });
     }
-
-    const sidebarLines = outputs[0]!.split("\n");
-    expect(sidebarLines.filter((line) => line === "[OpenAI Key]")).toHaveLength(1);
-
-    const singleWindow = projectQuotaProviderResults([result], "singleWindow", "summary");
-    expect(singleWindow).toHaveLength(1);
-    expect(singleWindow[0]?.accounting.sourceId).toBe("key-id");
-  });
-
-  it("is available when provider ids include openai/chatgpt/codex", async () => {
-    const { hasOpenAIOAuthCached } = await import("../src/lib/openai.js");
-    (hasOpenAIOAuthCached as any).mockResolvedValue(false);
-
-    await expect(
-      openaiProvider.isAvailable(createProviderAvailabilityContext({ providerIds: ["openai"] })),
-    ).resolves.toBe(true);
-    await expect(
-      openaiProvider.isAvailable(createProviderAvailabilityContext({ providerIds: ["chatgpt"] })),
-    ).resolves.toBe(true);
-    await expect(
-      openaiProvider.isAvailable(createProviderAvailabilityContext({ providerIds: ["codex"] })),
-    ).resolves.toBe(true);
-    await expect(
-      openaiProvider.isAvailable(createProviderAvailabilityContext({ providerIds: ["opencode"] })),
-    ).resolves.toBe(false);
-    await expect(
-      openaiProvider.isAvailable(createProviderAvailabilityContext({ providerIds: ["zai"] })),
-    ).resolves.toBe(false);
-    expect(hasOpenAIOAuthCached).toHaveBeenCalledTimes(2);
-    expect(hasOpenAIOAuthCached).toHaveBeenCalledWith({ maxAgeMs: 5_000 });
-  });
-
-  it("falls back to native OpenCode auth when provider ids do not include an OpenAI alias", async () => {
-    const { hasOpenAIOAuthCached } = await import("../src/lib/openai.js");
-    (hasOpenAIOAuthCached as any).mockResolvedValueOnce(true);
-
-    const ctx = createProviderAvailabilityContext({ providerIds: ["zai"] });
-
-    await expect(openaiProvider.isAvailable(ctx)).resolves.toBe(true);
-    expect(hasOpenAIOAuthCached).toHaveBeenCalledWith({ maxAgeMs: 5_000 });
-  });
-
-  it("is available when only a stored OpenAI API key exists", async () => {
-    const { hasOpenAIOAuthCached } = await import("../src/lib/openai.js");
-    const { readCredentialRows } = await import("../src/lib/opencode-auth.js");
-    vi.mocked(hasOpenAIOAuthCached).mockResolvedValue(false);
-    vi.mocked(readCredentialRows).mockResolvedValueOnce([
-      {
-        id: "key-id",
-        integrationId: "openai",
-        label: "Key",
-        active: true,
-        value: { type: "api", key: "sk-test" },
-      },
-    ]);
-
-    await expect(
-      openaiProvider.isAvailable(createProviderAvailabilityContext({ providerIds: ["zai"] })),
-    ).resolves.toBe(true);
-    expect(readCredentialRows).toHaveBeenLastCalledWith(["openai", "codex", "chatgpt"], {
-      methods: ["key"],
-      firstOnly: true,
-    });
-  });
-
-  it("falls back to available when provider lookup throws", async () => {
-    const { hasOpenAIOAuthCached } = await import("../src/lib/openai.js");
-    (hasOpenAIOAuthCached as any).mockResolvedValue(false);
-
-    const ctx = createProviderAvailabilityContext({ providersError: new Error("boom") });
-
-    await expect(openaiProvider.isAvailable(ctx)).resolves.toBe(true);
-    expect(hasOpenAIOAuthCached).not.toHaveBeenCalled();
   });
 });

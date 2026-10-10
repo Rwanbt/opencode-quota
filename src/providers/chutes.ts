@@ -1,7 +1,3 @@
-/**
- * Chutes AI provider wrapper.
- */
-
 import { API_KEY_VENDORS, getApiKeyDiagnostics, hasApiKey } from "../lib/api-key-resolver.js";
 import { queryChutesQuota } from "../lib/chutes.js";
 import type { QuotaProvider, QuotaProviderContext, QuotaProviderResult } from "../lib/entries.js";
