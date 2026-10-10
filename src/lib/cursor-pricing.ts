@@ -1,6 +1,7 @@
 import type { CostBuckets } from "./modelsdev-pricing.js";
 import { getQuotaProviderRuntimeIds } from "./provider-metadata.js";
-import type { CursorQuotaPlan } from "./types.js";
+
+export type CursorQuotaPlan = "none" | "pro" | "pro-plus" | "ultra";
 
 export type CursorResolvedModel =
   | { kind: "local"; model: CursorLocalPricingModel; pool: "auto_composer" }
@@ -104,7 +105,6 @@ export const CURSOR_OFFICIAL_MODEL_ALIASES: Readonly<
   "opus-4.5-thinking": { providerHint: "anthropic", modelHint: "claude-opus-4-5" },
   "opus-4.6": { providerHint: "anthropic", modelHint: "claude-opus-4-6" },
   "opus-4.6-thinking": { providerHint: "anthropic", modelHint: "claude-opus-4-6" },
-  "premium-routing": { providerHint: "cursor", modelHint: "premium-routing" },
   "sonnet-4.5": { providerHint: "anthropic", modelHint: "claude-sonnet-4-5" },
   "sonnet-4.5-thinking": { providerHint: "anthropic", modelHint: "claude-sonnet-4-5" },
   "sonnet-4.6": { providerHint: "anthropic", modelHint: "claude-sonnet-4-6" },
@@ -122,17 +122,14 @@ export function isCursorModelId(raw?: string): boolean {
   return normalized.startsWith("cursor/") || normalized.startsWith("cursor-acp/");
 }
 
+const CURSOR_PLAN_NAMES: Readonly<Partial<Record<CursorQuotaPlan, string>>> = {
+  pro: "Pro",
+  "pro-plus": "Pro Plus",
+  ultra: "Ultra",
+};
+
 export function getCursorPlanDisplayName(plan: CursorQuotaPlan): string | null {
-  switch (plan) {
-    case "pro":
-      return "Pro";
-    case "pro-plus":
-      return "Pro Plus";
-    case "ultra":
-      return "Ultra";
-    default:
-      return null;
-  }
+  return CURSOR_PLAN_NAMES[plan] ?? null;
 }
 
 export function getEffectiveCursorIncludedApiUsd(params: {
@@ -170,9 +167,5 @@ export function resolveCursorModel(rawModelId?: string): CursorResolvedModel {
   }
 
   const official = CURSOR_OFFICIAL_MODEL_ALIASES[model];
-  if (!official || official.providerHint === "cursor") {
-    return { kind: "unknown" };
-  }
-
-  return { kind: "official", ...official, pool: "api" };
+  return official ? { kind: "official", ...official, pool: "api" } : { kind: "unknown" };
 }

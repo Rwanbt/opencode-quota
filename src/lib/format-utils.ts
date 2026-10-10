@@ -1,9 +1,9 @@
 /**
- * Shared formatting primitives: the `/quota` report (quota-command-format.ts, quota-columns.ts),
- * provider percentages and amounts, and the resetTimeDecimals setting check.
+ * Small text helpers for the reports, the dialog tables and the providers: clamping, padding,
+ * wrapping, bars, amounts and times.
  */
 
-import type { PercentDisplayMode, PercentLabelStyle } from "./types.js";
+export type PercentDisplayMode = "remaining" | "used";
 
 /**
  * Clamp a number to an integer within [min, max].
@@ -19,14 +19,6 @@ export function clampInt(n: number, min: number, max: number): number {
 export function clampPercent(n: number): number {
   if (!Number.isFinite(n)) return 0;
   return Math.max(0, Math.min(100, Math.round(n)));
-}
-
-/**
- * Pad string to width, truncating if too long, adding spaces on right if too short.
- */
-export function padRight(str: string, width: number): string {
-  if (str.length >= width) return str.slice(0, width);
-  return str + " ".repeat(width - str.length);
 }
 
 /**
@@ -76,55 +68,6 @@ export function bar(percentRemaining: number, width: number): string {
   return "█".repeat(filled) + "░".repeat(empty);
 }
 
-/**
- * Resolve the displayed percent for toast/sidebar percent rows without
- * changing the underlying provider-normalized percentRemaining value.
- */
-export function resolveDisplayedPercent(
-  percentRemaining: number,
-  mode: PercentDisplayMode = "remaining",
-): number {
-  const remaining = Math.max(0, Math.round(percentRemaining));
-  const used = Math.max(0, Math.round(100 - percentRemaining));
-  return mode === "used" ? used : remaining;
-}
-
-export function formatDisplayedPercentLabel(
-  percentRemaining: number,
-  mode: PercentDisplayMode = "remaining",
-  style: PercentLabelStyle = "full",
-): string {
-  const displayedPercent = resolveDisplayedPercent(percentRemaining, mode);
-  const percent = `${displayedPercent}%`;
-  return style === "bare" ? percent : `${percent} ${mode === "used" ? "used" : "left"}`;
-}
-
-export function formatQuotaModeHeading(mode: PercentDisplayMode = "remaining"): string {
-  return `Quota [${mode === "used" ? "Used" : "Remaining"}]`;
-}
-
-/**
- * Format a token count with K/M suffix for compactness.
- *
- * Examples:
- * - 500 -> "500"
- * - 1500 -> "1.5K"
- * - 15000 -> "15K"
- * - 1500000 -> "1.5M"
- */
-export function formatTokenCount(count: number): string {
-  if (count >= 1_000_000) {
-    return `${(count / 1_000_000).toFixed(1)}M`;
-  }
-  if (count >= 10_000) {
-    return `${(count / 1_000).toFixed(0)}K`;
-  }
-  if (count >= 1_000) {
-    return `${(count / 1_000).toFixed(1)}K`;
-  }
-  return String(count);
-}
-
 /** A dollar amount with two decimals ("$12.50"); "$0.00" for a non-finite number. */
 export function fmtUsdAmount(n: number): string {
   if (!Number.isFinite(n)) return "$0.00";
@@ -143,45 +86,4 @@ export function formatLocalCallTimestamp(atMs?: number): string {
 
 export function abbreviateDisplayedModelName(name: string): string {
   return name.replace(/antigravity/gi, "agy");
-}
-
-export interface FormatResetCountdownOptions {
-  /** Join exact compound countdown units with spaces. */
-  spaced?: boolean;
-}
-
-/**
- * Format a reset countdown for the `/quota` report.
- *
- * Returns a precise-to-minute value like "2d 5h 14m", "3h 45m", or "14m"; "" without a time.
- * When reset time is in the past or invalid, returns "reset".
- */
-export function formatResetCountdown(iso?: string, opts?: FormatResetCountdownOptions): string {
-  if (!iso) return "";
-  const resetDate = new Date(iso);
-  const now = new Date();
-  const diffMs = resetDate.getTime() - now.getTime();
-  if (!Number.isFinite(diffMs) || diffMs <= 0) return "reset";
-
-  // Round up partial minutes so the countdown never understates the time left.
-  const diffMinutes = Math.ceil(diffMs / 60_000);
-  const days = Math.floor(diffMinutes / 1440);
-  const hours = Math.floor((diffMinutes % 1440) / 60);
-  const minutes = diffMinutes % 60;
-
-  const separator = opts?.spaced ? " " : "";
-  if (days > 0) return [`${days}d`, `${hours}h`, `${minutes}m`].join(separator);
-  if (hours > 0) return [`${hours}h`, `${minutes}m`].join(separator);
-  return `${minutes}m`;
-}
-
-export const MAX_RESET_TIME_DECIMALS = 4;
-
-export function isResetTimeDecimals(value: unknown): value is number {
-  return (
-    typeof value === "number" &&
-    Number.isInteger(value) &&
-    value >= 0 &&
-    value <= MAX_RESET_TIME_DECIMALS
-  );
 }

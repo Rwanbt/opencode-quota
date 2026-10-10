@@ -80,26 +80,26 @@ describe("quota provider Phase 7 documentation consistency", () => {
     }
 
     expect(configuration).toContain("Ask your agent to add a custom provider");
-    expect(configuration).toContain("experimental.quotaToast");
-    expect(configuration).toContain("quotaProviders");
-    expect(configuration).toContain("JSONC");
-    expect(configuration).toContain("do not duplicate it in a second file");
+    expect(configuration).not.toContain("experimental.quotaToast");
+    expect(configuration).not.toContain("quotaProviders");
+    expect(configuration).toContain("settings.jsonc");
+    expect(configuration).toContain("There are no project settings.");
 
     for (const document of [configuration, providers]) {
       expect(document).toContain("apiKeyEnv");
       expect(document).toContain("provider.<providerId>.options.apiKey");
       expect(document).toContain("opencode.db");
-      expect(document).toContain("quota-providers");
+      expect(document).toContain("providers.custom");
     }
 
-    expect(configurationCustomProviders).toContain("global-only");
+    expect(configurationCustomProviders).toContain("`providers.custom` in `settings.jsonc`");
     expect(
       readMarkdownParagraphContaining(
         configurationCustomProviders,
         "`modelIds`",
-        "`onlyCurrentModel`",
+        "`words.onlyCurrentModel`",
       ),
-    ).toMatch(/`modelIds`[\s\S]*\bonly\b[\s\S]*`onlyCurrentModel`/);
+    ).toMatch(/`modelIds`[\s\S]*\bonly\b[\s\S]*`words.onlyCurrentModel`/);
     const pricingMapRule = readMarkdownParagraphContaining(
       configurationCustomProviders,
       "pricingModelMap",
@@ -167,9 +167,10 @@ describe("quota provider Phase 7 documentation consistency", () => {
     );
     expect(externalJsonBasics).toContain('"version": 2');
     expect(externalJsonBasics).toContain('providers["quota-providers"]');
-    expect(externalJsonBasics).toContain("configured `quotaProviders` definition");
+    expect(externalJsonBasics).toContain("`providers.custom` definition");
     expect(external).not.toContain("custom-sources");
     expect(external).not.toContain("Custom-provider");
+    expect(external).not.toContain("quotaProviders");
     expect(externalJsonBasics).toContain('"sourceId": "openrouter-primary"');
     expect(externalJsonBasics).toContain('"sources": [');
     expect(externalJsonBasics).toContain('"id": "openrouter-primary"');
@@ -231,7 +232,6 @@ describe("quota provider Phase 7 documentation consistency", () => {
 
   it("keeps surface formatters generic", () => {
     for (const path of [
-      "src/lib/quota-command-format.ts",
       "src/view/select.ts",
       "src/view/text.ts",
       "src/tui/sidebar.tsx",

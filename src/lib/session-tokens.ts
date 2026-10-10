@@ -1,19 +1,20 @@
 /**
- * Shared session-token fetching helper.
- *
- * Consolidates the duplicated try/catch + error-capture logic that was
- * previously inlined in both `fetchQuotaMessage()` and
- * `fetchQuotaCommandMessage()` in plugin.ts.
+ * The tokens a session used so far, for the quota snapshot, with the reason when they could not
+ * be read.
  */
-
+import type { Words } from "../core/types.js";
 import type { SessionTokensData } from "./entries.js";
 import {
   getSessionTokenSummary,
   getSessionTreeTokenSummary,
   SessionNotFoundError,
 } from "./quota-stats.js";
-import type { SessionTokenError } from "./quota-status.js";
-import type { SessionTokenScope } from "./types.js";
+
+export interface SessionTokenError {
+  sessionID: string;
+  error: string;
+  checkedPath?: string;
+}
 
 export interface SessionTokenFetchResult {
   sessionTokens?: SessionTokensData;
@@ -30,7 +31,7 @@ export interface SessionTokenFetchResult {
 export async function fetchSessionTokensForDisplay(params: {
   enabled: boolean;
   sessionID?: string;
-  scope: SessionTokenScope;
+  scope: Words["sessionTokens"];
 }): Promise<SessionTokenFetchResult> {
   if (!params.enabled || !params.sessionID) return {};
 

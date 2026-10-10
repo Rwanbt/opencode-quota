@@ -9,8 +9,6 @@
 import { type RGBA, type ScrollBoxRenderable, TextAttributes } from "@opentui/core";
 import { type JSX, useTerminalDimensions } from "@opentui/solid";
 
-import { loadConfig } from "../lib/config.js";
-import { resolveOpenCodeLocationRoots } from "../lib/config-file-utils.js";
 import { sanitizeDisplayText } from "../lib/display-sanitize.js";
 import { fitTableToWidth } from "../lib/markdown-table.js";
 import { layoutQuotaTables, type QuotaBlock, type QuotaTable } from "../lib/quota-columns.js";
@@ -28,13 +26,11 @@ import {
   renderableSections,
   renderKvRow,
 } from "../lib/report-document.js";
-import type { TuiCommandDisplay } from "../lib/types.js";
 import { QuotaRpc } from "../rpc.js";
 import {
   type QuotaRpcClient,
   quotaCallOptions,
   type RpcLocationHost,
-  reportFailure,
   rpcErrorMessage,
 } from "./client.js";
 
@@ -100,27 +96,6 @@ type TuiContext = LegacyDialogHost;
 function getSessionID(event: TuiEvent): string | undefined {
   const sessionID = event.data?.sessionID;
   return typeof sessionID === "string" && sessionID ? sessionID : undefined;
-}
-
-function quotaClient(context: TuiContext) {
-  return {
-    config: {
-      get: async () => ({ data: {} }),
-      providers: async () => ({
-        data: {
-          providers:
-            context.data.location?.provider.list(
-              context.location ?? context.data.location.default(),
-            ) ?? [],
-        },
-      }),
-    },
-  };
-}
-
-/** Same project roots as the server plugin: the location's Git worktree, else the location directory. */
-function quotaRoots(context: TuiContext) {
-  return resolveOpenCodeLocationRoots(context.location?.directory ?? process.cwd());
 }
 
 /** OpenCode's dialog widths (dialogWidth in its ui/dialog.tsx). */
@@ -447,13 +422,13 @@ async function runQuotaCommand(
 
 /**
  * Quota slash commands that reach the server (from Web or Desktop, queued in the TUI, or
- * typed in "inline" mode) post the report into the chat as a pending inbox item. When a
- * report arrives for the session on screen, tuiCommandDisplay decides what the TUI shows: "dialog" opens the report in the dialog and cancels the pending
- * item, so no chat message remains; "inline" leaves the report in the chat.
+ * queued) post the report into the chat as a pending inbox item. When a report arrives for
+ * the session on screen, the TUI opens it in the dialog and cancels the pending item, so no
+ * chat message remains.
  * A command sent from Home creates its session, and OpenCode opens that session before the
  * server runs the command, so its report also arrives for the session on screen.
- * The TUI cannot tell which client typed the command, so in "dialog" mode it also removes a
- * report that Web or Desktop requested for the same session while the TUI shows it.
+ * The TUI cannot tell which client typed the command, so it also removes a report that Web
+ * or Desktop requested for the same session while the TUI shows it.
  */
 export async function showPostedQuotaReport(context: TuiContext, event: TuiEvent): Promise<void> {
   const sessionID = getSessionID(event);
@@ -468,10 +443,6 @@ export async function showPostedQuotaReport(context: TuiContext, event: TuiEvent
   if (!report) return;
   const spec = QUOTA_DIALOG_COMMANDS.find((candidate) => candidate.id === report.command);
   if (!spec) return;
-  const config = await loadConfig(quotaClient(context), undefined, {
-    configRootDir: quotaRoots(context).configRoot,
-  });
-  if (config.tuiCommandDisplay !== "dialog") return;
   // Cancelling deletes the pending item before it becomes a stored message, the same
   // request the TUI sends when the user deletes a pending prompt.
   void context.client.session.inbox.cancel({ sessionID, inboxID }).catch((error: unknown) => {
@@ -508,24 +479,10 @@ export function registerQuotaCommands(context: TuiContext): void {
  * Runs typed quota slash commands in the TUI. On Enter, before OpenCode submits the prompt,
  * a prompt that holds exactly a quota command is cleared and the command opens its dialog.
  * So the report never shows in the chat, and on Home no session is created for it.
- * Everything else, and every command in "inline" mode, goes on to OpenCode's submit, and
- * the server command posts the report as before.
- * The layer has no mode, so it is off while the "/" list or a dialog is open. tuiCommandDisplay
- * must be known when Enter is pressed, so it is read at start and again after each typed
- * quota command. Until the first read finishes, typed commands follow the default, "dialog".
+ * Everything else goes on to OpenCode's submit.
+ * The layer has no mode, so it is off while the "/" list or a dialog is open.
  */
 export function registerTypedQuotaCommands(context: TuiContext): void {
-  let commandDisplay: TuiCommandDisplay | undefined;
-  const readCommandDisplay = () => {
-    void loadConfig(quotaClient(context), undefined, {
-      configRootDir: quotaRoots(context).configRoot,
-    })
-      .then((config) => {
-        commandDisplay = config.tuiCommandDisplay;
-      })
-      .catch(reportFailure);
-  };
-  readCommandDisplay();
   context.keymap.layer(() => ({
     // Above OpenCode's textarea layer, which submits the prompt on Enter.
     priority: 1,
@@ -537,9 +494,6 @@ export function registerTypedQuotaCommands(context: TuiContext): void {
           const editor = context.renderer.currentFocusedEditor;
           const typed = editor ? parseQuotaSlashCommand(editor.plainText) : undefined;
           if (!editor || !typed) return false;
-          const display = commandDisplay;
-          readCommandDisplay();
-          if (display === "inline") return false;
           editor.clear();
           void runQuotaCommand(context, typed.command, getRouteSessionID(context), typed);
         },

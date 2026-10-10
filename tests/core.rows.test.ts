@@ -1022,6 +1022,147 @@ describe("rowsFromLegacyResult", () => {
     ]);
   });
 
+  it("hides email addresses and account, team, org, user and session ids in debug details", () => {
+    const result = rowsFromLegacyResult(
+      "xai",
+      {
+        attempted: true,
+        entries: [],
+        errors: [{ label: "bob.CANARY@example.com", message: "HTTP 401" }],
+        statusDetails: [
+          { key: "account_id", value: "acct_CANARY1" },
+          { key: "teamId", value: "CANARY2" },
+          { key: "session_id", value: "s9" },
+          { key: "connection", value: "alice.CANARY@example.co.uk" },
+          { key: "request", value: 'org_id=CANARY4 "user_id":"CANARY5" accountId: 7' },
+          { key: "account_count", value: "2" },
+        ],
+      },
+      NOW_MS,
+    );
+    expect(JSON.stringify(result.debug)).not.toContain("CANARY");
+    expect(result.debug).toEqual([
+      { key: "account_id", value: "[id]" },
+      { key: "teamId", value: "[id]" },
+      { key: "session_id", value: "[id]" },
+      { key: "connection", value: "[email]" },
+      { key: "request", value: 'org_id=[id] "user_id":[id] accountId: [id]' },
+      { key: "account_count", value: "2" },
+      { key: "error", value: "[email]: HTTP 401" },
+    ]);
+  });
+
+  it.each([
+    {
+      name: "a home path",
+      home: "/Users/alice",
+      value: "/Users/alice/.local/bin/claude",
+      cutUnhidden: "/Users/ali",
+      shown: "~/.local",
+      hidden: "ali",
+    },
+    {
+      name: "a JSON-quoted Windows home path",
+      home: "C:\\Users\\Alice Smith",
+      value: JSON.stringify("C:\\Users\\Alice Smith\\.local\\bin\\claude.exe"),
+      cutUnhidden: '"C:\\\\Users\\\\Alic',
+      shown: '"~\\\\.local',
+      hidden: "Alic",
+    },
+    {
+      name: "a Windows home path",
+      home: "C:\\Users\\Alice Smith",
+      value: "C:\\Users\\Alice Smith\\.local\\bin\\claude.exe",
+      cutUnhidden: "C:\\Users\\Alic",
+      shown: "~\\.local",
+      hidden: "Alic",
+    },
+    {
+      name: "an email address",
+      home: "/Users/alice",
+      value: "alice.smith@example.com",
+      cutUnhidden: "alice.smith@exam",
+      shown: "[email]",
+      hidden: "smith",
+    },
+  ])("hides $name before it cuts a long detail", ({ home, value, cutUnhidden, shown, hidden }) => {
+    vi.stubEnv("HOME", home);
+    // Unhidden, the cut at 300 characters would keep `cutUnhidden`: part of the value.
+    const filler = "1234567.".repeat(40).slice(0, 300 - " | ".length - cutUnhidden.length);
+    const result = rowsFromLegacyResult(
+      "anthropic",
+      {
+        attempted: true,
+        entries: [],
+        errors: [],
+        statusDetails: [{ key: "checked_commands", value: `${filler} | ${value}` }],
+      },
+      NOW_MS,
+    );
+    const [detail] = result.debug;
+    expect(detail?.value.length).toBeLessThanOrEqual(300);
+    expect(detail?.value).toContain(`${filler} | ${shown}`);
+    expect(detail?.value).not.toContain(hidden);
+  });
+
+  it("keeps each custom definition's check under its whole name, without its URL or key", () => {
+    vi.stubEnv("HOME", "/Users/alice");
+    const identity = { providerId: "gateway", modelIds: null, apiKeyEnv: null, selected: true };
+    const result = rowsFromLegacyResult(
+      "quota-providers",
+      {
+        attempted: true,
+        entries: [],
+        errors: [{ label: "Team", message: "HTTP 503" }],
+        diagnostics: [
+          {
+            ...identity,
+            sourceId: "production-gateway-us",
+            mode: "remote-api",
+            format: "json-v1",
+            apiKeyEnv: "TEAM_KEY",
+            attempted: true,
+            credentialSource: "explicit_env",
+            outcome: "http_error",
+            httpStatus: 503,
+            entryCount: 0,
+            checkedPaths: ["/Users/alice/.config/opencode/opencode.json"],
+            credentialDatabasePaths: ["/Users/alice/.local/share/opencode/opencode.db"],
+          },
+          {
+            ...identity,
+            sourceId: "seats",
+            mode: "local-estimate",
+            attempted: true,
+            credentialSource: null,
+            outcome: "success",
+            entryCount: 1,
+            checkedPaths: [],
+            credentialDatabasePaths: [],
+            statePath:
+              "/Users/alice/.local/state/opencode/opencode-quota/quota-providers/seats.json",
+            stateHealth: "healthy",
+            stateVersion: 1,
+            stateLastUpdatedAt: NOW_MS,
+          },
+        ],
+      },
+      NOW_MS,
+    );
+    expect(result.debug).toEqual([
+      {
+        key: "custom_production-gateway-us_check",
+        value:
+          "outcome=http_error http_status=503 credential_source=explicit_env checked_paths=~/.config/opencode/opencode.json | ~/.local/share/opencode/opencode.db",
+      },
+      {
+        key: "custom_seats_check",
+        value: `outcome=success state_health=healthy state_version=1 state_last_update=${new Date(NOW_MS).toISOString()}`,
+      },
+      { key: "error", value: "Team: HTTP 503" },
+    ]);
+  });
+
   it("scrubs control characters from provider text", () => {
     const [row] = fetchRows("quota-providers", [
       {
