@@ -14,6 +14,7 @@ import {
   fetchGoogleProviderQuota,
   type GoogleProviderFlavor,
   isGoogleRuntimeAvailable,
+  remainingCount,
 } from "./google-oauth-provider.js";
 
 function isGeminiCliModel(model: string): boolean {
@@ -32,18 +33,32 @@ const GEMINI_TIER_KEYS: Readonly<Record<string, string>> = {
   "Gemini Flash Lite": "flash_lite",
 };
 
-/** The quality tiers keep fixed keys; other models are keyed `model.<name>`. */
+/** Gemini's token types as count units; a type it does not name counts plain units. */
+const GEMINI_TOKEN_UNITS: Readonly<Record<string, string>> = {
+  REQUESTS: "request",
+  TOKENS: "token",
+};
+
+/**
+ * The quality tiers keep fixed keys; other models are keyed `model.<name>`. The row has the
+ * remaining count when Gemini gives one.
+ */
 function geminiCliRow(bucket: GeminiCliQuotaBucket): ProviderRow | undefined {
   const model = bucket.displayName.replace(/:+$/u, "").trim();
   if (!model) return undefined;
   const short = model.replace(/^Gemini\s+/u, "") || model;
-  return quotaRow({
-    key: GEMINI_TIER_KEYS[model] ?? `model.${keySlug(short)}`,
-    label: short,
-    window: classifyWindow(model),
-    percentRemaining: bucket.percentRemaining,
-    resetsAt: bucket.resetTimeIso,
-  });
+  const unit = GEMINI_TOKEN_UNITS[bucket.tokenType?.trim().toUpperCase() ?? ""] ?? "unit";
+  const remaining = remainingCount(bucket.remainingAmount, unit);
+  return {
+    ...quotaRow({
+      key: GEMINI_TIER_KEYS[model] ?? `model.${keySlug(short)}`,
+      label: short,
+      window: classifyWindow(model),
+      percentRemaining: bucket.percentRemaining,
+      resetsAt: bucket.resetTimeIso,
+    }),
+    ...(remaining ? { remaining } : {}),
+  };
 }
 
 const GEMINI_CLI_PROVIDER: GoogleProviderFlavor<GeminiCliQuotaBucket> = {

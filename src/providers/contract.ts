@@ -7,8 +7,15 @@
 import type { DebugDetail, QuotaRow, QuotaWindow } from "../core/types.js";
 import { type CredentialRow, formatCredentialDisplayNames } from "../lib/opencode-auth.js";
 
-/** One row as a provider reports it; `key` is the part of the row id after the provider id. */
-export type ProviderRow = Omit<QuotaRow, "id" | "providerId" | "account"> & { key: string };
+/**
+ * One row as a provider reports it; `key` is the part of the row id after the provider id.
+ * `observedAt` is when the provider measured the window (ISO); the legacy converter dates the
+ * runs-out estimate from it. It is not part of the v6 row.
+ */
+export type ProviderRow = Omit<QuotaRow, "id" | "providerId" | "account"> & {
+  key: string;
+  observedAt?: string;
+};
 
 export type FetchError = { message: string; retryable?: boolean };
 
@@ -53,6 +60,7 @@ export function quotaRow(fields: {
   percentRemaining: number;
   resetsAt?: string;
   windowStartedAt?: string;
+  observedAt?: string;
 }): ProviderRow {
   return {
     key: fields.key,
@@ -66,14 +74,15 @@ export function quotaRow(fields: {
     // An empty reset time means the provider gave none.
     ...(fields.resetsAt ? { resetsAt: fields.resetsAt } : {}),
     ...(fields.windowStartedAt ? { windowStartedAt: fields.windowStartedAt } : {}),
+    ...(fields.observedAt ? { observedAt: fields.observedAt } : {}),
   };
 }
 
-/** One window of a provider reply: the percent left and when it resets. */
+/** One window of a provider reply: the percent left, when it resets, and when it started. */
 type WindowValue = {
   percentRemaining: number;
   resetTimeIso?: string;
-  fixedWindow?: { startedAtIso: string };
+  fixedWindow?: { startedAtIso: string; observedAtIso: string };
 };
 
 /** A quota row for each window the provider reported, in the given order. */
@@ -91,6 +100,7 @@ export function windowRows(
             percentRemaining: value.percentRemaining,
             resetsAt: value.resetTimeIso,
             windowStartedAt: value.fixedWindow?.startedAtIso,
+            observedAt: value.fixedWindow?.observedAtIso,
           }),
         ]
       : [],

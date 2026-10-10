@@ -689,7 +689,23 @@ function legacyBasis(row: ProviderRow): AccountingPercentageBasis | undefined {
   return Object.keys(basis).length > 0 ? basis : undefined;
 }
 
-/** The legacy entry for one contract row; the shim reads it back to the same row. */
+/**
+ * A lone remaining count as the legacy entries showed it: "1,200 left", plus the count's unit
+ * unless it is plain or requests ("1,200 left TOKENS"). Only Google rows have one.
+ */
+function remainingRight(remaining: Amount): string {
+  const [integer = "0", fraction] = remaining.decimal.split(".");
+  const grouped = integer.replace(/\B(?=(\d{3})+(?!\d))/gu, ",");
+  const number = fraction ? `${grouped}.${fraction}` : grouped;
+  const { unit } = remaining;
+  const named = unit.kind === "count" && unit.unit !== "request" && unit.unit !== "unit";
+  return named ? `${number} left ${unit.unit.toUpperCase()}S` : `${number} left`;
+}
+
+/**
+ * The legacy entry for one contract row; the shim reads it back to the same row, except a lone
+ * remaining count, which becomes the `right` text the legacy entries showed.
+ */
 function legacyEntry(account: AccountResult, row: ProviderRow, nowMs: number): QuotaToastEntry {
   const meta = {
     accounting: {
@@ -707,15 +723,18 @@ function legacyEntry(account: AccountResult, row: ProviderRow, nowMs: number): Q
     ...(row.resetsAt ? { resetTimeIso: row.resetsAt } : {}),
   };
   if (row.percentRemaining !== undefined) {
-    const basis = legacyBasis(row);
+    const loneRemaining = row.remaining && !row.used && !row.limit ? row.remaining : undefined;
+    const basis = loneRemaining ? undefined : legacyBasis(row);
+    // The window is dated from when the provider measured it, not from this conversion.
+    const observedAtMs = row.observedAt ? Date.parse(row.observedAt) : nowMs;
     const startedAtMs = row.windowStartedAt ? Date.parse(row.windowStartedAt) : Number.NaN;
     const endsAtMs = row.resetsAt ? Date.parse(row.resetsAt) : Number.NaN;
     const fixedWindow =
-      row.windowStartedAt && row.resetsAt && startedAtMs < nowMs && nowMs < endsAtMs
+      row.windowStartedAt && row.resetsAt && startedAtMs < observedAtMs && observedAtMs < endsAtMs
         ? {
             kind: "fixed_window" as const,
             startedAtIso: row.windowStartedAt,
-            observedAtIso: new Date(nowMs).toISOString(),
+            observedAtIso: new Date(observedAtMs).toISOString(),
             endsAtIso: row.resetsAt,
             fullReset: true as const,
           }
@@ -723,6 +742,7 @@ function legacyEntry(account: AccountResult, row: ProviderRow, nowMs: number): Q
     return {
       ...meta,
       percentRemaining: row.percentRemaining,
+      ...(loneRemaining ? { right: remainingRight(loneRemaining) } : {}),
       ...(basis ? { basis } : {}),
       ...(fixedWindow ? { fixedWindow } : {}),
     };

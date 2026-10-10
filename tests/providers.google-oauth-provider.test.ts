@@ -36,10 +36,11 @@ vi.mock("../src/lib/google-gemini-cli.js", async (importOriginal) => ({
   inspectGeminiCliCompanionPresence: mocks.gemini.inspectCompanion,
 }));
 
-import { rowsFromProviderResult } from "../src/core/rows.js";
+import { legacyResultFromFetch, rowsFromProviderResult } from "../src/core/rows.js";
+import { normalizeQuotaProviderResult } from "../src/lib/quota-state-codec.js";
+import type { ProviderFetchResult } from "../src/providers/contract.js";
 import { googleAgyProvider } from "../src/providers/google-agy.js";
 import { googleGeminiCliProvider } from "../src/providers/google-gemini-cli.js";
-import { createGoogleAccountLabelMap } from "../src/providers/google-oauth-provider.js";
 
 const PROVIDERS = [
   {
@@ -179,28 +180,78 @@ describe.each(PROVIDERS)("$name provider", ({ name, integrationId, provider, lib
   });
 });
 
-describe("google account labels", () => {
-  it("formats real ellipsis labels without repeating the domain", () => {
-    expect([
-      ...createGoogleAccountLabelMap([
-        "alice@example.com",
-        "bo@example.com",
-        "local-only",
-        undefined,
-      ]).values(),
-    ]).toEqual(["ali…", "bo…", "loc…"]);
+describe.each(PROVIDERS)("$name account labels", ({ provider, lib, bucket }) => {
+  it.each([
+    [
+      "short hints without the domain",
+      ["alice@example.com", "bo@example.com", "local-only"],
+      ["ali…", "bo…", "loc…"],
+    ],
+    [
+      "extended or numbered hints where they would collide",
+      ["alice@work.com", "alicia@example.com", "alice@personal.com"],
+      ["alice… 1", "alici…", "alice… 2"],
+    ],
+  ])("names accounts with %s", async (_name, emails, accounts) => {
+    lib.query.mockResolvedValueOnce({
+      success: true,
+      buckets: emails.map((accountEmail, accountIndex) => ({
+        ...bucket,
+        accountEmail,
+        accountIndex,
+      })),
+    });
+
+    const fetched = await fetchRows(provider);
+
+    expect(fetched.rows.map((row) => row.account)).toEqual(accounts);
   });
+});
 
-  it("extends or numbers colliding account hints without repeating domains", () => {
-    const labels = createGoogleAccountLabelMap([
-      "alice@work.com",
-      "alicia@example.com",
-      "alice@personal.com",
-    ]);
+const TOKENS = { kind: "count", unit: "token" } as const;
+const REQUESTS = { kind: "count", unit: "request" } as const;
+const PLAIN = { kind: "count", unit: "unit" } as const;
 
-    expect(labels.get("alice@work.com")).toBe("alice… 1");
-    expect(labels.get("alicia@example.com")).toBe("alici…");
-    expect(labels.get("alice@personal.com")).toBe("alice… 2");
-    expect(new Set(labels.values()).size).toBe(3);
+describe("google remaining counts", () => {
+  it.each([
+    ["Google AGY", { remainingAmount: "1200" }, "1,200 left", { decimal: "1200", unit: PLAIN }],
+    ["Google AGY", {}, undefined, undefined],
+    [
+      "Gemini CLI",
+      { remainingAmount: "1200", tokenType: "TOKENS" },
+      "1,200 left TOKENS",
+      { decimal: "1200", unit: TOKENS },
+    ],
+    [
+      "Gemini CLI",
+      { remainingAmount: "0042", tokenType: "requests" },
+      "42 left",
+      { decimal: "42", unit: REQUESTS },
+    ],
+    [
+      "Gemini CLI",
+      { remainingAmount: "1234567" },
+      "1,234,567 left",
+      { decimal: "1234567", unit: PLAIN },
+    ],
+    ["Gemini CLI", { tokenType: "TOKENS" }, undefined, undefined],
+  ])("%s %j shows %j and keeps the count", async (name, fields, right, remaining) => {
+    const flavor = PROVIDERS.find((candidate) => candidate.name === name);
+    if (!flavor) throw new Error(`no provider ${name}`);
+    flavor.lib.query.mockResolvedValueOnce({
+      success: true,
+      buckets: [{ ...flavor.bucket, ...fields }],
+    });
+
+    const result = (await flavor.provider.fetch({
+      client: {},
+      config: {},
+    } as never)) as ProviderFetchResult;
+
+    const legacy = normalizeQuotaProviderResult(legacyResultFromFetch(result));
+    expect(legacy?.entries.map((entry) => entry.right)).toEqual([right]);
+    expect(
+      rowsFromProviderResult(flavor.provider.id, result).rows.map((row) => row.remaining),
+    ).toEqual([remaining]);
   });
 });

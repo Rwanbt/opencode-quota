@@ -1,3 +1,4 @@
+import type { Amount } from "../core/types.js";
 import { sanitizeDisplayText } from "../lib/display-sanitize.js";
 import type { QuotaProviderContext } from "../lib/entries.js";
 import type { GoogleCompanionPresence } from "../lib/google-companion-credentials.js";
@@ -52,6 +53,13 @@ export async function isGoogleRuntimeAvailable(
   }
 }
 
+/** A whole remaining count Google reported ("1200") in `unit`; none for anything else. */
+export function remainingCount(text: string | undefined, unit: string): Amount | undefined {
+  const digits = text?.trim();
+  if (!digits || !/^\d+$/u.test(digits)) return undefined;
+  return { decimal: digits.replace(/^0+(?=\d)/u, ""), unit: { kind: "count", unit } };
+}
+
 function getGoogleAccountLocalPart(email: string): string {
   const [local = email] = email.split("@");
   return local || email;
@@ -63,7 +71,7 @@ function formatGoogleAccountLabel(email: string | undefined): string {
 }
 
 /** Short account labels ("ali…"), extended or numbered where they would collide. */
-export function createGoogleAccountLabelMap(
+function createGoogleAccountLabelMap(
   emails: readonly (string | undefined)[],
 ): ReadonlyMap<string, string> {
   const uniqueEmails = [...new Set(emails.filter((email): email is string => Boolean(email)))];

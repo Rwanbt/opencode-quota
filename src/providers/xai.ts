@@ -29,7 +29,7 @@ import {
   quotaRow,
 } from "./contract.js";
 
-/** The credits row, labelled with its period ("Weekly"); the window start only when asked. */
+/** The credits row, labelled with its period ("Weekly"); the window's times only when asked. */
 function creditsRow(window: XaiWindowValue, withWindowStart: boolean): ProviderRow {
   const period = periodKindLabel(window.kind);
   return quotaRow({
@@ -39,6 +39,7 @@ function creditsRow(window: XaiWindowValue, withWindowStart: boolean): ProviderR
     percentRemaining: window.percentRemaining,
     resetsAt: window.resetTimeIso,
     windowStartedAt: withWindowStart ? window.fixedWindow?.startedAtIso : undefined,
+    observedAt: withWindowStart ? window.fixedWindow?.observedAtIso : undefined,
   });
 }
 

@@ -1,8 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { rowsFromProviderResult } from "../src/core/rows.js";
+import { legacyResultFromFetch, rowsFromProviderResult } from "../src/core/rows.js";
 import type { QuotaRow } from "../src/core/types.js";
 import { hasOpenAIOAuthCached, queryOpenAIQuota } from "../src/lib/openai.js";
 import { type CredentialRow, readCredentialRows } from "../src/lib/opencode-auth.js";
+import type { ProviderFetchResult } from "../src/providers/contract.js";
 import { openaiProvider } from "../src/providers/openai.js";
 import { createProviderAvailabilityContext } from "./helpers/provider-test-harness.js";
 
@@ -72,6 +73,34 @@ beforeEach(() => {
 });
 
 describe("openai provider", () => {
+  it.each([
+    ["at once", 0],
+    ["after another login answered slowly", 90_000],
+  ])("dates the 5h window from when OpenAI measured it when converted %s", async (_when, delayMs) => {
+    const observedAtIso = new Date(NOW_MS).toISOString();
+    const fixedWindow = {
+      kind: "fixed_window" as const,
+      startedAtIso: "2025-12-31T22:00:00.000Z",
+      observedAtIso,
+      endsAtIso: "2026-01-01T03:00:00.000Z",
+      fullReset: true as const,
+    };
+    query.mockResolvedValueOnce({
+      success: true,
+      label: "OpenAI (Pro)",
+      windows: {
+        hourly: { percentRemaining: 42, resetTimeIso: fixedWindow.endsAtIso, fixedWindow },
+      },
+    });
+    readRows.mockResolvedValueOnce([oauthRow("work-id", { label: "Work" })]);
+
+    const result = (await openaiProvider.fetch({ config: {} } as never)) as ProviderFetchResult;
+
+    expect(legacyResultFromFetch(result, NOW_MS + delayMs).entries).toMatchObject([
+      { fixedWindow },
+    ]);
+  });
+
   it("is not set up without a stored login", async () => {
     const fetched = await fetchRows([]);
 

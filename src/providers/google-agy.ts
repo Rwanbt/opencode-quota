@@ -14,6 +14,7 @@ import {
   fetchGoogleProviderQuota,
   type GoogleProviderFlavor,
   isGoogleRuntimeAvailable,
+  remainingCount,
 } from "./google-oauth-provider.js";
 
 function formatFamilyLabel(family: string): string {
@@ -22,19 +23,26 @@ function formatFamilyLabel(family: string): string {
   return family;
 }
 
-/** `<family>.<window>`, for example `claude_gpt.weekly`, labelled "Claude/GPT Weekly". */
+/**
+ * `<family>.<window>`, for example `claude_gpt.weekly`, labelled "Claude/GPT Weekly", with the
+ * remaining count when AGY gives one (AGY does not name its unit).
+ */
 function agyRow(bucket: GoogleAgyQuotaBucket): ProviderRow | undefined {
   const family = formatFamilyLabel(bucket.family);
   const familyKey = keySlug(family);
   if (!familyKey) return undefined;
   const slot = bucket.window === "weekly" ? WEEKLY : FIVE_HOUR;
-  return quotaRow({
-    key: `${familyKey}.${slot.key}`,
-    label: `${family} ${slot.label}`,
-    window: slot.window,
-    percentRemaining: bucket.percentRemaining,
-    resetsAt: bucket.resetTimeIso,
-  });
+  const remaining = remainingCount(bucket.remainingAmount, "unit");
+  return {
+    ...quotaRow({
+      key: `${familyKey}.${slot.key}`,
+      label: `${family} ${slot.label}`,
+      window: slot.window,
+      percentRemaining: bucket.percentRemaining,
+      resetsAt: bucket.resetTimeIso,
+    }),
+    ...(remaining ? { remaining } : {}),
+  };
 }
 
 const AGY_PROVIDER: GoogleProviderFlavor<GoogleAgyQuotaBucket> = {
