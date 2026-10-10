@@ -11,8 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { convertV5 } from "../src/settings/index.js";
 import { applyDisplayImport, createDisplayStore } from "../src/tui/display.js";
 import type { SurfaceHost } from "../src/tui/sidebar.js";
-
-type Node = { type: unknown; props: Record<string, any> };
+import { findAll } from "./helpers/jsx-tree.js";
 
 let root: string;
 
@@ -48,13 +47,6 @@ function memoryStorage() {
       return [value, async (mutation: (draft: Value) => void) => mutation(value)] as const;
     },
   };
-}
-
-function findAll(node: unknown, match: (node: Node) => boolean): Node[] {
-  if (Array.isArray(node)) return node.flatMap((child) => findAll(child, match));
-  if (!node || typeof node !== "object") return [];
-  const element = node as Node;
-  return [...(match(element) ? [element] : []), ...findAll(element.props?.children, match)];
 }
 
 describe("HomeFooter", () => {

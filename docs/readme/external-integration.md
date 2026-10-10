@@ -32,8 +32,8 @@ npx @slkiser/opencode-quota show --json --threshold 5
 
 | Code | Meaning |
 | --- | --- |
-| `0` | Quota is available and above the threshold |
-| `1` | At least one comparable cached percentage is below the threshold |
+| `0` | Results are complete and none is below the threshold |
+| `1` | At least one comparable cached percentage is below the threshold, or the command failed |
 | `2` | Results were incomplete or no comparable percentage was found |
 
 ### Read Copilot's percentage with `jq`
@@ -54,7 +54,10 @@ Use this for a status bar or another tool that checks quota often. Add this to `
 ```
 
 - The file is `~/.cache/opencode/quota-export.json` (or `$XDG_CACHE_HOME/opencode/quota-export.json` when `XDG_CACHE_HOME` is set). `export.path` changes it.
-- OpenCode's background service rewrites it each time its quota snapshot changes (providers are asked when a TUI shows quota or a reply ends, at most once per `checking.minIntervalMs`), and it keeps its last contents when OpenCode stops.
+- OpenCode's background service rewrites it each time its quota snapshot changes. The file keeps its last contents when OpenCode stops.
+- After a model step, the plugin may check providers again once 30 seconds have passed since the last check, even when that is sooner than `checking.minIntervalMs`.
+- The TUI dialog and toast forms of `/quota`, and the Limits tab, ask providers right away.
+- Web, Desktop, and the TUI chat form of `/quota` use `poll` refreshes and wait out `checking.minIntervalMs`.
 - A write error is logged but never breaks the TUI.
 
 ### tmux example (add to your tmux config)
@@ -93,7 +96,7 @@ It reads results already in memory and never starts its own refresh loop. If the
 <details>
 <summary><strong>Metric fields and privacy</strong></summary>
 
-`opencode.quota.consumed` uses percentage rows only. Its value is `(100 - percentRemaining) / 100`, limited to the range `0` to `1`. Rows without a percentage (amounts, yes/no values, text) create no consumed gauge.
+`opencode.quota.consumed` uses percentage rows only. Its value is `(100 - percentRemaining) / 100`, limited to the range `0` to `1`. Rows without a percentage (amounts, yes/no values, text) feed neither gauge.
 
 | Metric | Labels |
 | --- | --- |
@@ -146,7 +149,7 @@ The command and export file both use JSON schema version `3`. Every provider has
 | `ok` | Data is available | `fetchedAt`, `entries` |
 | `partial` | Some data worked and some failed | `fetchedAt`, `entries`, `errors` |
 | `error` | The provider failed | `fetchedAt`, a safe `error` message |
-| `unavailable` | No matching cached data exists | none required |
+| `unavailable` | Not set up, or no saved data | none required |
 
 A percentage entry uses `renderType: "percent"` and `percentRemaining`. A value entry uses `renderType: "value"` and `value`: the value text the TUI shows (for example, `$12.50 left` or `$2.50/$10.00`), and `Enabled` or `Disabled` for a yes/no row.
 
@@ -182,14 +185,14 @@ Rows from a `providers.custom` definition appear under `providers["quota-provide
 ```json
 {
   "id": "quota-providers.custom.openrouter-primary.Monthly",
-  "name": "Quota providers (OpenRouter primary) Monthly",
+  "name": "Custom providers (OpenRouter primary) Monthly",
   "account": "OpenRouter primary",
   "renderType": "percent",
   "percentRemaining": 40
 }
 ```
 
-The provider also includes a summary for every configured source:
+The provider also includes a summary for every configured source except the built-in tunings:
 
 ```json
 "sources": [

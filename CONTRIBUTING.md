@@ -31,11 +31,11 @@ For quick iteration: `pnpm run test:watch`.
 
 - **No AI calls.** Never send a request to an AI model to produce anything the plugin shows (quota rows, toasts, command output); it would spend the user's tokens. Calling a provider's quota or billing API is fine.
 - **OpenCode 2 only.** No OpenCode 1 code, APIs, or tables.
-- **Server vs. TUI.** The server plugin (`src/plugin.ts`) computes all text and registers the `quota_status` tool, the slash commands, and the `slkiser.opencode-quota` RPC. The TUI plugin (`src/tui-v2.tsx`) only draws what the RPC returns and never imports provider or credential code. Web and Desktop get slash commands only; OpenCode 2 has no plugin UI hooks there.
-- **One command path.** Every slash command, the `quota_status` tool, and the RPC `command` method go through `buildQuotaDialogCommandOutput()`.
+- **Server vs. TUI.** The server plugin (`src/plugin.ts`) reads providers, settings, and OpenCode's history, and registers the slash commands, the agent tools, and the `slkiser.opencode-quota` RPC. The TUI plugin (`src/tui/index.tsx`) only draws what the RPC returns and never imports provider or credential code. Web and Desktop get the slash commands only; OpenCode 2 has no plugin UI hooks there.
+- **One status report.** `/quota_status`, the `quota_status` tool, and the RPC `status` method go through `buildQuotaDialogCommandOutput()`.
 - **Credentials.** Read OpenCode logins only through `ctx.integration` in `src/lib/opencode-auth.ts`. The only exception is the terminal command (`src/lib/cli-show.ts`), which uses `src/lib/opencode-auth-sqlite.ts`; the plugins must never reach that file.
-- **Money.** Show amounts with the provider's ISO code through the shared formatter (e.g. `USD 12.50`). No symbols, conversions, or adding up different currencies.
-- Keep these boundary tests passing and up to date: `tests/plugin.command-handled-boundary.test.ts`, `tests/tui-dist-import-graph.test.ts`, `tests/plugin.question-hook.test.ts`, `tests/quota-provider-boundary.test.ts`.
+- **Money.** Use the shared formatter, which shows USD as `$12.50` and other currencies with an ISO code after the amount, such as `8.25 CNY`. Never convert amounts or add up different currencies.
+- Keep these boundary tests passing and up to date: `tests/plugin.command-handled-boundary.test.ts`, `tests/tui-dist-import-graph.test.ts`, `tests/quota-provider-boundary.test.ts`, `tests/v6-cross-surface.test.ts`.
 
 ## Provider changes
 
@@ -75,7 +75,7 @@ Make the smallest safe fix for the root cause. Match current OpenCode behavior i
 
 ## Before-and-after screenshots (required)
 
-Every PR that changes what users see must include before-and-after screenshots taken with the same config, model, theme, and window size, with credentials, account identifiers, and private paths hidden. For quota changes, report each surface: Web, TUI sidebar, toast, and the status line under the message input (plus the command dialog if relevant). Say which ones you didn't test. Tests don't replace screenshots, and screenshots don't replace tests. No visible change? Write `Not applicable` and why.
+Every PR that changes what users see must include before-and-after screenshots taken with the same config, model, theme, and window size, with credentials, account identifiers, and private paths hidden. Report each surface the change can reach: TUI sidebar (open and collapsed), the status line below the message input, toasts, the `/quota` quick look, the `/quota` window tabs (Limits, Usage, Notices, Status, Settings), Web and Desktop text commands, and CLI `show`/`status`. For export, telemetry, or agent tools, paste the output before and after. Say which ones you didn't test. Tests don't replace screenshots, and screenshots don't replace tests. No visible change? Write `Not applicable` and why.
 
 ## PR checklist
 

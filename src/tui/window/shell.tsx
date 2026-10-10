@@ -10,36 +10,15 @@
  * window appears.
  */
 import type { Plugin } from "@opencode/plugin/tui";
-import {
-  type BoxRenderable,
-  type Renderable,
-  type RGBA,
-  type ScrollBoxRenderable,
-  TextAttributes,
-} from "@opentui/core";
+import type { BoxRenderable, Renderable, RGBA, ScrollBoxRenderable } from "@opentui/core";
 import type { JSX } from "@opentui/solid";
 import { createSignal, onCleanup, onMount, Show } from "solid-js";
 import { sanitizeDisplayText } from "../../lib/display-sanitize.js";
-import {
-  QuotaRpc,
-  type QuotaRpcDownloadPricesInput,
-  type QuotaRpcDownloadPricesOutput,
-  type QuotaRpcNoticeListInput,
-  type QuotaRpcNoticeListOutput,
-  type QuotaRpcSaveSettingsInput,
-  type QuotaRpcSaveSettingsOutput,
-  type QuotaRpcSettingsInput,
-  type QuotaRpcSettingsOutput,
-  type QuotaRpcStatusInput,
-  type QuotaRpcStatusOutput,
-  type QuotaRpcUsageInput,
-  type QuotaRpcUsageOutput,
-} from "../../rpc.js";
-import { rpcErrorMessage } from "../client.js";
+import { QuotaRpc, type QuotaRpcNoticeListInput } from "../../rpc.js";
+import { type ClientHost, errorToast, quotaCallOptions, rpcErrorMessage } from "../client.js";
 import type { SettingsTab } from "../display.js";
 import type { SurfaceHost } from "../sidebar.js";
 import type { Theme } from "../theme.js";
-import { type NoticeBoard, noticeOptions } from "./notices.js";
 import {
   isSettingsTab,
   type OptionLine,
@@ -47,10 +26,16 @@ import {
   SETTINGS_TABS,
   type SettingsEditor,
 } from "./settings.js";
-import { createUsageTab, type UsageChoice } from "./usage.js";
-import { LimitsView, NoticesView, type StatusReport, StatusView } from "./views.js";
+import { Choice, createUsageTab, type UsageChoice } from "./usage.js";
+import {
+  LimitsView,
+  type NoticeBoard,
+  NoticesView,
+  noticeOptions,
+  type StatusReport,
+  StatusView,
+} from "./views.js";
 
-const RPC_TIMEOUT_MS = 60_000;
 const NOTICE_POLL_MS = 15_000;
 /** Columns inside the window until it knows its real width. */
 const DEFAULT_WIDTH = 120;
@@ -98,32 +83,18 @@ export type WindowKey = {
   // biome-ignore lint/suspicious/noConfusingVoidType: OpenCode's keymap API types `run` this way.
   run: () => void | false;
 };
-export type CallOptions = { location: { directory: string }; signal: AbortSignal };
-export type WindowRpc = {
-  noticeList(
-    input: QuotaRpcNoticeListInput,
-    options: CallOptions,
-  ): Promise<QuotaRpcNoticeListOutput>;
-  status(input: QuotaRpcStatusInput, options: CallOptions): Promise<QuotaRpcStatusOutput>;
-  usage(input: QuotaRpcUsageInput, options: CallOptions): Promise<QuotaRpcUsageOutput>;
-  downloadPrices(
-    input: QuotaRpcDownloadPricesInput,
-    options: CallOptions,
-  ): Promise<QuotaRpcDownloadPricesOutput>;
-  settings(input: QuotaRpcSettingsInput, options: CallOptions): Promise<QuotaRpcSettingsOutput>;
-  saveSettings(
-    input: QuotaRpcSaveSettingsInput,
-    options: CallOptions,
-  ): Promise<QuotaRpcSaveSettingsOutput>;
-};
 
 /** What the window needs from OpenCode's TUI context (its theme and client types aren't installed). */
-export type WindowHost = Pick<Plugin.Context, "keymap" | "renderer" | "themeMode" | "ui"> & {
-  location?: { directory: string };
-  theme: WindowTheme;
-  client: { rpc: (definition: typeof QuotaRpc) => WindowRpc };
-  data: { location?: { default: () => { directory: string } } };
-};
+export type WindowHost = Pick<Plugin.Context, "keymap" | "renderer" | "themeMode" | "ui"> &
+  ClientHost & { theme: WindowTheme };
+
+/** The session on screen; undefined on Home. */
+export function routeSessionID(api: {
+  ui: { router: { current(): { type: string; sessionID?: string } } };
+}): string | undefined {
+  const route = api.ui.router.current();
+  return route.type === "session" ? route.sessionID : undefined;
+}
 
 const KEYS = "Quota window";
 
@@ -182,22 +153,9 @@ export function createQuotaWindow(
 
   // The RPC client is made per call, so nothing reaches OpenCode during plugin setup.
   const rpc = () => api.client.rpc(QuotaRpc);
-  const options = (): CallOptions => {
-    const location = api.location ?? api.data.location?.default();
-    if (!location) throw new Error("OpenCode gave the TUI no location");
-    return { location, signal: AbortSignal.timeout(RPC_TIMEOUT_MS) };
-  };
-  const routeSessionID = () => {
-    const route = api.ui.router.current();
-    return route.type === "session" ? route.sessionID : undefined;
-  };
-  const usage = createUsageTab(api, { rpc, options, scroll: () => scroll });
-  const showError = (error: unknown) =>
-    api.ui.toast.show({
-      variant: "error",
-      title: "OpenCode Quota",
-      message: sanitizeDisplayText(rpcErrorMessage(error)),
-    });
+  const options = () => quotaCallOptions(api);
+  const usage = createUsageTab(api, () => scroll);
+  const showError = (error: unknown) => api.ui.toast.show(errorToast(error));
 
   /** Asks for the notices, after making the given changes, once the earlier requests are done. */
   function changeNotices(input: QuotaRpcNoticeListInput): Promise<void> {
@@ -248,7 +206,7 @@ export function createQuotaWindow(
     setTab(next);
     // A Settings line may have had the keyboard; it is gone with its tab.
     windowBox?.focus();
-    const sessionID = routeSessionID();
+    const sessionID = routeSessionID(api);
     stopNoticePoll();
     if (next === "limits") void host.quota.refresh("manual", sessionID);
     if (next === "notices") {
@@ -303,7 +261,7 @@ export function createQuotaWindow(
   }
 
   function open(next: WindowTab | "settings"): void {
-    if (!routeSessionID()) {
+    if (!routeSessionID(api)) {
       api.ui.toast.show({
         variant: "info",
         title: "OpenCode Quota",
@@ -453,17 +411,12 @@ export function createQuotaWindow(
             ? "↑↓ select or scroll · space/enter or click to use a line · ‹ › (or ←/→) to change · tab next tab · esc close"
             : "The keyboard is somewhere else (the message box, a dialog). Click this box to use ↑↓ space tab esc here."));
     const tabTitle = (item: { tab: WindowTab; title: string }) => (
-      <text
-        fg={item.tab === tab() ? theme().text.action.primary.selected : theme().text.muted}
-        attributes={
-          item.tab === tab() ? TextAttributes.BOLD | TextAttributes.UNDERLINE : TextAttributes.NONE
-        }
-        wrapMode="none"
-        selectable={false}
-        onMouseUp={settings.click(() => showTab(item.tab))}
-      >
-        {item.title}
-      </text>
+      <Choice
+        label={item.title}
+        active={item.tab === tab()}
+        theme={theme()}
+        run={settings.click(() => showTab(item.tab))}
+      />
     );
 
     return (

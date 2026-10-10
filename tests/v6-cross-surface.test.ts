@@ -18,6 +18,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ProviderRow } from "../src/providers/contract.js";
 import { answer, percentRow } from "./helpers/fake-answers.js";
 import { createFakeIntegration } from "./helpers/fake-integration.js";
+import { findAll, type Node, THEME, textLines } from "./helpers/jsx-tree.js";
 import {
   createAlibabaAuthModuleMock,
   createPricingModuleMock,
@@ -134,40 +135,15 @@ function httpFetch(url: string, init?: RequestInit): Response {
   throw new Error(`unexpected URL: ${url}`);
 }
 
-type Node = { type: unknown; props: Record<string, any> };
 type Listener = (event: { data: Record<string, unknown> }) => void;
 type ServerCommand = {
   name: string;
   execute(invocation: { sessionID: string; prompt: { text: string } }): Promise<void>;
 };
 
-/** Every `text` node of a JSX tree as one line, its spans joined. */
-function textLines(node: unknown): string[] {
-  const strings = (child: unknown): string =>
-    Array.isArray(child)
-      ? child.map(strings).join("")
-      : typeof child === "string" || typeof child === "number"
-        ? String(child)
-        : child && typeof child === "object"
-          ? strings((child as Node).props?.children)
-          : "";
-  if (Array.isArray(node)) return node.flatMap(textLines);
-  if (!node || typeof node !== "object") return [];
-  const element = node as Node;
-  if (element.type === "text") return [strings(element.props.children)];
-  return textLines(element.props?.children);
-}
-
 /** The text lines with runs of spaces as one space, so layout tweaks don't break the checks. */
 function words(node: unknown): string[] {
   return textLines(node).map((line) => line.replace(/\s+/gu, " ").trim());
-}
-
-function findAll(node: unknown, match: (node: Node) => boolean): Node[] {
-  if (Array.isArray(node)) return node.flatMap((child) => findAll(child, match));
-  if (!node || typeof node !== "object") return [];
-  const element = node as Node;
-  return [...(match(element) ? [element] : []), ...findAll(element.props?.children, match)];
 }
 
 /** The labels of the active choices: the tab, Cost or Tokens, the range, Model or Day. */
@@ -296,27 +272,6 @@ function expectNoCanary(...outputs: unknown[]): void {
   const text = JSON.stringify(outputs);
   for (const canary of Object.values(CANARIES)) expect(text).not.toContain(canary);
 }
-
-const THEME = {
-  text: {
-    base: "text",
-    muted: "muted",
-    action: { primary: { focused: "action", selected: "selected" } },
-    feedback: {
-      success: { base: "green" },
-      warning: { base: "yellow" },
-      error: { base: "red" },
-      info: { base: "blue" },
-    },
-  },
-  hue: { accent: { 500: "accent" } },
-  background: { action: { primary: { focused: "action-bg" } }, raised: { high: "raised" } },
-  border: { base: "border" },
-  surface: () => ({
-    text: { base: "text", muted: "muted", action: { primary: { focused: "action" } } },
-    background: { action: { primary: { focused: "action-bg" } } },
-  }),
-};
 
 type KeyLayer = {
   mode?: string;
@@ -619,7 +574,7 @@ describe("v6 surfaces on the quota snapshot", () => {
       expect.arrayContaining([
         "Plan ██████░░ 81% left",
         "5h ░░░░░░░░ 0% left 2h 14m",
-        "Quota providers (Team) Provider er…",
+        "Custom providers (Team) Provider e…",
         "Session 1.20K in · 45 out",
       ]),
     );
@@ -641,7 +596,7 @@ describe("v6 surfaces on the quota snapshot", () => {
     expect(words(sidebar())).toEqual(
       expect.arrayContaining([
         "▶ Quota (3 providers, 1 error)",
-        "Quota pr… 30d █████░░░ 64% Provi…",
+        "Custom p… 30d █████░░░ 64% Provi…",
       ]),
     );
 
@@ -655,7 +610,7 @@ describe("v6 surfaces on the quota snapshot", () => {
     await vi.waitFor(() => expect(tui.toast).toHaveBeenCalledOnce());
     const toast = tui.toast.mock.calls[0]?.[0];
     expect(toast).toMatchObject({ variant: "info", title: "OpenCode Quota" });
-    expect(toast.message).toContain("Quota providers (T… Provider error 503\nSession  1.20K in");
+    expect(toast.message).toContain("Custom providers (… Provider error 503\nSession  1.20K in");
 
     // /quota opens the quick look: one block per provider, OpenCode's usage of the last 7 days
     // next to the limits. Anthropic has only usage, MiniMax only limits.
@@ -675,7 +630,7 @@ describe("v6 surfaces on the quota snapshot", () => {
         "● MiniMax Token Plan — no usage in OpenCode",
         "5h ░░░░░░░░░│░░░░░░░░░░ 0% left · resets in 2h 14m · using it faster than it refills",
         "Weekly ████████░░░░░░░░░░░░ 40% left",
-        "● Quota providers (Team) — no usage in OpenCode",
+        "● Custom providers (Team) — no usage in OpenCode",
         "Cost by type",
         "c/t cost or tokens · ←/→ range · u full usage · s settings · esc close",
       ]),
@@ -711,7 +666,7 @@ describe("v6 surfaces on the quota snapshot", () => {
     );
     tabs.find((node) => textLines(node)[0] === "Limits")?.props.onMouseUp();
     await vi.waitFor(() =>
-      expect(quotaWindow()).toContain(" Quota providers · Team   Provider error 503"),
+      expect(quotaWindow()).toContain(" Custom providers · Team   Provider error 503"),
     );
     expect(quotaWindow()).toEqual(
       expect.arrayContaining([
@@ -744,7 +699,7 @@ describe("v6 surfaces on the quota snapshot", () => {
       "● Anthropic             $3.00",
       "● Copilot (pro)         Plan 81% left  $1.50",
       "● MiniMax Token Plan    5h 0% left · 7d 40% left",
-      "● Quota providers (Te…  Provider error 503",
+      "● Custom providers (T…  Provider error 503",
       "  30d 64% left",
     ];
     expect(tui.toast.mock.calls[1]?.[0]).toMatchObject({
@@ -787,7 +742,7 @@ describe("v6 surfaces on the quota snapshot", () => {
           ["MiniMax Token Plan Weekly", 40],
         ],
       ],
-      ["quota-providers", "partial", [["Quota providers (Team) Monthly", 64]]],
+      ["quota-providers", "partial", [["Custom providers (Team) Monthly", 64]]],
     ]);
     expect(exported.providers["quota-providers"]).toMatchObject({
       entries: [{ window: "Monthly", ownership: "user_configured" }],

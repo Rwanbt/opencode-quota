@@ -1,3 +1,8 @@
+/**
+ * The TUI plugin (`src/tui/index.tsx`) and its toasts (`toasts.ts`). The toasts on their own,
+ * then the plugin on a fake OpenCode host: its commands, the quota commands typed in the prompt,
+ * and what it does after a turn.
+ */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ProviderSnapshot, QuotaSnapshot, ResetNotice } from "../src/core/types.js";
 import type { QuotaClient } from "../src/tui/client.js";
@@ -266,79 +271,239 @@ describe("quota toasts", () => {
   });
 });
 
-describe("turn events of the TUI plugin", () => {
-  const handlers = new Map<string, (event: { data: Record<string, unknown> }) => void>();
-  const rpc = {
-    command: vi.fn(),
-    snapshot: vi.fn(),
-    refresh: vi.fn(),
-    notices: vi.fn(),
-    acknowledgeDisplayImport: vi.fn(),
-    events: { on: vi.fn(() => () => {}) },
-  };
-  const session = { get: vi.fn() };
-  const toast = vi.fn();
-  /** The display settings in OpenCode's plugin storage, live like OpenCode's. */
-  let displayStore = { version: 1, settings: defaultDisplaySettings() };
+/** The quota RPC the plugin calls; each test sets what it answers. */
+const rpc = {
+  snapshot: vi.fn(),
+  refresh: vi.fn(),
+  notices: vi.fn(),
+  status: vi.fn(),
+  usage: vi.fn(),
+  acknowledgeDisplayImport: vi.fn(),
+  events: { on: vi.fn(() => () => {}) },
+};
 
-  beforeEach(() => {
-    handlers.clear();
-    cleanups.length = 0;
-    displayStore = { version: 1, settings: defaultDisplaySettings() };
-    for (const mock of [rpc.notices, session.get, toast]) mock.mockReset();
-    rpc.snapshot.mockReset().mockResolvedValue({ snapshot: snapshot([]) });
-    rpc.acknowledgeDisplayImport.mockReset().mockResolvedValue({});
-    rpc.refresh.mockReset().mockResolvedValue({ snapshot: OK });
-    plugin.setup({
-      client: { rpc: () => rpc },
-      location: { directory: process.cwd() },
-      storage: {
-        store: (key: string, options: { initial: unknown }) => [
-          key === "settings" ? displayStore : options.initial,
-          vi.fn(),
-        ],
+type Listener = (event: { data: Record<string, unknown> }) => void;
+type Layer = {
+  mode?: string;
+  priority?: number;
+  commands: Array<{
+    id?: string;
+    bind?: string;
+    slash?: { name: string };
+    palette?: boolean;
+    run: () => unknown;
+  }>;
+};
+type Route = { type: "home" } | { type: "session"; sessionID: string };
+
+/** The TUI plugin on a fake OpenCode host, on Home or in a session. */
+function startTui(route: Route = { type: "home" }) {
+  const listeners = new Map<string, Listener>();
+  const layers: Layer[] = [];
+  const editor = { plainText: "", clear: vi.fn() };
+  /** The display settings in OpenCode's plugin storage, live like OpenCode's. */
+  const displayStore = { version: 1, settings: defaultDisplaySettings() };
+  let renderApp: () => unknown = () => null;
+  const context = {
+    location: { directory: process.cwd() },
+    renderer: { currentFocusedEditor: editor as typeof editor | null },
+    client: { rpc: vi.fn(() => rpc) },
+    storage: {
+      store: (key: string, options: { initial: unknown }) => [
+        key === "settings" ? displayStore : options.initial,
+        vi.fn(),
+      ],
+    },
+    data: {
+      session: { get: vi.fn() },
+      on: vi.fn((name: string, listener: Listener) => {
+        listeners.set(name, listener);
+        return vi.fn(() => listeners.delete(name));
+      }),
+    },
+    keymap: { layer: vi.fn((build: () => Layer) => layers.push(build())) },
+    ui: {
+      slot: vi.fn((claim: { append: string; render: () => unknown }) => {
+        if (claim.append === "app") {
+          renderApp = claim.render;
+          claim.render();
+        }
+        return vi.fn();
+      }),
+      toast: { show: vi.fn() },
+      router: { current: () => route },
+      dialog: {
+        show: vi.fn((_render: () => unknown, onClose?: () => void) => onClose?.()),
+        clear: vi.fn(),
+        set: vi.fn(),
       },
-      data: {
-        session,
-        on: (name: string, handler: (event: { data: Record<string, unknown> }) => void) => {
-          handlers.set(name, handler);
-          return () => handlers.delete(name);
-        },
-      },
-      keymap: { layer: vi.fn() },
-      ui: {
-        slot: (claim: { append: string; render: () => unknown }) => {
-          if (claim.append === "app") claim.render();
-          return vi.fn();
-        },
-        toast: { show: toast },
-      },
-    } as never);
+    },
+  };
+  plugin.setup(context as never);
+  return {
+    context,
+    editor,
+    displayStore,
+    listeners,
+    toast: context.ui.toast.show,
+    sessionGet: context.data.session.get,
+    /** The palette commands of the first mount. */
+    commands: layers.find((layer) => layer.mode === "global")?.commands ?? [],
+    /** The Enter binding of the typed quota commands. */
+    enter: () => layers.find((layer) => layer.priority === 1)?.commands[0],
+    layers,
+    emit: (name: string, data: Record<string, unknown>) => listeners.get(name)?.({ data }),
+    /** OpenCode mounts the "app" slot again, for example after it reconnects to its server. */
+    mountAppAgain: () => renderApp(),
+  };
+}
+
+beforeEach(() => {
+  cleanups.length = 0;
+  for (const mock of [rpc.notices, rpc.events.on]) mock.mockClear();
+  rpc.snapshot.mockReset().mockResolvedValue({ snapshot: snapshot([]) });
+  rpc.refresh.mockReset().mockResolvedValue({ snapshot: OK });
+  rpc.acknowledgeDisplayImport.mockReset().mockResolvedValue({});
+  rpc.status.mockReset().mockResolvedValue({ text: "status" });
+  // The quick look's and the Usage tab's data never arrive here: these tests check what opens.
+  rpc.usage.mockReset().mockReturnValue(new Promise(() => {}));
+});
+
+describe("commands of the TUI plugin", () => {
+  it("registers every quota command in the palette, and slash entries only for the TUI-only ones", () => {
+    const { context, commands } = startTui();
+
+    // The RPC client is made per call, never during setup.
+    expect(context.client.rpc).not.toHaveBeenCalled();
+    expect(commands.map((command) => command.id)).toEqual([
+      "quota.quick_look",
+      "quota.usage",
+      "quota.status",
+      "quota.settings",
+    ]);
+    expect(commands.every((command) => command.palette)).toBe(true);
+    // The server lists /quota, /quota_usage and /quota_status in the "/" list.
+    expect(commands.flatMap((command) => (command.slash ? [command.slash.name] : []))).toEqual([
+      "quota_settings",
+    ]);
+    expect(context.ui.slot.mock.calls.map(([claim]) => claim.append)).toEqual([
+      "app",
+      "sidebar.content",
+      "prompt.footer",
+      "home.footer.status",
+      "session.composer.top",
+    ]);
+    expect(context.data.on.mock.calls.map(([event]) => event)).toEqual([
+      "session.execution.succeeded",
+      "session.compaction.ended",
+      "session.step.ended",
+      "session.tool.input.started",
+      "session.tool.success",
+      "session.tool.failed",
+    ]);
   });
 
-  const emit = (name: string, data: Record<string, unknown>) => handlers.get(name)?.({ data });
+  it("registers its layers and listeners again when OpenCode mounts the app slot again", () => {
+    const { context, mountAppAgain } = startTui();
+    const firstListeners = context.data.on.mock.results.map((result) => result.value);
+    const firstLayers = context.keymap.layer.mock.calls.length;
+
+    mountAppAgain();
+
+    // The previous mount's layers left with it, so every layer is registered again.
+    expect(context.keymap.layer).toHaveBeenCalledTimes(firstLayers * 2);
+    expect(context.data.on).toHaveBeenCalledTimes(firstListeners.length * 2);
+    for (const dispose of firstListeners) expect(dispose).toHaveBeenCalledOnce();
+    const secondListeners = context.data.on.mock.results.slice(firstListeners.length);
+    for (const { value: dispose } of secondListeners) expect(dispose).not.toHaveBeenCalled();
+  });
+
+  it("catches a typed quota command with one Enter binding above OpenCode's prompt, only in the base mode", () => {
+    const { layers, enter } = startTui();
+
+    const layer = layers.find((item) => item.priority === 1);
+    expect(layer?.mode).toBeUndefined();
+    expect(layer?.commands).toHaveLength(1);
+    expect(enter()?.bind).toBe("return");
+    expect(enter()).not.toHaveProperty("id");
+    expect(enter()).not.toHaveProperty("slash");
+  });
+
+  it("opens the quick look for a typed /quota, even on Home", () => {
+    const home = startTui();
+    home.editor.plainText = "/quota";
+    expect(home.enter()?.run()).toBeUndefined();
+    expect(home.editor.clear).toHaveBeenCalledOnce();
+    expect(home.context.ui.dialog.show).toHaveBeenCalledOnce();
+    expect(home.context.ui.dialog.set).toHaveBeenCalledWith({ size: "xlarge" });
+    expect(home.toast).not.toHaveBeenCalled();
+    expect(rpc.usage).toHaveBeenCalledExactlyOnceWith({ range: "7d" }, expect.anything());
+  });
+
+  it("opens the quota window for the other typed quota commands, and on Home says to open a session first", () => {
+    const home = startTui();
+    for (const name of ["quota_usage", "quota_status", "quota_settings"]) {
+      home.editor.plainText = `/${name}`;
+      expect(home.enter()?.run()).toBeUndefined();
+    }
+    expect(home.editor.clear).toHaveBeenCalledTimes(3);
+    expect(home.toast).toHaveBeenCalledTimes(3);
+    expect(home.toast).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: "Open a session first: the quota window opens above its message box.",
+      }),
+    );
+
+    // A typed command runs synchronously: a returned promise would count as handled.
+    const session = startTui({ type: "session", sessionID: "ses_open" });
+    session.editor.plainText = "  /quota_status \n";
+    expect(session.enter()?.run()).toBeUndefined();
+    expect(session.toast).not.toHaveBeenCalled();
+    expect(rpc.status).toHaveBeenCalledExactlyOnceWith(
+      { sessionID: "ses_open" },
+      expect.anything(),
+    );
+  });
+
+  it("leaves other text and a missing editor to OpenCode's submit", () => {
+    const { context, editor, enter } = startTui();
+    for (const text of ["hello", "/quotax", "/quota_statu", "/help", "hello /quota", "/", ""]) {
+      editor.plainText = text;
+      expect(enter()?.run()).toBe(false);
+    }
+    context.renderer.currentFocusedEditor = null;
+    expect(enter()?.run()).toBe(false);
+    expect(editor.clear).not.toHaveBeenCalled();
+  });
+});
+
+describe("turn events of the TUI plugin", () => {
+  let tui: ReturnType<typeof startTui>;
+  beforeEach(() => {
+    tui = startTui();
+  });
 
   it("refreshes quota after a question is answered, with no toast by default", async () => {
-    emit("session.tool.input.started", { name: "question", id: "call-1" });
-    emit("session.tool.success", { sessionID: "ses_1", id: "call-1" });
+    tui.emit("session.tool.input.started", { name: "question", id: "call-1" });
+    tui.emit("session.tool.success", { sessionID: "ses_1", id: "call-1" });
     await vi.waitFor(() => expect(rpc.refresh).toHaveBeenCalledOnce());
     expect(rpc.refresh).toHaveBeenCalledWith(
       { reason: "turn", sessionID: "ses_1" },
       expect.anything(),
     );
     // Only the subagent check reads the session.
-    expect(session.get).toHaveBeenCalledExactlyOnceWith("ses_1");
-    expect(toast).not.toHaveBeenCalled();
+    expect(tui.sessionGet).toHaveBeenCalledExactlyOnceWith("ses_1");
+    expect(tui.toast).not.toHaveBeenCalled();
   });
 
   it.each([
     { name: "a failed question", tool: "question", end: "session.tool.failed" },
     { name: "another tool", tool: "bash", end: "session.tool.success" },
   ])("does nothing after $name", ({ tool, end }) => {
-    emit("session.tool.input.started", { name: tool, id: "call-2" });
-    emit(end, { sessionID: "ses_1", id: "call-2" });
+    tui.emit("session.tool.input.started", { name: tool, id: "call-2" });
+    tui.emit(end, { sessionID: "ses_1", id: "call-2" });
     expect(rpc.refresh).not.toHaveBeenCalled();
-    expect(session.get).not.toHaveBeenCalled();
+    expect(tui.sessionGet).not.toHaveBeenCalled();
   });
 
   it("asks for the snapshot once mounted, so Home gets the converted looks too", () => {
@@ -348,8 +513,8 @@ describe("turn events of the TUI plugin", () => {
   it("says once that the settings were converted, then applies and acknowledges the looks", async () => {
     const displayImport = { id: "import-1", display: { toast: { afterReply: "always" as const } } };
     rpc.refresh.mockResolvedValue({ snapshot: { ...OK, displayImport } });
-    emit("session.step.ended", { sessionID: "ses_1" });
-    emit("session.step.ended", { sessionID: "ses_1" });
+    tui.emit("session.step.ended", { sessionID: "ses_1" });
+    tui.emit("session.step.ended", { sessionID: "ses_1" });
     await vi.waitFor(() => expect(rpc.refresh).toHaveBeenCalledTimes(2));
     await vi.waitFor(() =>
       expect(rpc.acknowledgeDisplayImport).toHaveBeenCalledExactlyOnceWith(
@@ -357,20 +522,20 @@ describe("turn events of the TUI plugin", () => {
         expect.anything(),
       ),
     );
-    expect(toast.mock.calls.map(([shown]) => shown.message)).toEqual([
+    expect(tui.toast.mock.calls.map(([shown]) => shown.message)).toEqual([
       "Settings converted from v5 to settings.jsonc, details in /quota_status",
     ]);
   });
 
   it("stops listening when OpenCode unmounts the app slot", () => {
     for (const cleanup of cleanups.splice(0)) cleanup();
-    emit("session.step.ended", { sessionID: "ses_1" });
-    expect(handlers.size).toBe(0);
+    tui.emit("session.step.ended", { sessionID: "ses_1" });
+    expect(tui.listeners.size).toBe(0);
     expect(rpc.refresh).not.toHaveBeenCalled();
   });
 
   it("drops the reset notices still waiting when OpenCode unmounts the app slot", async () => {
-    displayStore.settings.toast.resetNotice = "all";
+    tui.displayStore.settings.toast.resetNotice = "all";
     let answer: (output: { snapshot: QuotaSnapshot }) => void = () => {};
     rpc.refresh.mockReset().mockImplementation(
       () =>
@@ -379,7 +544,7 @@ describe("turn events of the TUI plugin", () => {
         }),
     );
     // A reply's turn waits for quota; meanwhile the server announces a reset.
-    emit("session.execution.succeeded", { sessionID: "ses_1" });
+    tui.emit("session.execution.succeeded", { sessionID: "ses_1" });
     await vi.waitFor(() => expect(rpc.refresh).toHaveBeenCalledOnce());
     const notice: ResetNotice = {
       id: "weekly",
@@ -398,13 +563,15 @@ describe("turn events of the TUI plugin", () => {
     for (const cleanup of cleanups.splice(0)) cleanup();
     answer({ snapshot: OK });
     await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(toast).not.toHaveBeenCalled();
+    expect(tui.toast).not.toHaveBeenCalled();
   });
 
   it("refreshes after each step of a session, never of a subagent", () => {
-    session.get.mockImplementation((id: string) => (id === "child" ? { parentID: "ses_1" } : {}));
-    emit("session.step.ended", { sessionID: "child" });
-    emit("session.step.ended", { sessionID: "ses_1" });
+    tui.sessionGet.mockImplementation((id: string) =>
+      id === "child" ? { parentID: "ses_1" } : {},
+    );
+    tui.emit("session.step.ended", { sessionID: "child" });
+    tui.emit("session.step.ended", { sessionID: "ses_1" });
     expect(rpc.refresh.mock.calls.map(([input]) => input)).toEqual([
       { reason: "turn", sessionID: "ses_1" },
     ]);

@@ -201,7 +201,7 @@ export const quotaProvidersProvider: QuotaProvider = {
         return {
           attempted: true,
           accounts: [
-            failedAccount("Quota providers", "Failed to read exact runtime provider identities"),
+            failedAccount("Custom providers", "Failed to read exact runtime provider identities"),
           ],
           debug: [],
         };

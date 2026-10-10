@@ -107,8 +107,14 @@ function eventSchema<T extends Readonly<Record<string, unknown>>>(
   };
 }
 
-function checkOutput(value: unknown): string | null {
-  return isRecord(value) ? null : "output must be an object";
+/** An input with no fields of its own. */
+function checkObjectInput(value: unknown): string | null {
+  return isRecord(value) ? null : "input must be an object";
+}
+
+/** An input whose only field is an optional session id. */
+function checkSessionInput(value: unknown): string | null {
+  return isRecord(value) ? checkOptionalString(value, "sessionID") : "input must be an object";
 }
 
 function checkOptionalString(input: Record<string, unknown>, field: string): string | null {
@@ -175,9 +181,7 @@ export const QuotaRpc = {
   },
   methods: {
     snapshot: {
-      input: schema<QuotaRpcSnapshotInput>((value) =>
-        isRecord(value) ? checkOptionalString(value, "sessionID") : "input must be an object",
-      ),
+      input: schema<QuotaRpcSnapshotInput>(checkSessionInput),
       output: schema<QuotaRpcSnapshotOutput>(checkSnapshotOutput),
     },
     refresh: {
@@ -193,9 +197,7 @@ export const QuotaRpc = {
       output: schema<QuotaRpcSnapshotOutput>(checkSnapshotOutput),
     },
     notices: {
-      input: schema<QuotaRpcNoticesInput>((value) =>
-        isRecord(value) ? null : "input must be an object",
-      ),
+      input: schema<QuotaRpcNoticesInput>(checkObjectInput),
       output: schema<QuotaRpcNoticesOutput>((value) =>
         isRecord(value) && typeof value.homeLine === "string"
           ? null
@@ -217,9 +219,7 @@ export const QuotaRpc = {
       ),
     },
     status: {
-      input: schema<QuotaRpcStatusInput>((value) =>
-        isRecord(value) ? checkOptionalString(value, "sessionID") : "input must be an object",
-      ),
+      input: schema<QuotaRpcStatusInput>(checkSessionInput),
       output: schema<QuotaRpcStatusOutput>((value) =>
         isRecord(value) && typeof value.text === "string" ? null : "output must carry a text",
       ),
@@ -231,9 +231,7 @@ export const QuotaRpc = {
       ),
     },
     downloadPrices: {
-      input: schema<QuotaRpcDownloadPricesInput>((value) =>
-        isRecord(value) ? null : "input must be an object",
-      ),
+      input: schema<QuotaRpcDownloadPricesInput>(checkObjectInput),
       output: schema<QuotaRpcDownloadPricesOutput>((value) =>
         isRecord(value) && typeof value.ok === "boolean" && typeof value.message === "string"
           ? null
@@ -241,9 +239,7 @@ export const QuotaRpc = {
       ),
     },
     settings: {
-      input: schema<QuotaRpcSettingsInput>((value) =>
-        isRecord(value) ? null : "input must be an object",
-      ),
+      input: schema<QuotaRpcSettingsInput>(checkObjectInput),
       output: schema<QuotaRpcSettingsOutput>((value) =>
         isRecord(value) &&
         isRecord(value.values) &&
@@ -278,7 +274,9 @@ export const QuotaRpc = {
       input: schema<QuotaRpcAcknowledgeInput>((value) =>
         isRecord(value) && typeof value.id === "string" ? null : "input must carry an id",
       ),
-      output: schema<QuotaRpcAcknowledgeOutput>(checkOutput),
+      output: schema<QuotaRpcAcknowledgeOutput>((value) =>
+        isRecord(value) ? null : "output must be an object",
+      ),
     },
   },
 } satisfies Rpc.PortableDefinition;

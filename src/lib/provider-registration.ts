@@ -174,7 +174,7 @@ export const QUOTA_PROVIDER_REGISTRATION_SOURCE = [
   },
   {
     id: "quota-providers",
-    label: "Quota providers",
+    label: "Custom providers",
     runtimeIds: [],
     synonyms: [],
   },

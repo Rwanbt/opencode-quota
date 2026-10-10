@@ -12,7 +12,7 @@ import { type JSX, useTerminalDimensions } from "@opentui/solid";
 import { createMemo, createSignal } from "solid-js";
 import type { UsageReport } from "../core/usage.js";
 import { sanitizeDisplayText } from "../lib/display-sanitize.js";
-import { QuotaRpc, type QuotaRpcUsageInput, type QuotaRpcUsageOutput } from "../rpc.js";
+import { QuotaRpc } from "../rpc.js";
 import {
   DEFAULT_QUICK_LOOK_RANGE,
   type QuickLookLine,
@@ -23,16 +23,11 @@ import {
   stepRange,
 } from "../view/quick-look.js";
 import type { UsageMode } from "../view/usage.js";
-import {
-  type QuotaRpcCallOptions,
-  quotaCallOptions,
-  type RpcLocationHost,
-  rpcErrorMessage,
-} from "./client.js";
+import { type ClientHost, errorToast, quotaCallOptions, rpcErrorMessage } from "./client.js";
 import type { DisplaySettings } from "./display.js";
 import type { SurfaceHost } from "./sidebar.js";
 import { roleColor } from "./theme.js";
-import type { QuotaWindow, WindowTheme } from "./window/shell.js";
+import { type QuotaWindow, routeSessionID, type WindowTheme } from "./window/shell.js";
 
 /** OpenCode's "xlarge" dialog width (dialogWidth in its ui/dialog.tsx). */
 const DIALOG_WIDTH = 116;
@@ -55,13 +50,10 @@ type Toast = {
 type QuickLookKey = { bind: string; title: string; group: string; run: () => void };
 
 /** What the quick look needs from OpenCode's TUI context. */
-export type QuickLookHost = RpcLocationHost & {
+export type QuickLookHost = ClientHost & {
   /** `categorical` is OpenCode's palette for things that need telling apart, like providers. */
   theme: WindowTheme & { categorical?: ReadonlyArray<Readonly<Record<number, RGBA>>> };
   client: {
-    rpc: (definition: typeof QuotaRpc) => {
-      usage(input: QuotaRpcUsageInput, options: QuotaRpcCallOptions): Promise<QuotaRpcUsageOutput>;
-    };
     session: {
       command(
         input: { sessionID: string; name: string; text: string },
@@ -153,17 +145,6 @@ export function createQuickLook(
   host: SurfaceHost,
   quotaWindow: Pick<QuotaWindow, "open">,
 ): QuickLook {
-  const routeSessionID = () => {
-    const route = api.ui.router.current();
-    return route.type === "session" ? route.sessionID : undefined;
-  };
-  const showError = (error: unknown) =>
-    api.ui.toast.show({
-      variant: "error",
-      title: "OpenCode Quota",
-      message: sanitizeDisplayText(rpcErrorMessage(error)),
-    });
-
   // The RPC client is made per call, so nothing reaches OpenCode during plugin setup.
   async function loadUsage(range: QuickLookRange, sessionID?: string): Promise<UsageReport> {
     const input = { range, ...(sessionID ? { sessionID } : {}) };
@@ -203,7 +184,7 @@ export function createQuickLook(
         { signal: AbortSignal.timeout(COMMAND_TIMEOUT_MS) },
       );
     } catch (error) {
-      showError(error);
+      api.ui.toast.show(errorToast(error));
     }
   }
 
@@ -322,7 +303,7 @@ export function createQuickLook(
 
   return {
     open() {
-      const sessionID = routeSessionID();
+      const sessionID = routeSessionID(api);
       const form = host.display().quickLook;
       if (form === "chat" && sessionID) void postToChat(sessionID);
       else if (form === "dialog") openDialog(sessionID);

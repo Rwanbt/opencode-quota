@@ -237,7 +237,7 @@ function blocksOf(
     );
     for (const group of own) claimed.add(group);
     const index = report?.providers.indexOf(row) ?? 0;
-    // One group: its title names the account ("Quota providers (Team)").
+    // One group: its title names the account ("Custom providers (Team)").
     const name = own.length === 1 ? own[0].title : own[0]?.name;
     return {
       name: name ?? getQuotaProviderDisplayLabel(row.providerID),

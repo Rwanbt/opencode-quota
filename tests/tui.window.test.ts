@@ -2,8 +2,12 @@ import { describe, expect, it } from "vitest";
 import type { ProviderSnapshot, QuotaRow, QuotaSnapshot } from "../src/core/types.js";
 import { defaultDisplaySettings } from "../src/tui/display.js";
 import { limitsLines } from "../src/tui/window/limits.js";
-import { type NoticeBoard, noticeItems, noticeOptions } from "../src/tui/window/notices.js";
-import { statusLines } from "../src/tui/window/status.js";
+import {
+  type NoticeBoard,
+  noticeItems,
+  noticeOptions,
+  statusLines,
+} from "../src/tui/window/views.tsx";
 import { lineText } from "../src/view/text.js";
 
 const NOW = Date.parse("2026-10-10T12:00:00.000Z");

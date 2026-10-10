@@ -14,6 +14,7 @@
 import { createSignal } from "solid-js";
 import type { Words } from "../core/types.js";
 import { isQuotaWindow } from "../core/windows.js";
+import { isRecord } from "../lib/json-guards.js";
 import type { DisplayImport } from "../settings/index.js";
 import { checkSetting, SETTINGS_SCHEMA, type SettingRule } from "../settings/schema.js";
 import {
@@ -107,10 +108,6 @@ export const THEME_COLORS = Object.fromEntries(
   COLOR_LINES.map(({ role, theme }) => [role, theme]),
 ) as Record<ColorRole, ColorName | "bar">;
 const SURFACES: readonly Surface[] = ["sidebar", "collapsed", "statusLine", "toast"];
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 function isStringList(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item) => typeof item === "string");

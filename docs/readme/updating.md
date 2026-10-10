@@ -8,13 +8,13 @@ OpenCode 2 installs and updates plugins itself. This updates every outdated plug
 opencode plugin update
 ```
 
-Then restart OpenCode and run `/quota_status` (or `npx @slkiser/opencode-quota status` in a terminal). To update only this plugin, pass its entry exactly as written in your OpenCode config, for example `opencode plugin update @slkiser/opencode-quota`.
+Then restart OpenCode and run `/quota_status` in a session (or `npx @slkiser/opencode-quota status` in a terminal). To update only this plugin, pass its entry exactly as written in your OpenCode config, for example `opencode plugin update @slkiser/opencode-quota`.
 
 ## Moving from 5.x
 
 Update as above; you don't need to edit your settings. On the first start, OpenCode Quota converts your old global settings automatically:
 
-- It reads `opencode-quota/quota-toast.jsonc` or `.json` in the global OpenCode folder, or `experimental.quotaToast` in the global `opencode.json` when there is no such file.
+- It reads `opencode-quota/quota-toast.jsonc` or `.json` in the global OpenCode folder, or `experimental.quotaToast` in the global `opencode.json` or `opencode.jsonc` when there is no such file.
 - It writes the result to `opencode-quota/settings.jsonc` (see [Configuration](configuration.md)) and leaves the old file in place. From then on, only `settings.jsonc` is read.
 - Your old display choices (which surfaces and toasts show) move into the TUI.
 - The TUI shows a toast once. In that session, `/quota_status` lists what was converted, what was dropped, and why.
@@ -44,5 +44,5 @@ What changed in `5.0.0`:
 - **Quota runs in OpenCode's background service.** Inside OpenCode, `PATH`, environment variables, and the working folder (your home folder) come from the service, not your terminal. See [Service environment](troubleshooting.md#service-environment).
 - **Web and Desktop get slash commands, but no toasts or panels,** because OpenCode 2 gives plugins no Web UI hooks. See [Web and Desktop notes](manual-install.md#web-and-desktop-notes).
 - **One plugin entry.** One `"plugin"` entry in `opencode.json` loads the server and the TUI; no `tui.json` entry is needed.
-- **TUI reports open in a popup or in the quota window.** Only `/quota` with the `chat` [quick look](configuration.md#tui-surfaces) leaves a chat message.
+- **TUI reports open in a popup, a toast or the quota window.** Only `/quota` with the `chat` [quick look](configuration.md#tui-surfaces) leaves a chat message.
 - **OpenCode Zen uses your OpenCode Console sign-in; OpenCode Go uses it or an API key.** Their old workspace/cookie settings are no longer read. See [OpenCode Go](providers.md#opencode-go) and [OpenCode Zen](providers.md#opencode-zen).

@@ -9,53 +9,12 @@ import type { QuotaRpcNoticeListInput, QuotaRpcNoticeListOutput } from "../src/r
 import { createDisplayStore, type DisplayStorage } from "../src/tui/display.js";
 import { createSettingsEditor } from "../src/tui/window/settings.tsx";
 import { createQuotaWindow, type QuotaWindow } from "../src/tui/window/shell.tsx";
+import { findAll, THEME, textLines } from "./helpers/jsx-tree.js";
 
-type Node = { type: unknown; props: Record<string, any> };
 type Key = { bind: string; run: () => void };
 type Layer = { target: () => unknown; priority?: number; commands: Key[] };
 /** The window's own keys; the Usage tab's sit above them (11). */
 const WINDOW_KEYS_PRIORITY = 10;
-
-const THEME = {
-  text: {
-    base: "text",
-    muted: "muted",
-    action: { primary: { focused: "action", selected: "selected" } },
-    feedback: {
-      success: { base: "green" },
-      warning: { base: "yellow" },
-      error: { base: "red" },
-      info: { base: "blue" },
-    },
-  },
-  hue: { accent: { 500: "accent" } },
-  background: { action: { primary: { focused: "action-bg" } }, raised: { high: "raised" } },
-  border: { base: "border" },
-};
-
-/** Every `text` node of a JSX tree as one line. */
-function textLines(node: unknown): string[] {
-  const strings = (child: unknown): string =>
-    Array.isArray(child)
-      ? child.map(strings).join("")
-      : typeof child === "string" || typeof child === "number"
-        ? String(child)
-        : child && typeof child === "object"
-          ? strings((child as Node).props?.children)
-          : "";
-  if (Array.isArray(node)) return node.flatMap(textLines);
-  if (!node || typeof node !== "object") return [];
-  const element = node as Node;
-  if (element.type === "text") return [strings(element.props.children)];
-  return textLines(element.props?.children);
-}
-
-function findAll(node: unknown, match: (node: Node) => boolean): Node[] {
-  if (Array.isArray(node)) return node.flatMap((child) => findAll(child, match));
-  if (!node || typeof node !== "object") return [];
-  const element = node as Node;
-  return [...(match(element) ? [element] : []), ...findAll(element.props?.children, match)];
-}
 
 /** Clicks the innermost clickable part that shows `text`. */
 function click(tree: unknown, text: string): void {
