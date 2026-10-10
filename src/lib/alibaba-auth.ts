@@ -1,5 +1,4 @@
 import {
-  API_KEY_LOGIN_CACHE_MAX_AGE_MS,
   API_KEY_LOGIN_VENDORS,
   type ApiKeySource,
   getApiKeyCheckedPaths,
@@ -13,19 +12,18 @@ import { asRecord, nonEmptyString } from "./json-guards.js";
 import { getCredentialDatabasePaths } from "./opencode-auth.js";
 import type { AlibabaCodingPlanTier, AuthData } from "./types.js";
 
-export const DEFAULT_ALIBABA_AUTH_CACHE_MAX_AGE_MS = API_KEY_LOGIN_CACHE_MAX_AGE_MS;
 const DEFAULT_ALIBABA_CODING_PLAN_TIER: AlibabaCodingPlanTier = "lite";
 const ALIBABA = API_KEY_LOGIN_VENDORS["alibaba-coding-plan"];
 const TIER_KEYS = ["tier", "planTier", "plan_tier", "subscriptionTier"] as const;
 
-export type ResolvedAlibabaCodingPlanAuth =
+type ResolvedAlibabaCodingPlanAuth =
   | { state: "none" }
   | { state: "configured"; apiKey: string; tier: AlibabaCodingPlanTier }
   | { state: "invalid"; error: string; rawTier?: string };
 
 type DiagnosticPaths = { checkedPaths: string[]; credentialDatabasePaths: string[] };
 
-export type AlibabaCodingPlanAuthDiagnostics =
+type AlibabaCodingPlanAuthDiagnostics =
   | ({ state: "none"; source: null } & DiagnosticPaths)
   | ({ state: "configured"; source: ApiKeySource; tier: AlibabaCodingPlanTier } & DiagnosticPaths)
   | ({
@@ -71,7 +69,6 @@ export function resolveAlibabaCodingPlanAuth(
 }
 
 async function resolveAlibabaCodingPlanAuthWithSource(params?: {
-  maxAgeMs?: number;
   fallbackTier?: AlibabaCodingPlanTier;
 }): Promise<{ auth: ResolvedAlibabaCodingPlanAuth; source: ApiKeySource | null }> {
   const fallbackTier = params?.fallbackTier ?? DEFAULT_ALIBABA_CODING_PLAN_TIER;
@@ -84,24 +81,20 @@ async function resolveAlibabaCodingPlanAuthWithSource(params?: {
   }
 
   const auth = resolveAlibabaCodingPlanAuth(
-    (await readApiKeyLoginAuth(ALIBABA, params)) as AuthData | null,
+    (await readApiKeyLoginAuth(ALIBABA)) as AuthData | null,
     fallbackTier,
   );
   return { auth, source: auth.state === "none" ? null : "opencode.db" };
 }
 
 export async function resolveAlibabaCodingPlanAuthCached(params?: {
-  maxAgeMs?: number;
   fallbackTier?: AlibabaCodingPlanTier;
 }): Promise<ResolvedAlibabaCodingPlanAuth> {
   return (await resolveAlibabaCodingPlanAuthWithSource(params)).auth;
 }
 
-export async function getAlibabaCodingPlanAuthDiagnostics(params?: {
-  maxAgeMs?: number;
-  fallbackTier?: AlibabaCodingPlanTier;
-}): Promise<AlibabaCodingPlanAuthDiagnostics> {
-  const { auth, source } = await resolveAlibabaCodingPlanAuthWithSource(params);
+export async function getAlibabaCodingPlanAuthDiagnostics(): Promise<AlibabaCodingPlanAuthDiagnostics> {
+  const { auth, source } = await resolveAlibabaCodingPlanAuthWithSource();
   const paths = {
     checkedPaths: getApiKeyCheckedPaths(ALIBABA),
     credentialDatabasePaths: getCredentialDatabasePaths(),

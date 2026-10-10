@@ -1,13 +1,13 @@
 export type KimiQuotaEndpointId = "global" | "cn";
 
-export interface KimiQuotaEndpoint {
+interface KimiQuotaEndpoint {
   id: KimiQuotaEndpointId;
   label: string;
   apiBaseUrl: string;
   quotaUrl: string;
 }
 
-export const KIMI_QUOTA_ENDPOINTS: Readonly<Record<KimiQuotaEndpointId, KimiQuotaEndpoint>> = {
+const KIMI_QUOTA_ENDPOINTS: Readonly<Record<KimiQuotaEndpointId, KimiQuotaEndpoint>> = {
   global: {
     id: "global",
     label: "Kimi Code",

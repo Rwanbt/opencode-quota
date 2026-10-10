@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { QuotaProviderContext } from "../src/lib/entries.js";
+import { bindCredentialSource } from "../src/lib/opencode-auth.js";
 import type {
   QuotaProviderDefinition,
   RemoteApiQuotaProviderDefinition,
@@ -420,5 +421,66 @@ describe("quota-providers aggregate provider", () => {
     expect(checks(result)).toEqual([
       "custom_local_check: outcome=local_state_error state_health=healthy state_version=1 state_last_update=1970-01-01T00:00:00.001Z",
     ]);
+  });
+
+  it("makes no request and reads no key or login for switched-off definitions", async () => {
+    // The real key lookup and request, so every key and login read is seen.
+    const actual = await vi.importActual<typeof import("../src/lib/quota-providers-remote.js")>(
+      "../src/lib/quota-providers-remote.js",
+    );
+    runtimeMocks.resolveQuotaProviderApiKey.mockImplementation(actual.resolveQuotaProviderApiKey);
+    runtimeMocks.fetchRemoteQuotaProvider.mockImplementation(actual.fetchRemoteQuotaProvider);
+    const fetch = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ version: "quota-v1", entries: [] }), {
+          headers: { "content-type": "application/json" },
+        }),
+    );
+    vi.stubGlobal("fetch", fetch);
+    vi.stubEnv("ON_GATEWAY_KEY", "on-key");
+    vi.stubEnv("OFF_GATEWAY_KEY", "off-key");
+    const on = { ...remote("on-gateway"), apiKeyEnv: "ON_GATEWAY_KEY" };
+    const ctx = context(
+      [
+        on,
+        { ...remote("off-gateway"), apiKeyEnv: "OFF_GATEWAY_KEY", enabled: false },
+        { ...local("off-local"), enabled: false },
+      ],
+      ["on-gateway", "off-gateway", "off-local"],
+    );
+    const loginReads: string[] = [];
+    const variableReads: string[] = [];
+    const unbind = bindCredentialSource({
+      kind: "sqlite",
+      async readRows({ integrationIds }) {
+        loginReads.push(...integrationIds);
+        return [];
+      },
+    });
+    const realEnv = process.env;
+    process.env = new Proxy(realEnv, {
+      get(target, name) {
+        if (typeof name === "string") variableReads.push(name);
+        return Reflect.get(target, name);
+      },
+    });
+
+    let result: ProviderFetchResult;
+    try {
+      result = await quotaProvidersProvider.fetch(ctx);
+    } finally {
+      process.env = realEnv;
+      unbind();
+    }
+
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(fetch).toHaveBeenCalledWith(on.url, expect.anything());
+    expect(variableReads).toContain("ON_GATEWAY_KEY");
+    expect(variableReads).not.toContain("OFF_GATEWAY_KEY");
+    expect(loginReads).not.toContain("off-gateway");
+    expect(runtimeMocks.collectLocalQuotaProviderEstimate).not.toHaveBeenCalled();
+    expect(runtimeMocks.inspectLocalQuotaProviderState).not.toHaveBeenCalled();
+    expect(result.accounts.map((account) => account.login)).toEqual(["on-gateway"]);
+    expect(result.debug.map((item) => item.key)).toEqual(["custom_on-gateway_check"]);
   });
 });

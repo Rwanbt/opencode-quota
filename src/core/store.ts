@@ -107,19 +107,19 @@ export type StoreSource = {
   rowPrefixesForModel?: (model: SessionModel) => Record<string, string[]>;
 };
 
-export type RefreshReason = "poll" | "turn" | "manual" | "retry";
+type RefreshReason = "poll" | "turn" | "manual" | "retry";
 /**
  * With a model, the snapshot also names the providers serving it. `refresh: false` answers the
  * saved rows without asking any provider, also for the due ones.
  */
-export type SnapshotOptions = { model?: SessionModel; refresh?: boolean };
-export type RefreshOptions = {
+type SnapshotOptions = { model?: SessionModel; refresh?: boolean };
+type RefreshOptions = {
   model?: SessionModel;
   reason: RefreshReason;
   providerIds?: readonly string[];
 };
 
-export type QuotaStoreDeps = {
+type QuotaStoreDeps = {
   source: () => Promise<StoreSource>;
   /** The snapshot file; null keeps everything in memory. */
   file: string | null;

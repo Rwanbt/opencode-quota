@@ -4,12 +4,12 @@ import { join } from "path";
 import { isRecord } from "./json-guards.js";
 import { getOpencodeRuntimeDirs } from "./opencode-runtime-paths.js";
 
-export type ResolvedMimoConfig =
+type ResolvedMimoConfig =
   | { state: "none" }
   | { state: "configured"; config: { cookie: string }; source: string }
   | { state: "invalid"; source: string; error: string };
 
-export interface MimoConfigDiagnostics {
+interface MimoConfigDiagnostics {
   state: ResolvedMimoConfig["state"];
   source: string | null;
   error: string | null;
@@ -30,7 +30,7 @@ function getConfigPath(): string {
   return join(getOpencodeRuntimeDirs().configDir, "opencode-quota", "mimo.json");
 }
 
-export function normalizeMimoCookieHeader(raw: string): string | null {
+function normalizeMimoCookieHeader(raw: string): string | null {
   if (raw.includes("\r") || raw.includes("\n")) return null;
 
   const withoutPrefix = raw.trim().replace(/^cookie\s*:\s*/iu, "");
@@ -100,7 +100,7 @@ async function resolveMimoConfigFile(path: string): Promise<ResolvedMimoConfig> 
 }
 
 /** A set environment variable wins over the config file, even when it is invalid. */
-export async function resolveMimoConfig(): Promise<ResolvedMimoConfig> {
+async function resolveMimoConfig(): Promise<ResolvedMimoConfig> {
   const envCookie = process.env[MIMO_COOKIE_ENV];
   if (envCookie !== undefined) return resolveCookie(envCookie, `env:${MIMO_COOKIE_ENV}`);
   return resolveMimoConfigFile(getConfigPath());

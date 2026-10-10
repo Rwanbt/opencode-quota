@@ -4,28 +4,28 @@ import type { Amount } from "../core/types.js";
 import { accountingDecimalFromNumber } from "../providers/accounting-decimal.js";
 import type { ProviderRow } from "../providers/contract.js";
 import { writeJsonAtomic } from "./atomic-json.js";
-import { asRecord, isRecord } from "./json-guards.js";
+import { asRecord, hasOnlyKeys, isRecord } from "./json-guards.js";
 import { lookupCost } from "./modelsdev-pricing.js";
 import type { OpencodeRuntimeDirs } from "./opencode-runtime-paths.js";
 import { getOpencodeRuntimeDirs } from "./opencode-runtime-paths.js";
 import type { OpenCodeMessage } from "./opencode-storage.js";
 import { iterCompletedAssistantMessages } from "./opencode-storage.js";
+import { resolvePricingKey } from "./pricing-key.js";
 import {
   customRow,
   type LocalEstimateQuotaProviderDefinition,
   type LocalEstimateWindow,
 } from "./quota-providers.js";
-import { resolvePricingKey } from "./quota-stats.js";
 import { type TokenBuckets, tokenBucketsFromMessage } from "./token-buckets.js";
 import { calculateUsdFromTokenBuckets } from "./token-cost.js";
 
-export const QUOTA_PROVIDER_LOCAL_STATE_VERSION = 1 as const;
+const QUOTA_PROVIDER_LOCAL_STATE_VERSION = 1 as const;
 const LOCAL_STATE_DIR = "opencode-quota/quota-providers";
 const MINUTE_MS = 60 * 1000;
 const DAY_MS = 24 * 60 * MINUTE_MS;
 const TOKEN_BUCKET_KEYS = ["input", "output", "reasoning", "cache_read", "cache_write"];
 
-export interface LocalQuotaProviderMessage {
+interface LocalQuotaProviderMessage {
   id: string;
   atMs: number;
   providerId: string;
@@ -41,11 +41,7 @@ export interface LocalQuotaProviderStateV1 {
   messages: LocalQuotaProviderMessage[];
 }
 
-export type LocalQuotaProviderStateHealth =
-  | "missing"
-  | "healthy"
-  | "malformed"
-  | "version_mismatch";
+type LocalQuotaProviderStateHealth = "missing" | "healthy" | "malformed" | "version_mismatch";
 
 export interface LocalQuotaProviderStateDiagnostics {
   path: string;
@@ -55,7 +51,7 @@ export interface LocalQuotaProviderStateDiagnostics {
   lastUpdatedAt: number | null;
 }
 
-export interface LocalEstimateResult {
+interface LocalEstimateResult {
   /** Each key is the part of the row id after `custom.<definition id>.`. */
   rows: ProviderRow[];
   state: LocalQuotaProviderStateV1;
@@ -71,11 +67,6 @@ interface LocalStateDependencies {
   }) => Promise<OpenCodeMessage[]>;
   readText?: (path: string) => Promise<string>;
   writeState?: (path: string, state: LocalQuotaProviderStateV1) => Promise<void>;
-}
-
-function hasOnlyKeys(value: Record<string, unknown>, allowed: readonly string[]): boolean {
-  const allowedSet = new Set(allowed);
-  return Object.keys(value).every((key) => allowedSet.has(key));
 }
 
 function isNonEmptyString(value: unknown): boolean {

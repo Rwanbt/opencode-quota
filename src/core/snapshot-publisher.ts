@@ -16,7 +16,7 @@ import {
 import type { ServerSettings } from "./provider-source.js";
 import type { QuotaSnapshot } from "./types.js";
 
-export type SnapshotPublisher = {
+type SnapshotPublisher = {
   publish(snapshot: QuotaSnapshot): void;
   /** Resolves when nothing is waiting or running. */
   idle(): Promise<void>;

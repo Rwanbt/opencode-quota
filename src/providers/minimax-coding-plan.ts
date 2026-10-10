@@ -2,7 +2,6 @@
 
 import type { Amount } from "../core/types.js";
 import {
-  API_KEY_LOGIN_CACHE_MAX_AGE_MS,
   API_KEY_LOGIN_VENDORS,
   type ApiKeyLoginSpec,
   readKeyLogins,
@@ -267,9 +266,7 @@ async function fetchMiniMaxQuota(
   spec: MiniMaxSpec,
   ctx: QuotaProviderContext,
 ): Promise<ProviderFetchResult> {
-  const { auth, diagnostics } = await resolveApiKeyLoginWithDiagnostics(spec.auth, {
-    maxAgeMs: API_KEY_LOGIN_CACHE_MAX_AGE_MS,
-  });
+  const { auth, diagnostics } = await resolveApiKeyLoginWithDiagnostics(spec.auth);
   const endpoint =
     diagnostics.state === "configured" ? getMiniMaxQuotaEndpoint(spec.endpoint) : undefined;
   const debug = [
@@ -351,9 +348,7 @@ function minimaxProvider(spec: MiniMaxSpec): QuotaProvider {
           })));
       if (!providerAvailable) return false;
 
-      const auth = await resolveApiKeyLogin(spec.auth, {
-        maxAgeMs: API_KEY_LOGIN_CACHE_MAX_AGE_MS,
-      });
+      const auth = await resolveApiKeyLogin(spec.auth);
       return auth.state === "configured" || auth.state === "invalid";
     },
 

@@ -128,7 +128,7 @@ function clip(segments: Segment[], width: number): Segment[] {
   return [...cut(rest, width - columnsOf(mark)), { ...error, text: mark }];
 }
 
-export type SidebarInput = {
+type SidebarInput = {
   groups: Group[];
   layout: Layout;
   words: Words;
@@ -237,7 +237,7 @@ function shortWindow(item: VisibleRow): string {
   return item.row.window ? WINDOWS[item.row.window].short : item.label;
 }
 
-export type CollapsedInput = {
+type CollapsedInput = {
   groups: Group[];
   layout: Layout;
   words: Words;
@@ -303,9 +303,9 @@ export function collapsedLines(input: CollapsedInput): Line[] {
 
 /** How much one status line segment shows, from the most to the least. */
 export type StatusLevel = "full" | "bar" | "reset" | "numbers";
-export const STATUS_LEVELS: readonly StatusLevel[] = ["full", "bar", "reset", "numbers"];
+const STATUS_LEVELS: readonly StatusLevel[] = ["full", "bar", "reset", "numbers"];
 /** The status line's little bar. */
-export const STATUS_BAR_WIDTH = 5;
+const STATUS_BAR_WIDTH = 5;
 
 export type StatusInput = {
   groups: Group[];
@@ -328,7 +328,7 @@ function statusName(input: StatusInput, group: Group): string {
  * last check failed, the error's words take the place of the reset time next to the rows kept
  * from before, or "⚠" where the level shows no reset time.
  */
-export function statusSegment(input: StatusInput, group: Group, level: StatusLevel): Line {
+function statusSegment(input: StatusInput, group: Group, level: StatusLevel): Line {
   const { layout, words, nowMs } = input;
   const picked = pickRow(group, input.window[group.providerId]);
   const percent = picked?.row.percentRemaining;

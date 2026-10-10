@@ -1,8 +1,9 @@
 /**
- * A faked provider's answer on the row contract, for tests that replace a whole provider.
+ * A faked provider's answer on the row contract, for tests that replace a whole provider,
+ * and the snapshot rows and providers that the views and the store hand on.
  * Type-only imports, so a test's module mocks stay in charge of what loads.
  */
-import type { QuotaWindow } from "../../src/core/types.js";
+import type { ProviderSnapshot, QuotaRow, QuotaWindow } from "../../src/core/types.js";
 import type { ProviderFetchResult, ProviderRow } from "../../src/providers/contract.js";
 
 /** A remote, provider-reported quota row with the percent left. */
@@ -56,3 +57,28 @@ export function answer(...accounts: FakeAccount[]): ProviderFetchResult {
 
 /** The answer of a provider that is not set up. */
 export const NOT_SET_UP: ProviderFetchResult = { attempted: false, accounts: [], debug: [] };
+
+/** A remote, provider-reported snapshot row; `id` is "<providerId>.<key>", the label is the key. */
+export function quotaRow(id: string, fields: Partial<QuotaRow> = {}): QuotaRow {
+  const [providerId = "", key = ""] = id.split(".");
+  return {
+    id,
+    providerId,
+    label: key,
+    type: "quota",
+    method: "remote_api",
+    authority: "provider_reported",
+    prominence: "primary",
+    ...fields,
+  };
+}
+
+/** A provider's part of a snapshot that is not refreshing. */
+export function providerSnapshot(
+  providerId: string,
+  label: string,
+  rows: QuotaRow[],
+  extra: Partial<ProviderSnapshot> = {},
+): ProviderSnapshot {
+  return { providerId, label, rows, refreshing: false, debug: [], ...extra };
+}

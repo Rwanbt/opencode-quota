@@ -9,6 +9,7 @@ import {
   disposeQuotaTelemetryOwner,
   publishQuotaTelemetry,
 } from "../src/lib/quota-telemetry.js";
+import { providerSnapshot, quotaRow as row } from "./helpers/fake-answers.js";
 
 type Observation = {
   value: number;
@@ -54,26 +55,25 @@ function createOtelHarness(options: { throwOnAdd?: string } = {}) {
   };
 }
 
-function row(providerId: string, key: string, extras: Partial<QuotaRow> = {}): QuotaRow {
-  return {
-    id: `${providerId}.${key}`,
-    providerId,
-    label: key,
-    type: "quota",
-    method: "remote_api",
-    authority: "provider_reported",
-    prominence: "primary",
-    ...extras,
-  };
+/** A fake OpenTelemetry API that the telemetry loads from now on. */
+function installOtel(options: { throwOnAdd?: string } = {}) {
+  const otel = createOtelHarness(options);
+  __setQuotaTelemetryApiLoaderForTests(async () => otel.api);
+  return otel;
 }
 
-function provider(
-  providerId: string,
-  rows: QuotaRow[],
-  extras: Partial<ProviderSnapshot> = {},
-): ProviderSnapshot {
-  return { providerId, label: providerId, rows, refreshing: false, debug: [], ...extras };
-}
+const provider = (providerId: string, rows: QuotaRow[], extras: Partial<ProviderSnapshot> = {}) =>
+  providerSnapshot(providerId, providerId, rows, extras);
+
+/** One observation of "opencode.quota.consumed". */
+const consumedSeries = (value: number, provider: string, window: string, resultType = "quota") => ({
+  value,
+  attributes: {
+    "quota.provider": provider,
+    "quota.window": window,
+    "quota.result_type": resultType,
+  },
+});
 
 function snapshot(...providers: ProviderSnapshot[]): QuotaSnapshot {
   return { version: 6, providers, resetNotices: [], generatedAtMs: 0 };
@@ -111,8 +111,7 @@ describe("quota telemetry", () => {
   });
 
   it("registers exactly two callbacks once and reuses them across enable transitions", async () => {
-    const otel = createOtelHarness();
-    __setQuotaTelemetryApiLoaderForTests(async () => otel.api);
+    const otel = installOtel();
     const owner = {};
 
     const first = enable(owner);
@@ -148,8 +147,7 @@ describe("quota telemetry", () => {
   it("publishes clamped deterministic quota series with only bounded attributes", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-07-25T12:00:42.000Z"));
-    const otel = createOtelHarness();
-    __setQuotaTelemetryApiLoaderForTests(async () => otel.api);
+    const otel = installOtel();
     const token = enable({});
 
     publishQuotaTelemetry(
@@ -158,21 +156,21 @@ describe("quota telemetry", () => {
         provider(
           "openai",
           [
-            row("openai", "five_hour", {
+            row("openai.five_hour", {
               account: "account@example.com",
               window: "five_hour",
               percentRemaining: 25,
             }),
-            row("openai", "five_hour", {
+            row("openai.five_hour", {
               account: "another@example.com",
               window: "five_hour",
               percentRemaining: -20,
             }),
-            row("openai", "private", {
+            row("openai.private", {
               label: "Private https://sensitive.example",
               percentRemaining: 120,
             }),
-            row("openai", "balance", {
+            row("openai.balance", {
               type: "balance",
               amount: { decimal: "42", unit: { kind: "currency", code: "USD" } },
             }),
@@ -183,7 +181,7 @@ describe("quota telemetry", () => {
           },
         ),
         provider("private-customer-provider", [
-          row("private-customer-provider", "monthly", { percentRemaining: 50 }),
+          row("private-customer-provider.monthly", { percentRemaining: 50 }),
         ]),
       ),
     );
@@ -198,22 +196,8 @@ describe("quota telemetry", () => {
           JSON.stringify(["quota.provider", "quota.result_type", "quota.window"]),
       ),
     ).toBe(true);
-    expect(consumed).toContainEqual({
-      value: 1,
-      attributes: {
-        "quota.provider": "openai",
-        "quota.window": "five_hour",
-        "quota.result_type": "quota",
-      },
-    });
-    expect(consumed).toContainEqual({
-      value: 0.5,
-      attributes: {
-        "quota.provider": "other",
-        "quota.window": "unknown",
-        "quota.result_type": "quota",
-      },
-    });
+    expect(consumed).toContainEqual(consumedSeries(1, "openai", "five_hour"));
+    expect(consumed).toContainEqual(consumedSeries(0.5, "other", "unknown"));
     expect(JSON.stringify(consumed)).not.toMatch(
       /account@example\.com|another@example\.com|sensitive\.example|token secret|42/,
     );
@@ -232,83 +216,59 @@ describe("quota telemetry", () => {
     },
     { name: "a row without a window", extras: {}, attributes: ["unknown", "quota"] },
   ])("names $name by the row's window and type", async ({ extras, attributes }) => {
-    const otel = createOtelHarness();
-    __setQuotaTelemetryApiLoaderForTests(async () => otel.api);
+    const otel = installOtel();
     publishQuotaTelemetry(
       enable({}),
       snapshot(
         provider("copilot", [
-          row("copilot", "row", { ...extras, percentRemaining: 40 }),
-          row("copilot", "spend", {
+          row("copilot.row", { ...extras, percentRemaining: 40 }),
+          row("copilot.spend", {
             type: "usage",
             amount: { decimal: "3", unit: { kind: "currency", code: "USD" } },
           }),
-          row("copilot", "enabled", { type: "status", flag: true }),
+          row("copilot.enabled", { type: "status", flag: true }),
         ]),
       ),
     );
     await __flushQuotaTelemetryInitializationForTests();
 
     expect(otel.collect("opencode.quota.consumed")).toEqual([
-      {
-        value: 0.6,
-        attributes: {
-          "quota.provider": "copilot",
-          "quota.window": attributes[0],
-          "quota.result_type": attributes[1],
-        },
-      },
+      consumedSeries(0.6, "copilot", attributes[0], attributes[1]),
     ]);
   });
 
   it("maps aggregate sources to custom and reduces privacy-collapsed series by maximum", async () => {
-    const otel = createOtelHarness();
-    __setQuotaTelemetryApiLoaderForTests(async () => otel.api);
+    const otel = installOtel();
     publishQuotaTelemetry(
       enable({}),
       snapshot(
         provider("quota-providers", [
-          row("quota-providers", "team", { window: "month", percentRemaining: 70 }),
-          row("quota-providers", "gateway", { window: "month", percentRemaining: 40 }),
+          row("quota-providers.team", { window: "month", percentRemaining: 70 }),
+          row("quota-providers.gateway", { window: "month", percentRemaining: 40 }),
         ]),
-        provider("private-a", [row("private-a", "monthly", { percentRemaining: 80 })]),
-        provider("private-b", [row("private-b", "monthly", { percentRemaining: 30 })]),
+        provider("private-a", [row("private-a.monthly", { percentRemaining: 80 })]),
+        provider("private-b", [row("private-b.monthly", { percentRemaining: 30 })]),
       ),
     );
     await __flushQuotaTelemetryInitializationForTests();
 
     expect(otel.collect("opencode.quota.consumed")).toEqual([
-      {
-        value: 0.6,
-        attributes: {
-          "quota.provider": "custom",
-          "quota.window": "month",
-          "quota.result_type": "quota",
-        },
-      },
-      {
-        value: 0.7,
-        attributes: {
-          "quota.provider": "other",
-          "quota.window": "unknown",
-          "quota.result_type": "quota",
-        },
-      },
+      consumedSeries(0.6, "custom", "month"),
+      consumedSeries(0.7, "other", "unknown"),
     ]);
   });
 
   it("replaces the owner's series with each snapshot and ages them from the last answer", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-07-25T12:00:00.000Z"));
-    const otel = createOtelHarness();
-    __setQuotaTelemetryApiLoaderForTests(async () => otel.api);
+    const otel = installOtel();
     const token = enable({});
     await __flushQuotaTelemetryInitializationForTests();
     const ages = (okAtMs: number | undefined, providerId = "copilot") => {
       publishQuotaTelemetry(
         token,
         snapshot(
-          provider(providerId, [row(providerId, "m", { percentRemaining: 50 })], { okAtMs }),
+          provider(providerId, [row(`${providerId}.m`, { percentRemaining: 50 })], { okAtMs }),
         ),
       );
       return otel.collect("opencode.quota.cache.age");
@@ -325,20 +285,12 @@ describe("quota telemetry", () => {
     // A provider missing from the next snapshot leaves no series behind.
     ages(Date.now() - 1_000, "openai");
     expect(otel.collect("opencode.quota.consumed")).toEqual([
-      {
-        value: 0.5,
-        attributes: {
-          "quota.provider": "openai",
-          "quota.window": "unknown",
-          "quota.result_type": "quota",
-        },
-      },
+      consumedSeries(0.5, "openai", "unknown"),
     ]);
   });
 
   it("keeps owners isolated, rejects stale generations, and disposes cleanly", async () => {
-    const otel = createOtelHarness();
-    __setQuotaTelemetryApiLoaderForTests(async () => otel.api);
+    const otel = installOtel();
     const firstOwner = {};
     const secondOwner = {};
     const stale = enable(firstOwner, "config-a");
@@ -346,7 +298,7 @@ describe("quota telemetry", () => {
     const second = enable(secondOwner);
     expect(current.generation).toBeGreaterThan(stale.generation);
     const weekly = (percentRemaining: number) =>
-      snapshot(provider("copilot", [row("copilot", "w", { window: "week", percentRemaining })]));
+      snapshot(provider("copilot", [row("copilot.w", { window: "week", percentRemaining })]));
 
     publishQuotaTelemetry(stale, weekly(0));
     publishQuotaTelemetry(current, weekly(90));
@@ -383,24 +335,20 @@ describe("quota telemetry", () => {
     await expect(__flushQuotaTelemetryInitializationForTests()).resolves.toBeUndefined();
 
     __resetQuotaTelemetryForTests();
-    const brokenRegistration = createOtelHarness({
-      throwOnAdd: "opencode.quota.cache.age",
-    });
-    __setQuotaTelemetryApiLoaderForTests(async () => brokenRegistration.api);
+    const brokenRegistration = installOtel({ throwOnAdd: "opencode.quota.cache.age" });
     expect(() => enable({})).not.toThrow();
     await expect(__flushQuotaTelemetryInitializationForTests()).resolves.toBeUndefined();
     expect(brokenRegistration.callbacks.size).toBe(0);
 
     __resetQuotaTelemetryForTests();
-    const otel = createOtelHarness();
-    __setQuotaTelemetryApiLoaderForTests(async () => otel.api);
+    const otel = installOtel();
     const token = enable({});
     publishQuotaTelemetry(
       token,
       snapshot(
         provider("openai", [
-          row("openai", "daily", { window: "day", percentRemaining: 50 }),
-          row("openai", "weekly", { window: "week", percentRemaining: 25 }),
+          row("openai.daily", { window: "day", percentRemaining: 50 }),
+          row("openai.weekly", { window: "week", percentRemaining: 25 }),
         ]),
       ),
     );
@@ -417,8 +365,7 @@ describe("quota telemetry", () => {
   });
 
   it("does not create timers while configuring or observing", async () => {
-    const otel = createOtelHarness();
-    __setQuotaTelemetryApiLoaderForTests(async () => otel.api);
+    const otel = installOtel();
     const setInterval = vi.spyOn(globalThis, "setInterval");
     const setTimeout = vi.spyOn(globalThis, "setTimeout");
 

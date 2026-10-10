@@ -47,20 +47,7 @@ import {
   publicPricingMeta,
   statusPathText,
 } from "./quota-status.js";
-import { type ReportDocument, renderPlainTextReport } from "./report-document.js";
-import { getPackageVersion } from "./version.js";
-
-/** The commands this module builds reports for. */
-export type QuotaDialogCommandId = "quota_status";
-
-/** The /quota_status report: the document the TUI renders and the text everything else shows. */
-export type QuotaDialogCommandOutput = {
-  state: "output";
-  command: QuotaDialogCommandId;
-  title: string;
-  output: string;
-  document: ReportDocument;
-};
+import { renderPlainTextReport } from "./report-document.js";
 
 /** `opencode-quota show` lists every row of every provider. */
 const EVERY_ROW: SurfaceRows = { enabled: true, hidden: [], providerOrder: [], rowOrder: {} };
@@ -93,79 +80,46 @@ export function applyPricingSettings(pricing: Settings["pricing"]): void {
   setPricingSnapshotSelection(pricing.source);
 }
 
-/** Starts a models.dev price refresh when due and waits for it at most `maxWaitMs`. */
+/** Starts a models.dev price refresh when due and waits for it at most 0.75 s. */
 export async function kickPricingRefresh(params: {
-  reason: "init" | "tokens" | "status";
-  maxWaitMs?: number;
+  reason: "tokens" | "status";
   snapshotSelection: PricingSnapshotSource;
-  log?: (message: string, extra?: Record<string, unknown>) => Promise<void>;
 }): Promise<void> {
   try {
-    const refreshPromise = maybeRefreshPricingSnapshot({
-      reason: params.reason,
-      snapshotSelection: params.snapshotSelection,
-    });
-    const guardedRefreshPromise = refreshPromise.catch(() => undefined);
-    if (!params.maxWaitMs || params.maxWaitMs <= 0) {
-      void guardedRefreshPromise;
-      return;
-    }
-
-    await Promise.race([
-      guardedRefreshPromise,
-      new Promise<void>((resolve) => {
-        setTimeout(resolve, params.maxWaitMs);
-      }),
-    ]);
-  } catch (error) {
-    await params.log?.("Pricing refresh failed", {
-      reason: params.reason,
-      error: error instanceof Error ? error.message : String(error),
-    });
+    const refresh = maybeRefreshPricingSnapshot(params).catch(() => undefined);
+    await Promise.race([refresh, new Promise<void>((resolve) => setTimeout(resolve, 750))]);
+  } catch {
+    // A refresh that fails to start keeps the current price list.
   }
 }
 
-/** Where the settings come from and what they say about providers and prices. */
-export interface QuotaStatusReportConfigPayload {
-  settingsPath: string;
-  settingsFileExists: boolean;
-  enabledProviders: string[] | "auto";
-  onlyCurrentModel: boolean;
-  pricingSnapshotSource: PricingSnapshotSource;
-}
-
-export interface QuotaStatusReportPricingPayload {
-  selection: PricingSnapshotSource;
-  activeSource: string;
-  snapshot: {
-    source: string;
-    generatedAt: string | null;
-    units: string;
-  };
-  snapshotPath: string;
-  refreshStatePath: string;
-}
-
-export interface QuotaStatusReportPayload {
-  version: string;
+/** `opencode-quota status --json`: the format version, then what the report says, as data. */
+interface QuotaStatusReportPayload {
+  version: "6";
   generatedAt: string;
-  config: QuotaStatusReportConfigPayload;
+  /** Where the settings come from and what they say about providers and prices. */
+  config: {
+    settingsPath: string;
+    settingsFileExists: boolean;
+    enabledProviders: string[] | "auto";
+    onlyCurrentModel: boolean;
+    pricingSnapshotSource: PricingSnapshotSource;
+  };
   providers: Array<{
     id: string;
     enabled: boolean;
     available: boolean;
     matchesCurrentModel?: boolean;
   }>;
-  pricing: QuotaStatusReportPricingPayload;
+  pricing: {
+    selection: PricingSnapshotSource;
+    activeSource: string;
+    snapshot: { source: string; generatedAt: string | null; units: string };
+    snapshotPath: string;
+    refreshStatePath: string;
+  };
   /** One per enabled and available provider: ok when its check had no error. */
   liveProbes: Array<{ id: string; ok: boolean }>;
-}
-
-export interface QuotaStatusReportData {
-  document: ReportDocument;
-  output: string;
-  payload: QuotaStatusReportPayload;
-  hasComparableProviderData: boolean;
 }
 
 /**
@@ -335,15 +289,15 @@ export async function buildStatusReportData(params: {
   onDetectedProviderIds?: (providerIds: string[]) => Promise<void>;
   /** When set, restrict provider availability and live checks to this provider id. */
   providerFilterId?: string;
-}): Promise<QuotaStatusReportData> {
+}): Promise<{
+  output: string;
+  payload: QuotaStatusReportPayload;
+  hasComparableProviderData: boolean;
+}> {
   const { host } = params;
   const loaded = host.settings();
   const { settings } = loaded;
-  await kickPricingRefresh({
-    reason: "status",
-    maxWaitMs: 750,
-    snapshotSelection: settings.pricing.source,
-  });
+  await kickPricingRefresh({ reason: "status", snapshotSelection: settings.pricing.source });
 
   const currentModel = params.sessionModel?.id;
   const currentProviderID = params.sessionModel?.providerID;
@@ -413,10 +367,9 @@ export async function buildStatusReportData(params: {
   });
 
   // The payload follows the report's closed vocabulary: known ids, fixed words, known paths.
-  const version = (await getPackageVersion()) ?? "unknown";
   const pricingMeta = publicPricingMeta();
   const payload: QuotaStatusReportPayload = {
-    version,
+    version: "6",
     generatedAt: new Date(params.generatedAtMs).toISOString(),
     config: {
       settingsPath: statusPathText(loaded.path),
@@ -445,16 +398,14 @@ export async function buildStatusReportData(params: {
   };
 
   return {
-    document,
     output: renderPlainTextReport(document),
     payload,
     hasComparableProviderData: checked.some((provider) => provider.rows.length > 0),
   };
 }
 
-/** The /quota_status report, as a document and as plain text. */
+/** The /quota_status report as text. */
 export async function buildQuotaDialogCommandOutput(params: {
-  command: QuotaDialogCommandId;
   host: ProviderSourceHost;
   sessionID?: string;
   /** The session's model, for /quota_status. */
@@ -463,7 +414,7 @@ export async function buildQuotaDialogCommandOutput(params: {
   conversion?: V5Conversion;
   generatedAtMs?: number;
   onDetectedProviderIds?: (providerIds: string[]) => Promise<void>;
-}): Promise<QuotaDialogCommandOutput> {
+}): Promise<{ output: string }> {
   const generatedAtMs = params.generatedAtMs ?? Date.now();
   applyPricingSettings(params.host.settings().settings.pricing);
   const sessionModel =
@@ -478,11 +429,5 @@ export async function buildQuotaDialogCommandOutput(params: {
     generatedAtMs,
     onDetectedProviderIds: params.onDetectedProviderIds,
   });
-  return {
-    state: "output",
-    command: params.command,
-    title: "OpenCode Quota Status",
-    output: data.output,
-    document: data.document,
-  };
+  return { output: data.output };
 }

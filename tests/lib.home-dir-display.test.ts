@@ -113,7 +113,7 @@ describe("replaceHomeDirWithTilde", () => {
 describe("replaceHomeDirWithTildeInDocument", () => {
   it("replaces the home dir in every kind of block", () => {
     const document: ReportDocument = {
-      heading: { line: "# /Users/alice/title", subtitle: "/Users/alice" },
+      heading: "# /Users/alice/title",
       sections: [
         {
           id: "s",
@@ -124,19 +124,13 @@ describe("replaceHomeDirWithTildeInDocument", () => {
               lines: ["- configPaths: /Users/alice/.config/opencode/opencode.json"],
             },
             { kind: "kv", rows: [{ key: "opencode.db", value: "path=/Users/alice/x.db" }] },
-            {
-              kind: "table",
-              headers: ["path"],
-              rows: [["/Users/alice/a"]],
-              aligns: ["left"],
-            },
           ],
         },
       ],
     };
 
     expect(replaceHomeDirWithTildeInDocument(document, HOME)).toEqual({
-      heading: { line: "# ~/title", subtitle: "~" },
+      heading: "# ~/title",
       sections: [
         {
           id: "s",
@@ -144,7 +138,6 @@ describe("replaceHomeDirWithTildeInDocument", () => {
           blocks: [
             { kind: "lines", lines: ["- configPaths: ~/.config/opencode/opencode.json"] },
             { kind: "kv", rows: [{ key: "opencode.db", value: "path=~/x.db" }] },
-            { kind: "table", headers: ["path"], rows: [["~/a"]], aligns: ["left"] },
           ],
         },
       ],
@@ -157,10 +150,7 @@ describe("replaceHomeDirWithTildeInDocument", () => {
       sections: [
         {
           id: "s",
-          blocks: [
-            { kind: "kv", rows: [{ key: "/Users/alice/a" }] },
-            { kind: "table", headers: ["path"], rows: [["/Users/alice/b"]], aligns: ["left"] },
-          ],
+          blocks: [{ kind: "kv", rows: [{ key: "/Users/alice/a" }] }],
         },
       ],
     };

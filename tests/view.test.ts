@@ -22,37 +22,19 @@ import {
   sidebarLines,
   statusLayout,
 } from "../src/view/text.js";
+import { providerSnapshot, quotaRow as row } from "./helpers/fake-answers.js";
 
 const NOW = Date.parse("2026-10-10T12:00:00.000Z");
 const MINUTE = 60_000;
 const at = (ms: number) => new Date(NOW + ms).toISOString();
 
-function row(id: string, fields: Partial<QuotaRow> = {}): QuotaRow {
-  const [providerId = "", key = ""] = id.split(".");
-  return {
-    id,
-    providerId,
-    label: key,
-    type: "quota",
-    method: "remote_api",
-    authority: "provider_reported",
-    prominence: "primary",
-    ...fields,
-  };
-}
-
-function provider(providerId: string, label: string, rows: QuotaRow[], extra = {}) {
-  return {
-    providerId,
-    label,
-    rows,
-    okAtMs: NOW,
-    checkedAtMs: NOW,
-    refreshing: false,
-    debug: [],
-    ...extra,
-  } satisfies ProviderSnapshot;
-}
+/** A provider whose rows were fetched and checked at NOW. */
+const provider = (
+  providerId: string,
+  label: string,
+  rows: QuotaRow[],
+  extra: Partial<ProviderSnapshot> = {},
+) => providerSnapshot(providerId, label, rows, { okAtMs: NOW, checkedAtMs: NOW, ...extra });
 
 const CLAUDE = provider("anthropic", "Claude", [
   row("anthropic.five_hour", {
@@ -341,20 +323,18 @@ describe("view text", () => {
     surface: "sidebar" | "collapsed" | "statusLine" | "toast",
     providers = [CLAUDE, ZEN, ROUTER],
   ) => visibleGroups(snapshot(providers), display, surface, DEFAULT_WORDS);
+  /** What every drawing takes besides its groups. */
+  const drawn = { layout: display.layout, words: DEFAULT_WORDS, nowMs: NOW };
   const statusInput = (providers = [CLAUDE, ZEN, ROUTER]): StatusInput => ({
     groups: groups("statusLine", providers),
-    layout: display.layout,
-    words: DEFAULT_WORDS,
-    nowMs: NOW,
+    ...drawn,
     window: {},
   });
 
   it("draws the expanded sidebar with bars, percents, reset times and session tokens", () => {
     const lines = sidebarLines({
       groups: groups("sidebar"),
-      layout: display.layout,
-      words: DEFAULT_WORDS,
-      nowMs: NOW,
+      ...drawn,
       width: 40,
       sessionTokens: { input: 12_300, cachedInput: 0, output: 2_100 },
     });
@@ -376,15 +356,7 @@ describe("view text", () => {
 
   it("shortens the bar, then drops it and the percent word, when the sidebar is narrow", () => {
     const line = (width: number) =>
-      lineText(
-        sidebarLines({
-          groups: groups("sidebar", [CLAUDE]),
-          layout: display.layout,
-          words: DEFAULT_WORDS,
-          nowMs: NOW,
-          width,
-        })[1]!,
-      );
+      lineText(sidebarLines({ groups: groups("sidebar", [CLAUDE]), ...drawn, width })[1]!);
     expect([line(40), line(30), line(22)]).toEqual([
       " 5h       █████░░░  58% left 2h 14m",
       " 5h       ██░  58% left 2h 14m",
@@ -402,9 +374,7 @@ describe("view text", () => {
   it("draws one collapsed line per provider with its preferred window", () => {
     const lines = collapsedLines({
       groups: groups("collapsed"),
-      layout: display.layout,
-      words: DEFAULT_WORDS,
-      nowMs: NOW,
+      ...drawn,
       width: 40,
       window: { anthropic: "five_hour" },
     });
@@ -419,9 +389,7 @@ describe("view text", () => {
     const expired = { ...CLAUDE, error: { code: "login_expired" } } as const;
     const collapsed = collapsedLines({
       groups: groups("collapsed", [expired]),
-      layout: display.layout,
-      words: DEFAULT_WORDS,
-      nowMs: NOW,
+      ...drawn,
       width: 50,
       window: {},
     });

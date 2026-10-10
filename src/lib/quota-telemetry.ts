@@ -1,7 +1,7 @@
 import type { Attributes, ObservableResult } from "@opentelemetry/api";
 
 import type { QuotaSnapshot } from "../core/types.js";
-import { getQuotaProviderShape } from "./provider-metadata.js";
+import { getCanonicalQuotaProviderId } from "./provider-metadata.js";
 import { QUOTA_PROVIDERS_AGGREGATE_ID } from "./quota-providers.js";
 
 const METER_NAME = "@slkiser/opencode-quota";
@@ -26,7 +26,7 @@ type TelemetryApi = {
 };
 type TelemetryApiLoader = () => Promise<TelemetryApi>;
 
-export interface QuotaTelemetryToken {
+interface QuotaTelemetryToken {
   readonly ownerId: number;
   readonly generation: number;
 }
@@ -37,8 +37,6 @@ interface QuotaTelemetryObservation {
 }
 
 interface QuotaTelemetrySnapshot {
-  ownerId: number;
-  generation: number;
   providerId: string;
   cacheTimestamp?: number;
   consumed: QuotaTelemetryObservation[];
@@ -96,7 +94,7 @@ function safeProviderAttribute(providerId: string): string {
   ) {
     return "custom";
   }
-  return getQuotaProviderShape(providerId)?.id ?? "other";
+  return getCanonicalQuotaProviderId(providerId) ?? "other";
 }
 
 function observationKey(attributes: Attributes): string {
@@ -118,20 +116,32 @@ function removeOwnerSnapshots(state: QuotaTelemetryState, ownerId: number): void
   }
 }
 
+/** Keeps the highest value seen for `key`. */
+function keepHighest(
+  observations: Map<string, QuotaTelemetryObservation>,
+  key: string,
+  observation: QuotaTelemetryObservation,
+): void {
+  const existing = observations.get(key);
+  if (!existing || observation.value > existing.value) observations.set(key, observation);
+}
+
+function inKeyOrder(
+  observations: Map<string, QuotaTelemetryObservation>,
+): QuotaTelemetryObservation[] {
+  return [...observations.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([, observation]) => observation);
+}
+
 function collectConsumedObservations(state: QuotaTelemetryState): QuotaTelemetryObservation[] {
   const observations = new Map<string, QuotaTelemetryObservation>();
   for (const snapshot of state.snapshots.values()) {
     for (const observation of snapshot.consumed) {
-      const key = observationKey(observation.attributes);
-      const existing = observations.get(key);
-      if (!existing || observation.value > existing.value) {
-        observations.set(key, observation);
-      }
+      keepHighest(observations, observationKey(observation.attributes), observation);
     }
   }
-  return [...observations.entries()]
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([, observation]) => observation);
+  return inKeyOrder(observations);
 }
 
 function collectCacheAgeObservations(
@@ -143,17 +153,9 @@ function collectCacheAgeObservations(
     if (snapshot.cacheTimestamp === undefined) continue;
     const provider = safeProviderAttribute(snapshot.providerId);
     const value = Math.max(0, now - snapshot.cacheTimestamp) / 1000;
-    const existing = observations.get(provider);
-    if (!existing || value > existing.value) {
-      observations.set(provider, {
-        value,
-        attributes: { "quota.provider": provider },
-      });
-    }
+    keepHighest(observations, provider, { value, attributes: { "quota.provider": provider } });
   }
-  return [...observations.entries()]
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([, observation]) => observation);
+  return inKeyOrder(observations);
 }
 
 function emitObservations(
@@ -304,20 +306,14 @@ export function publishQuotaTelemetry(
           value: Math.min(1, Math.max(0, (100 - row.percentRemaining) / 100)),
           attributes,
         };
-        const key = observationKey(attributes);
-        const existing = consumed.get(key);
-        if (!existing || observation.value > existing.value) consumed.set(key, observation);
+        keepHighest(consumed, observationKey(attributes), observation);
       }
       if (consumed.size === 0) continue;
 
       state.snapshots.set(snapshotKey(token.ownerId, provider.providerId), {
-        ownerId: token.ownerId,
-        generation: token.generation,
         providerId: provider.providerId,
         ...(provider.okAtMs !== undefined ? { cacheTimestamp: provider.okAtMs } : {}),
-        consumed: [...consumed.entries()]
-          .sort(([left], [right]) => left.localeCompare(right))
-          .map(([, observation]) => observation),
+        consumed: inKeyOrder(consumed),
       });
     }
   } catch {

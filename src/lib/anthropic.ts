@@ -85,22 +85,22 @@ export interface AnthropicQuotaResult {
   fable_weekly?: { percentRemaining: number; resetTimeIso?: string };
 }
 
-export interface AnthropicQuotaError {
+interface AnthropicQuotaError {
   success: false;
   error: string;
 }
 
-export type AnthropicResult = AnthropicQuotaResult | AnthropicQuotaError | null;
-export type AnthropicAuthStatus = "authenticated" | "unauthenticated" | "unknown";
-export type AnthropicQuotaSource =
+type AnthropicResult = AnthropicQuotaResult | AnthropicQuotaError | null;
+type AnthropicAuthStatus = "authenticated" | "unauthenticated" | "unknown";
+type AnthropicQuotaSource =
   | "claude-auth-status-json"
   | "claude-credentials-oauth-api"
   | "opencode-auth-oauth-api"
   | "none";
 /** Which credential store provided the OAuth access token used for the usage probe. */
-export type AnthropicCredentialSource = "opencode-auth" | "claude-credentials";
+type AnthropicCredentialSource = "opencode-auth" | "claude-credentials";
 
-export interface AnthropicDiagnostics {
+interface AnthropicDiagnostics {
   installed: boolean;
   version: string | null;
   authStatus: AnthropicAuthStatus;
@@ -118,12 +118,12 @@ export interface AnthropicDiagnostics {
   quota?: AnthropicQuotaResult;
 }
 
-export interface AnthropicProbeOptions {
+interface AnthropicProbeOptions {
   binaryPath?: string;
   requestTimeoutMs?: number;
 }
 
-export type ClaudeCommandInvocation = {
+type ClaudeCommandInvocation = {
   file: string;
   args: string[];
   display: string;

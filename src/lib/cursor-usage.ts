@@ -6,25 +6,29 @@ import {
 } from "./cursor-pricing.js";
 import { lookupCost } from "./modelsdev-pricing.js";
 import { iterAssistantMessages } from "./opencode-storage.js";
-import type { TokenBuckets } from "./quota-stats.js";
-import { resolvePricingKey } from "./quota-stats.js";
-import { addTokenBuckets, emptyTokenBuckets, tokenBucketsFromMessage } from "./token-buckets.js";
+import { resolvePricingKey } from "./pricing-key.js";
+import {
+  addTokenBuckets,
+  emptyTokenBuckets,
+  type TokenBuckets,
+  tokenBucketsFromMessage,
+} from "./token-buckets.js";
 import { calculateUsdFromTokenBuckets } from "./token-cost.js";
 
-export interface CursorCycleWindow {
+interface CursorCycleWindow {
   sinceMs: number;
   untilMs: number;
   resetTimeIso: string;
   source: "configured_day" | "calendar_month";
 }
 
-export interface CursorUsageBucket {
+interface CursorUsageBucket {
   costUsd: number;
   tokens: TokenBuckets;
   messageCount: number;
 }
 
-export interface CursorUsageSummary {
+interface CursorUsageSummary {
   window: CursorCycleWindow;
   observedAtMs: number;
   api: CursorUsageBucket;

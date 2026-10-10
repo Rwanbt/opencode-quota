@@ -46,9 +46,13 @@ import {
   writeQuotaExport,
 } from "../src/lib/quota-export.js";
 import type { QuotaExport } from "../src/lib/quota-export-types.js";
-import type { QuotaProviderDefinition } from "../src/lib/quota-providers.js";
-import type { AccountResult, ProviderFetchResult, ProviderRow } from "../src/providers/contract.js";
+import type {
+  QuotaProviderDefinition,
+  RemoteApiQuotaProviderDefinition,
+} from "../src/lib/quota-providers.js";
+import type { AccountResult, ProviderFetchResult } from "../src/providers/contract.js";
 import { customAccount } from "../src/providers/quota-providers.js";
+import { percentRow, providerSnapshot, quotaRow } from "./helpers/fake-answers.js";
 
 // --------------- helpers ---------------
 
@@ -64,26 +68,20 @@ function exportAfter(
   checks: Record<string, Check | undefined>,
   customDefinitions: QuotaProviderDefinition[] = [],
 ): QuotaExport {
-  const providers = Object.entries(checks).map(([providerId, check]) => ({
-    providerId,
-    label: check?.label ?? providerId,
-    rows: [],
-    refreshing: false,
-    debug: [],
-    ...(check
-      ? {
-          exportPart: exportProviderFromCheck({
-            providerId,
-            label: check.label ?? providerId,
-            rows: check.fetched.rows,
-            ...(check.fetched.error ? { error: check.fetched.error } : {}),
-            checkedAtMs: check.checkedAtMs,
-            customDefinitions,
-            accounts: check.accounts ?? [],
-          }),
-        }
-      : {}),
-  }));
+  const providers = Object.entries(checks).map(([providerId, check]) => {
+    const label = check?.label ?? providerId;
+    if (!check) return providerSnapshot(providerId, label, []);
+    const exportPart = exportProviderFromCheck({
+      providerId,
+      label,
+      rows: check.fetched.rows,
+      ...(check.fetched.error ? { error: check.fetched.error } : {}),
+      checkedAtMs: check.checkedAtMs,
+      customDefinitions,
+      accounts: check.accounts ?? [],
+    });
+    return providerSnapshot(providerId, label, [], { exportPart });
+  });
   const generatedAtMs = Date.now();
   return buildQuotaExportFromSnapshot(
     { version: 6, providers, resetNotices: [], generatedAtMs, serverId: "test", revision: 1 },
@@ -102,35 +100,29 @@ function customCheck(result: ProviderFetchResult, checkedAtMs: number): Check {
 }
 
 /** A remote custom quota row, keyed by its name like the adapters key it. */
-function customQuota(key: string, percentRemaining: number): ProviderRow {
-  return {
-    key,
-    label: key,
-    type: "quota",
-    method: "remote_api",
-    authority: "provider_reported",
-    prominence: "primary",
-    percentRemaining,
-  };
-}
+const customQuota = (key: string, percentRemaining: number) =>
+  percentRow(key, key, percentRemaining);
 
 /** A remote, provider-reported quota row of `providerId`. */
-function row(
+const row = (providerId: string, key: string, label: string, fields: Partial<QuotaRow> = {}) =>
+  quotaRow(`${providerId}.${key}`, { label, ...fields });
+
+/** A remote custom definition in the quota-v1 format. */
+function definition(
+  id: string,
   providerId: string,
-  key: string,
   label: string,
-  fields: Partial<QuotaRow> = {},
-): QuotaRow {
+  extra: Partial<RemoteApiQuotaProviderDefinition> = {},
+): QuotaProviderDefinition {
   return {
-    id: `${providerId}.${key}`,
+    id,
     providerId,
     label,
-    type: "quota",
-    method: "remote_api",
-    authority: "provider_reported",
-    prominence: "primary",
-    ...fields,
-  };
+    mode: "remote-api",
+    url: `https://${id}.example/accounting`,
+    format: "quota-v1",
+    ...extra,
+  } as QuotaProviderDefinition;
 }
 
 function usd(decimal: string) {
@@ -149,34 +141,24 @@ const REMOTE = {
 // --------------- describe blocks ---------------
 
 describe("resolveExportPath", () => {
-  it("handles empty, tilde, absolute, and relative paths", () => {
-    expect(resolveExportPath("")).toBe(testPaths.defaultExport);
-    expect(resolveExportPath("~/my-exports/quota.json")).toBe(
-      join(homedir(), "my-exports/quota.json"),
-    );
-    expect(resolveExportPath("/etc/opencode/export.json")).toBe("/etc/opencode/export.json");
-    expect(resolveExportPath("relative/path/quota.json")).toBe("relative/path/quota.json");
-  });
-
-  it("expands Windows-style home-relative paths across platforms", () => {
-    expect(resolveExportPath("~\\exports\\quota.json")).toBe(
-      join(homedir(), "exports", "quota.json"),
-    );
-    expect(resolveExportPath("~\\exports\\\\nested\\quota.json")).toBe(
-      join(homedir(), "exports", "nested", "quota.json"),
-    );
-    expect(resolveExportPath("~\\")).toBe(homedir());
-  });
-
-  it("leaves unsupported tilde and ordinary backslash paths unchanged", () => {
-    expect(resolveExportPath("~")).toBe("~");
-    expect(resolveExportPath("~user/exports")).toBe("~user/exports");
-    expect(resolveExportPath("relative\\path.json")).toBe("relative\\path.json");
-    expect(resolveExportPath("C:\\exports\\quota.json")).toBe("C:\\exports\\quota.json");
-    expect(resolveExportPath("\\\\server\\share\\quota.json")).toBe(
-      "\\\\server\\share\\quota.json",
-    );
-    expect(resolveExportPath("~/literal\\name.json")).toBe(join(homedir(), "literal\\name.json"));
+  it.each([
+    ["", testPaths.defaultExport],
+    ["~/my-exports/quota.json", join(homedir(), "my-exports/quota.json")],
+    ["/etc/opencode/export.json", "/etc/opencode/export.json"],
+    ["relative/path/quota.json", "relative/path/quota.json"],
+    // Windows-style home-relative paths expand on every platform.
+    ["~\\exports\\quota.json", join(homedir(), "exports", "quota.json")],
+    ["~\\exports\\\\nested\\quota.json", join(homedir(), "exports", "nested", "quota.json")],
+    ["~\\", homedir()],
+    // Other tildes and ordinary backslash paths stay as they are.
+    ["~", "~"],
+    ["~user/exports", "~user/exports"],
+    ["relative\\path.json", "relative\\path.json"],
+    ["C:\\exports\\quota.json", "C:\\exports\\quota.json"],
+    ["\\\\server\\share\\quota.json", "\\\\server\\share\\quota.json"],
+    ["~/literal\\name.json", join(homedir(), "literal\\name.json")],
+  ])("resolves %j to %j", (input, expected) => {
+    expect(resolveExportPath(input)).toBe(expected);
   });
 });
 
@@ -476,12 +458,8 @@ describe("the export of each provider's last check", () => {
   });
 
   it("lists each custom definition with a coarse status, never its URL, key, format or files", () => {
-    const definitions: QuotaProviderDefinition[] = [
-      {
-        id: "same-label-one",
-        providerId: "gateway-one",
-        label: "Same label",
-        mode: "remote-api",
+    const definitions = [
+      definition("same-label-one", "gateway-one", "Same label", {
         url: "https://secret-one.example/accounting",
         format: "json-v1",
         adapter: {
@@ -494,23 +472,9 @@ describe("the export of each provider's last check", () => {
           ],
         },
         apiKeyEnv: "GATEWAY_ONE_KEY",
-      },
-      {
-        id: "same-label-two",
-        providerId: "gateway-two",
-        label: "Same label",
-        mode: "remote-api",
-        url: "https://secret-two.example/accounting",
-        format: "quota-v1",
-      },
-      {
-        id: "not-selected",
-        providerId: "gateway-three",
-        label: "Not selected",
-        mode: "remote-api",
-        url: "https://secret-three.example/accounting",
-        format: "quota-v1",
-      },
+      }),
+      definition("same-label-two", "gateway-two", "Same label"),
+      definition("not-selected", "gateway-three", "Not selected"),
     ];
     const [one, two] = definitions as [QuotaProviderDefinition, QuotaProviderDefinition];
     const check = customCheck(
@@ -579,23 +543,9 @@ describe("the export of each provider's last check", () => {
   });
 
   it("lists every custom definition as unavailable when the custom providers could not be asked", () => {
-    const definitions: QuotaProviderDefinition[] = [
-      {
-        id: "first",
-        providerId: "gateway-one",
-        label: "First",
-        mode: "remote-api",
-        url: "https://one.example/accounting",
-        format: "quota-v1",
-      },
-      {
-        id: "second",
-        providerId: "gateway-two",
-        label: "Second",
-        mode: "remote-api",
-        url: "https://two.example/accounting",
-        format: "quota-v1",
-      },
+    const definitions = [
+      definition("first", "gateway-one", "First"),
+      definition("second", "gateway-two", "Second"),
     ];
     const check = customCheck({ attempted: false, accounts: [], debug: [] }, Date.now());
 
@@ -611,21 +561,14 @@ describe("the export of each provider's last check", () => {
   });
 
   it("says a switched-off definition is off instead of giving it a status", () => {
-    const definition: QuotaProviderDefinition = {
-      id: "first",
-      providerId: "gateway-one",
-      label: "First",
-      mode: "remote-api",
-      url: "https://one.example/accounting",
-      format: "quota-v1",
-    };
-    const second = { ...definition, id: "second", label: "Second" };
+    const first = definition("first", "gateway-one", "First");
+    const second = definition("second", "gateway-one", "Second");
     // A result from before the user switched "second" off.
     const check = customCheck(
       {
         attempted: true,
         accounts: [
-          customAccount(definition, [], ["Failed to read accounting data"]),
+          customAccount(first, [], ["Failed to read accounting data"]),
           customAccount(second, [customQuota("Monthly", 50)], []),
         ],
         debug: [],
@@ -634,7 +577,7 @@ describe("the export of each provider's last check", () => {
     );
 
     const actual = exportAfter({ "quota-providers": check }, [
-      definition,
+      first,
       { ...second, enabled: false },
     ]);
 
@@ -665,14 +608,10 @@ describe("the export of a provider without a check in this server", () => {
   const NOW_MS = Date.parse("2026-06-01T12:00:00.000Z");
 
   function snapshotExport(provider: Partial<ProviderSnapshot>) {
-    const snapshotProvider: ProviderSnapshot = {
-      providerId: "copilot",
-      label: "Copilot",
-      rows: [],
-      refreshing: false,
+    const snapshotProvider = providerSnapshot("copilot", "Copilot", [], {
       debug: [{ key: "api_key_source", value: "env" }],
       ...provider,
-    };
+    });
     return buildQuotaExportFromSnapshot(
       {
         version: 6,

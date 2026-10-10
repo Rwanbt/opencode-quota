@@ -9,7 +9,7 @@ import { parseConfigDocument } from "./opencode-config-editor.js";
 import { getOpencodeRuntimeDirs } from "./opencode-runtime-paths.js";
 import { getQuotaProviderRuntimeIds } from "./provider-metadata.js";
 
-export interface CursorAuthPresence {
+interface CursorAuthPresence {
   state: "missing" | "present" | "invalid";
   selectedPath?: string;
   presentPaths: string[];
@@ -17,7 +17,7 @@ export interface CursorAuthPresence {
   error?: string;
 }
 
-export interface CursorOpenCodeIntegration {
+interface CursorOpenCodeIntegration {
   pluginEnabled: boolean;
   providerConfigured: boolean;
   matchedPaths: string[];

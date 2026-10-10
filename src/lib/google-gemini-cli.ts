@@ -9,9 +9,7 @@ import {
   hasGoogleQuotaRuntimeAvailable,
   inspectGoogleAuthPresence,
   queryGoogleQuota,
-  resolveGoogleAccounts,
   resolveGoogleAuthIdentity,
-  resolveGoogleConfiguredProjectId,
 } from "./google-oauth-quota.js";
 import { nonEmptyString } from "./json-guards.js";
 import type { ResolvedAuthIdentity } from "./resolved-auth-identity.js";
@@ -142,17 +140,6 @@ function toGeminiCliBuckets(
   );
 }
 
-export function resolveGeminiCliAccounts(
-  auth: AuthData | null | undefined,
-  configuredProjectId?: string,
-): GeminiCliAccount[] {
-  return resolveGoogleAccounts(GEMINI_CLI, auth, configuredProjectId);
-}
-
-export function resolveGeminiCliConfiguredProjectId(): Promise<string | undefined> {
-  return resolveGoogleConfiguredProjectId(GEMINI_CLI);
-}
-
 export function inspectGeminiCliAuthPresence(): Promise<
   GoogleAuthPresence<GeminiCliAuthSourceKey>
 > {
@@ -175,8 +162,4 @@ export function queryGeminiCliQuota(
   options: { requestTimeoutMs?: number; authData?: AuthData } = {},
 ): Promise<GeminiCliResult> {
   return queryGoogleQuota(GEMINI_CLI, options);
-}
-
-export function clearGeminiCliRuntimeCacheForTests(): void {
-  geminiCliCompanion.clearCacheForTests();
 }

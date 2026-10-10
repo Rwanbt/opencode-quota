@@ -5,7 +5,7 @@
 /** Request timeout in milliseconds. */
 export const REQUEST_TIMEOUT_MS = 5000;
 
-export type FetchWithTimeoutOptions<T> = {
+type FetchWithTimeoutOptions<T> = {
   request: Omit<RequestInit, "signal">;
   timeoutMs?: number;
   fetchFn?: typeof fetch;

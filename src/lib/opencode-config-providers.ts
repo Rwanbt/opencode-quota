@@ -23,23 +23,23 @@ import {
 } from "./opencode-config-read.js";
 import { getOpencodeRuntimeDirs } from "./opencode-runtime-paths.js";
 import {
+  getCanonicalQuotaProviderId,
   getQuotaProviderRuntimeIds,
-  getQuotaProviderShape,
   normalizeQuotaProviderId,
 } from "./provider-metadata.js";
 
-export interface LoadConfiguredProviderIdsOptions {
+interface LoadConfiguredProviderIdsOptions {
   configRootDir: string;
 }
 
-export interface ReconcileDetectedProviderConfigOptions {
+interface ReconcileDetectedProviderConfigOptions {
   configRootDir: string;
   detectedProviderIds: readonly string[];
   preferredFormat?: ConfigFileFormat;
   writeText?: (path: string, content: string) => Promise<void>;
 }
 
-export interface ReconcileDetectedProviderConfigResult {
+interface ReconcileDetectedProviderConfigResult {
   path: string | null;
   format: ConfigFileFormat | null;
   addedProviderIds: string[];
@@ -166,8 +166,8 @@ export async function reconcileDetectedProvidersInGlobalConfig(
     options.detectedProviderIds
       .map((providerId) => normalizeQuotaProviderId(providerId))
       .filter((providerId) => {
-        const shape = getQuotaProviderShape(providerId);
-        return Boolean(shape && shape.id !== "quota-providers");
+        const canonicalId = getCanonicalQuotaProviderId(providerId);
+        return Boolean(canonicalId && canonicalId !== "quota-providers");
       }),
   );
   const globalConfigDir = getOpencodeRuntimeDirs().configDir;

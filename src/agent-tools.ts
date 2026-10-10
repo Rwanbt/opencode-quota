@@ -44,13 +44,13 @@ import {
   settingsPath,
 } from "./settings/index.js";
 
-export type QuotaAgentToolsHost = {
+type QuotaAgentToolsHost = {
   /** The providers OpenCode serves now; a custom provider shows only when its providerId is one. */
   openCodeProviderIds(): Promise<readonly string[]>;
 };
 
 /** A tool as `ctx.tool.transform(editor => editor.add(tool))` takes it. */
-export type QuotaAgentTool = {
+type QuotaAgentTool = {
   name: string;
   description: string;
   input: {

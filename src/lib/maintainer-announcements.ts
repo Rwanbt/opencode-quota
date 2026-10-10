@@ -1,6 +1,6 @@
 import {
   type CanonicalQuotaProviderId,
-  getQuotaProviderShape,
+  getCanonicalQuotaProviderId,
   normalizeQuotaProviderId,
 } from "./provider-metadata.js";
 
@@ -13,7 +13,7 @@ export interface MaintainerAnnouncement {
   providerIds?: CanonicalQuotaProviderId[];
 }
 
-export type MaintainerAnnouncementInactiveReason =
+type MaintainerAnnouncementInactiveReason =
   | "invalid_id"
   | "invalid_message"
   | "invalid_url"
@@ -24,7 +24,7 @@ export type MaintainerAnnouncementInactiveReason =
   | "invalid_provider_ids"
   | "provider_mismatch";
 
-export interface MaintainerAnnouncementEvaluation {
+interface MaintainerAnnouncementEvaluation {
   announcement: MaintainerAnnouncement;
   active: boolean;
   reasons: MaintainerAnnouncementInactiveReason[];
@@ -85,29 +85,12 @@ function normalizedProviderIds(providerIds: readonly string[]): CanonicalQuotaPr
   const seen = new Set<string>();
 
   for (const providerId of providerIds) {
-    const shape = getQuotaProviderShape(normalizeQuotaProviderId(providerId));
-    if (!shape || seen.has(shape.id)) {
+    const canonicalId = getCanonicalQuotaProviderId(normalizeQuotaProviderId(providerId));
+    if (!canonicalId || seen.has(canonicalId)) {
       continue;
     }
-    seen.add(shape.id);
-    out.push(shape.id);
-  }
-
-  return out;
-}
-
-export function getMaintainerAnnouncementTargetProviderIds(params?: {
-  announcements?: readonly MaintainerAnnouncement[];
-}): CanonicalQuotaProviderId[] {
-  const out: CanonicalQuotaProviderId[] = [];
-  const seen = new Set<CanonicalQuotaProviderId>();
-
-  for (const announcement of params?.announcements ?? BUNDLED_MAINTAINER_ANNOUNCEMENTS) {
-    for (const providerId of normalizedProviderIds(announcement.providerIds ?? [])) {
-      if (seen.has(providerId)) continue;
-      seen.add(providerId);
-      out.push(providerId);
-    }
+    seen.add(canonicalId);
+    out.push(canonicalId);
   }
 
   return out;
@@ -129,7 +112,7 @@ function getEndsAtSortValue(announcement: MaintainerAnnouncement): number {
   return parseTimestamp(announcement.endsAt) ?? Number.POSITIVE_INFINITY;
 }
 
-export function evaluateMaintainerAnnouncements(params?: {
+function evaluateMaintainerAnnouncements(params?: {
   announcements?: readonly MaintainerAnnouncement[];
   nowMs?: number;
   enabledProviders?: string[] | "auto";
@@ -182,14 +165,6 @@ export function evaluateMaintainerAnnouncements(params?: {
       if (endsAtDelta !== 0) return endsAtDelta;
       return a.announcement.id.localeCompare(b.announcement.id);
     });
-}
-
-export function getActiveMaintainerAnnouncements(params?: {
-  announcements?: readonly MaintainerAnnouncement[];
-  nowMs?: number;
-  enabledProviders?: string[] | "auto";
-}): MaintainerAnnouncementEvaluation[] {
-  return evaluateMaintainerAnnouncements(params).filter((evaluation) => evaluation.active);
 }
 
 export function getMaintainerAnnouncementsSummary(params?: {

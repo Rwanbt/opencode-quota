@@ -3,7 +3,7 @@ import { getQuotaProviderRuntimeIds } from "./provider-metadata.js";
 
 export type CursorQuotaPlan = "none" | "pro" | "pro-plus" | "ultra";
 
-export type CursorResolvedModel =
+type CursorResolvedModel =
   | { kind: "local"; model: CursorLocalPricingModel; pool: "auto_composer" }
   | { kind: "official"; providerHint: string; modelHint: string; pool: "api" }
   | { kind: "unknown" };
@@ -37,7 +37,7 @@ const CURSOR_LOCAL_PRICING = {
   "grok-4.7-fast": { input: 4, output: 12, cache_read: 1 },
 } satisfies Record<string, CostBuckets>;
 
-export type CursorLocalPricingModel = keyof typeof CURSOR_LOCAL_PRICING;
+type CursorLocalPricingModel = keyof typeof CURSOR_LOCAL_PRICING;
 
 export const CURSOR_OFFICIAL_MODEL_ALIASES: Readonly<
   Record<string, { providerHint: string; modelHint: string }>

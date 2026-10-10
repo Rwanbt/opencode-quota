@@ -7,6 +7,7 @@ import { createHash } from "node:crypto";
 import { isAbsolute } from "node:path";
 import type { Node } from "jsonc-parser";
 import { getNodeValue } from "jsonc-parser";
+import { isRecord } from "../lib/json-guards.js";
 import { normalizeQuotaProviderId, QUOTA_PROVIDER_CATALOG } from "../lib/provider-metadata.js";
 import {
   describeQuotaProviderRequest,
@@ -161,7 +162,7 @@ export const PROVIDER_IDS: readonly string[] = Object.keys(QUOTA_PROVIDER_CATALO
 );
 
 /** A provider id or one of its aliases ("nano-gpt", "quota-providers") as `providers.enabled` keeps it. */
-export function canonicalProviderId(id: string): string | undefined {
+function canonicalProviderId(id: string): string | undefined {
   const normalized = normalizeQuotaProviderId(id);
   const canonical = normalized === "quota-providers" ? "custom" : normalized;
   return PROVIDER_IDS.includes(canonical) ? canonical : undefined;
@@ -293,17 +294,13 @@ function unknownKeyIssue(group: string, position: number): SettingsIssue {
 }
 
 /** One `key: value` a file or a patch sets, in the order it sets them. */
-export type Assignment = { key: string; value: unknown };
+type Assignment = { key: string; value: unknown };
 
 /** How to walk a value: plain JSON values, or jsonc-parser nodes (which keep duplicate keys). */
 type Walker<T> = {
   entries(value: T): Array<[string, T]> | undefined;
   leaf(value: T): unknown;
 };
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 export const PLAIN_WALKER: Walker<unknown> = {
   entries: (value) => (isRecord(value) ? Object.entries(value) : undefined),
@@ -369,7 +366,7 @@ export function flattenSettings<T>(
   return { assignments, issues };
 }
 
-export function getSetting(settings: Settings, key: string): unknown {
+function getSetting(settings: Settings, key: string): unknown {
   let value: unknown = settings;
   for (const part of key.split(".")) value = isRecord(value) ? value[part] : undefined;
   return value;

@@ -1,7 +1,4 @@
-import {
-  DEFAULT_ALIBABA_AUTH_CACHE_MAX_AGE_MS,
-  resolveAlibabaCodingPlanAuthCached,
-} from "../lib/alibaba-auth.js";
+import { resolveAlibabaCodingPlanAuthCached } from "../lib/alibaba-auth.js";
 import { resolveAnthropicAuthIdentity } from "../lib/anthropic.js";
 import {
   API_KEY_LOGIN_VENDORS,
@@ -91,7 +88,7 @@ function regionalKeyPolicy(
   });
 }
 
-export async function resolveQuotaProviderDefinitionAuthIdentity(
+async function resolveQuotaProviderDefinitionAuthIdentity(
   definition: QuotaProviderDefinition,
 ): Promise<ResolvedAuthIdentity | null> {
   if (definition.mode === "local-estimate") {
@@ -151,9 +148,7 @@ export const PROVIDER_CACHE_POLICIES = {
   cursor: UNCACHED,
   "alibaba-token-plan": UNCACHED,
   "alibaba-coding-plan": resolvedCredentialPolicy("alibaba-coding-plan", async () => {
-    const resolved = await resolveAlibabaCodingPlanAuthCached({
-      maxAgeMs: DEFAULT_ALIBABA_AUTH_CACHE_MAX_AGE_MS,
-    });
+    const resolved = await resolveAlibabaCodingPlanAuthCached();
     return resolved.state === "configured"
       ? { credential: resolved.apiKey, qualifiers: [resolved.tier] }
       : null;

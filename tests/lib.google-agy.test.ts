@@ -60,8 +60,6 @@ import {
   hasAgyQuotaRuntimeAvailable,
   inspectAgyAuthPresence,
   queryGoogleAgyQuota,
-  resolveAgyAccounts,
-  resolveAgyConfiguredProjectId,
   resolveGoogleAgyAuthIdentity,
 } from "../src/lib/google-agy.js";
 import {
@@ -69,8 +67,11 @@ import {
   inspectGeminiCliAuthPresence,
   queryGeminiCliQuota,
   resolveGeminiCliAuthIdentity,
-  resolveGeminiCliConfiguredProjectId,
 } from "../src/lib/google-gemini-cli.js";
+import {
+  resolveGoogleAccounts,
+  resolveGoogleConfiguredProjectId,
+} from "../src/lib/google-oauth-quota.js";
 
 const TOKEN_URL = "https://oauth2.googleapis.com/token";
 
@@ -174,7 +175,11 @@ const FLAVORS = [
     missingCompanionError: "Companion plugin is missing",
     failedLoginState: "invalid",
     query: queryGoogleAgyQuota,
-    resolveProjectId: resolveAgyConfiguredProjectId,
+    resolveProjectId: () =>
+      resolveGoogleConfiguredProjectId({
+        projectIdEnvVar: "OPENCODE_AGY_PROJECT_ID",
+        projectIdConfigProvider: "google-agy",
+      }),
     resolveIdentity: resolveGoogleAgyAuthIdentity,
     inspectAuth: inspectAgyAuthPresence,
     hasRuntime: hasAgyQuotaRuntimeAvailable,
@@ -194,7 +199,11 @@ const FLAVORS = [
     missingCompanionError: "Gemini CLI requires the opencode-gemini-auth plugin",
     failedLoginState: "present",
     query: queryGeminiCliQuota,
-    resolveProjectId: resolveGeminiCliConfiguredProjectId,
+    resolveProjectId: () =>
+      resolveGoogleConfiguredProjectId({
+        projectIdEnvVar: "OPENCODE_GEMINI_PROJECT_ID",
+        projectIdConfigProvider: "google",
+      }),
     resolveIdentity: resolveGeminiCliAuthIdentity,
     inspectAuth: inspectGeminiCliAuthPresence,
     hasRuntime: hasGeminiCliQuotaRuntimeAvailable,
@@ -534,6 +543,12 @@ describe.each(FLAVORS)("$name OAuth quota flow", (flavor) => {
     });
   });
 });
+
+const AGY_AUTH_KEYS = ["google-agy", "opencode-agy-auth", "google-agy-auth"] as const;
+
+function resolveAgyAccounts(auth: Parameters<typeof resolveGoogleAccounts>[1], project: string) {
+  return resolveGoogleAccounts({ authKeys: AGY_AUTH_KEYS }, auth, project);
+}
 
 describe("Google account resolution", () => {
   it("preserves auth-key order, packed refresh parts, login tokens, and duplicate suppression", () => {

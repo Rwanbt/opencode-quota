@@ -21,12 +21,12 @@ export class SessionNotFoundError extends Error {
   }
 }
 
-export interface OpenCodeTokenCache {
+interface OpenCodeTokenCache {
   read: number;
   write: number;
 }
 
-export interface OpenCodeTokens {
+interface OpenCodeTokens {
   input: number;
   output: number;
   reasoning?: number;
@@ -59,7 +59,7 @@ export interface OpenCodeSessionInfo {
   };
 }
 
-export type OpenCodeDbStats = {
+type OpenCodeDbStats = {
   dbPath: string;
   sessionCount: number;
   messageCount: number;
@@ -656,4 +656,56 @@ export async function readAllSessionsIndex(): Promise<Record<string, OpenCodeSes
   } finally {
     conn.close();
   }
+}
+
+function compareSessionCreatedAt(a: OpenCodeSessionInfo, b: OpenCodeSessionInfo): number {
+  const aCreated =
+    typeof a.time?.created === "number" && Number.isFinite(a.time.created)
+      ? a.time.created
+      : Number.MAX_SAFE_INTEGER;
+  const bCreated =
+    typeof b.time?.created === "number" && Number.isFinite(b.time.created)
+      ? b.time.created
+      : Number.MAX_SAFE_INTEGER;
+
+  if (aCreated !== bCreated) return aCreated - bCreated;
+  return a.id.localeCompare(b.id);
+}
+
+/** The ids of a session and all its subagent sessions, depth first, children oldest first. */
+export async function resolveSessionTree(rootSessionID: string): Promise<string[]> {
+  if (!rootSessionID.startsWith("ses_")) {
+    throw new SessionNotFoundError(rootSessionID, "(invalid session ID format)");
+  }
+
+  const sessionsIdx = await readAllSessionsIndex();
+  const root = sessionsIdx[rootSessionID];
+  if (!root) {
+    throw new SessionNotFoundError(rootSessionID, getOpenCodeDbPath());
+  }
+
+  const childrenByParentID = new Map<string, OpenCodeSessionInfo[]>();
+  for (const session of Object.values(sessionsIdx)) {
+    if (!session.parentID) continue;
+    const children = childrenByParentID.get(session.parentID);
+    if (children) {
+      children.push(session);
+    } else {
+      childrenByParentID.set(session.parentID, [session]);
+    }
+  }
+
+  for (const children of childrenByParentID.values()) {
+    children.sort(compareSessionCreatedAt);
+  }
+
+  const tree: string[] = [];
+  const visit = (session: OpenCodeSessionInfo): void => {
+    if (tree.includes(session.id)) return;
+    tree.push(session.id);
+    for (const child of childrenByParentID.get(session.id) ?? []) visit(child);
+  };
+
+  visit(root);
+  return tree;
 }
