@@ -105,10 +105,10 @@ These show only your own member API key's usage, not the whole organization's.
 Custom providers can report quota, rate limit, usage, spend, budget, balance, or status. Ask your agent to add a custom provider: paste this into OpenCode and replace `<provider>`:
 
 ```text
-Add a custom OpenCode Quota provider for <provider> with the quota_provider_add tool, following docs/readme/providers.md#custom-providers in https://github.com/slkiser/opencode-quota. Never put a key or other secret in the definition: set apiKeyEnv to the name of the environment variable that holds the key. The tool saves the definition, tests it once and returns the rows or the error; fix what it reports and add it again with the same id until it shows rows.
+Add a custom OpenCode Quota provider for <provider> with the quota_provider_add tool, following docs/readme/providers.md#custom-providers in https://github.com/slkiser/opencode-quota. Never put a key or other secret in the definition: set apiKeyEnv to the name of a dedicated environment variable that holds the key (for example MYVENDOR_API_KEY). The tool saves the definition, tests it once and returns the rows or the error; fix what it reports and add it again with the same id until it shows rows.
 ```
 
-The agent tools write only OpenCode Quota's own settings file, never `opencode.json`, and refuse a definition that looks like it holds a key. `quota_provider_test` and `quota_provider_remove` take a provider's `id`.
+The agent tools change only OpenCode Quota's own settings file (through a symlink, its target), never `opencode.json`; testing a local-estimate provider also updates its state file. A provider added by an agent reads its key only from its own `apiKeyEnv` variable: the tools refuse a built-in provider's variable, a `providerId` with a key saved in OpenCode (add that one by hand), and anything that looks like a key. `quota_provider_test` and `quota_provider_remove` take a provider's `id`.
 
 To edit it yourself, put definitions in `quotaProviders` in the global `opencode-quota/quota-toast.jsonc` (or `.json`); without that file, use `experimental.quotaToast.quotaProviders` in the global OpenCode config. Restart OpenCode after editing.
 
