@@ -80,6 +80,17 @@ describe("resolvePricingKey snapshot coverage", () => {
     expect(pricedKey(providerID, modelID)).toBe(expected);
   });
 
+  // Upstream no longer lists these, so the upstream check below does not cover their rates.
+  it.each([
+    ["auto", { input: 1.25, output: 6, cache_read: 0.25 }],
+    ["composer-1", { input: 1.25, output: 10, cache_read: 0.125 }],
+    ["composer-1.5", { input: 3.5, output: 17.5, cache_read: 0.35 }],
+    ["composer-2", { input: 0.5, output: 2.5, cache_read: 0.2 }],
+    ["composer-2-fast", { input: 1.5, output: 7.5, cache_read: 0.35 }],
+  ])("prices the older Cursor model %s at its published rates", (model, rates) => {
+    expect(lookupCursorLocalCost(model)).toEqual(rates);
+  });
+
   it("prices every synced upstream Cursor model at Cursor's published rates", () => {
     const upstream: Record<string, { input: number; output: number; cache_read?: number }> =
       CURSOR_MODEL_COSTS;

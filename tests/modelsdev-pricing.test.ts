@@ -145,6 +145,21 @@ describe("pricing runtime refresh policy", () => {
     });
   });
 
+  it.each([
+    [7, false],
+    [1, true],
+    [0, true], // not a positive number: the 3-day default
+  ])("refreshes a 4-day-old snapshot after %d configured days: %s", async (days, fetches) => {
+    const { pricing, refresh } = await setup();
+    pricing.setPricingSnapshotAutoRefresh(days);
+    const fetchFn = vi.fn().mockResolvedValue(modelsDevResponse({ input: 0.2 }));
+
+    const result = await refresh({ fetchFn, maxAgeMs: undefined });
+
+    expect(result.attempted).toBe(fetches);
+    expect(fetchFn).toHaveBeenCalledTimes(fetches ? 1 : 0);
+  });
+
   it("falls back to last local snapshot when fetch fails", async () => {
     const { pricing, runtimeDirs, refresh } = await setup();
 
