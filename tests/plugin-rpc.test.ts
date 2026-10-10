@@ -375,6 +375,31 @@ describe("server quota RPC", () => {
     await expect(call("snapshot", {})).resolves.toEqual({ snapshot: withPercentWords("bare") });
   });
 
+  it("tells clients which OpenCode provider each custom definition serves", async () => {
+    useSettings({
+      providers: {
+        enabled: ["copilot", "custom"],
+        custom: [
+          {
+            id: "team-accounting",
+            providerId: "team-gateway",
+            label: "Team",
+            mode: "remote-api",
+            url: "https://team-gateway.example/quota",
+            format: "quota-v1",
+            apiKeyEnv: "V6_TEAM_KEY",
+          },
+        ],
+      },
+    });
+    const { call } = await setupServer();
+
+    const { snapshot } = (await call("snapshot", {})) as { snapshot: QuotaSnapshot };
+    expect(snapshot.customRowProviders).toEqual({
+      "quota-providers.custom.team-accounting.": "team-gateway",
+    });
+  });
+
   it("converts the v5 settings at the first start and offers their looks until a TUI takes them", async () => {
     await rm(SETTINGS_FILE);
     await writeFile(

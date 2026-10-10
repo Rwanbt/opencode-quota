@@ -19,6 +19,10 @@ const MINUTE = 60_000;
 const at = (minutes: number) => new Date(NOW + minutes * MINUTE).toISOString();
 /** The dialog's room in a 100-column terminal. */
 const WIDTH_100 = 93;
+/** The dialog's room in an 80-column terminal. */
+const WIDTH_80 = 73;
+/** The toast's text in a 45-column terminal. */
+const TOAST_45 = 33;
 
 const text = (line: QuickLookLine) => line.map((part) => part.text).join("");
 
@@ -64,6 +68,15 @@ const COPILOT = provider("copilot", "Copilot", [
 const OPENROUTER = provider("openrouter", "OpenRouter", [], {
   error: { code: "provider_error", status: 500 },
 });
+/** A custom definition "team-accounting" (label "Team") that serves OpenCode's "team-gateway". */
+const TEAM = provider("quota-providers", "Quota providers", [
+  row("quota-providers.custom.team-accounting.monthly", {
+    account: "Team",
+    label: "Monthly",
+    percentRemaining: 64,
+  }),
+]);
+const TEAM_ROW_PROVIDERS = { "quota-providers.custom.team-accounting.": "team-gateway" };
 
 function snapshot(providers: ProviderSnapshot[], words?: Words): QuotaSnapshot {
   return {
@@ -194,6 +207,54 @@ describe("quick look: providers", () => {
     expect(marker?.role).toBe("marker");
   });
 
+  it("keeps every word of the reset and the pace, wrapped under the percent at 80 columns", () => {
+    const zaiOut = provider("zai", "Z.ai", [
+      row("zai.five_hour", {
+        label: "5h",
+        window: "five_hour",
+        percentRemaining: 0,
+        resetsAt: at(150),
+      }),
+    ]);
+    const copilotLong = provider("copilot", "Copilot", [
+      row("copilot.premium", {
+        label: "Premium requests",
+        percentRemaining: 80,
+        resetsAt: at((20 * 24 + 3) * 60 + 4),
+      }),
+    ]);
+    const lines = bodyText({
+      snapshot: snapshot([zaiOut, copilotLong]),
+      usage: undefined,
+      width: WIDTH_80,
+    });
+    // Under the percent: the label column (16), the bar and the gaps take 43 columns.
+    const under = " ".repeat(43);
+    const zai = lines.findIndex((line) => line.startsWith("    5h"));
+    expect(lines[zai]).toMatch(/ {4}0% left · resets in 2h 30m$/u);
+    expect(lines.slice(zai + 1, zai + 3)).toEqual([
+      `${under}using it faster than it`,
+      `${under}refills`,
+    ]);
+    const copilot = lines.findIndex((line) => line.startsWith("    Premium requests"));
+    expect(lines[copilot]).toMatch(/ {3}80% left$/u);
+    expect(lines[copilot + 1]).toBe(`${under}resets in 20d 3h 4m`);
+    for (const line of lines) expect(columnsOf(line)).toBeLessThanOrEqual(WIDTH_80);
+  });
+
+  it("puts a custom provider's usage on its quota block, named with its label", () => {
+    const lines = bodyText({
+      snapshot: { ...snapshot([TEAM]), customRowProviders: TEAM_ROW_PROVIDERS },
+      usage: report([usageRow("team-gateway", 3.39, 1_000_000, 2)]),
+    });
+    const blocks = lines.filter((line) => line.startsWith("● "));
+    expect(blocks).toEqual([
+      "● Quota providers (Team)       $3.39  100.0% of cost · 1.00M tokens · 2 sessions",
+    ]);
+    const team = lines.indexOf(blocks[0]);
+    expect(lines[team + 1]).toMatch(/^ {4}Monthly [█░]{20} {3}64% left$/u);
+  });
+
   it("puts the pace words under the bar when the line would be too wide", () => {
     const lines = bodyText({ width: 80 });
     const bar = lines.findIndex((line) => line.startsWith("    5h"));
@@ -303,6 +364,27 @@ describe("quick look: short text", () => {
       nowMs: NOW,
     });
     expect(message).toBe("Quota\n● Z.ai  5h 30% left runs out in 1h 5m");
+  });
+
+  it("keeps each amount and limit whole on lines as wide as the toast", () => {
+    const message = quickLookText({
+      snapshot: { ...snapshot([ZAI, TEAM]), customRowProviders: TEAM_ROW_PROVIDERS },
+      usage: report([
+        usageRow("zai-coding-plan", 12.5, 4_100_000, 3),
+        usageRow("team-gateway", 3.39, 1_000_000, 2),
+      ]),
+      settings,
+      nowMs: NOW,
+      width: TOAST_45,
+    });
+    expect(message.split("\n")).toEqual([
+      "Quota · 7 days · $15.89",
+      "  5.10M tokens",
+      "● Z.ai",
+      "  5h 30% left  $12.50",
+      "● Quota providers (Te…",
+      "  Monthly 64% left  $3.39",
+    ]);
   });
 
   it("says when quota found no provider", () => {

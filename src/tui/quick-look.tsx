@@ -36,6 +36,8 @@ import type { QuotaWindow, WindowTheme } from "./window/shell.js";
 
 /** OpenCode's "xlarge" dialog width (dialogWidth in its ui/dialog.tsx). */
 const DIALOG_WIDTH = 116;
+/** OpenCode's toast is at most this wide, and 6 columns narrower than the terminal (ui/toast.tsx). */
+const TOAST_MAX_WIDTH = 60;
 const COMMAND_TIMEOUT_MS = 60_000;
 /**
  * OpenCode gives the keyboard back to the message box 1 ms after a dialog closes. The window
@@ -68,6 +70,8 @@ export type QuickLookHost = RpcLocationHost & {
     };
   };
   keymap: { layer(build: () => { mode: "modal"; commands: QuickLookKey[] }): void };
+  /** The terminal's width in columns. */
+  renderer: { width: number };
   ui: {
     router: { current(): { type: string; sessionID?: string } };
     toast: { show(toast: Toast): void };
@@ -181,7 +185,9 @@ export function createQuickLook(
       return;
     }
     const display = host.display();
-    const message = quickLookText({ snapshot, usage, settings: display, nowMs: Date.now() });
+    // The toast's text: its width without the borders (1 + 1) and the paddings (2 + 2).
+    const width = Math.min(TOAST_MAX_WIDTH, api.renderer.width - 6) - 6;
+    const message = quickLookText({ snapshot, usage, settings: display, nowMs: Date.now(), width });
     api.ui.toast.show({
       variant: "info",
       title: "OpenCode Quota",

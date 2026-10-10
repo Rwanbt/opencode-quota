@@ -280,6 +280,40 @@ describe("quota window shell", () => {
     expect(lines.filter((line) => line === "read (click: unread)")).toHaveLength(2);
   });
 
+  it("sends one change for two quick clicks on one line, and the next click undoes it", async () => {
+    const host = fakeHost();
+    host.quotaWindow.open("notices");
+    await flush();
+    host.noticeCalls[0]?.answer();
+    await flush();
+
+    // Two clicks before the server answers: the board still shows both as unread.
+    let view = draw(host.quotaWindow);
+    click(view.tree, "Copilot moves to AI Credits.");
+    click(view.tree, "Copilot moves to AI Credits.");
+    click(view.tree, "Count on the Home screen");
+    click(view.tree, "Count on the Home screen");
+    view.dispose();
+    await flush();
+    // The requests run one after another: answer each as it goes out.
+    for (let open = host.noticeCalls.find((call) => !call.answered); open; ) {
+      open.answer();
+      await flush();
+      open = host.noticeCalls.find((call) => !call.answered);
+    }
+
+    view = draw(host.quotaWindow);
+    click(view.tree, "Copilot moves to AI Credits.");
+    view.dispose();
+    await flush();
+    expect(host.noticeCalls.map((call) => call.input)).toEqual([
+      {},
+      { read: ["a"] },
+      { home: false },
+      { unread: ["a"] },
+    ]);
+  });
+
   it("shows and copies the newest status report after closing and opening again", async () => {
     const host = fakeHost();
     host.quotaWindow.open("status");

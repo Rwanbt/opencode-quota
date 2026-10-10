@@ -279,7 +279,7 @@ async function startHosts() {
   const { default: tuiPlugin } = await import("../src/tui/index.tsx");
   const disposeTui = tuiPlugin.setup({
     location: { directory: process.cwd() },
-    renderer: { currentFocusedEditor: null, on: () => {}, off: () => {} },
+    renderer: { currentFocusedEditor: null, width: 120, on: () => {}, off: () => {} },
     client: { rpc: createQuotaRpcBridge(handlers, events), session: { command: sessionCommand } },
     theme: THEME,
     storage,
@@ -508,7 +508,7 @@ describe("v6 surfaces on the quota snapshot", () => {
       expect.arrayContaining([
         "Quota last 7 days Cost Tokens ‹ 7 days ›",
         "$4.50 Daily cost",
-        "● Copilot $1.50 33.3% of cost · 500K tokens · 1 session",
+        "● Copilot (pro) $1.50 33.3% of cost · 500K tokens · 1 session",
         "Plan ████████████████░░░░ 81% left",
         "● MiniMax Token Plan — no usage in OpenCode",
         "5h ░░░░░░░░░│░░░░░░░░░░ 0% left · resets in 2h 14m · using it faster than it refills",
@@ -572,7 +572,8 @@ describe("v6 surfaces on the quota snapshot", () => {
     );
 
     // The quick look as a toast, and as a message in the session: the TUI runs the server's
-    // /quota there, which posts the same short text as on Web and Desktop.
+    // /quota there, which posts the same short text as on Web and Desktop. In a 120-column
+    // terminal the toast's text gets 54 columns: a longer line goes on under itself.
     const settings = tui.stored.get("settings").settings;
     settings.quickLook = "toast";
     await tui.command("quick_look").run();
@@ -580,9 +581,10 @@ describe("v6 surfaces on the quota snapshot", () => {
     const shortText = [
       "Quota · 7 days · $4.50 · 1.50M tokens",
       "● Anthropic             $3.00",
-      "● Copilot               Plan 81% left  $1.50",
+      "● Copilot (pro)         Plan 81% left  $1.50",
       "● MiniMax Token Plan    5h 0% left · 7d 40% left",
-      "● Quota providers (Te…  Provider error 503 · 30d 64% left",
+      "● Quota providers (Te…  Provider error 503",
+      "  30d 64% left",
     ];
     expect(tui.toast.mock.calls[1]?.[0]).toMatchObject({
       variant: "info",

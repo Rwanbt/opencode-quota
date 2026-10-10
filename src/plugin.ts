@@ -34,6 +34,7 @@ import {
   kickPricingRefresh,
   type QuotaDialogCommandId,
 } from "./lib/quota-dialog-commands.js";
+import { QUOTA_PROVIDERS_AGGREGATE_ID } from "./lib/quota-providers.js";
 import {
   containsQuotaReport,
   formatQuotaReportMessage,
@@ -232,14 +233,28 @@ export const QuotaToastPlugin = Plugin.define({
         },
       };
     };
-    // Every snapshot a client gets carries the server's words and the v5 looks still to apply,
-    // and none of the export parts the server keeps for the export file.
-    const forClients = (snapshot: QuotaSnapshot): QuotaSnapshot => ({
-      ...snapshot,
-      providers: snapshot.providers.map(({ exportPart: _serverOnly, ...provider }) => provider),
-      words: loaded.settings.words,
-      ...(displayImport ? { displayImport } : {}),
-    });
+    // Every snapshot a client gets carries the server's words, the OpenCode provider of each
+    // custom definition, and the v5 looks still to apply, and none of the export parts the
+    // server keeps for the export file.
+    const forClients = (snapshot: QuotaSnapshot): QuotaSnapshot => {
+      const custom = loaded.settings.providers.custom;
+      return {
+        ...snapshot,
+        providers: snapshot.providers.map(({ exportPart: _serverOnly, ...provider }) => provider),
+        words: loaded.settings.words,
+        ...(custom.length > 0
+          ? {
+              customRowProviders: Object.fromEntries(
+                custom.map((one) => [
+                  `${QUOTA_PROVIDERS_AGGREGATE_ID}.custom.${one.id}.`,
+                  one.providerId,
+                ]),
+              ),
+            }
+          : {}),
+        ...(displayImport ? { displayImport } : {}),
+      };
+    };
 
     // A notice can target the users of some providers: the enabled and available ones,
     // found without asking any provider for quota.

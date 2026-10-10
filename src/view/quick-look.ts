@@ -78,6 +78,8 @@ export type QuickLookTextInput = {
   usage: UsageReport | undefined;
   settings: RowSettings;
   nowMs: number;
+  /** The columns a line may take (the toast's); without it lines are as long as they get. */
+  width?: number;
 };
 
 /** A provider's block: its usage (when OpenCode used it) and its quota groups (when checked). */
@@ -86,6 +88,8 @@ type Block = { name: string; dot: UsageRole; usage?: UsageProviderRow; groups: G
 type Columns = { name: number; label: number };
 
 const SESSION_RANGES: ReadonlySet<UsageRange> = new Set(["session", "session_tree"]);
+/** The usage ranges in picker order: the one list the quick look's ranges come from. */
+const USAGE_RANGES = Object.keys(RANGE_TITLES) as UsageRange[];
 const INDENT = "    ";
 /** The provider name column: as wide as the longest name, within these bounds. */
 const NAME_MIN_WIDTH = 10;
@@ -95,6 +99,8 @@ const AMOUNT_WIDTH = 10;
 const LABEL_MIN_WIDTH = 6;
 const LABEL_MAX_WIDTH = 16;
 const BAR_WIDTH = 20;
+/** Narrower than this under the percent, the reset and pace words go under the label. */
+const UNDER_MIN_WIDTH = 16;
 /** The total and its two lines beside the chart. */
 const TOTALS_WIDTH = 38;
 const COLUMN_GAP = 3;
@@ -104,6 +110,8 @@ const CHART_ROWS = 2;
 /** The "by type" bar stays short, like the usage view's. */
 const BY_TYPE_MAX_WIDTH = 64;
 const TEXT_NAME_MAX = 20;
+/** A short-text line that goes on under the one before starts this far in. */
+const TEXT_CONTINUE = "  ";
 const KEY_HINTS = "c/t cost or tokens · ←/→ range · u full usage · s settings · esc close";
 
 function span(text: string, role: QuickLookRole): QuickLookSpan {
@@ -162,9 +170,25 @@ export function quotaProviderIdsOfUsage(usageProviderID: string): string[] {
   return [usageProviderID, ...getQuotaProviderIdsForRuntimeId(usageProviderID)];
 }
 
+/**
+ * The quota group serves what OpenCode used under `usageProviderID`: its quota provider is one
+ * that id stands for, or it shows a custom definition serving that id (`customRowProviders`).
+ */
+function groupServesUsage(
+  group: Group,
+  usageProviderID: string,
+  customRowProviders: Readonly<Record<string, string>>,
+): boolean {
+  if (quotaProviderIdsOfUsage(usageProviderID).includes(group.providerId)) return true;
+  const prefixes = Object.keys(customRowProviders).filter(
+    (prefix) => customRowProviders[prefix] === usageProviderID,
+  );
+  return group.rows.some(({ row }) => prefixes.some((prefix) => row.id.startsWith(prefix)));
+}
+
 /** The ranges ←/→ step through, in order; the session ones only inside a session. */
 export function quickLookRanges(inSession: boolean): QuickLookRange[] {
-  return (Object.keys(RANGE_TITLES) as UsageRange[]).filter(
+  return USAGE_RANGES.filter(
     (range): range is QuickLookRange =>
       range !== "between" && (inSession || !SESSION_RANGES.has(range)),
   );
@@ -199,17 +223,26 @@ function quotaGroups(snapshot: QuotaSnapshot | undefined, settings: RowSettings)
  * One block per provider OpenCode used (most cost, or most tokens, first) with the quota groups
  * it matches, then one per quota group no used provider matched, in the sidebar's order.
  */
-function blocksOf(groups: Group[], report: UsageReport | undefined, mode: UsageMode): Block[] {
+function blocksOf(
+  groups: Group[],
+  snapshot: QuotaSnapshot | undefined,
+  report: UsageReport | undefined,
+  mode: UsageMode,
+): Block[] {
+  const customRowProviders = snapshot?.customRowProviders ?? {};
   const used = (report?.providers ?? []).filter((row) => row.tokens > 0);
   const ordered = mode === "cost" ? used : [...used].sort((a, b) => b.tokens - a.tokens);
   const claimed = new Set<Group>();
   const usedBlocks = ordered.map((row): Block => {
-    const ids = quotaProviderIdsOfUsage(row.providerID);
-    const own = groups.filter((group) => !claimed.has(group) && ids.includes(group.providerId));
+    const own = groups.filter(
+      (group) => !claimed.has(group) && groupServesUsage(group, row.providerID, customRowProviders),
+    );
     for (const group of own) claimed.add(group);
     const index = report?.providers.indexOf(row) ?? 0;
+    // One group: its title names the account ("Quota providers (Team)").
+    const name = own.length === 1 ? own[0].title : own[0]?.name;
     return {
-      name: own[0]?.name ?? getQuotaProviderDisplayLabel(row.providerID),
+      name: name ?? getQuotaProviderDisplayLabel(row.providerID),
       dot: `provider:${index}`,
       usage: row,
       groups: own,
@@ -317,9 +350,33 @@ function markedBar(percent: number, level: Level, evenLeft: number | undefined):
   return merged;
 }
 
+/** `text` in lines of at most `width` columns, broken between words; a longer word is cut. */
+function wrapWords(text: string, width: number): string[] {
+  const lines: string[] = [];
+  let current = "";
+  for (const word of text.split(" ")) {
+    const joined = current ? `${current} ${word}` : word;
+    if (columnsOf(joined) <= width) {
+      current = joined;
+      continue;
+    }
+    if (current) lines.push(current);
+    current = word;
+    while (columnsOf(current) > width) {
+      const head = sliceColumns(current, width);
+      if (!head) break;
+      lines.push(head);
+      current = current.slice(head.length);
+    }
+  }
+  if (current) lines.push(current);
+  return lines;
+}
+
 /**
- * A limit: its bar with the even-use mark, % left, the reset and the pace words. When that is
- * wider than `input.width`, the pace words go on a line of their own under the percent.
+ * A limit: its bar with the even-use mark, % left, the reset and the pace words. The reset and
+ * the pace follow on the bar's line while they fit in `input.width`; otherwise they go under the
+ * percent, wrapped to the columns left there.
  */
 function limitLines(
   item: VisibleRow,
@@ -335,19 +392,32 @@ function limitLines(
   const reset = resetText(row, input.nowMs, words);
   const pace = paceOf(row, input.nowMs);
   const percentWidth = columnsOf(percentText(words, 100, true));
-  const line: QuickLookLine = [
-    label,
-    ...markedBar(percent, level, pace?.evenLeft),
-    span(`  ${padStartColumns(percentText(words, percent, true), percentWidth)}`, level),
-    ...(reset ? [span(` · resets in ${reset}`, "muted")] : []),
+  const lines: QuickLookLine[] = [
+    [
+      label,
+      ...markedBar(percent, level, pace?.evenLeft),
+      span(`  ${padStartColumns(percentText(words, percent, true), percentWidth)}`, level),
+    ],
   ];
-  if (!pace) return [line];
-  const paceSpan = span(paceText(pace, words), pace.kind === "fast" ? "warning" : "muted");
-  if (lineWidth(line) + 3 + columnsOf(paceSpan.text) <= input.width) {
-    return [[...line, span(" · ", "muted"), paceSpan]];
+  const after: QuickLookSpan[] = [
+    ...(reset ? [span(`resets in ${reset}`, "muted")] : []),
+    ...(pace ? [span(paceText(pace, words), pace.kind === "fast" ? "warning" : "muted")] : []),
+  ];
+  // Under the percent; in a very narrow dialog, under the label instead.
+  const percentStart = INDENT.length + columns.label + 1 + BAR_WIDTH + 2;
+  const under = input.width - percentStart >= UNDER_MIN_WIDTH ? percentStart : INDENT.length;
+  const room = Math.max(1, input.width - under);
+  for (const part of after) {
+    const last = lines[lines.length - 1];
+    if (lineWidth(last) + 3 + columnsOf(part.text) <= input.width) {
+      last.push(span(" · ", "muted"), part);
+      continue;
+    }
+    for (const piece of wrapWords(part.text, room)) {
+      lines.push([span(" ".repeat(under), "muted"), span(piece, part.role)]);
+    }
   }
-  const under = INDENT.length + columns.label + 1 + BAR_WIDTH + 2;
-  return [line, [span(" ".repeat(under), "muted"), paceSpan]];
+  return lines;
 }
 
 /** A block: its cost line, then each quota group's error and limits. */
@@ -378,7 +448,12 @@ function blockLines(block: Block, input: QuickLookInput, columns: Columns): Quic
 export function quickLookView(input: QuickLookInput): QuickLookView {
   const width = Math.max(0, Math.floor(input.width));
   const sized = { ...input, width };
-  const blocks = blocksOf(quotaGroups(input.snapshot, input.settings), input.usage, input.mode);
+  const blocks = blocksOf(
+    quotaGroups(input.snapshot, input.settings),
+    input.snapshot,
+    input.usage,
+    input.mode,
+  );
   const longest = (texts: string[]) => Math.max(0, ...texts.map((text) => columnsOf(text)));
   const labels = blocks.flatMap((block) => block.groups.flatMap((group) => group.rows));
   const columns: Columns = {
@@ -430,31 +505,62 @@ function shortLimits(group: Group, words: Words, nowMs: number): string[] {
   return [...error, ...limits];
 }
 
+/** A piece of a short-text line, and what goes before it when it follows on the same line. */
+type Piece = { text: string; before: string };
+
+/**
+ * The pieces on lines of at most `width` columns: a piece never splits (a wider one gets a line
+ * of its own), and a line that goes on starts with `TEXT_CONTINUE`. No width: one line.
+ */
+function flowPieces(pieces: Piece[], width: number | undefined): string[] {
+  const lines: string[] = [];
+  let line = "";
+  for (const piece of pieces) {
+    const joined = line ? `${line}${piece.before}${piece.text}` : piece.text;
+    if (!line || width === undefined || columnsOf(joined) <= width) {
+      line = joined;
+      continue;
+    }
+    lines.push(line.trimEnd());
+    line = `${TEXT_CONTINUE}${piece.text}`;
+  }
+  return line ? [...lines, line.trimEnd()] : lines;
+}
+
 /**
  * The quick look as short text for the toast and the chat: the range and totals, then one line
- * per provider with its limits and its cost. Pace words show only with `words.runsOut`.
+ * per provider with its limits and its cost. Pace words show only with `words.runsOut`. With
+ * `width`, a line that would be wider goes on under itself, never inside an amount or a limit.
  */
 export function quickLookText(input: QuickLookTextInput): string {
-  const { usage, nowMs } = input;
+  const { usage, nowMs, width } = input;
   const words = input.snapshot?.words ?? DEFAULT_WORDS;
-  const blocks = blocksOf(quotaGroups(input.snapshot, input.settings), usage, "cost");
-  let header = "Quota";
+  const blocks = blocksOf(
+    quotaGroups(input.snapshot, input.settings),
+    input.snapshot,
+    usage,
+    "cost",
+  );
+  const header: Piece[] = [{ text: "Quota", before: "" }];
   if (usage) {
-    const used = usage.totals.tokens.processed > 0;
-    header += ` · ${rangeLabel(usage.range)} · `;
-    header += used
-      ? `${formatUsd(usage.totals.costUsd)} · ${formatTokens(usage.totals.tokens.processed)} tokens`
-      : "no usage";
+    const totals =
+      usage.totals.tokens.processed > 0
+        ? [formatUsd(usage.totals.costUsd), `${formatTokens(usage.totals.tokens.processed)} tokens`]
+        : ["no usage"];
+    for (const text of [rangeLabel(usage.range), ...totals]) header.push({ text, before: " · " });
   }
   const nameWidth = Math.min(
     TEXT_NAME_MAX,
     Math.max(0, ...blocks.map((block) => columnsOf(block.name))),
   );
-  const lines = blocks.map((block) => {
-    const limits = block.groups.flatMap((group) => shortLimits(group, words, nowMs)).join(" · ");
-    const cost = block.usage ? costText(block.usage) : "";
-    const parts = [fit(block.name, nameWidth), limits, cost].filter((part) => part.trim() !== "");
-    return `● ${parts.join("  ")}`;
+  const lines = blocks.flatMap((block) => {
+    const limits = block.groups.flatMap((group) => shortLimits(group, words, nowMs));
+    const pieces: Piece[] = [
+      { text: `● ${fit(block.name, nameWidth)}`, before: "" },
+      ...limits.map((text, index) => ({ text, before: index === 0 ? "  " : " · " })),
+      ...(block.usage ? [{ text: costText(block.usage), before: "  " }] : []),
+    ];
+    return flowPieces(pieces, width);
   });
   if (lines.length === 0 && input.snapshot) {
     lines.push(
@@ -463,5 +569,5 @@ export function quickLookText(input: QuickLookTextInput): string {
         : "No quota providers found. Run /quota_status to see why.",
     );
   }
-  return [header, ...lines].join("\n");
+  return [...flowPieces(header, width), ...lines].join("\n");
 }

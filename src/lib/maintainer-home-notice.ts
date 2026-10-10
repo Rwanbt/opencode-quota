@@ -53,14 +53,14 @@ export async function markNotices(ids: readonly string[], read: boolean): Promis
   const path = statePath("maintainer-announcements-read.json");
   await withFileLock(
     `${path}.lock`,
-    async () => {
+    async (fence) => {
       const readIds = await readNoticeIds();
       for (const id of ids) {
         if (read) readIds.add(id);
         else readIds.delete(id);
       }
       const kept = [...readIds].filter((id) => known.has(id)).sort();
-      await writeJsonAtomic(path, { read: kept }, STATE_FILE_OPTIONS);
+      await writeJsonAtomic(path, { read: kept }, { ...STATE_FILE_OPTIONS, beforeCommit: fence });
     },
     {
       waitMs: READ_STATE_LOCK_WAIT_MS,

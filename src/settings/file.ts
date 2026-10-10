@@ -25,7 +25,7 @@ import {
   resolveConfigWriteTarget,
   writeResolvedConfigText,
 } from "../lib/config-write-target.js";
-import { claimAbandoned, createExclusive, lockOwnerText, releaseLock } from "../lib/file-lock.js";
+import { type LockFence, withFileLock } from "../lib/file-lock.js";
 import { getOpencodeRuntimeDirs } from "../lib/opencode-runtime-paths.js";
 import {
   type DisplayImport,
@@ -243,33 +243,30 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
  * Runs `work` on the file a save writes (a symlink's real target, else settings.jsonc), holding
- * the lock next to it (a file with our pid and a token), so saves, the conversion and the display
- * import never interleave. A live owner is never robbed: after LOCK_WAIT_MS this fails as busy.
+ * the lock next to it (`withFileLock`), so saves, the conversion and the display import never
+ * interleave. `work` calls the fence right before each write commits. After LOCK_WAIT_MS without
+ * the lock this fails as busy.
  */
 async function withSettingsLock<T>(
-  work: (target: ConfigWriteTargetSnapshot) => Promise<T>,
+  work: (target: ConfigWriteTargetSnapshot, fence: LockFence) => Promise<T>,
 ): Promise<T> {
-  const token = randomUUID();
-  const mine = lockOwnerText(token);
-  const start = Date.now();
+  const deadline = Date.now() + LOCK_WAIT_MS;
   for (;;) {
     const target = await resolveConfigWriteTarget(settingsPath());
     const lock = `${target.writePath}.lock`;
-    await mkdir(dirname(lock), { recursive: true, mode: NEW_CONFIG_DIRECTORY_MODE });
-    if (await createExclusive(lock, mine)) {
-      try {
+    const busyMessage = `the settings file is busy: another save holds ${lock}; try again`;
+    const done = await withFileLock(
+      lock,
+      async (fence) => {
         // Another save created the file, or a link moved, while we waited: lock it again.
         const now = await resolveConfigWriteTarget(target.configuredPath);
-        if (configWriteTargetsEqual(target, now)) return await work(target);
-      } finally {
-        await releaseLock(lock, mine);
-      }
-    } else {
-      await claimAbandoned(lock, token);
-    }
-    if (Date.now() - start > LOCK_WAIT_MS) {
-      throw new Error(`the settings file is busy: another save holds ${lock}; try again`);
-    }
+        if (!configWriteTargetsEqual(target, now)) return undefined;
+        return { value: await work(target, fence) };
+      },
+      { waitMs: Math.max(0, deadline - Date.now()), busyMessage },
+    );
+    if (done) return done.value;
+    if (Date.now() > deadline) throw new Error(busyMessage);
     await sleep(20);
   }
 }
@@ -282,13 +279,14 @@ function displayImportPath(): string {
 export type PendingDisplayImport = { id: string; display: DisplayImport };
 
 /** Keeps the v5 looks under a new id until the TUI acknowledges it (the caller holds the lock). */
-async function keepDisplayImport(display: DisplayImport): Promise<void> {
+async function keepDisplayImport(display: DisplayImport, fence: LockFence): Promise<void> {
   if (Object.keys(display).length === 0) return;
   const pending: PendingDisplayImport = { id: randomUUID(), display };
   await writeTextAtomic(displayImportPath(), `${JSON.stringify(pending, null, 2)}\n`, {
     policy: "configuration",
     directoryMode: NEW_CONFIG_DIRECTORY_MODE,
     fileMode: NEW_CONFIG_FILE_MODE,
+    beforeCommit: fence,
   });
 }
 
@@ -303,8 +301,10 @@ export async function pendingDisplayImport(): Promise<PendingDisplayImport | und
 
 /** The TUI applied the looks with this id: forget them, but never a newer import. */
 export async function acknowledgeDisplayImport(id: string): Promise<void> {
-  await withSettingsLock(async () => {
-    if ((await pendingDisplayImport())?.id === id) await rm(displayImportPath(), { force: true });
+  await withSettingsLock(async (_target, fence) => {
+    if ((await pendingDisplayImport())?.id !== id) return;
+    await fence();
+    await rm(displayImportPath(), { force: true });
   });
 }
 
@@ -368,7 +368,7 @@ export async function editSettingsFile(
 async function editWithLock(plan: PlanText): Promise<SaveResult> {
   const path = settingsPath();
   try {
-    return await withSettingsLock((target) => editLocked(target, plan));
+    return await withSettingsLock((target, fence) => editLocked(target, fence, plan));
   } catch (error) {
     return failedSave(`could not save ${path}: ${errorMessage(error)}`);
   }
@@ -382,7 +382,7 @@ function readTarget(target: ConfigWriteTargetSnapshot): Promise<string | undefin
   return target.terminalExisted ? readFile(target.writePath, "utf8") : Promise.resolve(undefined);
 }
 
-async function editLocked(target: ConfigWriteTargetSnapshot, plan: PlanText) {
+async function editLocked(target: ConfigWriteTargetSnapshot, fence: LockFence, plan: PlanText) {
   const path = target.configuredPath;
   const original = await readTarget(target);
   // A syntax error, or a key set twice or with a dot (an edit would change another one).
@@ -416,8 +416,8 @@ async function editLocked(target: ConfigWriteTargetSnapshot, plan: PlanText) {
   if (!configWriteTargetsEqual(target, now) || (await readTarget(target)) !== original) {
     return failedSave(`${path} changed while saving; nothing was saved, try again`);
   }
-  if (conversion) await keepDisplayImport(conversion.displayImport);
-  await writeResolvedConfigText(target, updated);
+  if (conversion) await keepDisplayImport(conversion.displayImport, fence);
+  await writeResolvedConfigText(target, updated, fence);
   await chmod(target.writePath, NEW_CONFIG_FILE_MODE);
   return { ok: true, issues, diff };
 }
@@ -435,11 +435,11 @@ export async function convertV5(): Promise<V5Conversion | undefined> {
   const malformed = "an old settings file does not parse; converted in memory until it is fixed";
   if (conversion.malformed) return { ...conversion, notWrittenReason: malformed };
   try {
-    return await withSettingsLock(async (target) => {
+    return await withSettingsLock(async (target, fence) => {
       // Another OpenCode process converted first.
       if (target.terminalExisted) return undefined;
-      await keepDisplayImport(conversion.displayImport);
-      await writeResolvedConfigText(target, convertedFileText(conversion));
+      await keepDisplayImport(conversion.displayImport, fence);
+      await writeResolvedConfigText(target, convertedFileText(conversion), fence);
       await chmod(target.writePath, NEW_CONFIG_FILE_MODE);
       return { ...conversion, written: true };
     });

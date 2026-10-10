@@ -185,6 +185,11 @@ export function createQuotaWindow(api: WindowHost, host: SurfaceHost): QuotaWind
   let openNoticeRequests = 0;
   /** The notice requests run one after another, so changes reach the server in click order. */
   let noticeQueue: Promise<void> = Promise.resolve();
+  /**
+   * What the clicks not on the board yet change: a notice id, or a Notices line. Another click
+   * on the same thing is ignored until the newest answer shows, since it would send the same.
+   */
+  const changing = new Set<string>();
   let noticePoll: ReturnType<typeof setInterval> | undefined;
 
   // The RPC client is made per call, so nothing reaches OpenCode during plugin setup.
@@ -217,9 +222,18 @@ export function createQuotaWindow(api: WindowHost, host: SurfaceHost): QuotaWind
         if (request === noticeRequest) showError(error);
       } finally {
         openNoticeRequests -= 1;
+        // The newest answer came after every earlier change: the board shows them all.
+        if (request === noticeRequest) changing.clear();
       }
     });
     return noticeQueue;
+  }
+
+  /** A click's change; ignored while the same thing's last change is not on the board. */
+  function changeOnce(what: string, input: QuotaRpcNoticeListInput): void {
+    if (changing.has(what)) return;
+    changing.add(what);
+    void changeNotices(input);
   }
 
   async function loadStatus(sessionID: string | undefined): Promise<void> {
@@ -288,9 +302,9 @@ export function createQuotaWindow(api: WindowHost, host: SurfaceHost): QuotaWind
     if (tab() !== "notices" || !current) return [];
     const unreadIds = current.notices.filter((notice) => !notice.read).map(({ id }) => id);
     const runs = {
-      enabled: () => void changeNotices({ enabled: !current.enabled }),
-      home: () => void changeNotices({ home: !current.home }),
-      readAll: () => void changeNotices({ read: unreadIds }),
+      enabled: () => changeOnce("enabled", { enabled: !current.enabled }),
+      home: () => changeOnce("home", { home: !current.home }),
+      readAll: () => changeOnce("readAll", { read: unreadIds }),
     };
     return noticeOptions(current).map((option) => ({ ...option, run: runs[option.id] }));
   }
@@ -316,6 +330,7 @@ export function createQuotaWindow(api: WindowHost, host: SurfaceHost): QuotaWind
     // Answers still on their way belong to the closed window.
     noticeRequest += 1;
     statusRequest += 1;
+    changing.clear();
     keyboardWanted = false;
     if (focusBefore && !focusBefore.isDestroyed) focusBefore.focus();
     focusBefore = null;
@@ -579,7 +594,9 @@ export function createQuotaWindow(api: WindowHost, host: SurfaceHost): QuotaWind
             <NoticesView
               theme={theme()}
               board={board()}
-              toggle={(id, read) => void changeNotices(read ? { unread: [id] } : { read: [id] })}
+              toggle={(id, read) =>
+                changeOnce(`notice ${id}`, read ? { unread: [id] } : { read: [id] })
+              }
             />
           </Show>
           <Show when={tab() === "status"}>
