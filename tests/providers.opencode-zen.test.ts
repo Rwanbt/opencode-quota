@@ -118,7 +118,7 @@ describe("OpenCode Zen provider", () => {
       "an expired sign-in",
       [consoleLogin({ expires: NOW - 1 })],
       "expired",
-      "internal",
+      "login_expired",
       `OpenCode Console sign-in failed: the sign-in expired. ${LOGIN_HINT}`,
     ],
   ])("reports %s without asking the Console", async (_name, logins, authState, code, message) => {
@@ -304,7 +304,7 @@ describe("OpenCode Zen provider", () => {
     [
       "an expired session on any route",
       { "budgets/org": () => new Response("unauthorized", { status: 401 }) },
-      "bad_response",
+      "login_expired",
       SESSION_ERROR,
     ],
     [
@@ -313,7 +313,7 @@ describe("OpenCode Zen provider", () => {
         "billing/status": () =>
           new Response(null, { status: 302, headers: { location: "/login" } }),
       },
-      "bad_response",
+      "login_expired",
       SESSION_ERROR,
     ],
     [

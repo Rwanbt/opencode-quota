@@ -123,13 +123,16 @@ describe("OpenCode Go with the Console sign-in", () => {
       detail: { key: "console_error", value: "OpenCode Console API error 500 (/api/go/status)" },
     },
     {
-      name: "a Console 500 without an API key stays quiet",
+      name: "a Console 500 without an API key is Go's error",
       login: consoleLogin(),
       consoleStatus: 500,
       apiKey: false,
       rows: [],
-      errorCode: "not_configured",
-      detail: { key: "console_error", value: "OpenCode Console API error 500 (/api/go/status)" },
+      errorCode: "provider_error",
+      detail: {
+        key: "error",
+        value: "OpenCode Go: OpenCode Console API error 500 (/api/go/status)",
+      },
     },
     {
       name: "an expired sign-in uses the API key",

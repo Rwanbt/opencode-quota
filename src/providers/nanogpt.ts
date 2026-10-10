@@ -147,7 +147,11 @@ export const nanoGptProvider: QuotaProvider = {
     const result = await queryNanoGptQuota({ requestTimeoutMs: ctx.config?.requestTimeoutMs });
     if (!result) return { attempted: false, accounts: [], debug: keyDetails };
     if (!result.success) {
-      return { attempted: true, accounts: [failedAccount(LABEL, result.error)], debug: keyDetails };
+      return {
+        attempted: true,
+        accounts: [failedAccount(LABEL, result.error, result.retryable)],
+        debug: keyDetails,
+      };
     }
     const accounts = nanoGptAccounts(result);
     return { attempted: true, accounts, debug: [...keyDetails, ...nanoGptDetails(result)] };

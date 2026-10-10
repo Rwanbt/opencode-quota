@@ -15,6 +15,7 @@ import { queryOpenCodeGoConsoleStatus, queryOpenCodeGoQuota } from "../lib/openc
 import { normalizeQuotaProviderId } from "../lib/provider-metadata.js";
 import type { OpenCodeGoResult, OpenCodeGoWindowKey } from "../lib/types.js";
 import {
+  type FetchError,
   FIVE_HOUR,
   failedAccount,
   fetchKeyLogins,
@@ -116,6 +117,7 @@ export const opencodeGoProvider: QuotaProvider = {
     }
 
     let consoleError: string;
+    let consoleFailure: FetchError;
     if (consoleAuth.state === "configured") {
       const consoleResult = await queryOpenCodeGoConsoleStatus(consoleAuth.credential, {
         requestTimeoutMs: ctx.config.requestTimeoutMs,
@@ -146,13 +148,16 @@ export const opencodeGoProvider: QuotaProvider = {
         };
       }
       consoleError = consoleResult.error;
+      consoleFailure = { message: consoleError, retryable: consoleResult.retryable };
     } else {
       consoleError = scrubCredentialErrorText(consoleAuth.error);
+      consoleFailure = {
+        message: `OpenCode Console sign-in failed: ${consoleError}. ${CONSOLE_LOGIN_HINT}`,
+      };
     }
 
     // The Console request or sign-in failed: fall back to the API-key path and surface the
-    // console error in diagnostics. Without an API key a failed request stays quiet (the
-    // sign-in works, only this request failed); a failed sign-in becomes Go's one error row.
+    // console error in diagnostics. Without an API key the failure is Go's one error row.
     const diagnostics = await getApiKeyLoginDiagnostics(OPENCODE_GO_AUTH);
     return await fetchWithApiKey(
       ctx,
@@ -164,22 +169,20 @@ export const opencodeGoProvider: QuotaProvider = {
         { key: "go_source", value: "legacy_key" },
         selectedWindowsDetail,
       ],
-      consoleAuth.state === "invalid"
-        ? `OpenCode Console sign-in failed: ${consoleError}. ${CONSOLE_LOGIN_HINT}`
-        : undefined,
+      consoleFailure,
     );
   },
 };
 
 /**
- * The API-key path. `consoleSignInFailure` is set when OpenCode could not return
- * the Console sign-in; without an API key it becomes Go's one error row.
+ * The API-key path. `consoleFailure` is set when the Console sign-in or its request failed;
+ * without an API key it becomes Go's one error row.
  */
 async function fetchWithApiKey(
   ctx: QuotaProviderContext,
   diagnostics: ApiKeyLoginDiagnostics,
   debug: DebugDetail[],
-  consoleSignInFailure?: string,
+  consoleFailure?: FetchError,
 ): Promise<ProviderFetchResult> {
   const windows = ctx.config.opencodeGoWindows ?? OPENCODE_GO_WINDOW_ORDER;
   const notSubscribed: ProviderFetchResult = {
@@ -191,8 +194,12 @@ async function fetchWithApiKey(
 
   if (auth.state === "none") {
     notSubscribedCredentialFingerprints.clear();
-    return consoleSignInFailure
-      ? { attempted: true, accounts: [failedAccount(LABEL, consoleSignInFailure)], debug }
+    return consoleFailure
+      ? {
+          attempted: true,
+          accounts: [failedAccount(LABEL, consoleFailure.message, consoleFailure.retryable)],
+          debug,
+        }
       : { attempted: false, accounts: [], debug };
   }
 

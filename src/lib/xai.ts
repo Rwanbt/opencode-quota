@@ -75,7 +75,7 @@ function periodKindFromType(value: unknown): XaiPeriodKind {
   const raw = nonEmptyString(value)?.toUpperCase() ?? "";
   if (raw.includes("WEEK")) return "weekly";
   if (raw.includes("MONTH")) return "monthly";
-  if (raw.includes("DAY")) return "daily";
+  if (raw.includes("DAY") || raw.includes("DAILY")) return "daily";
   return "period";
 }
 

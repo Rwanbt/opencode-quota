@@ -82,6 +82,8 @@ describe("xAI provider", () => {
     expect(rowSummary(fetched.rows)).toEqual([
       ["xai.credits", "Heavy", "Weekly", "week", 95, WEEK_END],
     ]);
+    // The period start is the pace marker's evidence, for a stored login too.
+    expect(fetched.rows[0]?.windowStartedAt).toBe("2026-07-13T02:24:00.983Z");
     expect(fetched.error).toBeUndefined();
     expect(fetched.rowLogins).toEqual(["cred_1"]);
     expect(http.mock.calls.map(([url]) => url)).toEqual([CREDITS_URL, SUBSCRIPTIONS_URL]);
@@ -121,6 +123,14 @@ describe("xAI provider", () => {
         creditUsagePercent: 25,
       },
       ["Monthly", "month", 75, "2026-08-01T00:00:00.000Z"],
+    ],
+    [
+      "a daily period",
+      {
+        currentPeriod: { type: "USAGE_PERIOD_TYPE_DAILY", end: "2026-07-16T00:00:00Z" },
+        creditUsagePercent: 10,
+      },
+      ["Daily", "day", 90, "2026-07-16T00:00:00.000Z"],
     ],
     [
       "a weekly period without a usage percent (0% used)",

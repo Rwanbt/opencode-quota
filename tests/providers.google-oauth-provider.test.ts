@@ -234,6 +234,13 @@ describe("google remaining counts", () => {
       "1,234,567 left",
       { decimal: "1234567", unit: PLAIN },
     ],
+    [
+      "Gemini CLI",
+      { remainingAmount: "12.5", tokenType: "TOKENS" },
+      "12.5 left TOKENS",
+      { decimal: "12.5", unit: TOKENS },
+    ],
+    ["Google AGY", { remainingAmount: "007.250" }, "7.25 left", { decimal: "7.25", unit: PLAIN }],
     ["Gemini CLI", { tokenType: "TOKENS" }, undefined, undefined],
   ])("%s %j shows %j and keeps the count", async (name, fields, right, remaining) => {
     const flavor = PROVIDERS.find((candidate) => candidate.name === name);

@@ -5,9 +5,11 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { legacyResultFromFetch } from "../src/core/rows.js";
 import type { QuotaProvider } from "../src/lib/entries.js";
 import { isCanonicalProviderAvailable } from "../src/lib/provider-availability.js";
 import { chutesProvider } from "../src/providers/chutes.js";
+import type { ProviderFetchResult } from "../src/providers/contract.js";
 import { deepseekProvider } from "../src/providers/deepseek.js";
 import { kiloProvider } from "../src/providers/kilo.js";
 import { nanoGptProvider } from "../src/providers/nanogpt.js";
@@ -259,7 +261,7 @@ describeVendor("synthetic", [
       weeklyTokenLimit: { maxCredits: "24.00", remainingCredits: "$2.02", percentRemaining: 8 },
     },
     rows: [],
-    error: "internal",
+    error: "bad_response",
     errorLines: ["Synthetic: Synthetic API response missing weeklyTokenLimit quota window"],
   },
   {
@@ -538,6 +540,27 @@ describeVendor("nanogpt", [
     ],
   },
 ]);
+
+it("nanogpt marks a failure of both endpoints retryable when one of them may recover", async () => {
+  setKey("nanogpt");
+  fakeHttp(
+    byUrl({
+      [NANOGPT_USAGE]: new Response("bad gateway", { status: 502 }),
+      [NANOGPT_BALANCE]: new Response("Unauthorized", { status: 401 }),
+    }),
+  );
+
+  const result = await nanoGptProvider.fetch({ config: { requestTimeoutMs: 5_000 } } as never);
+
+  expect(legacyResultFromFetch(result as ProviderFetchResult).errors).toEqual([
+    {
+      label: "NanoGPT",
+      message:
+        "Usage: NanoGPT API error 502: bad gateway; Balance: NanoGPT API error 401: Unauthorized",
+      retryable: true,
+    },
+  ]);
+});
 
 describeVendor("openrouter", [
   {

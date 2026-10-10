@@ -53,11 +53,17 @@ export async function isGoogleRuntimeAvailable(
   }
 }
 
-/** A whole remaining count Google reported ("1200") in `unit`; none for anything else. */
+/** A remaining count Google reported ("1200", "12.5") in `unit`; none for anything else. */
 export function remainingCount(text: string | undefined, unit: string): Amount | undefined {
-  const digits = text?.trim();
-  if (!digits || !/^\d+$/u.test(digits)) return undefined;
-  return { decimal: digits.replace(/^0+(?=\d)/u, ""), unit: { kind: "count", unit } };
+  const number = text?.trim();
+  if (!number || !/^\d+(?:\.\d+)?$/u.test(number)) return undefined;
+  const [integer = "0", fraction = ""] = number.split(".");
+  const whole = integer.replace(/^0+(?=\d)/u, "");
+  const decimals = fraction.replace(/0+$/u, "");
+  return {
+    decimal: decimals ? `${whole}.${decimals}` : whole,
+    unit: { kind: "count", unit },
+  };
 }
 
 function getGoogleAccountLocalPart(email: string): string {

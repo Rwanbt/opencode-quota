@@ -127,6 +127,16 @@ describe.each(ENDPOINTS)("MiniMax $endpoint", (endpoint) => {
       code: "rate_limited",
       message: "MiniMax API error: rate limit exceeded",
     },
+    {
+      reply: () => ({ base_resp: { status_code: 2049, status_msg: "Invalid API key" } }),
+      code: "login_expired",
+      message: "MiniMax API error: Invalid API key",
+    },
+    {
+      reply: () => ({ base_resp: { status_code: 1004, status_msg: "login fail: bad secret" } }),
+      code: "login_expired",
+      message: "MiniMax API error: login fail: bad secret",
+    },
   ])("shows $code for: $message", async ({ reply, code, message }) => {
     process.env[envVar] = "env-key";
     fakeHttp(reply);

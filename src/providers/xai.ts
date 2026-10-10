@@ -29,8 +29,8 @@ import {
   quotaRow,
 } from "./contract.js";
 
-/** The credits row, labelled with its period ("Weekly"); the window's times only when asked. */
-function creditsRow(window: XaiWindowValue, withWindowStart: boolean): ProviderRow {
+/** The credits row, labelled with its period ("Weekly"), with when the period started. */
+function creditsRow(window: XaiWindowValue): ProviderRow {
   const period = periodKindLabel(window.kind);
   return quotaRow({
     key: "credits",
@@ -38,8 +38,8 @@ function creditsRow(window: XaiWindowValue, withWindowStart: boolean): ProviderR
     window: classifyWindow(period),
     percentRemaining: window.percentRemaining,
     resetsAt: window.resetTimeIso,
-    windowStartedAt: withWindowStart ? window.fixedWindow?.startedAtIso : undefined,
-    observedAt: withWindowStart ? window.fixedWindow?.observedAtIso : undefined,
+    windowStartedAt: window.fixedWindow?.startedAtIso,
+    observedAt: window.fixedWindow?.observedAtIso,
   });
 }
 
@@ -80,7 +80,7 @@ export const xaiProvider: QuotaProvider = {
       }
       return {
         attempted: true,
-        accounts: [{ name: result.label, rows: [creditsRow(result.window, true)], errors: [] }],
+        accounts: [{ name: result.label, rows: [creditsRow(result.window)], errors: [] }],
         debug: [],
       };
     }
@@ -93,7 +93,7 @@ export const xaiProvider: QuotaProvider = {
         if (!result) return null;
         if (!result.success) return { rows: [], errors: [{ message: result.error }] };
         return {
-          rows: [creditsRow(result.window, false)],
+          rows: [creditsRow(result.window)],
           errors: [],
           fallbackName: result.label,
         };
