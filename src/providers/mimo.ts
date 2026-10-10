@@ -1,12 +1,6 @@
+import type { AmountUnit } from "../core/types.js";
 import { sanitizeSingleLineDisplaySnippet } from "../lib/display-sanitize.js";
-import type {
-  AccountingMetadata,
-  AccountingUnit,
-  QuotaProvider,
-  QuotaProviderContext,
-  QuotaToastEntry,
-  QuotaToastError,
-} from "../lib/entries.js";
+import type { QuotaProvider, QuotaProviderContext } from "../lib/entries.js";
 import type {
   MimoBalance,
   MimoDashboardResult,
@@ -18,24 +12,18 @@ import { getMimoConfigDiagnostics, resolveMimoConfigCached } from "../lib/mimo-c
 import { getQuotaProviderRuntimeIds } from "../lib/provider-metadata.js";
 import { accountingDecimalFromNumber } from "./accounting-decimal.js";
 import {
-  attemptedErrorResult,
-  attemptedResult,
-  configStatusDetails,
-  notAttemptedResult,
-  withStatusDetails,
-} from "./result-helpers.js";
+  type AccountResult,
+  failedAccount,
+  MONTHLY,
+  type ProviderFetchResult,
+  type ProviderRow,
+} from "./contract.js";
+import { configStatusDetails } from "./result-helpers.js";
 
 const MIMO_LABEL = "Xiaomi MiMo";
 const MIMO_RUNTIME_IDS = new Set(getQuotaProviderRuntimeIds("xiaomi"));
-
-const QUOTA_ACCOUNTING: AccountingMetadata = {
-  resultType: "quota",
-  acquisitionMethod: "dashboard_scrape",
-  ownership: "maintained",
-  authority: "provider_reported",
-};
-const BALANCE_ACCOUNTING: AccountingMetadata = { ...QUOTA_ACCOUNTING, resultType: "balance" };
 const TOKEN_UNIT = { kind: "count", unit: "token" } as const;
+const MIMO_ROW = { method: "dashboard_scrape", authority: "provider_reported" } as const;
 
 function getPlanDisplay(detail: MimoEndpointResult<MimoPlanDetail>): string | null {
   if (detail.state !== "success" || detail.data.expired) return null;
@@ -53,38 +41,60 @@ function getPlanDisplay(detail: MimoEndpointResult<MimoPlanDetail>): string | nu
   return planName || planCode || null;
 }
 
-function buildBalanceEntries(balance: MimoBalance, group: string): QuotaToastEntry[] {
-  const unit: AccountingUnit = balance.currency
+function balanceRows(balance: MimoBalance): ProviderRow[] {
+  const unit: AmountUnit = balance.currency
     ? { kind: "currency", code: balance.currency }
     : { kind: "count", unit: "credit" };
-  const rows = [
-    { component: "total_balance", amount: balance.total, prominence: "primary" },
-    { component: "cash_balance", amount: balance.cash, prominence: "supplementary" },
-    { component: "gift_balance", amount: balance.gift, prominence: "supplementary" },
+  const components = [
+    { key: "total_balance", label: "Balance", amount: balance.total, prominence: "primary" },
+    { key: "cash_balance", label: "Cash", amount: balance.cash, prominence: "supplementary" },
+    { key: "gift_balance", label: "Gift", amount: balance.gift, prominence: "supplementary" },
   ] as const;
-
-  const entries: QuotaToastEntry[] = [];
-  for (const row of rows) {
-    if (row.amount === null) continue;
-    entries.push({
-      accounting: BALANCE_ACCOUNTING,
-      kind: "quantity",
-      name: `xiaomi-mimo-${row.component}`,
-      group,
-      semantic: {
-        metric: { kind: "component", component: row.component },
-        prominence: row.prominence,
-      },
-      quantity: { decimal: accountingDecimalFromNumber(row.amount), unit },
-    });
-  }
-  return entries;
+  return components.flatMap(({ key, label, amount, prominence }) =>
+    amount === null
+      ? []
+      : [
+          {
+            ...MIMO_ROW,
+            key,
+            label,
+            type: "balance",
+            prominence,
+            amount: { decimal: accountingDecimalFromNumber(amount), unit },
+          } as const,
+        ],
+  );
 }
 
-function endpointErrors(result: MimoDashboardResult): QuotaToastError[] {
-  return [result.usage, result.detail, result.balance].flatMap((endpoint) =>
-    endpoint.state === "error" ? [{ label: MIMO_LABEL, message: endpoint.error }] : [],
-  );
+/** The plan's account (named after the plan when it has one), then each failed endpoint. */
+function mimoAccounts(result: MimoDashboardResult): AccountResult[] {
+  const plan = getPlanDisplay(result.detail);
+  const rows: ProviderRow[] = [];
+  if (
+    result.usage.state === "success" &&
+    !(result.detail.state === "success" && result.detail.data.expired)
+  ) {
+    const { used, limit } = result.usage.data;
+    rows.push({
+      ...MIMO_ROW,
+      key: "monthly_tokens",
+      label: MONTHLY.label,
+      window: MONTHLY.window,
+      type: "quota",
+      prominence: "primary",
+      percentRemaining: 100 - (used / limit) * 100,
+      used: { decimal: accountingDecimalFromNumber(used), unit: TOKEN_UNIT },
+      limit: { decimal: accountingDecimalFromNumber(limit), unit: TOKEN_UNIT },
+    });
+  }
+  if (result.balance.state === "success") rows.push(...balanceRows(result.balance.data));
+
+  return [
+    { name: plan ? `${MIMO_LABEL}: ${plan}` : MIMO_LABEL, rows, errors: [] },
+    ...[result.usage, result.detail, result.balance].flatMap((endpoint) =>
+      endpoint.state === "error" ? [failedAccount(MIMO_LABEL, endpoint.error)] : [],
+    ),
+  ];
 }
 
 export const xiaomiProvider: QuotaProvider = {
@@ -100,9 +110,9 @@ export const xiaomiProvider: QuotaProvider = {
     return MIMO_RUNTIME_IDS.has(provider);
   },
 
-  async fetch(ctx: QuotaProviderContext) {
+  async fetch(ctx: QuotaProviderContext): Promise<ProviderFetchResult> {
     const diagnostics = await getMimoConfigDiagnostics();
-    const statusDetails = configStatusDetails({
+    const debug = configStatusDetails({
       ...diagnostics,
       error: diagnostics.error
         ? sanitizeSingleLineDisplaySnippet(diagnostics.error, 120)
@@ -110,12 +120,13 @@ export const xiaomiProvider: QuotaProvider = {
     });
     const config = await resolveMimoConfigCached();
 
-    if (config.state === "none") return withStatusDetails(notAttemptedResult(), statusDetails);
+    if (config.state === "none") return { attempted: false, accounts: [], debug };
     if (config.state === "invalid") {
-      return withStatusDetails(
-        attemptedErrorResult(MIMO_LABEL, `Invalid config (${config.source}): ${config.error}`),
-        statusDetails,
-      );
+      return {
+        attempted: true,
+        accounts: [failedAccount(MIMO_LABEL, `Invalid config (${config.source}): ${config.error}`)],
+        debug,
+      };
     }
 
     const result = await queryMimoDashboard(config.config.cookie, {
@@ -123,41 +134,6 @@ export const xiaomiProvider: QuotaProvider = {
         ? ctx.config.requestTimeoutMs
         : undefined,
     });
-    const plan = getPlanDisplay(result.detail);
-    const group = plan ? `${MIMO_LABEL}: ${plan}` : MIMO_LABEL;
-    const entries: QuotaToastEntry[] = [];
-
-    if (
-      result.usage.state === "success" &&
-      !(result.detail.state === "success" && result.detail.data.expired)
-    ) {
-      const { used, limit } = result.usage.data;
-      entries.push({
-        accounting: QUOTA_ACCOUNTING,
-        name: `${group} Monthly`,
-        group,
-        percentRemaining: 100 - (used / limit) * 100,
-        semantic: {
-          metric: { kind: "window", window: "month" },
-          prominence: "primary",
-        },
-        basis: {
-          used: {
-            quantity: { decimal: accountingDecimalFromNumber(used), unit: TOKEN_UNIT },
-            authority: "provider_reported",
-          },
-          limit: {
-            quantity: { decimal: accountingDecimalFromNumber(limit), unit: TOKEN_UNIT },
-            authority: "provider_reported",
-          },
-        },
-      });
-    }
-
-    if (result.balance.state === "success") {
-      entries.push(...buildBalanceEntries(result.balance.data, group));
-    }
-
-    return withStatusDetails(attemptedResult(entries, endpointErrors(result)), statusDetails);
+    return { attempted: true, accounts: mimoAccounts(result), debug };
   },
 };

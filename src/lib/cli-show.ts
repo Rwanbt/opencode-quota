@@ -1,12 +1,12 @@
 import { resolve } from "path";
 import { hasAnthropicCredentialsConfigured } from "./anthropic.js";
+import {
+  API_KEY_LOGIN_CACHE_MAX_AGE_MS,
+  API_KEY_LOGIN_VENDORS,
+  resolveApiKeyLogin,
+} from "./api-key-resolver.js";
 import { buildCliShowJson, buildCliShowText, type CliReport } from "./cli-reports.js";
 import { findGitWorktreeRoot } from "./config-file-utils.js";
-import {
-  DEFAULT_KIMI_AUTH_CACHE_MAX_AGE_MS,
-  resolveKimiCnAuthCached,
-  resolveKimiGlobalAuthCached,
-} from "./kimi-auth.js";
 import { bindCredentialSource } from "./opencode-auth.js";
 import { createSqliteCredentialSource } from "./opencode-auth-sqlite.js";
 import {
@@ -146,8 +146,12 @@ async function loadCliAuthenticatedProviderIds(config: Record<string, unknown>):
       : undefined;
   const [anthropicConfigured, kimiGlobalAuth, kimiCnAuth] = await Promise.all([
     hasAnthropicCredentialsConfigured({ binaryPath: anthropicBinaryPath }),
-    resolveKimiGlobalAuthCached({ maxAgeMs: DEFAULT_KIMI_AUTH_CACHE_MAX_AGE_MS }),
-    resolveKimiCnAuthCached({ maxAgeMs: DEFAULT_KIMI_AUTH_CACHE_MAX_AGE_MS }),
+    resolveApiKeyLogin(API_KEY_LOGIN_VENDORS["kimi-code-plan-global"], {
+      maxAgeMs: API_KEY_LOGIN_CACHE_MAX_AGE_MS,
+    }),
+    resolveApiKeyLogin(API_KEY_LOGIN_VENDORS["kimi-code-plan-cn"], {
+      maxAgeMs: API_KEY_LOGIN_CACHE_MAX_AGE_MS,
+    }),
   ]);
 
   return [

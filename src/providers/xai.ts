@@ -1,19 +1,15 @@
 /**
- * xAI SuperGrok provider wrapper.
+ * xAI SuperGrok: the shared credits meter of each OpenCode xAI sign-in. A sign-in OpenCode could
+ * not return shows as its own error.
  */
 
+import { classifyWindow } from "../core/windows.js";
 import type {
   QuotaProvider,
   QuotaProviderContext,
   QuotaProviderMatchContext,
-  QuotaProviderResult,
-  QuotaToastEntry,
 } from "../lib/entries.js";
-import {
-  credentialRowAuthEntry,
-  formatCredentialDisplayNames,
-  readCredentialRows,
-} from "../lib/opencode-auth.js";
+import { credentialRowAuthEntry, readCredentialRows } from "../lib/opencode-auth.js";
 import { isCanonicalProviderAvailable } from "../lib/provider-availability.js";
 import { modelProviderMatchesRuntimeId } from "../lib/provider-model-matching.js";
 import type { AuthData } from "../lib/types.js";
@@ -25,24 +21,25 @@ import {
   resolveXaiOAuth,
   type XaiWindowValue,
 } from "../lib/xai.js";
-import { attemptedResult, mapNullableProviderResult } from "./result-helpers.js";
+import {
+  failedAccount,
+  fetchEachLogin,
+  type ProviderFetchResult,
+  type ProviderRow,
+  quotaRow,
+} from "./contract.js";
 
-function xaiQuotaEntry(group: string, window: XaiWindowValue, sourceId?: string): QuotaToastEntry {
+/** The credits row, labelled with its period ("Weekly"); the window start only when asked. */
+function creditsRow(window: XaiWindowValue, withWindowStart: boolean): ProviderRow {
   const period = periodKindLabel(window.kind);
-  return {
-    accounting: {
-      resultType: "quota",
-      acquisitionMethod: "remote_api",
-      ownership: "maintained",
-      authority: "provider_reported",
-      ...(sourceId === undefined ? {} : { sourceId }),
-    },
-    name: `${group} ${period}`,
-    group,
-    label: `${period}:`,
+  return quotaRow({
+    key: "credits",
+    label: period,
+    window: classifyWindow(period),
     percentRemaining: window.percentRemaining,
-    resetTimeIso: window.resetTimeIso,
-  };
+    resetsAt: window.resetTimeIso,
+    windowStartedAt: withWindowStart ? window.fixedWindow?.startedAtIso : undefined,
+  });
 }
 
 export const xaiProvider: QuotaProvider = {
@@ -66,56 +63,41 @@ export const xaiProvider: QuotaProvider = {
     return modelProviderMatchesRuntimeId(model, "xai");
   },
 
-  async fetch(ctx: QuotaProviderContext): Promise<QuotaProviderResult> {
+  async fetch(ctx: QuotaProviderContext): Promise<ProviderFetchResult> {
     const requestTimeoutMs = ctx.config?.requestTimeoutMs;
-    // A failed login stays in the list so it shows as its own error row.
-    const credentials = (await readCredentialRows(["xai"], { methods: ["oauth"] })).flatMap(
-      (row) => {
-        const auth = resolveXaiOAuth({ xai: credentialRowAuthEntry(row) } as AuthData);
-        return auth.state === "none" ? [] : [{ row, auth }];
-      },
-    );
+    // A failed login stays in the list so it shows as its own error.
+    const logins = (await readCredentialRows(["xai"], { methods: ["oauth"] })).flatMap((row) => {
+      const auth = resolveXaiOAuth({ xai: credentialRowAuthEntry(row) } as AuthData);
+      return auth.state === "none" ? [] : [{ row, auth }];
+    });
 
-    if (credentials.length === 0) {
+    if (logins.length === 0) {
       const result = await queryXaiQuota({ requestTimeoutMs });
-      return mapNullableProviderResult(result, {
-        errorLabel: "xAI",
-        onSuccess: ({ label, window }) =>
-          attemptedResult(
-            [
-              {
-                ...xaiQuotaEntry(label, window),
-                ...(window.fixedWindow ? { fixedWindow: { ...window.fixedWindow } } : {}),
-              },
-            ],
-            [],
-            { singleWindowDisplayName: label },
-          ),
-      });
+      if (!result) return { attempted: false, accounts: [], debug: [] };
+      if (!result.success) {
+        return { attempted: true, accounts: [failedAccount("xAI", result.error)], debug: [] };
+      }
+      return {
+        attempted: true,
+        accounts: [{ name: result.label, rows: [creditsRow(result.window, true)], errors: [] }],
+        debug: [],
+      };
     }
 
-    const results = await Promise.all(
-      credentials.map(async ({ row, auth }) => ({
-        row,
-        result: await queryXaiQuota({ requestTimeoutMs, auth }),
-      })),
-    );
-    const names = formatCredentialDisplayNames(
-      "xAI",
-      results.map(({ row, result }) => ({
-        row,
-        fallbackName: result?.success ? result.label : "xAI",
-      })),
-    );
-    const mapped = results.map(({ row, result }, index) =>
-      mapNullableProviderResult(result, {
-        errorLabel: names[index],
-        onSuccess: ({ window }) => attemptedResult([xaiQuotaEntry(names[index], window, row.id)]),
-      }),
-    );
-    return attemptedResult(
-      mapped.flatMap(({ entries }) => entries),
-      mapped.flatMap(({ errors }) => errors),
-    );
+    const accounts = await fetchEachLogin({
+      providerName: "xAI",
+      logins,
+      async fetchLogin({ auth }) {
+        const result = await queryXaiQuota({ requestTimeoutMs, auth });
+        if (!result) return null;
+        if (!result.success) return { rows: [], errors: [{ message: result.error }] };
+        return {
+          rows: [creditsRow(result.window, false)],
+          errors: [],
+          fallbackName: result.label,
+        };
+      },
+    });
+    return { attempted: true, accounts, debug: [] };
   },
 };

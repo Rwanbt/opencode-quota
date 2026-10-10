@@ -43,6 +43,7 @@ export function keySlug(text: string): string {
 export const FIVE_HOUR = { key: "five_hour", label: "5h", window: "five_hour" } as const;
 export const WEEKLY = { key: "weekly", label: "Weekly", window: "week" } as const;
 export const MONTHLY = { key: "monthly", label: "Monthly", window: "month" } as const;
+export const DAILY = { key: "daily", label: "Daily", window: "day" } as const;
 
 /** A remote, provider-reported quota row with the percent left: most providers' row. */
 export function quotaRow(fields: {
@@ -146,4 +147,40 @@ export async function fetchEachLogin<Login extends { row: CredentialRow }>(param
       },
     ];
   });
+}
+
+/** A stored key login OpenCode could not use: what `readKeyLogins` gives for a broken one. */
+type BrokenKeyLogin = { state: "invalid"; error: string };
+
+/**
+ * Fetches each stored key login of an API-key vendor (see `readKeyLogins`). A broken login is
+ * an account with its error; `brokenFirst` lists those before the fetched ones.
+ */
+export async function fetchKeyLogins<Auth extends { state: string }>(params: {
+  providerName: string;
+  logins: ReadonlyArray<{ row: CredentialRow; auth: Auth }>;
+  brokenFirst: boolean;
+  fetchLogin: (login: {
+    row: CredentialRow;
+    auth: Exclude<Auth, BrokenKeyLogin>;
+  }) => Promise<LoginFetch>;
+}): Promise<AccountResult[]> {
+  const accounts = await fetchEachLogin({
+    providerName: params.providerName,
+    logins: params.logins,
+    async fetchLogin({ row, auth }) {
+      if (auth.state === "invalid") {
+        return { rows: [], errors: [{ message: (auth as unknown as BrokenKeyLogin).error }] };
+      }
+      return params.fetchLogin({ row, auth: auth as Exclude<Auth, BrokenKeyLogin> });
+    },
+  });
+  if (!params.brokenFirst) return accounts;
+  const broken = new Set(
+    params.logins.filter(({ auth }) => auth.state === "invalid").map(({ row }) => row.id),
+  );
+  return [
+    ...accounts.filter((account) => broken.has(account.login ?? "")),
+    ...accounts.filter((account) => !broken.has(account.login ?? "")),
+  ];
 }

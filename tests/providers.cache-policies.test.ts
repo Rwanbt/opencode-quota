@@ -7,15 +7,22 @@ const cachePolicyMocks = vi.hoisted(() => ({
   resolveConsoleAuth: vi.fn(),
 }));
 
-vi.mock("../src/lib/kimi-auth.js", () => ({
-  DEFAULT_KIMI_AUTH_CACHE_MAX_AGE_MS: 5_000,
-  resolveKimiGlobalAuthCached: cachePolicyMocks.resolveGlobal,
-  resolveKimiCnAuthCached: cachePolicyMocks.resolveCn,
-  resolveKimiGlobalAuthWithDiagnosticsCached: vi.fn(),
-  resolveKimiCnAuthWithDiagnosticsCached: vi.fn(),
-  resolveKimiGlobalAuth: vi.fn(),
-  resolveKimiCnAuth: vi.fn(),
-}));
+// Each Kimi region's key comes from its own resolver call.
+vi.mock("../src/lib/api-key-resolver.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/lib/api-key-resolver.js")>();
+  return {
+    ...actual,
+    resolveApiKeyLogin: (spec: unknown) => {
+      if (spec === actual.API_KEY_LOGIN_VENDORS["kimi-code-plan-global"]) {
+        return cachePolicyMocks.resolveGlobal();
+      }
+      if (spec === actual.API_KEY_LOGIN_VENDORS["kimi-code-plan-cn"]) {
+        return cachePolicyMocks.resolveCn();
+      }
+      return actual.resolveApiKeyLogin(spec as never);
+    },
+  };
+});
 
 vi.mock("../src/lib/opencode-console-auth.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/lib/opencode-console-auth.js")>()),

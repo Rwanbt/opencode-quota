@@ -12,12 +12,20 @@ import { existsSync } from "fs";
 import { sanitizeDisplayText } from "./display-sanitize.js";
 import { resolveEnvTemplate } from "./env-template.js";
 import { asRecord } from "./json-guards.js";
-import { getCredentialDatabasePaths, readAuthFile, readAuthFileCached } from "./opencode-auth.js";
+import {
+  type CredentialRow,
+  credentialRowAuthEntry,
+  getCredentialDatabasePaths,
+  readAuthFile,
+  readAuthFileCached,
+  readCredentialRows,
+} from "./opencode-auth.js";
 import {
   buildOpenCodeConfigCandidates,
   readOpenCodeConfigCandidate,
 } from "./opencode-config-read.js";
 import { getOpencodeRuntimeDirs } from "./opencode-runtime-paths.js";
+import type { AuthData } from "./types.js";
 
 /** Where an API key may live for one vendor. */
 export interface ApiKeySpec {
@@ -385,4 +393,27 @@ export async function getApiKeyLoginDiagnostics(
   params?: { maxAgeMs?: number },
 ): Promise<ApiKeyLoginDiagnostics> {
   return (await resolveApiKeyLoginWithDiagnostics(spec, params)).diagnostics;
+}
+
+/**
+ * Every key login of the vendor stored in OpenCode, in OpenCode's order, with what each one
+ * holds. `parse` reads one login (default: `parseApiKeyLogin`); `selectRows` narrows the
+ * logins further, for example to drop alias duplicates.
+ */
+export async function readKeyLogins<Auth extends { state: string } = ApiKeyLoginResult>(
+  spec: ApiKeyLoginSpec,
+  options: {
+    parse?: (auth: AuthData) => Auth;
+    selectRows?: (rows: CredentialRow[]) => CredentialRow[];
+  } = {},
+): Promise<Array<{ row: CredentialRow; auth: Exclude<Auth, { state: "none" }> }>> {
+  const parse = options.parse ?? ((auth: AuthData) => parseApiKeyLogin(spec, auth) as Auth);
+  const vendorRows = (await readCredentialRows(spec.authKeys, { methods: ["key"] })).filter((row) =>
+    spec.authKeys.includes(row.integrationId),
+  );
+  const rows = options.selectRows ? options.selectRows(vendorRows) : vendorRows;
+  return rows.flatMap((row) => {
+    const auth = parse({ [row.integrationId]: credentialRowAuthEntry(row) } as AuthData);
+    return auth.state === "none" ? [] : [{ row, auth: auth as Exclude<Auth, { state: "none" }> }];
+  });
 }

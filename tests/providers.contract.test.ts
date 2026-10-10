@@ -10,6 +10,7 @@ import { normalizeQuotaProviderResult } from "../src/lib/quota-state-codec.js";
 import {
   FIVE_HOUR,
   fetchEachLogin,
+  fetchKeyLogins,
   type ProviderFetchResult,
   type ProviderRow,
   quotaRow,
@@ -48,6 +49,35 @@ describe("fetchEachLogin", () => {
       ["[OpenAI Work] (Pro) (active)", "a", []],
       ["[OpenAI Work 2]", "b", [{ message: "partial" }]],
       ["[OpenAI]", "d", []],
+    ]);
+  });
+});
+
+describe("fetchKeyLogins", () => {
+  const logins = [
+    { row: login("a", "Work").row, auth: { state: "configured" as const, apiKey: "good" } },
+    { row: login("b", "").row, auth: { state: "invalid" as const, error: "key is empty" } },
+    { row: login("c", "Home").row, auth: { state: "configured" as const, apiKey: "bad" } },
+  ];
+
+  it.each([
+    [false, ["[Kimi Work]", "[Kimi]", "[Kimi Home]"]],
+    [true, ["[Kimi]", "[Kimi Work]", "[Kimi Home]"]],
+  ])("with brokenFirst %s lists the accounts %j", async (brokenFirst, names) => {
+    const accounts = await fetchKeyLogins({
+      providerName: "Kimi",
+      logins,
+      brokenFirst,
+      async fetchLogin({ auth }) {
+        return auth.apiKey === "bad"
+          ? { rows: [], errors: [{ message: "HTTP 500" }] }
+          : { rows: [FIVE_HOUR_ROW], errors: [] };
+      },
+    });
+
+    expect(accounts.map((account) => account.name)).toEqual(names);
+    expect(accounts.find((account) => account.login === "b")?.errors).toEqual([
+      { message: "key is empty" },
     ]);
   });
 });

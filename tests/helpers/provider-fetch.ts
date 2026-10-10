@@ -1,0 +1,174 @@
+/**
+ * The world of a provider fetch test: temp OpenCode folders (never this machine's real ones),
+ * API keys in the environment, logins in a temp `opencode.db`, and fake HTTP. Call
+ * `useProviderWorld()` once per test file (or describe block).
+ */
+
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { afterEach, beforeEach, vi } from "vitest";
+
+import { rowsFromProviderResult } from "../../src/core/rows.js";
+import type { Amount, QuotaRow } from "../../src/core/types.js";
+import type { QuotaProvider } from "../../src/lib/entries.js";
+import { bindCredentialSource, notifyCredentialsChanged } from "../../src/lib/opencode-auth.js";
+import { createSqliteCredentialSource } from "../../src/lib/opencode-auth-sqlite.js";
+import { type CredentialDatabaseRow, writeCredentialDatabase } from "./credential-database.js";
+
+/** Environment variables a vendor may read a key, cookie or folder from. */
+const PROVIDER_ENV_NAMES = [
+  "OPENCODE_CONFIG_DIR",
+  "OPENCODE_DB",
+  "ALIBABA_API_KEY",
+  "ALIBABA_CODING_PLAN_API_KEY",
+  "CHUTES_API_KEY",
+  "DEEPSEEK_API_KEY",
+  "KILO_API_KEY",
+  "KIMI_API_KEY",
+  "KIMI_CN_API_KEY",
+  "KIMI_CODE_API_KEY",
+  "KIMI_GLOBAL_API_KEY",
+  "MIMO_USAGE_COOKIE",
+  "MINIMAX_API_KEY",
+  "MINIMAX_CHINA_CODING_PLAN_API_KEY",
+  "MINIMAX_CODING_PLAN_API_KEY",
+  "NANOGPT_API_KEY",
+  "NANO_GPT_API_KEY",
+  "OLLAMA_API_KEY",
+  "OPENCODE_API_KEY",
+  "OPENROUTER_API_KEY",
+  "SYNTHETIC_API_KEY",
+  "ZAI_API_KEY",
+  "ZAI_CODING_PLAN_API_KEY",
+  "ZHIPU_API_KEY",
+  "ZHIPU_CODING_PLAN_API_KEY",
+];
+
+export type ProviderWorld = {
+  /** OpenCode's config folder (`opencode.json`, `opencode-quota/…`). */
+  readonly configDir: string;
+  /** Stores these logins in OpenCode's database, replacing any stored before. */
+  storeLogins(rows: readonly CredentialDatabaseRow[]): void;
+  /** Writes a file below the config folder. */
+  writeConfigFile(relativePath: string, content: string): void;
+};
+
+/** Temp OpenCode folders and a bound credential reader for each test; see the file header. */
+export function useProviderWorld(): ProviderWorld {
+  const originalEnv = process.env;
+  let root = "";
+  let unbind = () => {};
+
+  const world: ProviderWorld = {
+    get configDir() {
+      return join(root, "config", "opencode");
+    },
+    storeLogins(rows) {
+      const databasePath = join(root, "data", "opencode", "opencode.db");
+      rmSync(databasePath, { force: true });
+      mkdirSync(dirname(databasePath), { recursive: true });
+      writeCredentialDatabase(databasePath, rows);
+      notifyCredentialsChanged();
+    },
+    writeConfigFile(relativePath, content) {
+      const path = join(world.configDir, relativePath);
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, content);
+    },
+  };
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), "opencode-quota-provider-"));
+    process.env = {
+      ...originalEnv,
+      XDG_CONFIG_HOME: join(root, "config"),
+      XDG_DATA_HOME: join(root, "data"),
+      XDG_CACHE_HOME: join(root, "cache"),
+      XDG_STATE_HOME: join(root, "state"),
+    };
+    for (const name of PROVIDER_ENV_NAMES) delete process.env[name];
+    unbind = bindCredentialSource(createSqliteCredentialSource());
+    notifyCredentialsChanged();
+  });
+
+  afterEach(() => {
+    unbind();
+    notifyCredentialsChanged();
+    process.env = originalEnv;
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  return world;
+}
+
+/** One stored API-key login. */
+export function keyLogin(
+  id: string,
+  integrationId: string,
+  key: unknown,
+  fields: Partial<CredentialDatabaseRow> = {},
+): CredentialDatabaseRow {
+  return { id, integrationId, active: null, updated: 1, value: { type: "api", key }, ...fields };
+}
+
+type FakeReply = Response | unknown;
+
+/**
+ * Answers every `fetch` with `reply(url, init)`: a Response as is, anything else as a JSON 200.
+ * Returns the mock, so a test can check the URLs and headers it was called with.
+ */
+export function fakeHttp(
+  reply: (url: string, init: RequestInit) => FakeReply | Promise<FakeReply>,
+) {
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, init: RequestInit = {}) => {
+    const answer = await reply(String(input), init);
+    return answer instanceof Response ? answer : new Response(JSON.stringify(answer));
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  return fetchMock;
+}
+
+/** The header a fake HTTP call was made with. */
+export function requestHeader(init: RequestInit | undefined, name: string): string | null {
+  return new Headers(init?.headers).get(name);
+}
+
+/** The provider's fetch, as the store gets it: rows with ids and accounts, the error, debug. */
+export async function fetchRows(
+  provider: Pick<QuotaProvider, "id" | "fetch">,
+  config: Record<string, unknown> = {},
+) {
+  const result = await provider.fetch({
+    config: { requestTimeoutMs: 5_000, enabledProviders: "auto", ...config },
+  } as never);
+  return rowsFromProviderResult(provider.id, result, Date.now());
+}
+
+function amountText(amount: Amount | undefined): string | undefined {
+  if (!amount) return undefined;
+  const unit = amount.unit;
+  const name =
+    unit.kind === "currency" ? unit.code : unit.kind === "count" ? unit.unit : unit.symbol;
+  return `${amount.decimal} ${name}`;
+}
+
+/** The value a row shows: its percent left, amount, flag or text, plus used/limit when given. */
+function rowValue(row: QuotaRow): string | number | boolean | null {
+  const value = row.percentRemaining ?? amountText(row.amount) ?? row.flag ?? row.text ?? null;
+  const used = amountText(row.used);
+  const limit = amountText(row.limit);
+  return used || limit ? `${value} (${used ?? "?"} of ${limit ?? "?"})` : value;
+}
+
+/** Compact rows for tables: [id, account, label, window, value, resets at]. */
+export function rowSummary(rows: readonly QuotaRow[]) {
+  return rows.map((row) => [
+    row.id,
+    row.account ?? null,
+    row.label,
+    row.window ?? null,
+    rowValue(row),
+    row.resetsAt ?? null,
+  ]);
+}

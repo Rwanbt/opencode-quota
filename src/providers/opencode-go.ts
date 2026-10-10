@@ -1,42 +1,36 @@
 import { createHash } from "node:crypto";
 
+import type { DebugDetail } from "../core/types.js";
 import {
   API_KEY_LOGIN_VENDORS,
   type ApiKeyLoginDiagnostics,
   getApiKeyLoginDiagnostics,
-  parseApiKeyLogin,
+  readKeyLogins,
   resolveApiKeyLogin,
 } from "../lib/api-key-resolver.js";
-import type {
-  QuotaProvider,
-  QuotaProviderContext,
-  QuotaProviderResult,
-  QuotaProviderStatusDetail,
-  QuotaToastEntry,
-} from "../lib/entries.js";
+import type { QuotaProvider, QuotaProviderContext } from "../lib/entries.js";
 import { scrubCredentialErrorText, selectConnectionCredentialRows } from "../lib/opencode-auth.js";
 import { consoleBaseUrl, resolveOpenCodeConsoleAuth } from "../lib/opencode-console-auth.js";
 import { queryOpenCodeGoConsoleStatus, queryOpenCodeGoQuota } from "../lib/opencode-go.js";
 import { normalizeQuotaProviderId } from "../lib/provider-metadata.js";
 import type { OpenCodeGoResult, OpenCodeGoWindowKey } from "../lib/types.js";
-import { readKeyLoginRows } from "./key-login-rows.js";
 import {
-  attemptedErrorResult,
-  attemptedResult,
-  notAttemptedResult,
-  statusDetailsFromRecord,
-  withStatusDetails,
-} from "./result-helpers.js";
+  FIVE_HOUR,
+  failedAccount,
+  fetchKeyLogins,
+  MONTHLY,
+  type ProviderFetchResult,
+  type ProviderRow,
+  quotaRow,
+  WEEKLY,
+} from "./contract.js";
+import { statusDetailsFromRecord } from "./result-helpers.js";
 
-const OPENCODE_GO_PROVIDER_LABEL = "OpenCode Go";
+const LABEL = "OpenCode Go";
 const OPENCODE_GO_AUTH = API_KEY_LOGIN_VENDORS["opencode-go"];
 const CONSOLE_LOGIN_HINT = "Run `opencode auth login opencode`.";
 const OPENCODE_GO_WINDOW_ORDER: OpenCodeGoWindowKey[] = ["rolling", "weekly", "monthly"];
-const OPENCODE_GO_WINDOW_LABELS: Record<OpenCodeGoWindowKey, string> = {
-  rolling: "5h:",
-  weekly: "Weekly:",
-  monthly: "Monthly:",
-};
+const OPENCODE_GO_SLOTS = { rolling: FIVE_HOUR, weekly: WEEKLY, monthly: MONTHLY } as const;
 const NOT_SUBSCRIBED_DETAIL = { key: "opencode_go_state", value: "not_subscribed" };
 
 /** Keys the API answered "not subscribed" for; not asked again until the stored keys change. */
@@ -56,7 +50,7 @@ function retainCurrentCredentialFingerprints(current: ReadonlySet<string>): void
   }
 }
 
-function authStatusDetails(diagnostics: ApiKeyLoginDiagnostics): QuotaProviderStatusDetail[] {
+function authStatusDetails(diagnostics: ApiKeyLoginDiagnostics): DebugDetail[] {
   return statusDetailsFromRecord({
     auth_state: diagnostics.state,
     auth_source: diagnostics.source ?? "(none)",
@@ -66,30 +60,18 @@ function authStatusDetails(diagnostics: ApiKeyLoginDiagnostics): QuotaProviderSt
   });
 }
 
-function buildOpenCodeGoEntries(
+/** The selected windows of one Go reply, in the order 5h, weekly, monthly. */
+function goRows(
   result: Extract<OpenCodeGoResult, { success: true }>,
-  selectedWindows: OpenCodeGoWindowKey[],
-  group = OPENCODE_GO_PROVIDER_LABEL,
-  sourceId?: string,
-): QuotaToastEntry[] {
+  selectedWindows: readonly OpenCodeGoWindowKey[],
+): ProviderRow[] {
   return OPENCODE_GO_WINDOW_ORDER.filter((window) => selectedWindows.includes(window)).map(
-    (window) => {
-      const label = OPENCODE_GO_WINDOW_LABELS[window];
-      return {
-        accounting: {
-          resultType: "quota",
-          acquisitionMethod: "remote_api",
-          ownership: "maintained",
-          authority: "provider_reported",
-          ...(sourceId ? { sourceId } : {}),
-        },
-        name: `${group} ${label.slice(0, -1)}`,
-        group,
-        label,
+    (window) =>
+      quotaRow({
+        ...OPENCODE_GO_SLOTS[window],
         percentRemaining: result[window].percentRemaining,
-        resetTimeIso: result[window].resetTimeIso,
-      };
-    },
+        resetsAt: result[window].resetTimeIso,
+      }),
   );
 }
 
@@ -111,14 +93,14 @@ export const opencodeGoProvider: QuotaProvider = {
     return normalizeQuotaProviderId(provider) === "opencode-go";
   },
 
-  async fetch(ctx: QuotaProviderContext): Promise<QuotaProviderResult> {
+  async fetch(ctx: QuotaProviderContext): Promise<ProviderFetchResult> {
     const windows = ctx.config.opencodeGoWindows ?? OPENCODE_GO_WINDOW_ORDER;
     const selectedWindowsDetail = { key: "selected_windows", value: windows.join(",") };
     const consoleAuth = await resolveOpenCodeConsoleAuth();
 
     if (consoleAuth.state === "none") {
       const diagnostics = await getApiKeyLoginDiagnostics(OPENCODE_GO_AUTH);
-      return await fetchOpenCodeGoLegacy(ctx, diagnostics, [
+      return await fetchWithApiKey(ctx, diagnostics, [
         ...authStatusDetails(diagnostics),
         selectedWindowsDetail,
       ]);
@@ -126,8 +108,8 @@ export const opencodeGoProvider: QuotaProvider = {
 
     if (consoleAuth.state === "expired") {
       // OpenCode refreshes the console token when it is read, so this is rare;
-      // fall back to the legacy path, which also still accepts workspace API keys.
-      return await fetchOpenCodeGoLegacy(ctx, await getApiKeyLoginDiagnostics(OPENCODE_GO_AUTH), [
+      // fall back to the API-key path, which also still accepts workspace API keys.
+      return await fetchWithApiKey(ctx, await getApiKeyLoginDiagnostics(OPENCODE_GO_AUTH), [
         { key: "console_auth_state", value: "expired" },
         { key: "go_source", value: "legacy_key" },
       ]);
@@ -139,29 +121,29 @@ export const opencodeGoProvider: QuotaProvider = {
         requestTimeoutMs: ctx.config.requestTimeoutMs,
       });
       if (consoleResult.success) {
-        return withStatusDetails(
-          attemptedResult(
-            buildOpenCodeGoEntries(
-              consoleResult,
-              windows,
-              OPENCODE_GO_PROVIDER_LABEL,
-              "console:go",
-            ),
-          ),
-          [
+        return {
+          attempted: true,
+          accounts: [
+            { name: LABEL, login: "console:go", rows: goRows(consoleResult, windows), errors: [] },
+          ],
+          debug: [
             { key: "console_auth_state", value: "configured" },
             { key: "console_server", value: consoleBaseUrl(consoleAuth.credential) },
             { key: "go_source", value: "console" },
             selectedWindowsDetail,
           ],
-        );
+        };
       }
       if (consoleResult.notSubscribed === true) {
-        return withStatusDetails(attemptedResult([]), [
-          { key: "console_auth_state", value: "configured" },
-          NOT_SUBSCRIBED_DETAIL,
-          selectedWindowsDetail,
-        ]);
+        return {
+          attempted: true,
+          accounts: [],
+          debug: [
+            { key: "console_auth_state", value: "configured" },
+            NOT_SUBSCRIBED_DETAIL,
+            selectedWindowsDetail,
+          ],
+        };
       }
       consoleError = consoleResult.error;
     } else {
@@ -172,7 +154,7 @@ export const opencodeGoProvider: QuotaProvider = {
     // console error in diagnostics. Without an API key a failed request stays quiet (the
     // sign-in works, only this request failed); a failed sign-in becomes Go's one error row.
     const diagnostics = await getApiKeyLoginDiagnostics(OPENCODE_GO_AUTH);
-    return await fetchOpenCodeGoLegacy(
+    return await fetchWithApiKey(
       ctx,
       diagnostics,
       [
@@ -193,25 +175,25 @@ export const opencodeGoProvider: QuotaProvider = {
  * The API-key path. `consoleSignInFailure` is set when OpenCode could not return
  * the Console sign-in; without an API key it becomes Go's one error row.
  */
-async function fetchOpenCodeGoLegacy(
+async function fetchWithApiKey(
   ctx: QuotaProviderContext,
   diagnostics: ApiKeyLoginDiagnostics,
-  statusDetails: QuotaProviderStatusDetail[],
+  debug: DebugDetail[],
   consoleSignInFailure?: string,
-): Promise<QuotaProviderResult> {
+): Promise<ProviderFetchResult> {
   const windows = ctx.config.opencodeGoWindows ?? OPENCODE_GO_WINDOW_ORDER;
-  const notSubscribedResult = () =>
-    withStatusDetails(attemptedResult([]), [...statusDetails, NOT_SUBSCRIBED_DETAIL]);
+  const notSubscribed: ProviderFetchResult = {
+    attempted: true,
+    accounts: [],
+    debug: [...debug, NOT_SUBSCRIBED_DETAIL],
+  };
   const auth = await resolveApiKeyLogin(OPENCODE_GO_AUTH);
 
   if (auth.state === "none") {
     notSubscribedCredentialFingerprints.clear();
-    return withStatusDetails(
-      consoleSignInFailure
-        ? attemptedErrorResult(OPENCODE_GO_PROVIDER_LABEL, consoleSignInFailure)
-        : notAttemptedResult(),
-      statusDetails,
-    );
+    return consoleSignInFailure
+      ? { attempted: true, accounts: [failedAccount(LABEL, consoleSignInFailure)], debug }
+      : { attempted: false, accounts: [], debug };
   }
 
   if (diagnostics.source === "opencode.db") {
@@ -220,89 +202,84 @@ async function fetchOpenCodeGoLegacy(
     // become additional connections: prefer native rows and collapse rows
     // holding the same credential (e.g. Zen + Go sharing a workspace key).
     // Console OAuth credentials cannot authorize this API and are skipped.
-    const { credentials, invalidErrors } = await readKeyLoginRows({
-      integrationIds: OPENCODE_GO_AUTH.authKeys,
-      label: OPENCODE_GO_PROVIDER_LABEL,
-      parseAuth: (auth) => parseApiKeyLogin(OPENCODE_GO_AUTH, auth),
+    const logins = await readKeyLogins(OPENCODE_GO_AUTH, {
       selectRows: (rows) =>
         selectConnectionCredentialRows(
           rows.filter((row) => row.value.type !== "oauth"),
           "opencode-go",
         ),
     });
-    if (credentials.length > 0 || invalidErrors.length > 0) {
-      retainCurrentCredentialFingerprints(
-        new Set(credentials.map(({ auth: rowAuth }) => fingerprintCredential(rowAuth.apiKey))),
+    if (logins.length > 0) {
+      const keys = logins.flatMap(({ auth: login }) =>
+        login.state === "configured" ? [login.apiKey] : [],
       );
-      // A not-subscribed key gives no row at all.
-      const results = await Promise.all(
-        credentials.map(async ({ row, displayName, auth: rowAuth }) => {
-          const fingerprint = fingerprintCredential(rowAuth.apiKey);
+      retainCurrentCredentialFingerprints(new Set(keys.map(fingerprintCredential)));
+      // A not-subscribed key gives no account at all.
+      const accounts = await fetchKeyLogins({
+        providerName: LABEL,
+        logins,
+        brokenFirst: true,
+        async fetchLogin({ auth: login }) {
+          const fingerprint = fingerprintCredential(login.apiKey);
           if (notSubscribedCredentialFingerprints.has(fingerprint)) return null;
-          const result = await queryOpenCodeGoQuota(rowAuth.apiKey, {
+          const result = await queryOpenCodeGoQuota(login.apiKey, {
             requestTimeoutMs: ctx.config.requestTimeoutMs,
           });
-          if (!result.success && result.notSubscribed === true) {
+          if (result.success) return { rows: goRows(result, windows), errors: [] };
+          if (result.notSubscribed === true) {
             notSubscribedCredentialFingerprints.add(fingerprint);
             return null;
           }
-          return { row, group: displayName, result };
-        }),
+          return { rows: [], errors: [{ message: result.error, retryable: result.retryable }] };
+        },
+      });
+      const nothingShown = accounts.every(
+        (account) => account.rows.length === 0 && account.errors.length === 0,
       );
-      const entries: QuotaToastEntry[] = [];
-      const errors: QuotaProviderResult["errors"] = [...invalidErrors];
-      for (const item of results) {
-        if (!item) continue;
-        const { row, group, result } = item;
-        if (result.success) entries.push(...buildOpenCodeGoEntries(result, windows, group, row.id));
-        else errors.push({ label: group, message: result.error, retryable: result.retryable });
-      }
-      return withStatusDetails(attemptedResult(entries, errors), [
-        ...statusDetails,
-        ...(entries.length === 0 && errors.length === 0 && credentials.length > 0
-          ? [NOT_SUBSCRIBED_DETAIL]
-          : []),
-      ]);
+      return {
+        attempted: true,
+        accounts,
+        debug: nothingShown && keys.length > 0 ? [...debug, NOT_SUBSCRIBED_DETAIL] : debug,
+      };
     }
   }
 
   if (auth.state === "invalid") {
     notSubscribedCredentialFingerprints.clear();
-    return withStatusDetails(
-      attemptedErrorResult(OPENCODE_GO_PROVIDER_LABEL, auth.error),
-      statusDetails,
-    );
+    return { attempted: true, accounts: [failedAccount(LABEL, auth.error)], debug };
   }
 
   const fingerprint = fingerprintCredential(auth.apiKey);
   retainCurrentCredentialFingerprints(new Set([fingerprint]));
-  if (notSubscribedCredentialFingerprints.has(fingerprint)) return notSubscribedResult();
+  if (notSubscribedCredentialFingerprints.has(fingerprint)) return notSubscribed;
 
   const result = await queryOpenCodeGoQuota(auth.apiKey, {
     requestTimeoutMs: ctx.config.requestTimeoutMs,
   });
   if (!result.success && result.notSubscribed === true) {
     notSubscribedCredentialFingerprints.add(fingerprint);
-    return notSubscribedResult();
+    return notSubscribed;
   }
   if (!result.success) {
-    return withStatusDetails(
-      attemptedErrorResult(OPENCODE_GO_PROVIDER_LABEL, result.error, {
-        retryable: result.retryable,
-      }),
-      [...statusDetails, { key: "live_fetch_error", value: result.error }],
-    );
+    return {
+      attempted: true,
+      accounts: [failedAccount(LABEL, result.error, result.retryable)],
+      debug: [...debug, { key: "live_fetch_error", value: result.error }],
+    };
   }
 
-  const liveDetails = OPENCODE_GO_WINDOW_ORDER.map((window) => {
-    const usage = result[window];
-    return {
-      key: `${window}_usage`,
-      value: `status=${usage.status} percent_used=${usage.usagePercent} percent_remaining=${usage.percentRemaining} reset_at=${usage.resetTimeIso}`,
-    };
-  });
-  return withStatusDetails(attemptedResult(buildOpenCodeGoEntries(result, windows)), [
-    ...statusDetails,
-    ...liveDetails,
-  ]);
+  return {
+    attempted: true,
+    accounts: [{ name: LABEL, rows: goRows(result, windows), errors: [] }],
+    debug: [
+      ...debug,
+      ...OPENCODE_GO_WINDOW_ORDER.map((window) => {
+        const usage = result[window];
+        return {
+          key: `${window}_usage`,
+          value: `status=${usage.status} percent_used=${usage.usagePercent} percent_remaining=${usage.percentRemaining} reset_at=${usage.resetTimeIso}`,
+        };
+      }),
+    ],
+  };
 }

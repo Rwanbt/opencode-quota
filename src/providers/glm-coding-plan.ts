@@ -6,7 +6,7 @@
 import {
   API_KEY_LOGIN_CACHE_MAX_AGE_MS,
   getApiKeyLoginDiagnostics,
-  parseApiKeyLogin,
+  readKeyLogins,
   resolveApiKeyLogin,
 } from "../lib/api-key-resolver.js";
 import type { QuotaProvider, QuotaProviderContext } from "../lib/entries.js";
@@ -15,13 +15,12 @@ import {
   type GlmEndpoint,
   queryGlmCodingPlanQuota,
 } from "../lib/glm-coding-plan.js";
-import { credentialRowAuthEntry, readCredentialRows } from "../lib/opencode-auth.js";
 import { isCanonicalProviderAvailable } from "../lib/provider-availability.js";
 import type { ZaiQuotaResult } from "../lib/types.js";
 import {
   FIVE_HOUR,
   failedAccount,
-  fetchEachLogin,
+  fetchKeyLogins,
   type ProviderFetchResult,
   type ProviderRow,
   WEEKLY,
@@ -57,22 +56,13 @@ async function fetchGlmQuota(
   });
   const authDetails = apiKeyStatusDetails(diagnostics);
   if (diagnostics.source === "opencode.db") {
-    const logins = (await readCredentialRows(endpoint.auth.authKeys, { methods: ["key"] })).flatMap(
-      (row) => {
-        if (!endpoint.auth.authKeys.includes(row.integrationId)) return [];
-        const auth = parseApiKeyLogin(endpoint.auth, {
-          [row.integrationId]: credentialRowAuthEntry(row),
-        });
-        // An invalid login stays in the list so it shows as its own error.
-        return auth.state === "none" ? [] : [{ row, auth }];
-      },
-    );
+    const logins = await readKeyLogins(endpoint.auth);
     if (logins.length > 0) {
-      const accounts = await fetchEachLogin({
+      const accounts = await fetchKeyLogins({
         providerName: endpoint.label,
         logins,
+        brokenFirst: false,
         async fetchLogin({ auth }) {
-          if (auth.state === "invalid") return { rows: [], errors: [{ message: auth.error }] };
           const result = await queryGlmCodingPlanQuota(endpoint, {
             requestTimeoutMs,
             apiKey: auth.apiKey,

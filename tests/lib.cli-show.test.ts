@@ -31,11 +31,20 @@ vi.mock("../src/lib/anthropic.js", () => ({
   hasAnthropicCredentialsConfigured: vi.fn(async () => authMocks.anthropicConfigured),
 }));
 
-vi.mock("../src/lib/kimi-auth.js", () => ({
-  DEFAULT_KIMI_AUTH_CACHE_MAX_AGE_MS: 30_000,
-  resolveKimiGlobalAuthCached: vi.fn(async () => ({ state: authMocks.kimiGlobalState })),
-  resolveKimiCnAuthCached: vi.fn(async () => ({ state: authMocks.kimiCnState })),
-}));
+vi.mock("../src/lib/api-key-resolver.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/lib/api-key-resolver.js")>();
+  return {
+    ...actual,
+    resolveApiKeyLogin: vi.fn(async (spec: unknown) => ({
+      state:
+        spec === actual.API_KEY_LOGIN_VENDORS["kimi-code-plan-global"]
+          ? authMocks.kimiGlobalState
+          : spec === actual.API_KEY_LOGIN_VENDORS["kimi-code-plan-cn"]
+            ? authMocks.kimiCnState
+            : "none",
+    })),
+  };
+});
 
 vi.mock("../src/providers/registry.js", () => ({
   getProviders: () => mockProviders,
