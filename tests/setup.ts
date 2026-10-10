@@ -13,7 +13,6 @@ process.env.GIT_CONFIG_NOSYSTEM = "1";
 
 // The plugin reads and writes OpenCode's folders under the home folder and XDG folders, reads
 // OpenCode's credential database, takes API keys from the environment and calls provider APIs.
-// A test that missed a fake once read this machine's real DeepSeek key and sent a real request.
 // So every test file gets its own empty home folder, no OpenCode or credential variables, and a
 // fetch that only reaches loopback servers.
 const testHome = mkdtempSync(join(tmpdir(), "opencode-quota-test-home-"));
