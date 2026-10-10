@@ -270,17 +270,23 @@ describe("turn events of the TUI plugin", () => {
   };
   const session = { get: vi.fn() };
   const toast = vi.fn();
+  /** The display settings in OpenCode's plugin storage, live like OpenCode's. */
+  let displayStore = { version: 1, settings: defaultDisplaySettings() };
 
   beforeEach(() => {
     handlers.clear();
     cleanups.length = 0;
+    displayStore = { version: 1, settings: defaultDisplaySettings() };
     for (const mock of [rpc.snapshot, rpc.notices, session.get, toast]) mock.mockReset();
     rpc.refresh.mockReset().mockResolvedValue({ snapshot: OK });
     plugin.setup({
       client: { rpc: () => rpc },
       location: { directory: process.cwd() },
       storage: {
-        store: (_key: string, options: { initial: unknown }) => [options.initial, vi.fn()],
+        store: (key: string, options: { initial: unknown }) => [
+          key === "settings" ? displayStore : options.initial,
+          vi.fn(),
+        ],
       },
       data: {
         session,
@@ -330,6 +336,38 @@ describe("turn events of the TUI plugin", () => {
     emit("session.step.ended", { sessionID: "ses_1" });
     expect(handlers.size).toBe(0);
     expect(rpc.refresh).not.toHaveBeenCalled();
+  });
+
+  it("drops the reset notices still waiting when OpenCode unmounts the app slot", async () => {
+    displayStore.settings.toast.resetNotice = "all";
+    let answer: (output: { snapshot: QuotaSnapshot }) => void = () => {};
+    rpc.refresh.mockReset().mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          answer = resolve;
+        }),
+    );
+    // A reply's turn waits for quota; meanwhile the server announces a reset.
+    emit("session.execution.succeeded", { sessionID: "ses_1" });
+    await vi.waitFor(() => expect(rpc.refresh).toHaveBeenCalledOnce());
+    const notice: ResetNotice = {
+      id: "weekly",
+      rowId: "claude.weekly",
+      providerId: "claude",
+      label: "Weekly",
+      window: "week",
+      percentRemaining: 100,
+      atMs: Date.now() + 60_000,
+    };
+    const changed = rpc.events.on.mock.lastCall?.[1] as unknown as (event: {
+      data: { snapshot: QuotaSnapshot };
+    }) => void;
+    changed({ data: { snapshot: snapshot([provider("Claude", 100)], [notice]) } });
+
+    for (const cleanup of cleanups.splice(0)) cleanup();
+    answer({ snapshot: OK });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(toast).not.toHaveBeenCalled();
   });
 
   it("refreshes after each step of a session, never of a subagent", () => {

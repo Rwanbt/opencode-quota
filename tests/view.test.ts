@@ -433,6 +433,15 @@ describe("view text", () => {
     expect(statusLayout(input, 9, 0, "auto").shown.map(lineText)).toEqual(["C… ⚠"]);
   });
 
+  it("cuts the big bar to the status line's room, keeping the error's mark", () => {
+    const expired = statusInput([{ ...CLAUDE, error: { code: "login_expired" } }]);
+    expect([40, 30].map((width) => lineText(bigStatusLine(expired, width)!))).toEqual([
+      "Claude 7d █░░░░░░░░░ 12% left · Sign in…",
+      "Claude 7d █░░░░░░░░░ 12% le… ⚠",
+    ]);
+    expect(lineText(bigStatusLine(statusInput([ROUTER]), 8)!)).toBe("OpenR… ⚠");
+  });
+
   it("cuts the first provider short when it does not fit, so the arrows stay", () => {
     const layout = statusLayout(statusInput(), 14, 0, "auto");
     expect([layout.shown.map(lineText), layout.hiddenAfter]).toEqual([["Clau… 12%"], 2]);

@@ -89,7 +89,8 @@ export function StatusLine(props: { host: SurfaceHost; sessionID?: string }): JS
     >
       <Show when={big() ? input() : undefined}>
         {(current: () => StatusInput) => (
-          <Show when={bigStatusLine(current())}>
+          // The room is 0 until OpenCode measures the box; until then the line is drawn whole.
+          <Show when={bigStatusLine(current(), room() || undefined)}>
             {(line: () => Line) => <LineText line={line()} host={host} />}
           </Show>
         )}
