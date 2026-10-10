@@ -116,7 +116,7 @@ export const SETTINGS_TABS: ReadonlyArray<{
   {
     tab: "layout",
     title: "Layout",
-    note: "Bars and spacing. Watch the sidebar → and the line under the message box ↓",
+    note: "Bars, spacing, and how /quota shows. Watch the sidebar → and the line under the message box ↓",
     watchesSidebar: true,
   },
   {

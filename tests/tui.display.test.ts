@@ -274,6 +274,8 @@ describe("the Settings tabs' field table", () => {
     { path: "layout.separator", delta: -1, expected: "  " },
     { path: "statusLine.detail", delta: 1, expected: "one" },
     { path: "runsOut.statusLine", delta: 1, expected: true },
+    { path: "quickLook", delta: 1, expected: "toast" },
+    { path: "quickLook", delta: -1, expected: "chat" },
     { path: "colors.reset", delta: 1, expected: "text" },
     { path: "colors.reset", delta: -1, expected: "bar" },
     { path: "colors.good", delta: -1, expected: "blue" },
@@ -289,6 +291,14 @@ describe("the Settings tabs' field table", () => {
     expect(valueAt(next, path)).toBe(expected);
     // The rest stays as it was.
     expect(setIn(next, path.split("."), valueAt(start, path))).toEqual(start);
+  });
+
+  it("puts how /quota shows on the Layout tab, in words", () => {
+    const quickLook = field("quickLook");
+    expect([quickLook.tab, quickLook.values.map(quickLook.show)]).toEqual([
+      "layout",
+      ["a popup", "a toast", "a chat message"],
+    ]);
   });
 
   it.each([

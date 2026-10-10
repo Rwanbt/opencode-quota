@@ -899,6 +899,30 @@ describe("v6 surfaces on the quota snapshot", () => {
       await tui.dispose();
     });
 
+    it("shows /quota in the Layout tab's form at once, and saves it to plugin storage", async () => {
+      const { tui, windowTree } = await openSettings("Layout");
+      const line = () => settingLine(windowTree(), "quickLook");
+      expect(words(line())).toEqual(expect.arrayContaining(["/quota shows", "a popup"]));
+
+      // A toast before Save: /quota already uses the changed line.
+      clickable(line(), "›").props.onMouseUp();
+      expect(words(line())).toContain("a toast");
+      await tui.command("quick_look").run();
+      await vi.waitFor(() =>
+        expect(tui.toast).toHaveBeenLastCalledWith(
+          expect.objectContaining({
+            variant: "info",
+            message: expect.stringMatching(/^Quota · 7 days/u),
+          }),
+        ),
+      );
+      expect(tui.dialog.show).not.toHaveBeenCalled();
+
+      clickable(windowTree(), "Save").props.onMouseUp();
+      await vi.waitFor(() => expect(tui.stored.get("settings").settings?.quickLook).toBe("toast"));
+      await tui.dispose();
+    });
+
     it("opens OpenCode's theme list from the theme line's ▸", async () => {
       const { tui, windowTree } = await openSettings("Colors");
       clickable(settingLine(windowTree(), "theme"), "▸").props.onMouseUp();

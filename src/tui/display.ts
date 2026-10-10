@@ -177,7 +177,6 @@ export function defaultDisplaySettings(): DisplaySettings {
     surfaces: Object.fromEntries(SURFACES.map((surface) => [surface, readSurface(undefined)])),
     window: {},
     colors: {},
-    quickLook: "dialog",
   };
   for (const field of FIELDS) putAt(settings, field.path.split("."), field.initial);
   return settings as DisplaySettings;
@@ -202,9 +201,6 @@ export function readDisplaySettings(stored: unknown): DisplaySettings {
     (item): item is WindowChoice => item === "lowest" || isQuotaWindow(item),
   );
   settings.colors = recordOf(from.colors, isColorChoice);
-  if (QUICK_LOOK_FORMS.includes(from.quickLook as QuickLookForm)) {
-    settings.quickLook = from.quickLook as QuickLookForm;
-  }
   const { thresholds } = settings;
   thresholds.warningBelow = Math.max(thresholds.warningBelow, thresholds.lowBelow);
   return settings;
@@ -344,6 +340,11 @@ const LAYOUT = { preset: "layout" } as const;
 const unit = (word: string) => (value: FieldValue) => `${value} ${word}`;
 const percentLeft = unit("% left");
 const RESET_NOTICES: Record<string, string> = { weekly: "weekly limits", all: "every limit" };
+const QUICK_LOOK_TITLES: Record<QuickLookForm, string> = {
+  dialog: "a popup",
+  toast: "a toast",
+  chat: "a chat message",
+};
 const REPLY_TOASTS = ["off", "always", "low"];
 const NOTICE_TOASTS = ["off", "weekly", "all"];
 const SHOW = {
@@ -357,6 +358,7 @@ const SHOW = {
   indent: (value) => (value === 1 ? "1 space" : `${value} spaces`),
   gap: (value) => (value ? "1 empty line" : "nothing"),
   separator: (value) => (String(value).trim() ? `"${String(value).trim()}"` : "spaces"),
+  quickLook: (value) => QUICK_LOOK_TITLES[value as QuickLookForm],
 } satisfies Record<string, Show>;
 // "Getting low" stays at or above "almost out", so ‹ › skip the values that would break that.
 const warningChoices = (settings: DisplaySettings) =>
@@ -452,6 +454,14 @@ export const FIELDS: readonly Field[] = [
     group: "Status line",
     valid: isSeparator,
   }),
+  // On Layout: how /quota looks, next to how the other places look.
+  {
+    ...listField("quickLook", "/quota shows", "dialog", QUICK_LOOK_FORMS, SHOW.quickLook, {
+      group: "/quota quick look",
+      note: "type /quota to try it, even before you save",
+    }),
+    tab: "layout",
+  },
 ];
 
 /** A line on top of a tab that sets the lines marked with its name in one step. */

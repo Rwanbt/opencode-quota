@@ -51,7 +51,7 @@ How the sidebar, the status line and toasts look (which rows, colors, bars, when
 - **Sidebar:** the `Quota` panel of each session, with a bar per row and the session tokens. Click its title to collapse it to one line per provider; OpenCode remembers the choice.
 - **Status line:** under the message box, in the room OpenCode's footer leaves free. Each provider shows its lowest window, or the window you pick with `‹ ›` on the Collapsed or Status line tab (the collapsed panel shows the same one), with as much detail as fits; when not all fit, scroll with the mouse wheel or click `‹` and `+N ›`.
 - **Toasts:** by default after compaction and when every provider fails, for 9 seconds. Toasts appear only in the TUI, never in Web or Desktop.
-- **Quick look (`quickLook`):** how `/quota` shows it. `dialog` (the default) opens a popup; `toast` shows the short text in a toast; `chat` posts the short text in the session as your message, as on Web (on Home, which has no session, a toast).
+- **Quick look (`quickLook`, on the Layout tab):** how `/quota` shows it. `dialog` (the default) opens a popup; `toast` shows the short text in a toast; `chat` posts the short text in the session as your message, as on Web (on Home, which has no session, a toast).
 
 ## Custom providers
 
