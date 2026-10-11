@@ -20,7 +20,11 @@ import type { UsageReport } from "../core/usage.js";
 import { isQuotaWindow } from "../core/windows.js";
 import { isV5SettingKey } from "../settings/convert.js";
 import type { LoadedSettings, V5Conversion } from "../settings/index.js";
-import { isSettingsGroup, SETTINGS_SCHEMA } from "../settings/schema.js";
+import {
+  isSettingsGroup,
+  PROVIDER_IDS as SETTINGS_PROVIDER_IDS,
+  SETTINGS_SCHEMA,
+} from "../settings/schema.js";
 import { formatShare, formatTokens } from "../view/format.js";
 import { COUNT_LABELS } from "./accounting-format.js";
 import { ERROR_MESSAGES as ALIBABA_TOKEN_PLAN_ERRORS } from "./alibaba-token-plan.js";
@@ -168,6 +172,8 @@ export type QuotaStatusReportParams = {
   /** The project folder quota is computed for. */
   workspaceRoot: string;
   enabledProviders: string[] | "auto";
+  /** The provider ids switched off in settings.jsonc. */
+  offProviders: readonly string[];
   onlyCurrentModel: boolean;
   quotaProviders?: readonly QuotaProviderDefinition[];
   pricingSnapshotSource: PricingSnapshotSource;
@@ -307,7 +313,7 @@ function currentModelText(params: QuotaStatusReportParams): string {
 
 /** Known provider ids joined, and how many others there were. */
 function providerIdsText(ids: readonly string[]): string {
-  const known = ids.filter((id) => PROVIDER_IDS.has(id));
+  const known = ids.filter((id) => SETTINGS_PROVIDER_IDS.includes(id));
   const others = ids.length - known.length;
   const text = joinOrNone(known);
   return others > 0 ? `${text} (+${countText(others, "unknown id", "unknown ids")})` : text;
@@ -444,7 +450,6 @@ function conversionRows(conversion: V5Conversion, homeDir: string): ReportKvRow[
 
 /** The settings file, what is wrong in it, the v5 conversion, and what quota is set to do. */
 function settingsSection(params: QuotaStatusReportParams, homeDir: string): ReportSection {
-  const enabled = params.enabledProviders;
   const rows: ReportKvRow[] = [
     { key: "settings_file", value: settingsFileText(params, homeDir) },
     ...settingsIssueRows(params.settings.issues),
@@ -459,13 +464,13 @@ function settingsSection(params: QuotaStatusReportParams, homeDir: string): Repo
     rows.push({ key: "not_read", value: joinOrNone(paths) });
   }
   rows.push(
-    { key: "enabledProviders", value: enabled === "auto" ? "(auto)" : providerIdsText(enabled) },
-    { key: "onlyCurrentModel", value: params.onlyCurrentModel === true ? "true" : "false" },
+    { key: "providers.off", value: providerIdsText(params.offProviders) },
+    { key: "words.onlyCurrentModel", value: params.onlyCurrentModel === true ? "true" : "false" },
     { key: "currentModel", value: currentModelText(params) },
     { key: "workspace_root", value: pathText(params.workspaceRoot, homeDir) },
   );
   (params.quotaProviders ?? []).forEach((definition, index) => {
-    rows.push({ key: "custom_provider", value: customProviderText(definition, index + 1) });
+    rows.push({ key: "providers.custom", value: customProviderText(definition, index + 1) });
   });
   return kvSection("settings", rows);
 }
@@ -496,9 +501,9 @@ function announcementsSection(
   const { config, summary } = announcements;
   const frequency = config.homeFrequency === "always" ? "always" : "daily";
   return kvSection("maintainer_announcements", [
-    { key: "enabled", value: config.enabled === true ? "true" : "false" },
-    { key: "home", value: config.home === true ? "true" : "false" },
-    { key: "home_frequency", value: frequency },
+    { key: "system.notices", value: config.enabled === true ? "true" : "false" },
+    { key: "system.noticesOnHome", value: config.home === true ? "true" : "false" },
+    { key: "system.noticesOnHomeEvery", value: frequency },
     { key: "source", value: summary.source === "bundled_only" ? "bundled_only" : "(other)" },
     { key: "network", value: summary.network ? "true" : "false" },
     { key: "active", value: fmtInt(summary.activeCount) },
@@ -1183,7 +1188,7 @@ async function pricingSection(
       key: "pricing",
       value: `source=${meta.source} generated_at=${meta.generatedAt} units=${meta.units}`,
     },
-    { key: "selection", value: `configured=${configured} active=${meta.source}` },
+    { key: "providers.pricing.source", value: `configured=${configured} active=${meta.source}` },
   ];
   if (configured === "bundled") {
     rows.push({
@@ -1208,8 +1213,8 @@ async function pricingSection(
       value: `age_ms=${fmtInt(health.ageMs)} max_age_ms=${fmtInt(health.maxAgeMs)} stale=${health.stale === true}`,
     },
     {
-      key: "refresh_policy",
-      value: `auto_refresh_days=${fmtInt(Math.round(maxAgeMs / (24 * 60 * 60 * 1000)))}`,
+      key: "providers.pricing.autoRefreshDays",
+      value: fmtInt(Math.round(maxAgeMs / (24 * 60 * 60 * 1000))),
     },
   );
   if (refreshState) {

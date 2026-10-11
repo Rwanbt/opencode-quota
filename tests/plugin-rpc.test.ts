@@ -948,6 +948,7 @@ describe("server quota RPC", () => {
   });
 
   it("computes quota for the location's project folder, not the service's working folder", async () => {
+    useSettings({ providers: { off: [] } });
     const workspaceRoots: string[] = [];
     const fetch = vi.fn(async (ctx: { workspaceRoot: string }) => {
       workspaceRoots.push(ctx.workspaceRoot);
@@ -959,7 +960,10 @@ describe("server quota RPC", () => {
 
     // The store's refresh, then /quota_status, which checks every provider itself.
     await call("refresh", { reason: "manual" });
-    await call("status", { sessionID: "session-1" });
+    const status = (await call("status", { sessionID: "session-1" })) as { text: string };
+    expect(status.text).toContain("- providers.off: (none)");
+    expect(status.text).toContain("- words.onlyCurrentModel: false");
+    expect(status.text).not.toContain("- enabledProviders:");
 
     expect(workspaceRoots).toHaveLength(2);
     expect(new Set(workspaceRoots)).toEqual(new Set([project]));
