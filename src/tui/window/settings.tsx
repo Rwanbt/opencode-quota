@@ -1112,6 +1112,14 @@ export function createSettingsEditor(api: WindowHost, display: DisplayStore) {
     },
     /** A line takes typing, so the window's own keys rest. */
     typing: () => typing() !== undefined,
+    /** A System switch's saved value (`system.exportFile`); undefined until the server answers. */
+    savedSwitch(key: string): boolean | undefined {
+      return server.saved() ? server.value(key) === true : undefined;
+    },
+    /** Saves a System switch straight away; System has no draft and no Save. */
+    saveSwitch: (key: string, on: boolean): Promise<void> => server.saveNow(key, on),
+    /** Reads the saved settings again, for System's switches. */
+    loadSaved: (): Promise<void> => server.load(),
     /** The snapshot with the Words tab's unsaved words, which every surface shows while you edit. */
     withDraftWords(snapshot: QuotaSnapshot | undefined): QuotaSnapshot | undefined {
       const words = server.draftWords();

@@ -230,6 +230,17 @@ export function createServerSettings(rpc: ServerSettingsRpc) {
       await readSaved();
     },
     /**
+     * Saves one setting straight away, apart from the window's draft (the System tab's
+     * switches), then reads the saved settings again. The error says why the server refused it.
+     */
+    async saveNow(key: string, next: unknown): Promise<void> {
+      const result = await rpc.saveSettings({ patch: settingsPatch({ [key]: next }) });
+      if (!result.ok) {
+        throw new Error(result.issues.map((issue) => `${issue.key}: ${issue.message}`).join("; "));
+      }
+      await readSaved();
+    },
+    /**
      * Sends the changes and switches in one save; nothing is saved when the server refuses any
      * of them, and the error says why. A switch-on carries the fingerprint of the definition
      * shown: one that changed since is reloaded and marked, not switched on. A change made while

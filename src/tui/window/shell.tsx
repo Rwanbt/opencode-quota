@@ -41,6 +41,15 @@ import {
 } from "./views.js";
 
 const NOTICE_POLL_MS = 15_000;
+/** System's switches for other tools; each saves to settings.jsonc straight away. */
+const TOOL_SWITCHES: ReadonlyArray<{ key: string; title: string; note?: string }> = [
+  {
+    key: "system.exportFile",
+    title: "Quota file (JSON)",
+    note: "for status bars and scripts; the opencode-quota CLI works either way",
+  },
+  { key: "system.telemetry", title: "OpenTelemetry metrics" },
+];
 /** Columns inside the window until it knows its real width. */
 const DEFAULT_WIDTH = 120;
 
@@ -207,6 +216,8 @@ export function createQuotaWindow(
    */
   const changing = new Set<string>();
   let noticePoll: ReturnType<typeof setInterval> | undefined;
+  /** System switches whose save is not back yet; another flip of the same one is ignored. */
+  const savingSwitches = new Set<string>();
 
   // The RPC client is made per call, so nothing reaches OpenCode during plugin setup.
   const rpc = () => api.client.rpc(QuotaRpc);
@@ -238,6 +249,18 @@ export function createQuotaWindow(
     if (changing.has(what)) return;
     changing.add(what);
     void changeNotices(input);
+  }
+
+  async function flipSwitch(key: string, on: boolean): Promise<void> {
+    if (savingSwitches.has(key)) return;
+    savingSwitches.add(key);
+    try {
+      await settings.saveSwitch(key, on);
+    } catch (error) {
+      showError(error);
+    } finally {
+      savingSwitches.delete(key);
+    }
   }
 
   async function loadStatus(sessionID: string | undefined): Promise<void> {
@@ -273,6 +296,8 @@ export function createQuotaWindow(
         if (openNoticeRequests === 0) void changeNotices({});
       }, NOTICE_POLL_MS);
       void loadStatus(sessionID);
+      // Snapshots bring the saved settings too, so the switches show even if this read fails.
+      settings.loadSaved().catch(() => {});
     }
     if (next === "usage" && sessionID) usage.show(sessionID);
     setSelected(tabOptions()[0]?.id ?? "");
@@ -296,7 +321,8 @@ export function createQuotaWindow(
   /**
    * The lines above a tab's body that ↑↓ can select: switches (‹ on ›) and buttons (▸). System
    * has Copy for its status report first, so it is picked as soon as the tab opens, then the
-   * notice lines once the notices arrived.
+   * notice lines once the notices arrived, then the switches for other tools once the saved
+   * settings arrived.
    */
   function tabOptions(): OptionLine[] {
     if (tab() !== "system") return [];
@@ -307,8 +333,22 @@ export function createQuotaWindow(
       run: copyReport,
       note: () => "then paste it into a GitHub issue",
     };
+    const tools = TOOL_SWITCHES.flatMap(({ key, title, note }, index): OptionLine[] => {
+      const on = settings.savedSwitch(key);
+      if (on === undefined) return [];
+      return [
+        {
+          id: key,
+          ...(index === 0 ? { group: "For other tools" } : {}),
+          title,
+          value: () => (on ? "on" : "off"),
+          cycle: () => void flipSwitch(key, !on),
+          ...(note ? { note: () => note } : {}),
+        },
+      ];
+    });
     const current = board();
-    if (!current) return [copy];
+    if (!current) return [copy, ...tools];
     const unreadIds = current.notices.filter((notice) => !notice.read).map(({ id }) => id);
     const runs = {
       enabled: () => changeOnce("enabled", { enabled: !current.enabled }),
@@ -323,7 +363,7 @@ export function createQuotaWindow(
         ...(kind === "switch" ? { cycle: runs[id] } : { run: runs[id] }),
       }),
     );
-    return [copy, ...notices];
+    return [copy, ...notices, ...tools];
   }
 
   function open(next: WindowTab | "settings"): void {

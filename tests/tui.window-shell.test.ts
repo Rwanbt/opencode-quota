@@ -5,7 +5,11 @@
  */
 import { createRoot } from "solid-js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { QuotaRpcNoticeListInput, QuotaRpcNoticeListOutput } from "../src/rpc.js";
+import type {
+  QuotaRpcNoticeListInput,
+  QuotaRpcNoticeListOutput,
+  QuotaRpcSaveSettingsInput,
+} from "../src/rpc.js";
 import { createFileDisplay } from "../src/tui/display.js";
 import { createServerSettings } from "../src/tui/server-settings.js";
 import { createSettingsEditor } from "../src/tui/window/settings.tsx";
@@ -98,7 +102,10 @@ function fakeHost() {
       { id: "b", message: "v6 is out." },
     ],
     read: new Set<string>(),
+    /** The saved settings by dotted key, as the settings RPC answers them. */
+    values: {} as Record<string, unknown>,
   };
+  const saveCalls: QuotaRpcSaveSettingsInput[] = [];
   const noticeCalls: Array<{ input: QuotaRpcNoticeListInput; answered: boolean; answer(): void }> =
     [];
   const statusCalls: Array<{ answered: boolean; answer(text: string): void }> = [];
@@ -169,8 +176,13 @@ function fakeHost() {
   };
   const display = createFileDisplay(
     createServerSettings({
-      settings: async () => ({ values: {}, providers: [], custom: [] }),
-      saveSettings: async () => ({ ok: true, issues: [] }),
+      settings: async () => ({ values: { ...server.values }, providers: [], custom: [] }),
+      saveSettings: async (input) => {
+        saveCalls.push(input);
+        const system = (input.patch.system ?? {}) as Record<string, unknown>;
+        for (const [key, value] of Object.entries(system)) server.values[`system.${key}`] = value;
+        return { ok: true, issues: [] };
+      },
     }),
   );
   const settings = createSettingsEditor(api as never, display);
@@ -194,6 +206,7 @@ function fakeHost() {
     server,
     noticeCalls,
     statusCalls,
+    saveCalls,
     layers,
     copied,
     keyboard,
@@ -298,6 +311,47 @@ describe("quota window shell", () => {
       { read: ["a"] },
       { home: false },
       { unread: ["a"] },
+    ]);
+  });
+
+  it("saves a switch for other tools straight away and shows the saved value", async () => {
+    const host = fakeHost();
+    host.quotaWindow.open("system");
+    await flush();
+
+    // Two quick clicks send one save; the line shows what the server saved.
+    let view = draw(host.quotaWindow);
+    expect(textLines(view.tree)).toEqual(
+      expect.arrayContaining([
+        " For other tools",
+        expect.stringContaining("Quota file (JSON)"),
+        "off",
+        expect.stringContaining("OpenTelemetry metrics"),
+      ]),
+    );
+    clickLine(view.tree, "Quota file (JSON)");
+    clickLine(view.tree, "Quota file (JSON)");
+    view.dispose();
+    await flush();
+    expect(host.saveCalls).toEqual([{ patch: { system: { exportFile: true } } }]);
+    view = draw(host.quotaWindow);
+    const fileLine = findAll(
+      view.tree,
+      (node) =>
+        node.type === "box" &&
+        typeof node.props?.onMouseDown === "function" &&
+        textLines(node).some((text) => text.includes("Quota file (JSON)")),
+    ).at(-1);
+    expect(textLines(fileLine).map((text) => text.trim())).toContain("on");
+
+    // The next click turns it off again; telemetry saves its own key.
+    clickLine(view.tree, "Quota file (JSON)");
+    clickLine(view.tree, "OpenTelemetry metrics");
+    view.dispose();
+    await flush();
+    expect(host.saveCalls.slice(1)).toEqual([
+      { patch: { system: { exportFile: false } } },
+      { patch: { system: { telemetry: true } } },
     ]);
   });
 
