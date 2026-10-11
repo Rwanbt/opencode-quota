@@ -417,7 +417,9 @@ describe("CLI reports", () => {
       expect(report.exitCode).toBe(0);
       expect(report.stderr).toBe("");
       expect(report.stdout).toMatch(/^# Quota Status/u);
-      expect(report.stdout).toContain("- enabledProviders: synthetic");
+      expect(report.stdout).toContain(
+        `- providers.off: ${CONFIG_PROVIDER_IDS.filter((id) => id !== "synthetic").join(" | ")}`,
+      );
       expect(report.stdout).toContain("\nsynthetic:\n- state: ok");
       expect(report.stdout.endsWith("\n")).toBe(true);
       expect(buildStatusReportData).toHaveBeenCalledWith(

@@ -8,6 +8,8 @@
 2. Find the provider or feature that fails, and follow the matching fix below.
 3. Restart OpenCode after changing `opencode.json`. Changes to logins and `settings.jsonc` apply without a restart.
 
+`/quota_status` labels settings with their `settings.jsonc` keys. `providers.off` lists switched-off provider ids, or `(none)` when every discovered provider is checked. `words.onlyCurrentModel` shows the current-model filter. The notice settings are `system.notices`, `system.noticesOnHome`, and `system.noticesOnHomeEvery`. Pricing settings appear as `providers.pricing.source` and `providers.pricing.autoRefreshDays`.
+
 Every provider missing? Check that `@slkiser/opencode-quota` is in the `plugin` list of `opencode.jsonc` or `.json`. That one entry also loads the TUI; no `tui.json` entry is needed.
 
 ## Logins
@@ -60,7 +62,7 @@ Run `/quota_status` first and check that provider's section. Every known provide
 <details>
 <summary><strong>Custom providers</strong></summary>
 
-`/quota_status` lists each definition in the `settings` section by its place in `providers.custom`, with its mode and model count, for example `custom_provider: custom 1 (remote-api, 3 models)`; it never shows a definition's id, URL, environment variable name or model ids. The `quota-providers` section shows the live check: `state`, the rows (a definition as `(custom 1)`), and a `custom 1 check` line per definition with its outcome, HTTP status, credential source, and checked paths (or local state health). These results are fetched live for the status command; cached results are not substituted.
+`/quota_status` lists each definition in the `settings` section by its place in `providers.custom`, with its mode and model count, for example `providers.custom: custom 1 (remote-api, 3 models)`; it never shows a definition's id, URL, environment variable name or model ids. The `quota-providers` section shows the live check: `state`, the rows (a definition as `(custom 1)`), and a `custom 1 check` line per definition with its outcome, HTTP status, credential source, and checked paths (or local state health). These results are fetched live for the status command; cached results are not substituted.
 
 | Symptom                                    | Fix |
 | ------------------------------------------ | --- |

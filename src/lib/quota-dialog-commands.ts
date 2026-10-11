@@ -357,6 +357,7 @@ export async function buildStatusReportData(params: {
       settings.providers.off.length === 0
         ? "auto"
         : PROVIDER_IDS.filter((id) => !settings.providers.off.includes(id)),
+    offProviders: settings.providers.off,
     onlyCurrentModel: settings.words.onlyCurrentModel,
     quotaProviders: settings.providers.custom,
     pricingSnapshotSource: settings.providers.pricing.source,

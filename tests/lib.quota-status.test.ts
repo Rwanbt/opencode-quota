@@ -92,6 +92,7 @@ function params(overrides: Partial<QuotaStatusReportParams> = {}): QuotaStatusRe
     settings: { path: "/cfg/opencode-quota/settings.jsonc", exists: true, issues: [], notRead: [] },
     workspaceRoot: "/ws",
     enabledProviders: "auto",
+    offProviders: [],
     onlyCurrentModel: false,
     pricingSnapshotSource: "auto",
     providerAvailability: providers.map(({ providerId }) => ({
@@ -277,8 +278,8 @@ const NUMBER_LINES: readonly RegExp[] = [
   String.raw`- settings_issue: ${SMALL} unknown keys?`,
   String.raw`- conversion: from .+ \(${SMALL} converted, ${SMALL} dropped, ${SMALL} invalid\); .+`,
   String.raw`- conversion_\w+: .*\(\+${SMALL} unknown keys?\)|- conversion_\w+: ${SMALL} unknown keys?`,
-  String.raw`- enabledProviders: .+ \(\+${SMALL} unknown ids?\)`,
-  String.raw`- custom_provider: custom ${SMALL} (?:off .+|\([\w-]+, (?:${SMALL} models?|all models)(?:, tunes [\w-]+)?\))`,
+  String.raw`- providers\.off: .+ \(\+${SMALL} unknown ids?\)`,
+  String.raw`- providers\.custom: custom ${SMALL} (?:off .+|\([\w-]+, (?:${SMALL} models?|all models)(?:, tunes [\w-]+)?\))`,
   String.raw`- (?:active|future|expired): ${SMALL}`,
   String.raw`- (?:checked_at|token_expires_at|cycle_reset_at|reset_at|billing_period_end|grace_until|local_state_last_update): ${TIME}(?: \(rows from ${TIME}\))?`,
   String.raw`- (?:list_error|failures): .*`,
@@ -294,7 +295,7 @@ const NUMBER_LINES: readonly RegExp[] = [
   String.raw`- custom ${SMALL} check: .*`,
   String.raw`- pricing: source=\w+ generated_at=${TIME} units=(?:USD per 1M tokens|\(other units\))`,
   String.raw`- staleness: age_ms=[\d,]+ max_age_ms=[\d,]+ stale=(?:true|false)`,
-  String.raw`- refresh_policy: auto_refresh_days=\d{1,4}`,
+  String.raw`- providers\.pricing\.autoRefreshDays: \d{1,4}`,
   String.raw`- refresh: last_attempt_at=${TIME} last_success_at=${TIME} last_failure_at=${TIME} last_result=\S+`,
   String.raw`- providers: \d{1,4}`,
   String.raw`- unpriced_30d: \d{1,3}\.\d% of ${AMOUNT} tokens`,
@@ -316,8 +317,8 @@ const FIELD_FORMS: ReadonlyArray<readonly [RegExp, RegExp]> = (
       String.raw`  - ${ROW_ID}(?: \(account ${SMALL}\))?: ${ROW_FACT}(?:, ${ROW_FACT})*|  - … \(${SMALL} more\)|  - [\w.-]+/[\w.-]+: ${AMOUNT} tokens|  - … \(${SMALL} more unpriced models?\)`,
     ],
     [
-      /^- custom_provider: /u,
-      String.raw`- custom_provider: custom ${SMALL} (?:off \(switch on in /quota_settings → Providers\)|\((?:remote-api|local-estimate), (?:${SMALL} models?|all models)(?:, tunes [\w-]+)?\))`,
+      /^- providers\.custom: /u,
+      String.raw`- providers\.custom: custom ${SMALL} (?:off \(switch on in /quota_settings → Providers\)|\((?:remote-api|local-estimate), (?:${SMALL} models?|all models)(?:, tunes [\w-]+)?\))`,
     ],
     [
       /^- currentModel: /u,
@@ -527,9 +528,9 @@ describe("buildQuotaStatusReport", () => {
     expect(section(text, "maintainer_announcements")).toBe(
       [
         "maintainer_announcements:",
-        "- enabled: true",
-        "- home: true",
-        "- home_frequency: daily",
+        "- system.notices: true",
+        "- system.noticesOnHome: true",
+        "- system.noticesOnHomeEvery: daily",
         "- source: bundled_only",
         "- network: false",
         "- active: 2",
@@ -895,7 +896,7 @@ describe("buildQuotaStatusReport", () => {
     {
       name: "a custom definition's id, provider id, env variable and model ids",
       canary: "secretcanary",
-      shows: "- custom_provider: custom 1 (remote-api, 1 model)",
+      shows: "- providers.custom: custom 1 (remote-api, 1 model)",
       overrides: {
         quotaProviders: [
           remoteDefinition(SK_CANARY, { apiKeyEnv: "SK_SECRETCANARY", modelIds: [SK_CANARY] }),
@@ -1026,6 +1027,7 @@ describe("buildQuotaStatusReport", () => {
       shows: "- (other provider): enabled available",
       overrides: {
         enabledProviders: ["openai", "lowercasecanary"],
+        offProviders: ["copilot", "lowercasecanary"],
         providerAvailability: [{ id: "lowercasecanary", enabled: true, available: true }],
         providers: [
           snapshot("lowercasecanary", {
@@ -1230,6 +1232,7 @@ describe("buildQuotaStatusReport", () => {
         }),
         workspaceRoot: garbage(),
         enabledProviders: ["openai", garbage()],
+        offProviders: ["copilot", garbage()],
         quotaProviders: definitions,
         currentModel: pick([garbage(), KNOWN_MODEL]),
         providerAvailability: providers.map((provider) => ({
@@ -1296,7 +1299,7 @@ describe("buildQuotaStatusReport", () => {
     // The report still has its facts: known model, row ids, custom numbers.
     expect(output).toContain(`- currentModel: `);
     expect(output).toContain(`  - openai/${KNOWN_MODEL}: 3.00K tokens`);
-    expect(output).toContain("- custom_provider: custom 3 (remote-api, 2 models)");
+    expect(output).toContain("- providers.custom: custom 3 (remote-api, 2 models)");
   });
 
   it.each([
@@ -1616,14 +1619,15 @@ describe("buildQuotaStatusReport", () => {
       name: "the settings file, the providers and the session model",
       overrides: {
         enabledProviders: ["copilot", "openai"],
+        offProviders: ["anthropic", "custom"],
         onlyCurrentModel: true,
         currentModel: KNOWN_MODEL,
       },
       lines: [
         "- settings_file: (custom path)/settings.jsonc (exists)",
         "- project_settings: none: the settings are global; v5 project-scope files are not read",
-        "- enabledProviders: copilot | openai",
-        "- onlyCurrentModel: true",
+        "- providers.off: anthropic | custom",
+        "- words.onlyCurrentModel: true",
         `- currentModel: ${KNOWN_MODEL}`,
         "- workspace_root: (custom path)",
       ],
@@ -1643,7 +1647,7 @@ describe("buildQuotaStatusReport", () => {
       },
       lines: [
         "- settings_file: (custom path)/settings.jsonc (missing; using the defaults)",
-        "- enabledProviders: (none)",
+        "- providers.off: (none)",
         "- currentModel: (no session available)",
       ],
     },
@@ -1665,7 +1669,7 @@ describe("buildQuotaStatusReport", () => {
         },
       },
       lines: [
-        "- enabledProviders: (auto)",
+        "- providers.off: (none)",
         "- currentModel: (error: session.get returned no modelID)",
         [
           "- settings_issue: $file: syntax error on line 2",
@@ -1724,9 +1728,9 @@ describe("buildQuotaStatusReport", () => {
         ],
       },
       lines: [
-        "- custom_provider: custom 1 (remote-api, 1 model)",
-        "- custom_provider: custom 2 (local-estimate, all models)",
-        "- custom_provider: custom 3 (local-estimate, all models, tunes alibaba-coding-plan)",
+        "- providers.custom: custom 1 (remote-api, 1 model)",
+        "- providers.custom: custom 2 (local-estimate, all models)",
+        "- providers.custom: custom 3 (local-estimate, all models, tunes alibaba-coding-plan)",
       ],
       absent: ["team", "seats", "gateway", "TEAM_KEY", "model-a", "private"],
     },
@@ -1745,7 +1749,7 @@ describe("buildQuotaStatusReport", () => {
           },
         ],
       },
-      lines: ["- custom_provider: custom 1 off (switch on in /quota_settings → Providers)"],
+      lines: ["- providers.custom: custom 1 off (switch on in /quota_settings → Providers)"],
       absent: ["gateway.example", "my-gateway", "My Gateway"],
     },
     {
@@ -1883,7 +1887,8 @@ describe("buildQuotaStatusReport", () => {
     const text = section(await report({ pricingSnapshotSource: configured }), "pricing_snapshot");
 
     expect(text).toMatch(/- pricing: source=bundled generated_at=\S+Z units=USD per 1M tokens\n/u);
-    expect(text).toContain(`- selection: configured=${configured} active=bundled`);
+    expect(text).toContain(`- providers.pricing.source: configured=${configured} active=bundled`);
+    expect(text).toMatch(/- providers\.pricing\.autoRefreshDays: \d+\n/u);
     expect(text).toContain("- refresh: (no runtime refresh state yet)");
     expect(text).toMatch(/- providers: \d+\n/u);
     if (note) expect(text).toContain(`- selection_note: ${note}`);
@@ -2239,7 +2244,9 @@ describe("buildStatusReportData", () => {
     expect(before).toContain(
       "- settings_file: ~/.config/opencode/opencode-quota/settings.jsonc (missing; the v5 settings are converted in memory)",
     );
-    expect(before).toContain("- enabledProviders: synthetic");
+    expect(before).toContain(
+      `- providers.off: ${PROVIDER_IDS.filter((id) => id !== "synthetic").join(" | ")}`,
+    );
     expect(before).toMatch(
       /- conversion: from ~\/\.config\/opencode\/opencode-quota\/quota-toast\.json \(\d+ converted, \d+ dropped, \d+ invalid\); converted in memory/u,
     );
