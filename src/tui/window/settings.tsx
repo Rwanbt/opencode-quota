@@ -110,6 +110,8 @@ export type OptionLine = {
   id: string;
   /** A heading above the line, which starts a group. */
   group?: string;
+  /** A blank line above the line, between blocks of one group. */
+  gap?: boolean;
   title: string;
   value: () => string;
   cycle?: (delta: number) => void;
@@ -120,7 +122,7 @@ export type OptionLine = {
   warning?: boolean;
   /** A second muted line under the value. */
   detail?: string;
-  /** Nesting under the line above: 1 for a provider's tick, 2 for that provider's settings. */
+  /** Nesting under the line above: 1 for a provider's settings under its tick. */
   depth?: number;
   swatches?: () => RGBA[];
 };
@@ -230,6 +232,9 @@ export function OptionRow(props: {
         <box paddingTop={props.first ? 0 : 1}>
           <Cell fg={props.theme.text.action.primary.selected} bold>{` ${line.group}`}</Cell>
         </box>
+      </Show>
+      <Show when={line.gap}>
+        <box height={1} />
       </Show>
       <box
         id={boxId(line.id)}
@@ -369,7 +374,7 @@ export function createSettingsEditor(api: WindowHost, display: DisplayStore) {
       id: field.path,
       group: field.group,
       title: field.title,
-      depth: field.provider ? 2 : 0,
+      depth: field.provider ? 1 : 0,
       value: () => field.show(value()),
       cycle:
         field.values.length > 0
@@ -434,6 +439,7 @@ export function createSettingsEditor(api: WindowHost, display: DisplayStore) {
     return {
       id: `custom.${entry.id}`,
       group: first ? "Custom providers (added in settings.jsonc)" : undefined,
+      gap: !first,
       title: entry.label,
       value: () => (on() ? "on" : "off"),
       cycle: () => server.switchCustom(entry.id, !on()),
@@ -463,7 +469,6 @@ export function createSettingsEditor(api: WindowHost, display: DisplayStore) {
         id: `provider.${id}`,
         group: id === ordered[0]?.id ? "Which providers" : undefined,
         title: `${ticked ? "[x]" : "[ ]"} ${label}`,
-        depth: 1,
         value: () => (ticked ? (found.includes(id) ? "checked" : "not found") : "skipped"),
         cycle: () => server.set(PROVIDERS_KEY, withTick(off(), id, !ticked)),
       };

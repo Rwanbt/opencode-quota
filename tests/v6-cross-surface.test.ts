@@ -750,6 +750,10 @@ describe("v6 surfaces on the quota snapshot", () => {
         );
         expect(words(settingLine(windowTree(), "provider.cursor"))).toContain("not found");
         expect(words(windowTree())).not.toContain("Check");
+        // The ticks are the tab's top lines, as far in as any other line.
+        expect(textLines(settingLine(windowTree(), "provider.copilot"))[0]).toMatch(
+          /^ {3}\[x\] Copilot/u,
+        );
         clickable(settingLine(windowTree(), "provider.copilot"), "›").props.onMouseUp();
         expect(words(settingLine(windowTree(), "provider.copilot"))).toContain("skipped");
         clickable(windowTree(), "Save").props.onMouseUp();
