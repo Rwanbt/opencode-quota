@@ -38,7 +38,6 @@ import {
   stepIn,
   typedColor,
   typedNumber,
-  valueAt,
 } from "../display.js";
 import { foundProviderIds, isTicked, PROVIDERS_KEY, withTick } from "../server-settings.js";
 import type { SurfaceHost } from "../sidebar.js";
@@ -222,6 +221,8 @@ export function OptionRow(props: {
     return end + 3 + columnsOf(note()) <= props.width;
   };
   const indent = "  ".repeat(line.depth ?? 0);
+  // A tick without a word has the value's room too, so a long name shows whole.
+  const titleWidth = () => (line.tick && !line.value() ? 26 + 2 + (props.valueWidth ?? 24) : 26);
   const noteColor = () =>
     props.active
       ? fg()
@@ -245,7 +246,7 @@ export function OptionRow(props: {
         onMouseDown={props.press}
       >
         <Cell fg={fg()} onUp={line.tick ? props.click(props.use) : undefined}>
-          {`   ${indent}${fit(line.title, 26 - indent.length)} `}
+          {`   ${indent}${fit(line.title, titleWidth() - indent.length)} `}
         </Cell>
         <Cell fg={arrow()} onUp={props.click(() => line.cycle?.(-1))}>
           {line.cycle && !line.tick ? "‹ " : "  "}
@@ -463,6 +464,7 @@ export function createSettingsEditor(api: WindowHost, display: DisplayStore) {
     if (!loaded) return [];
     const found = foundProviderIds(snapshot);
     const off = () => server.value(PROVIDERS_KEY) as string[];
+    const savedOff = loaded.values[PROVIDERS_KEY] as string[];
     const ordered = [
       ...loaded.providers.filter(({ id }) => found.includes(id)),
       ...loaded.providers.filter(({ id }) => !found.includes(id)),
@@ -475,8 +477,10 @@ export function createSettingsEditor(api: WindowHost, display: DisplayStore) {
         title: `${ticked ? "[x]" : "[ ]"} ${label}`,
         tick: true,
         warning: true,
-        // The tick says on or off; only a ticked provider quota can't find says more.
-        value: () => (ticked && snapshot && !found.includes(id) ? "not set up" : ""),
+        // The tick says on or off; only a saved tick quota can't use says more (a tick not
+        // saved yet is not checked yet).
+        value: () =>
+          ticked && isTicked(savedOff, id) && snapshot && !found.includes(id) ? "not set up" : "",
         cycle: () => server.set(PROVIDERS_KEY, withTick(off(), id, !ticked)),
       };
       const nested = ticked ? FIELDS.filter((field) => field.provider === id) : [];

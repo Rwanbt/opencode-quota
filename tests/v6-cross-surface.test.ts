@@ -756,6 +756,12 @@ describe("v6 surfaces on the quota snapshot", () => {
           "",
         ]);
         expect(words(windowTree())).not.toContain("Check");
+        // A tick with a word keeps it lined up; without one a long name shows whole.
+        const alibaba = () => settingLine(windowTree(), "provider.alibaba-token-plan");
+        expect(words(alibaba())).toEqual(["[x] Alibaba Personal Toke…", "", "not set up", ""]);
+        clickable(alibaba(), "[x] Alibaba Personal Toke…").props.onMouseUp();
+        expect(words(alibaba())[0]).toBe("[ ] Alibaba Personal Token Plan");
+        clickable(alibaba(), "[ ] Alibaba Personal Token Plan").props.onMouseUp();
         // The ticks are the tab's top lines, as far in as any other line.
         expect(textLines(settingLine(windowTree(), "provider.copilot"))[0]).toMatch(
           /^ {3}\[x\] Copilot/u,
@@ -784,6 +790,14 @@ describe("v6 surfaces on the quota snapshot", () => {
           expect(words(settingLine(windowTree(), "provider.cursor"))).not.toContain("not set up"),
         );
         expect(words(settingLine(windowTree(), "provider.cursor"))).toContain("[x] Cursor");
+        // A tick not saved yet is not checked yet, so it has no word either.
+        clickable(settingLine(windowTree(), "provider.copilot"), "[ ] Copilot").props.onMouseUp();
+        expect(words(settingLine(windowTree(), "provider.copilot"))).toEqual([
+          "[x] Copilot",
+          "",
+          "",
+          "",
+        ]);
       } finally {
         await tui.dispose();
       }
