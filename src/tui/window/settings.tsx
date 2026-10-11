@@ -24,6 +24,7 @@ import { WINDOWS } from "../../core/windows.js";
 import { QuotaRpc } from "../../rpc.js";
 import type { CustomProviderSwitch } from "../../settings/index.js";
 import { CHANGED_SINCE_REVIEW } from "../../settings/schema.js";
+import { columnsOf } from "../../view/columns.js";
 import { DEFAULT_WORDS, fit, percentText, resetText, rowValueText } from "../../view/format.js";
 import { pickRow, type Surface, type SurfaceRows, type WindowChoice } from "../../view/select.js";
 import type { ColorRole } from "../../view/text.js";
@@ -159,6 +160,8 @@ const TRANSPARENT = RGBA.fromInts(0, 0, 0, 0);
 /** The id of a surface tab's switch line. */
 const SWITCH_ID = "surface";
 const DOUBLE_CLICK_MS = 400;
+/** Where a line's value starts: past the 3 spaces, the 26-column title, its space and the "‹ ". */
+const VALUE_COLUMN = 32;
 
 /** Selection id of a tree line; a row id could equal a setting's path. */
 function lineKey(id: string): string {
@@ -182,11 +185,15 @@ function windowTitle(choice: WindowChoice): string {
   return choice === "lowest" ? "lowest left" : WINDOWS[choice].short;
 }
 
-/** One-line text that keeps its width, unless `shrink` lets it give way (notes, details). */
+/**
+ * One-line text that keeps its width, unless `shrink` lets it give way. With `wrap` (notes,
+ * details) it goes on to more lines between words instead of being cut.
+ */
 export function Cell(props: {
   fg?: RGBA;
   bold?: boolean;
   shrink?: boolean;
+  wrap?: boolean;
   onUp?: () => void;
   children: JSX.Element;
 }): JSX.Element {
@@ -194,7 +201,7 @@ export function Cell(props: {
     <text
       fg={props.fg}
       attributes={props.bold ? TextAttributes.BOLD : TextAttributes.NONE}
-      wrapMode="none"
+      wrapMode={props.wrap ? "word" : "none"}
       flexShrink={props.shrink ? 1 : 0}
       selectable={false}
       onMouseUp={props.onUp}
@@ -217,6 +224,8 @@ export function OptionRow(props: {
   /** The first line of a list has no gap above its group heading. */
   first?: boolean;
   valueWidth?: number;
+  /** The line's room; a note that doesn't fit after the value goes on a line under it. */
+  width?: number;
   /** The input that replaces the value while the line takes typing. */
   input?: () => JSX.Element;
 }): JSX.Element {
@@ -224,6 +233,12 @@ export function OptionRow(props: {
   const fg = () => (props.active ? props.theme.text.action.primary.focused : props.theme.text.base);
   const arrow = () => (props.active ? fg() : props.theme.text.action.primary.selected);
   const note = () => line.note?.() ?? "";
+  const noteInline = () => {
+    if (props.width === undefined) return true;
+    const swatches = 3 * (line.swatches?.() ?? []).length;
+    const end = VALUE_COLUMN + (props.valueWidth ?? 24) + 2 + swatches;
+    return end + 3 + columnsOf(note()) <= props.width;
+  };
   const indent = "  ".repeat(line.depth ?? 0);
   const noteColor = () =>
     props.active
@@ -268,14 +283,24 @@ export function OptionRow(props: {
             ))}
           </Cell>
         </Show>
-        <Cell fg={noteColor()} shrink>
-          {note() ? `   ${note()}` : ""}
-        </Cell>
+        <Show when={note() && noteInline()}>
+          <box paddingLeft={3} flexShrink={1}>
+            <Cell fg={noteColor()} shrink wrap>
+              {note()}
+            </Cell>
+          </box>
+        </Show>
       </box>
+      <Show when={note() && !noteInline()}>
+        <box paddingLeft={VALUE_COLUMN}>
+          <Cell fg={noteColor()} shrink wrap>
+            {note()}
+          </Cell>
+        </box>
+      </Show>
       <Show when={line.detail}>
-        {/* Under the value: past the 3 spaces, the 26-column title and the "‹ ". */}
-        <box paddingLeft={32}>
-          <Cell fg={props.theme.text.muted} shrink>
+        <box paddingLeft={VALUE_COLUMN}>
+          <Cell fg={props.theme.text.muted} shrink wrap>
             {line.detail}
           </Cell>
         </box>
@@ -631,6 +656,8 @@ export function createSettingsEditor(api: WindowHost, display: DisplayStore) {
     sessionID: string;
     box: () => BoxRenderable | undefined;
     scroll: () => ScrollBoxRenderable | undefined;
+    /** The body's room: the scrollbar's column and a gap before it stay free. */
+    width: number;
   }): JSX.Element {
     /** The box with only the tree lines, so the drag math counts lines from its top. */
     let list: BoxRenderable | undefined;
@@ -961,7 +988,7 @@ export function createSettingsEditor(api: WindowHost, display: DisplayStore) {
     }
 
     return (
-      <box flexDirection="column">
+      <box flexDirection="column" width={props.width}>
         <For each={options()}>
           {(line: OptionLine, index: () => number) => (
             <OptionRow
@@ -969,6 +996,7 @@ export function createSettingsEditor(api: WindowHost, display: DisplayStore) {
               theme={theme()}
               active={selected() === line.id}
               first={index() === 0}
+              width={props.width}
               click={click}
               press={(event) => {
                 if (event.button !== 0 || typing()) return;

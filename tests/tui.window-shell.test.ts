@@ -1,6 +1,6 @@
 /**
  * The quota window (`src/tui/window/shell.tsx`) on a fake OpenCode host whose server answers
- * when the test says so: answers that arrive out of order, the Notices poll, and the keyboard
+ * when the test says so: answers that arrive out of order, System's notice poll, and the keyboard
  * when OpenCode draws the window again.
  */
 import { createRoot } from "solid-js";
@@ -239,7 +239,7 @@ describe("quota window shell", () => {
 
   it("shows the server's latest notice state when an older answer comes last", async () => {
     const host = fakeHost();
-    host.quotaWindow.open("notices");
+    host.quotaWindow.open("system");
     await flush();
     host.noticeCalls[0]?.answer();
     await flush();
@@ -267,7 +267,7 @@ describe("quota window shell", () => {
 
   it("sends one change for two quick clicks on one line, and the next click undoes it", async () => {
     const host = fakeHost();
-    host.quotaWindow.open("notices");
+    host.quotaWindow.open("system");
     await flush();
     host.noticeCalls[0]?.answer();
     await flush();
@@ -301,11 +301,11 @@ describe("quota window shell", () => {
 
   it("shows and copies the newest status report after closing and opening again", async () => {
     const host = fakeHost();
-    host.quotaWindow.open("status");
+    host.quotaWindow.open("system");
     const first = draw(host.quotaWindow);
     press(host.layers, "escape");
     first.dispose();
-    host.quotaWindow.open("status");
+    host.quotaWindow.open("system");
     host.statusCalls[1]?.answer("# Quota Status (new)");
     host.statusCalls[0]?.answer("# Quota Status (old)");
     await flush();
@@ -317,9 +317,9 @@ describe("quota window shell", () => {
     expect(host.copied).toEqual(["# Quota Status (new)"]);
   });
 
-  it("asks for the notices again while Notices shows, and stops on another tab", async () => {
+  it("asks for the notices again while System shows, and stops on another tab", async () => {
     const host = fakeHost();
-    host.quotaWindow.open("notices");
+    host.quotaWindow.open("system");
     // A poll waits while a request is still out.
     await vi.advanceTimersByTimeAsync(15_000);
     expect(host.noticeCalls).toHaveLength(1);

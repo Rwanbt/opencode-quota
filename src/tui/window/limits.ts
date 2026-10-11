@@ -254,7 +254,7 @@ export function limitsLines(input: LimitsInput): Line[] {
     return [
       {
         id: "",
-        segments: [{ text: "No quota providers found. The Status tab says why.", role: "value" }],
+        segments: [{ text: "No quota providers found. The System tab says why.", role: "value" }],
       },
     ];
   }

@@ -187,7 +187,7 @@ describe("quota window: Limits", () => {
   });
 
   it("says where to look when no provider is found", () => {
-    expect(limits([])).toEqual(["No quota providers found. The Status tab says why."]);
+    expect(limits([])).toEqual(["No quota providers found. The System tab says why."]);
   });
 });
 

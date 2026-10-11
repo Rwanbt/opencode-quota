@@ -140,7 +140,7 @@ const plugin = Plugin.define({
     const quotaCommands: Record<string, (argumentsText: string) => void> = {
       quota: () => quotaWindow.open("limits"),
       quota_usage: openUsage,
-      quota_status: () => quotaWindow.open("status"),
+      quota_status: () => quotaWindow.open("system"),
       quota_settings: () => quotaWindow.open("settings"),
     };
 
@@ -186,7 +186,7 @@ const plugin = Plugin.define({
               title: "Quota status report",
               group: "OpenCode Quota",
               palette: true,
-              run: () => quotaWindow.open("status"),
+              run: () => quotaWindow.open("system"),
             },
             {
               id: "quota.settings",

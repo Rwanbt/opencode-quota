@@ -1,6 +1,6 @@
 /** @jsxImportSource @opentui/solid */
 /**
- * The bodies of the quota window's Limits, Notices and Status tabs. Their text comes from pure
+ * The bodies of the quota window's Limits and System tabs. Their text comes from pure
  * builders: `limits.ts`, and `noticeOptions`, `noticeItems` and `statusLines` here; the views
  * only color it and handle clicks.
  */
@@ -13,10 +13,10 @@ import { LineText, type SurfaceHost } from "../sidebar.js";
 import { limitsLines } from "./limits.js";
 import type { WindowTheme } from "./shell.js";
 
-/** The Notices tab's data: its two settings and the maintainer notices with their read state. */
+/** The notices' data: their two settings and the maintainer notices with their read state. */
 export type NoticeBoard = QuotaRpcNoticeListOutput;
 
-/** A Notices setting line: a switch flips with ‹ › or a click, a button runs. */
+/** A notice setting line: a switch flips with ‹ › or a click, a button runs. */
 export type NoticeOption = {
   id: "enabled" | "home" | "readAll";
   title: string;
@@ -35,7 +35,7 @@ export type NoticeItem = {
   action: string;
 };
 
-/** The Notices tab's setting lines: notices on or off, the count on Home, mark all read. */
+/** System's notice lines: notices on or off, the count on Home, mark all read. */
 export function noticeOptions(board: NoticeBoard): NoticeOption[] {
   const unread = board.notices.filter((notice) => !notice.read).length;
   const onOff = (on: boolean) => (on ? "on" : "off");
@@ -76,8 +76,8 @@ export function noticeItems(board: NoticeBoard): { items: NoticeItem[]; empty?: 
 export type StatusLine = { text: string; heading: boolean };
 
 /**
- * The Status tab's lines: the /quota_status report, its title ("# ") and its section titles (an
- * unindented line that ends with ":") marked so they can be bold.
+ * The status report on System: the /quota_status report's lines, its title ("# ") and its
+ * section titles (an unindented line that ends with ":") marked so they can be bold.
  */
 export function statusLines(text: string): StatusLine[] {
   return text.split("\n").map((line) => ({
@@ -131,10 +131,11 @@ export function NoticesView(props: {
           {`   ${body().empty}`}
         </text>
       </Show>
-      {body().items.map((item) => (
+      {body().items.map((item, index) => (
         <box
           flexDirection="row"
-          marginBottom={1}
+          // A blank line between notices; the status report under them keeps its own.
+          marginBottom={index < body().items.length - 1 ? 1 : 0}
           onMouseUp={() => props.toggle(item.id, item.read)}
         >
           <text

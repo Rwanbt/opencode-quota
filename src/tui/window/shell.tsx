@@ -2,15 +2,15 @@
 /**
  * The quota window. `/quota`, `/quota_usage`, `/quota_status` and `/quota_settings` open it
  * above the message box of a session, where it covers the chat
- * with the same size on every tab: Usage, Limits, Notices, Status and the Settings tabs
+ * with the same size on every tab: Usage, Limits, System and the Settings tabs
  * (`settings.tsx`). The tab bar is one line, with "esc" at its right end to close the window:
  * when its tabs don't fit, it drops the "Settings" label, then shows the tabs around the
  * current one between ‹ and ›. The bottom line lists the
  * tab's keys; the Settings tabs have Save and Discard above it. While the window is focused (it
  * is after opening; click it to give it the keyboard again) its keys work: ↑↓ select or scroll,
  * space/enter use a line, ←/→ change it, tab switches tabs, esc closes. Closing gives the
- * keyboard back to whatever had it before. Notices asks the server again every 15 seconds while
- * it shows, so a new notice or a change made in another window appears.
+ * keyboard back to whatever had it before. System asks the server for the notices again every
+ * 15 seconds while it shows, so a new notice or a change made in another window appears.
  */
 import type { Plugin } from "@opencode/plugin/tui";
 import type { BoxRenderable, Renderable, RGBA, ScrollBoxRenderable } from "@opentui/core";
@@ -44,14 +44,13 @@ const NOTICE_POLL_MS = 15_000;
 /** Columns inside the window until it knows its real width. */
 const DEFAULT_WIDTH = 120;
 
-export type WindowTab = "limits" | "usage" | "notices" | "status" | SettingsTab;
+export type WindowTab = "limits" | "usage" | "system" | SettingsTab;
 
 /** The view tabs; the Settings tabs (`SETTINGS_TABS`) follow them under their own label. */
 const TABS: ReadonlyArray<{ tab: WindowTab; title: string }> = [
   { tab: "usage", title: "Usage" },
   { tab: "limits", title: "Limits" },
-  { tab: "notices", title: "Notices" },
-  { tab: "status", title: "Status" },
+  { tab: "system", title: "System" },
 ];
 /** Every tab in the order the tab bar shows them and tab and shift+tab go through them. */
 const ALL_TABS: ReadonlyArray<{ tab: WindowTab; title: string }> = [...TABS, ...SETTINGS_TABS];
@@ -267,14 +266,14 @@ export function createQuotaWindow(
     const sessionID = routeSessionID(api);
     stopNoticePoll();
     if (next === "limits") void host.quota.refresh("manual", sessionID);
-    if (next === "notices") {
+    if (next === "system") {
       void changeNotices({});
       // A poll waits while a request is still out, so slow answers don't pile up.
       noticePoll = setInterval(() => {
         if (openNoticeRequests === 0) void changeNotices({});
       }, NOTICE_POLL_MS);
+      void loadStatus(sessionID);
     }
-    if (next === "status") void loadStatus(sessionID);
     if (next === "usage" && sessionID) usage.show(sessionID);
     setSelected(tabOptions()[0]?.id ?? "");
     scroll?.scrollTo(0);
@@ -294,28 +293,37 @@ export function createQuotaWindow(
     });
   }
 
-  /** The lines above a tab's body that ↑↓ can select: switches (‹ on ›) and buttons (▸). */
+  /**
+   * The lines above a tab's body that ↑↓ can select: switches (‹ on ›) and buttons (▸). System
+   * has Copy for its status report first, so it is picked as soon as the tab opens, then the
+   * notice lines once the notices arrived.
+   */
   function tabOptions(): OptionLine[] {
-    if (tab() === "status") {
-      const note = () => "then paste it into a GitHub issue";
-      return [
-        { id: "copy", title: "Copy this report", value: () => "copy", run: copyReport, note },
-      ];
-    }
+    if (tab() !== "system") return [];
+    const copy: OptionLine = {
+      id: "copy",
+      title: "Copy the status report",
+      value: () => "copy",
+      run: copyReport,
+      note: () => "then paste it into a GitHub issue",
+    };
     const current = board();
-    if (tab() !== "notices" || !current) return [];
+    if (!current) return [copy];
     const unreadIds = current.notices.filter((notice) => !notice.read).map(({ id }) => id);
     const runs = {
       enabled: () => changeOnce("enabled", { enabled: !current.enabled }),
       home: () => changeOnce("home", { home: !current.home }),
       readAll: () => changeOnce("readAll", { read: unreadIds }),
     };
-    return noticeOptions(current).map(({ id, title, value, kind }) => ({
-      id,
-      title,
-      value: () => value,
-      ...(kind === "switch" ? { cycle: runs[id] } : { run: runs[id] }),
-    }));
+    const notices = noticeOptions(current).map(
+      ({ id, title, value, kind }): OptionLine => ({
+        id,
+        title,
+        value: () => value,
+        ...(kind === "switch" ? { cycle: runs[id] } : { run: runs[id] }),
+      }),
+    );
+    return [copy, ...notices];
   }
 
   function open(next: WindowTab | "settings"): void {
@@ -608,6 +616,7 @@ export function createQuotaWindow(
               press={() => setSelected(option.id)}
               use={() => useLine(option, true)}
               valueWidth={option.cycle ? 3 : 9}
+              width={bodyWidth()}
             />
           ))}
           <Show when={tab() === "limits"}>
@@ -621,7 +630,7 @@ export function createQuotaWindow(
           <Show when={tab() === "usage"}>
             <usage.View width={bodyWidth()} keyTarget={() => windowBox} />
           </Show>
-          <Show when={tab() === "notices"}>
+          <Show when={tab() === "system"}>
             <NoticesView
               theme={theme()}
               board={board()}
@@ -629,8 +638,6 @@ export function createQuotaWindow(
                 changeOnce(`notice ${id}`, read ? { unread: [id] } : { read: [id] })
               }
             />
-          </Show>
-          <Show when={tab() === "status"}>
             <StatusView theme={theme()} report={status()} />
           </Show>
           <Show when={settingsTab()}>
@@ -641,6 +648,7 @@ export function createQuotaWindow(
                 sessionID={props.sessionID}
                 box={() => windowBox}
                 scroll={() => scroll}
+                width={bodyWidth()}
               />
             )}
           </Show>

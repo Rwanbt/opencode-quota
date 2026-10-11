@@ -75,7 +75,7 @@ Make the smallest safe fix for the root cause. Match current OpenCode behavior i
 
 ## Before-and-after screenshots (required)
 
-Every PR that changes what users see must include before-and-after screenshots taken with the same config, model, theme, and window size, with credentials, account identifiers, and private paths hidden. Report each surface the change can reach: TUI sidebar (open and collapsed), the status line below the message input, toasts, the `/quota` window tabs (Limits, Usage, Notices, Status, Settings), Web and Desktop text commands, and CLI `show`/`status`. For export, telemetry, or agent tools, paste the output before and after. Say which ones you didn't test. Tests don't replace screenshots, and screenshots don't replace tests. No visible change? Write `Not applicable` and why.
+Every PR that changes what users see must include before-and-after screenshots taken with the same config, model, theme, and window size, with credentials, account identifiers, and private paths hidden. Report each surface the change can reach: TUI sidebar (open and collapsed), the status line below the message input, toasts, the `/quota` window tabs (Usage, Limits, System, Settings), Web and Desktop text commands, and CLI `show`/`status`. For export, telemetry, or agent tools, paste the output before and after. Say which ones you didn't test. Tests don't replace screenshots, and screenshots don't replace tests. No visible change? Write `Not applicable` and why.
 
 ## PR checklist
 

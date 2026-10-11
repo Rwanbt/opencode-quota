@@ -587,13 +587,12 @@ describe("v6 surfaces on the quota snapshot", () => {
         "OpenCode Quota",
         "Usage",
         "Limits",
-        "Notices",
-        "Status",
+        "System",
         "│",
         "Sidebar",
         "Words",
-        // The tabs after Words don't fit in the 120 columns the window starts with.
-        "›",
+        // Every tab fits in the 120 columns the window starts with.
+        "Providers",
         "esc",
         "Copilot  pro",
         expect.stringMatching(/^ {2}Plan +━+─+ {2}81% left$/u),
@@ -606,12 +605,12 @@ describe("v6 surfaces on the quota snapshot", () => {
     expect(quotaWindow()).not.toContain("Close");
 
     // /quota_usage opens it on Usage (its ranges; the window starts without the keyboard, so no
-    // key hint), /quota_status on Status, /quota_settings on the first Settings tab.
+    // key hint), /quota_status on System, /quota_settings on the first Settings tab.
     await tui.command("usage").run();
     const usageKeys = "Session + subagents";
     await vi.waitFor(() => expect(quotaWindow()).toContain(usageKeys));
     await tui.command("status").run();
-    expect(quotaWindow()).toContainEqual(expect.stringContaining("Copy this report"));
+    expect(quotaWindow()).toContainEqual(expect.stringContaining("Copy the status report"));
     await tui.command("settings").run();
     expect(quotaWindow()).toContainEqual(
       expect.stringContaining("Show the Quota panel in the session sidebar"),
@@ -685,7 +684,7 @@ describe("v6 surfaces on the quota snapshot", () => {
     clickable(windowTree(), "Sidebar").props.onMouseUp();
     expect(words(sidebar())).toContain("Session 1.20K in · 45 out");
     const sessionTokens = settingLine(windowTree(), "sidebar.sessionTokens");
-    expect(words(sessionTokens)).toEqual(["Session tokens line", "‹", "shown", "›", ""]);
+    expect(words(sessionTokens)).toEqual(["Session tokens line", "‹", "shown", "›"]);
     clickable(sessionTokens, "›").props.onMouseUp();
     expect(words(sidebar())).not.toContain("Session 1.20K in · 45 out");
     expect(tui.stored.get("settings").settings.sidebar).toBeUndefined();
@@ -828,8 +827,9 @@ describe("v6 surfaces on the quota snapshot", () => {
       settings("https://other.example/accounting");
       clickable(windowTree(), "Save").props.onMouseUp();
 
+      // Too long to follow the value in 120 columns: the note goes on a line under it.
       await vi.waitFor(() =>
-        expect(words(team())).toContain(
+        expect(words(windowTree())).toContain(
           "changed since you reviewed it; look again · https://other.example/accounting",
         ),
       );
