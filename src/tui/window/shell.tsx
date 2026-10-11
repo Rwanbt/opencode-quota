@@ -202,7 +202,7 @@ export function createQuotaWindow(
   /** The notice requests run one after another, so changes reach the server in click order. */
   let noticeQueue: Promise<void> = Promise.resolve();
   /**
-   * What the clicks not on the board yet change: a notice id, or a Notices line. Another click
+   * What the clicks not on the board yet change: a notice id, or a notice line. Another click
    * on the same thing is ignored until the newest answer shows, since it would send the same.
    */
   const changing = new Set<string>();

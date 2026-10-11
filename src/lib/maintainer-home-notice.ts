@@ -151,7 +151,7 @@ export async function homeNoticeLine(params: {
   if (unread === 0) return "";
   if (params.frequency === "daily" && !(await claimDailyHomeNotice(nowMs))) return "";
   const count = unread === 1 ? "1 unread maintainer notice" : `${unread} unread maintainer notices`;
-  return `Notice: ${count}, see /quota_status → Notices.`;
+  return `Notice: ${count}, see /quota_status.`;
 }
 
 export function __resetMaintainerHomeNoticeForTests(): void {

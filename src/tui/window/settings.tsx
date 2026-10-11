@@ -292,14 +292,14 @@ export function OptionRow(props: {
         </Show>
       </box>
       <Show when={note() && !noteInline()}>
-        <box paddingLeft={VALUE_COLUMN}>
+        <box paddingLeft={VALUE_COLUMN} width={props.width}>
           <Cell fg={noteColor()} shrink wrap>
             {note()}
           </Cell>
         </box>
       </Show>
       <Show when={line.detail}>
-        <box paddingLeft={VALUE_COLUMN}>
+        <box paddingLeft={VALUE_COLUMN} width={props.width}>
           <Cell fg={props.theme.text.muted} shrink wrap>
             {line.detail}
           </Cell>

@@ -35,7 +35,7 @@ import {
   markNotices,
 } from "../src/lib/maintainer-home-notice.js";
 
-const NOTICE = "Notice: 1 unread maintainer notice, see /quota_status → Notices.";
+const NOTICE = "Notice: 1 unread maintainer notice, see /quota_status.";
 const MINUTE = 60_000;
 const readStateFile = () =>
   join(state.root, "state", "opencode-quota", "maintainer-announcements-read.json");

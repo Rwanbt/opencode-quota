@@ -744,7 +744,7 @@ describe("server quota RPC", () => {
     const expected =
       active === 0
         ? ""
-        : `Notice: ${active} unread maintainer ${active === 1 ? "notice" : "notices"}, see /quota_status → Notices.`;
+        : `Notice: ${active} unread maintainer ${active === 1 ? "notice" : "notices"}, see /quota_status.`;
     useSettings({ announcements: { enabled: true, home: true, homeFrequency: "always" } });
     await expect((await setupServer()).call("notices", {})).resolves.toEqual({
       homeLine: expected,
