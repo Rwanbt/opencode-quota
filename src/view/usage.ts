@@ -4,10 +4,12 @@
  * the TUI Usage tab maps each span to one styled span and picks colors from its theme, and Web
  * `/quota` and the CLI print the same words as plain text (`usageText`).
  *
- * Sections, top to bottom: the total, the providers, a daily chart (beside the total and the
- * providers from 110 columns on), totals by token kind, cost (or tokens) by type, and the
- * breakdown by model or by day. `modelDetailView` lays out one model of the breakdown. Every
- * line fits in `width` terminal columns.
+ * Sections, top to bottom: the total, the providers as a small table, a daily chart (beside
+ * the total and the providers when it gets 32 columns there, as tall as they are), totals by
+ * token kind, cost (or tokens) by type, and the breakdown by model or by day. In the TUI the
+ * chart fills its width, the "by type" bar is a thin line across the view and each breakdown row
+ * has a bar of its amount. `modelDetailView` lays out one model of the breakdown. Every line
+ * fits in `width` terminal columns.
  */
 import type { UsageByType, UsageModelRow, UsageReport, UsageRow } from "../core/usage.js";
 import { usageRangeLabel } from "../core/usage-ranges.js";
@@ -55,17 +57,27 @@ export type UsageRole =
 type UsageSpan = { text: string; role: UsageRole };
 export type UsageLine = UsageSpan[];
 
-/** From this width the chart sits beside the total and the providers, like T3's page. */
-const WIDE_MIN_WIDTH = 110;
+/**
+ * The chart sits beside the total and the providers, like T3's page, when it gets this much;
+ * below the roomy width the unpriced note is cut to the table's width to make room.
+ */
+const BESIDE_CHART_MIN_WIDTH = 32;
+const BESIDE_CHART_ROOMY_WIDTH = 60;
 /** The total and the provider list never get wider than this, so their numbers stay close. */
 const LIST_MAX_WIDTH = 48;
 const COLUMN_GAP = 3;
+/** Between the total and providers on the left and the chart on the right. */
+const SIDE_GAP = 4;
 /** Narrower views are laid out at this width and then cut. */
 const LAYOUT_MIN_WIDTH = 32;
 const CHART_ROWS = 6;
+/** Beside the providers, the chart grows with them up to this many rows. */
+const CHART_ROWS_MAX = 12;
 const DETAIL_CHART_ROWS = 5;
 /** A day's column is at most this wide, so a short range does not draw a few huge blocks. */
-const CHART_COLUMN_MAX = 6;
+const CHART_COLUMN_MAX = 16;
+/** From this many cells, a chart column leaves its last cell empty, so the days stand apart. */
+const CHART_GAP_FROM = 3;
 /** One to eight eighths of a chart cell. */
 const BLOCKS = "▁▂▃▄▅▆▇█";
 /** The "by type" bar and its legend stay short, like T3's, on a wide view. */
@@ -74,6 +86,14 @@ const BY_TYPE_MAX_WIDTH = 64;
 const DOT = "● ";
 const TEXT_MAX_WIDTH = 64;
 const TEXT_BREAKDOWN_ROWS = 10;
+
+/** The TUI's "by type" bar and its legend marks: a thin line, its parts told apart by color. */
+const THIN_BAR = "━";
+const THIN_MARK = "━━";
+/** A breakdown row's bar needs this much room, else the row has none. */
+const ROW_BAR_MIN_WIDTH = 8;
+/** The breakdown's names get at most this wide when the rows have bars. */
+const ROW_NAME_MAX_WIDTH = 40;
 
 /** Shade marks, one per part, so the "by type" bar also reads without colors. */
 const PART_MARKS: Record<UsagePart, string> = {
@@ -101,8 +121,11 @@ type View = {
   thisYear: number;
 };
 
-/** What the output includes: the TUI view has the chart and every row; text does not. */
-type Contents = { chart: boolean; breakdownRows: number };
+/**
+ * What the output includes: the TUI view has the chart, every row and colors (`colored`: thin
+ * bars told apart by color, bars in the breakdown); text has none of them.
+ */
+type Contents = { chart: boolean; breakdownRows: number; colored: boolean };
 
 function span(text: string, role: UsageRole): UsageSpan {
   return { text, role };
@@ -196,28 +219,77 @@ function unpricedLines(view: View, width: number): UsageLine[] {
   return [line];
 }
 
-/** Two lines per provider: name, sessions and amount; then its share and the other amount. */
-function providerLines(view: View, width: number): UsageLine[] {
-  return inModeOrder(view.report.providers, view.mode).flatMap((row) => {
-    const amount = view.mode === "cost" ? costText(row) : formatTokens(row.tokens);
-    const name = getQuotaProviderDisplayLabel(row.providerID);
-    const sessions = `  ${plural(row.sessions, "session")}`;
-    const nameRoom = width - columnsOf(DOT) - columnsOf(amount) - 1;
-    const head = [
-      span(DOT, providerRole(view.report, row.providerID)),
-      span(truncateColumns(name, nameRoom), "text"),
-      ...(columnsOf(name) + columnsOf(sessions) <= nameRoom ? [span(sessions, "muted")] : []),
-    ];
-    const padding = " ".repeat(Math.max(1, width - lineWidth(head) - columnsOf(amount)));
-    const detail =
-      view.mode === "cost"
-        ? `${formatShare(row.costShare)} of cost · ${formatTokens(row.tokens)} tokens`
-        : `${formatShare(row.tokenShare)} of tokens · ${costText(row)}`;
-    return [
-      [...head, span(padding, "muted"), span(amount, amount === "no price" ? "muted" : "value")],
-      [span(`  ${detail}`, "muted")],
-    ];
+type Metric = "cost" | "share" | "tokens";
+
+const METRIC_HEADERS: Record<Metric, string> = { cost: "Cost", share: "Share", tokens: "Tokens" };
+
+/** A table's number columns: the mode's amount, its share, then the other amount. */
+function metricsOf(mode: UsageMode): Metric[] {
+  return mode === "cost" ? ["cost", "share", "tokens"] : ["tokens", "share", "cost"];
+}
+
+function metricText(view: View, metric: Metric, row: UsageRow): string {
+  if (metric === "cost") return costText(row);
+  if (metric === "tokens") return formatTokens(row.tokens);
+  return formatShare(view.mode === "cost" ? row.costShare : row.tokenShare);
+}
+
+function metricRole(view: View, metric: Metric, text: string): UsageRole {
+  if (metric === "share" || text === "no price") return "muted";
+  return metric === view.mode ? "value" : "text";
+}
+
+/** Each metric column's width: its header or its widest number. */
+function metricWidths(view: View, metrics: Metric[], rows: UsageRow[]): number[] {
+  return metrics.map((metric) =>
+    Math.max(
+      columnsOf(METRIC_HEADERS[metric]),
+      ...rows.map((row) => columnsOf(metricText(view, metric, row))),
+    ),
+  );
+}
+
+/** The metric cells of one table line: right-aligned, two spaces before each. */
+function metricSpans(
+  view: View,
+  metrics: Metric[],
+  widths: number[],
+  row: UsageRow | undefined,
+): UsageLine {
+  return metrics.map((metric, index) => {
+    if (!row) return span(`  ${padStartColumns(METRIC_HEADERS[metric], widths[index])}`, "muted");
+    const text = metricText(view, metric, row);
+    return span(`  ${padStartColumns(text, widths[index])}`, metricRole(view, metric, text));
   });
+}
+
+/**
+ * The providers as a table under a header: name, the mode's amount, its share and the other
+ * amount. A narrow list drops the other amount, then the share, before names get short.
+ */
+function providerLines(view: View, width: number): UsageLine[] {
+  const rows = inModeOrder(view.report.providers, view.mode);
+  const names = rows.map((row) => getQuotaProviderDisplayLabel(row.providerID));
+  const nameWidest = Math.max(columnsOf("Provider") - columnsOf(DOT), ...names.map(columnsOf));
+  let metrics = metricsOf(view.mode);
+  let widths = metricWidths(view, metrics, rows);
+  const room = () => width - columnsOf(DOT) - widths.reduce((sum, item) => sum + item + 2, 0);
+  while (metrics.length > 1 && room() < Math.min(nameWidest, 8)) {
+    metrics = metrics.slice(0, -1);
+    widths = widths.slice(0, -1);
+  }
+  const nameWidth = Math.max(1, Math.min(nameWidest, room()));
+  return [
+    [
+      span(padEndColumns("Provider", columnsOf(DOT) + nameWidth), "muted"),
+      ...metricSpans(view, metrics, widths, undefined),
+    ],
+    ...rows.map((row, index) => [
+      span(DOT, providerRole(view.report, row.providerID)),
+      span(padEndColumns(truncateColumns(names[index], nameWidth), nameWidth), "text"),
+      ...metricSpans(view, metrics, widths, row),
+    ]),
+  ];
 }
 
 /** "Sep 11 … Sep 26 … Oct 10" under the chart: first, middle (when it fits) and last day. */
@@ -279,7 +351,8 @@ function chartDays(report: UsageReport, mode: UsageMode, model?: UsageModelRow):
 /**
  * The daily chart: a title, `rows` rows of block characters (one column per day, or per few
  * days when the days do not fit) with the top value on the left, a baseline with 0, and a date
- * axis. Nothing when the range has fewer than two days or nothing to draw.
+ * axis. Columns of 3 cells or more keep their last cell empty, so the days stand apart.
+ * Nothing when the range has fewer than two days or nothing to draw.
  */
 function chartLines(
   days: ChartDay[],
@@ -305,6 +378,7 @@ function chartLines(
   const chartWidth = Math.min(plotWidth, columns.length * CHART_COLUMN_MAX);
   // Column `index` covers [columnStart(index), columnStart(index + 1)): widths differ by one at most.
   const columnStart = (index: number) => Math.floor((index * chartWidth) / columns.length);
+  const gap = Math.floor(chartWidth / columns.length) >= CHART_GAP_FROM;
   // Each column's height in eighths of a row; a day above 0 always shows.
   const eighths = columns.map((column) =>
     column.amount <= 0 ? 0 : Math.max(1, Math.round((column.amount / max) * rows * 8)),
@@ -318,7 +392,8 @@ function chartLines(
     const cells = columns.map((_, index) => {
       const fill = Math.min(8, Math.max(0, eighths[index] - below));
       const cell = fill === 0 ? " " : BLOCKS[fill - 1];
-      return cell.repeat(columnStart(index + 1) - columnStart(index));
+      const width = columnStart(index + 1) - columnStart(index);
+      return gap ? `${cell.repeat(width - 1)} ` : cell.repeat(width);
     });
     const label = row === 0 ? formatAmount(max) : "";
     lines.push([
@@ -395,27 +470,42 @@ function splitWidth(amounts: number[], width: number): number[] {
   return cells;
 }
 
-/** One stacked bar (at most 64 columns) and its legend: cost by type, or tokens by type. */
-function byTypeLines(kind: UsageMode, amounts: UsageByType, width: number): UsageLine[] {
-  const barWidth = Math.min(width, BY_TYPE_MAX_WIDTH);
+/**
+ * One stacked bar and its legend: cost by type, or tokens by type. Text gets a bar of shade
+ * marks of at most 64 columns; `colored` (the TUI) a thin line as wide as `width`, a space
+ * between its parts.
+ */
+function byTypeLines(
+  kind: UsageMode,
+  amounts: UsageByType,
+  width: number,
+  colored: boolean,
+): UsageLine[] {
+  const barWidth = colored ? width : Math.min(width, BY_TYPE_MAX_WIDTH);
   const parts = (["input", "cacheRead", "cacheWrite", "output"] as const).map((part) => ({
     part,
     amount: amounts[part],
   }));
   if (parts.every((part) => part.amount <= 0)) return [];
 
+  const shown = parts.filter((part) => part.amount > 0).length;
+  const gaps = colored ? shown - 1 : 0;
   const cells = splitWidth(
     parts.map((part) => part.amount),
-    barWidth,
+    barWidth - gaps,
   );
-  const bar = parts
-    .map((part, index) => span(PART_MARKS[part.part].repeat(cells[index]), `part:${part.part}`))
-    .filter((part) => part.text.length > 0);
+  const bar: UsageLine = [];
+  parts.forEach((part, index) => {
+    if (cells[index] === 0) return;
+    if (colored && bar.length > 0) bar.push(span(" ", "muted"));
+    const mark = colored ? THIN_BAR : PART_MARKS[part.part];
+    bar.push(span(mark.repeat(cells[index]), `part:${part.part}`));
+  });
   const legend: UsageLine[] = [];
   for (const part of parts) {
     const amount = kind === "cost" ? formatUsd(part.amount) : formatTokens(part.amount);
     const item = [
-      span(PART_MARKS[part.part], `part:${part.part}`),
+      span(colored ? THIN_MARK : PART_MARKS[part.part], `part:${part.part}`),
       span(` ${PART_LABELS[part.part]} `, "muted"),
       span(amount, "value"),
     ];
@@ -471,46 +561,53 @@ export function breakdownModels(report: UsageReport, mode: UsageMode): UsageMode
   );
 }
 
-/** The breakdown table: #, Model or Day, then the mode's amount, Share and the other amount. */
-function breakdownLines(view: View, width: number, maxRows: number): UsageLine[] {
+/**
+ * The breakdown table: #, Model or Day, then the mode's amount, Share and the other amount.
+ * `colored` (the TUI) puts a bar of each row's amount between the names and the numbers, the
+ * biggest row's bar full, when there is room for it.
+ */
+function breakdownLines(view: View, width: number, maxRows: number, colored: boolean): UsageLine[] {
   const entries = breakdownEntries(view);
   const shown = entries.slice(0, maxRows);
-  const metrics =
-    view.mode === "cost"
-      ? (["cost", "share", "tokens"] as const)
-      : (["tokens", "share", "cost"] as const);
-  const headers = { cost: "Cost", share: "Share", tokens: "Tokens" };
-  const cellText = (metric: (typeof metrics)[number], row: UsageRow) => {
-    if (metric === "cost") return costText(row);
-    if (metric === "tokens") return formatTokens(row.tokens);
-    return formatShare(view.mode === "cost" ? row.costShare : row.tokenShare);
-  };
-  const cellRole = (metric: (typeof metrics)[number], text: string): UsageRole => {
-    if (metric === "share" || text === "no price") return "muted";
-    return metric === view.mode ? "value" : "text";
-  };
-  const metricWidths = metrics.map((metric) =>
-    Math.max(
-      columnsOf(headers[metric]),
-      ...shown.map((entry) => columnsOf(cellText(metric, entry.row))),
-    ),
+  const metrics = metricsOf(view.mode);
+  const widths = metricWidths(
+    view,
+    metrics,
+    shown.map((entry) => entry.row),
   );
   const numberWidth = String(shown.length).length;
   const dotWidth = view.breakdown === "model" ? columnsOf(DOT) : 0;
-  const metricsWidth = metricWidths.reduce((sum, metricWidth) => sum + metricWidth + 2, 0);
-  const nameWidth = Math.max(4, width - numberWidth - 2 - dotWidth - metricsWidth);
+  const metricsWidth = widths.reduce((sum, metricWidth) => sum + metricWidth + 2, 0);
+  const fixed = numberWidth + 2 + dotWidth + metricsWidth;
+  const nameWidest = Math.min(
+    ROW_NAME_MAX_WIDTH,
+    Math.max(4, ...shown.map((entry) => columnsOf(entry.name))),
+  );
+  const barRoom = width - fixed - nameWidest - 2;
+  const barWidth = colored && barRoom >= ROW_BAR_MIN_WIDTH ? barRoom : 0;
+  const nameWidth = barWidth > 0 ? nameWidest : Math.max(4, width - fixed);
+  const amountOf = (row: UsageRow) => (view.mode === "cost" ? row.costUsd : row.tokens);
+  const most = Math.max(0, ...shown.map((entry) => amountOf(entry.row)));
+  const barSpans = (entry: BreakdownEntry): UsageLine => {
+    if (barWidth === 0) return [];
+    const amount = amountOf(entry.row);
+    const filled = most > 0 && amount > 0 ? Math.max(1, Math.round((amount / most) * barWidth)) : 0;
+    return [
+      span("  ", "muted"),
+      span(THIN_BAR.repeat(filled), entry.dot ?? "bar"),
+      span(" ".repeat(barWidth - filled), "muted"),
+    ].filter((part) => part.text.length > 0);
+  };
 
   const nameHeader = view.breakdown === "model" ? "Model" : "Day";
   const lines: UsageLine[] = [
     [span("Breakdown", "heading")],
     [
       span(
-        `${padStartColumns("#", numberWidth)}  ${padEndColumns(nameHeader, dotWidth + nameWidth)}`,
+        `${padStartColumns("#", numberWidth)}  ${padEndColumns(nameHeader, dotWidth + nameWidth)}${barWidth > 0 ? " ".repeat(barWidth + 2) : ""}`,
         "muted",
       ),
-      ...metrics.map((metric, index) =>
-        span(`  ${padStartColumns(headers[metric], metricWidths[index])}`, "muted"),
-      ),
+      ...metricSpans(view, metrics, widths, undefined),
     ],
   ];
   shown.forEach((entry, position) => {
@@ -518,10 +615,8 @@ function breakdownLines(view: View, width: number, maxRows: number): UsageLine[]
       span(`${padStartColumns(String(position + 1), numberWidth)}  `, "muted"),
       ...(entry.dot ? [span(DOT, entry.dot)] : []),
       span(padEndColumns(truncateColumns(entry.name, nameWidth), nameWidth), "text"),
-      ...metrics.map((metric, index) => {
-        const text = cellText(metric, entry.row);
-        return span(`  ${padStartColumns(text, metricWidths[index])}`, cellRole(metric, text));
-      }),
+      ...barSpans(entry),
+      ...metricSpans(view, metrics, widths, entry.row),
     ]);
   });
   if (entries.length > shown.length) {
@@ -558,35 +653,46 @@ function buildView(
   };
   const layoutWidth = Math.max(LAYOUT_MIN_WIDTH, width);
 
-  let top: UsageLine[];
-  if (contents.chart && layoutWidth >= WIDE_MIN_WIDTH) {
-    const leftWidth = Math.min(LIST_MAX_WIDTH, Math.floor(layoutWidth * 0.4));
-    const left = [
-      ...totalLines(view, leftWidth),
-      ...unpricedLines(view, leftWidth),
-      [],
-      ...providerLines(view, leftWidth),
-    ].map((line) => clip(line, leftWidth));
-    const right = chartLines(
-      chartDays(report, view.mode),
-      view.mode,
-      view.thisYear,
-      layoutWidth - leftWidth - COLUMN_GAP,
-      CHART_ROWS,
+  const listWidth = Math.min(LIST_MAX_WIDTH, layoutWidth);
+  const providers = providerLines(view, listWidth);
+  const total = totalLines(view, listWidth);
+  const listWith = (noteWidth: number) =>
+    [...total, ...unpricedLines(view, noteWidth), [], ...providers].map((line) =>
+      clip(line, listWidth),
     );
-    top = sideBySide(left, right, leftWidth + COLUMN_GAP);
-  } else {
-    const listWidth = Math.min(LIST_MAX_WIDTH, layoutWidth);
-    const chart = contents.chart
-      ? chartLines(chartDays(report, view.mode), view.mode, view.thisYear, layoutWidth, CHART_ROWS)
-      : [];
-    top = [
-      ...totalLines(view, layoutWidth),
-      ...unpricedLines(view, layoutWidth),
-      [],
-      ...providerLines(view, listWidth),
-      ...(chart.length > 0 ? [[], ...chart] : []),
-    ];
+  const list = listWith(listWidth);
+  let top = list;
+  if (contents.chart) {
+    // Beside the list when the chart gets room there; the unpriced note may give up its model
+    // names (cut to the table's width) for that.
+    const tableWidth = Math.max(LAYOUT_MIN_WIDTH, ...[...providers, ...total].map(lineWidth));
+    const besideList = [list, listWith(Math.min(listWidth, tableWidth))].find(
+      (lines, index) =>
+        layoutWidth - Math.max(...lines.map(lineWidth)) - SIDE_GAP >=
+        (index === 0 ? BESIDE_CHART_ROOMY_WIDTH : BESIDE_CHART_MIN_WIDTH),
+    );
+    if (besideList) {
+      const listUsed = Math.max(...besideList.map(lineWidth));
+      // As tall as the list: the chart's title, baseline and dates take 3 lines.
+      const rows = Math.min(CHART_ROWS_MAX, Math.max(CHART_ROWS, besideList.length - 3));
+      const chart = chartLines(
+        chartDays(report, view.mode),
+        view.mode,
+        view.thisYear,
+        layoutWidth - listUsed - SIDE_GAP,
+        rows,
+      );
+      top = sideBySide(besideList, chart, listUsed + SIDE_GAP);
+    } else {
+      const chart = chartLines(
+        chartDays(report, view.mode),
+        view.mode,
+        view.thisYear,
+        layoutWidth,
+        CHART_ROWS,
+      );
+      if (chart.length > 0) top = [...list, [], ...chart];
+    }
   }
   const sections = [
     top,
@@ -595,8 +701,9 @@ function buildView(
       view.mode,
       view.mode === "cost" ? report.totals.costByType : report.totals.tokensByType,
       layoutWidth,
+      contents.colored,
     ),
-    breakdownLines(view, layoutWidth, contents.breakdownRows),
+    breakdownLines(view, layoutWidth, contents.breakdownRows, contents.colored),
   ].filter((lines) => lines.length > 0);
   return sections
     .flatMap((lines, index) => (index === 0 ? lines : [[], ...lines]))
@@ -622,12 +729,18 @@ export function byTypeBarLines(
 ): UsageLine[] {
   const { totals } = report;
   const amounts = options.mode === "cost" ? totals.costByType : totals.tokensByType;
-  return byTypeLines(options.mode, amounts, options.width).map((line) => clip(line, options.width));
+  return byTypeLines(options.mode, amounts, options.width, false).map((line) =>
+    clip(line, options.width),
+  );
 }
 
 /** The usage view for the TUI Usage tab: lines of role-tagged spans, each at most `width`. */
 export function usageView(report: UsageReport, options: UsageViewOptions): UsageLine[] {
-  return buildView(report, options, { chart: true, breakdownRows: Number.POSITIVE_INFINITY });
+  return buildView(report, options, {
+    chart: true,
+    breakdownRows: Number.POSITIVE_INFINITY,
+    colored: true,
+  });
 }
 
 /** Below this width per side, cost by type and tokens by type stack in the model detail. */
@@ -695,8 +808,8 @@ export function modelDetailView(
   const sideWidth = Math.floor((layoutWidth - COLUMN_GAP) / 2);
   const sideBySideFits = sideWidth >= DETAIL_SIDE_MIN_WIDTH;
   const byTypeWidth = sideBySideFits ? sideWidth : layoutWidth;
-  const costByType = byTypeLines("cost", model.costByType, byTypeWidth);
-  const tokensByType = byTypeLines("tokens", model.tokensByType, byTypeWidth);
+  const costByType = byTypeLines("cost", model.costByType, byTypeWidth, true);
+  const tokensByType = byTypeLines("tokens", model.tokensByType, byTypeWidth, true);
   if (sideBySideFits && costByType.length > 0) {
     lines.push([], ...sideBySide(costByType, tokensByType, sideWidth + COLUMN_GAP));
   } else {
@@ -716,7 +829,7 @@ export function usageText(report: UsageReport, options: UsageTextOptions): strin
   const lines = buildView(
     report,
     { mode: options.mode, breakdown: options.breakdown, width },
-    { chart: false, breakdownRows: TEXT_BREAKDOWN_ROWS },
+    { chart: false, breakdownRows: TEXT_BREAKDOWN_ROWS, colored: false },
   );
   const title = truncateColumns(`Usage · ${rangeTitle(report)}`, width);
   const texts = lines.map((line) =>

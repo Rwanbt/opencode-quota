@@ -328,49 +328,69 @@ describe("usageView", () => {
   });
 
   it.each([
-    { width: 109, beside: false },
-    { width: 110, beside: true },
+    { width: 64, beside: false },
+    { width: 80, beside: true },
     { width: 160, beside: true },
-  ])("puts the chart beside the total at $width columns: $beside", ({ width, beside }) => {
+  ])("puts the chart beside the total when it gets 32 columns there ($width: $beside)", ({
+    width,
+    beside,
+  }) => {
     const totalLine = render(t3Report(), { mode: "cost", breakdown: "model", width })[0];
     expect(totalLine.startsWith("$5,415.41  636 sessions · API estimate")).toBe(true);
-    expect(totalLine.includes("Daily cost")).toBe(beside);
+    expect(/Daily cost|Cost per \d+ days/.test(totalLine)).toBe(beside);
   });
 
   it.each([
     {
       mode: "cost" as const,
-      title: "$5,415.41",
-      detail: "  636 sessions · API estimate",
-      provider: "$5,011.00",
-      share: "  92.5% of cost · 12.9B tokens",
+      total: [
+        [
+          { text: "$5,415.41", role: "title" },
+          { text: "  636 sessions · API estimate", role: "muted" },
+        ],
+      ],
+      header: /^Provider +Cost {2}Share {2}Tokens$/,
+      anthropic: /^● Anthropic +\$5,011\.00 {2}92\.5% {3}12\.9B$/,
     },
     {
       mode: "tokens" as const,
-      title: "13.4B tokens",
-      detail: "  636 sessions · $5,415.41 API estimate",
-      provider: "12.9B",
-      share: "  96.3% of tokens · $5,011.00",
+      // Too wide for the list's 48 columns on one line.
+      total: [
+        [{ text: "13.4B tokens", role: "title" }],
+        [{ text: "636 sessions · $5,415.41 API estimate", role: "muted" }],
+      ],
+      header: /^Provider +Tokens {2}Share {7}Cost$/,
+      anthropic: /^● Anthropic +12\.9B {2}96\.3% {2}\$5,011\.00$/,
     },
-  ])("$mode mode: the total, then a dominant provider", (expected) => {
-    const lines = usageView(t3Report(), { mode: expected.mode, breakdown: "model", width: 80 });
-    expect(lines[0]).toEqual([
-      { text: expected.title, role: "title" },
-      { text: expected.detail, role: "muted" },
+  ])("$mode mode: the total, then the providers as a table, the mode's amount first", (expected) => {
+    const lines = usageView(t3Report(), { mode: expected.mode, breakdown: "model", width: 64 });
+    expect(lines.slice(0, expected.total.length)).toEqual(expected.total);
+    const [header, anthropic] = from(lines, "Provider");
+    expect(textOf(header)).toMatch(expected.header);
+    expect(textOf(anthropic)).toMatch(expected.anthropic);
+    expect(textOf(anthropic)).toHaveLength(textOf(header).length);
+    expect(anthropic.map((part) => part.role)).toEqual([
+      "provider:0",
+      "text",
+      "value",
+      "muted",
+      "text",
     ]);
-    const [anthropic, share] = from(lines, "Anthropic");
-    expect(anthropic[0]).toEqual({ text: "● ", role: "provider:0" });
-    expect(anthropic).toContainEqual({ text: "Anthropic", role: "text" });
-    expect(anthropic).toContainEqual({ text: "  248 sessions", role: "muted" });
-    expect(anthropic.at(-1)).toEqual({ text: expected.provider, role: "value" });
-    expect(textOf(anthropic)).toHaveLength(48);
-    expect(share).toEqual([{ text: expected.share, role: "muted" }]);
     // Each provider keeps its place in the report as its color slot.
     expect(from(lines, "OpenCode Zen")[0][0]).toEqual({ text: "● ", role: "provider:3" });
   });
 
+  it("drops the other amount from a narrow provider table before names get short", () => {
+    const header = (width: number) => {
+      const lines = usageView(t3Report(), { mode: "cost", breakdown: "model", width });
+      return textOf(from(lines, "Provider")[0]);
+    };
+    expect(header(64)).toMatch(/^Provider +Cost {2}Share {2}Tokens$/);
+    expect(header(34)).toMatch(/^Provider +Cost {2}Share$/);
+  });
+
   it("draws a daily chart: top value, 0, one column per day, first/middle/last dates", () => {
-    const lines = t3From("Daily cost");
+    const lines = t3From("Daily cost", { width: 64 });
     const rows = lines.slice(1, 7);
     expect(rows.map((row) => row.map((part) => part.role))).toEqual(
       Array.from({ length: 6 }, () => ["muted", "bar"]),
@@ -386,6 +406,30 @@ describe("usageView", () => {
       { text: "─".repeat(rows[5][1].text.length), role: "muted" },
     ]);
     expect(textOf(lines[8]).trim()).toMatch(/^Sep 11 +Sep 26 +Oct 10$/);
+  });
+
+  it("leaves a gap after each day when a day gets 3 cells or more", () => {
+    const report = daysReport([
+      [1, 100],
+      [1, 100],
+      [1, 100],
+      [1, 100],
+    ]);
+    const lines = from(usageView(report, { mode: "cost", breakdown: "model", width: 40 }), "Daily");
+    const top = lines[1][1].text;
+    expect(top).toMatch(/^(█+ )+$/u);
+    expect(top.split(" ").filter(Boolean)).toHaveLength(4);
+  });
+
+  it("puts the chart beside the list as tall as the list, at least 6 rows", () => {
+    const lines = usageView(t3Report(), { mode: "cost", breakdown: "model", width: 110 });
+    const rows = lines.filter((line) => line.some((part) => part.role === "bar"));
+    expect(rows).toHaveLength(6);
+    const tall = { ...t3Report(), providers: [...t3Report().providers, ...t3Report().providers] };
+    const tallLines = usageView(tall, { mode: "cost", breakdown: "model", width: 110 });
+    const tallRows = tallLines.filter((line) => line.some((part) => part.role === "bar"));
+    // 2 + 1 + 1 + 8 list lines, less the chart's title, baseline and dates.
+    expect(tallRows).toHaveLength(9);
   });
 
   it("charts many days a few to a column, with the year on dates outside this year", () => {
@@ -463,10 +507,8 @@ describe("usageView", () => {
         "part:cacheWrite": 1716.2,
         "part:output": 580.29,
       },
-      legend: [
-        "▒ Input $369.53   ░ Cache read $2,749.39",
-        "▓ Cache write $1,716.20   █ Output $580.29",
-      ],
+      legend:
+        "━━ Input $369.53   ━━ Cache read $2,749.39   ━━ Cache write $1,716.20   ━━ Output $580.29",
     },
     {
       mode: "tokens" as const,
@@ -477,9 +519,9 @@ describe("usageView", () => {
         "part:cacheWrite": 142,
         "part:output": 49.97,
       },
-      legend: ["▒ Input 4.00M   ░ Cache read 13.2B   ▓ Cache write 142M", "█ Output 50.0M"],
+      legend: "━━ Input 4.00M   ━━ Cache read 13.2B   ━━ Cache write 142M   ━━ Output 50.0M",
     },
-  ])("$title: one bar of at most 64 columns in proportion, then a legend", ({
+  ])("$title: one thin bar across the view in proportion, a space between parts, then a legend", ({
     mode,
     title,
     parts,
@@ -487,20 +529,27 @@ describe("usageView", () => {
   }) => {
     const lines = t3From(title, { mode, width: 110 });
     const bar = lines[1];
-    expect(textOf(bar)).toHaveLength(64);
+    expect(textOf(bar)).toHaveLength(110);
+    const shown = bar.filter((part) => part.role !== "muted");
+    expect(shown.map((part) => part.role)).toEqual(Object.keys(parts));
+    expect(bar.filter((part) => part.role === "muted").map((part) => part.text)).toEqual([
+      " ",
+      " ",
+      " ",
+    ]);
     const total = Object.values(parts).reduce((sum, amount) => sum + amount, 0);
-    expect(bar.map((part) => part.role)).toEqual(Object.keys(parts));
-    for (const part of bar) {
-      const exact = (parts[part.role as keyof typeof parts] / total) * 64;
+    for (const part of shown) {
+      expect(part.text).toMatch(/^━+$/u);
+      const exact = (parts[part.role as keyof typeof parts] / total) * 107;
       // A part above 0 always shows, even when it would round to nothing: the widest part
       // gives up a cell for each such part.
-      const givenUp = bar.length - 1;
+      const givenUp = shown.length - 1;
       expect(part.text.length).toBeGreaterThanOrEqual(Math.max(1, Math.floor(exact) - givenUp));
       expect(part.text.length).toBeLessThanOrEqual(Math.ceil(exact) + 1);
     }
-    expect(lines.slice(2, 2 + legend.length).map(textOf)).toEqual(legend);
-    expect(lines[2 + legend.length]).toEqual([]);
-    expect(lines[2][0].role).toBe(bar[0].role);
+    expect(textOf(lines[2])).toBe(legend);
+    expect(lines[3]).toEqual([]);
+    expect(lines[2][0]).toEqual({ text: "━━", role: "part:input" });
   });
 
   it.each([
@@ -509,8 +558,8 @@ describe("usageView", () => {
       options: { mode: "cost" as const, breakdown: "model" as const },
       header: /^# {2}Model +Cost {2}Share {2}Tokens$/,
       rows: [
-        /^1 {2}● claude-opus-5-5 +\$4,410\.41 {2}81\.4% {3}12\.5B$/,
-        /^2 {2}● composer-2 +\$353\.05 {3}6\.5% {4}368M$/,
+        /^1 {2}● claude-opus-5-5 {3}━+ {2}\$4,410\.41 {2}81\.4% {3}12\.5B$/u,
+        /^2 {2}● composer-2 {8}━+ +\$353\.05 {3}6\.5% {4}368M$/u,
       ],
     },
     {
@@ -518,17 +567,17 @@ describe("usageView", () => {
       options: { mode: "tokens" as const, breakdown: "model" as const },
       header: /^# {2}Model +Tokens {2}Share {7}Cost$/,
       rows: [
-        /^1 {2}● claude-opus-5-5 +12\.5B {2}93\.3% {2}\$4,410\.41$/,
-        /^2 {2}● composer-2 +368M/,
+        /^1 {2}● claude-opus-5-5 {3}━+ {3}12\.5B {2}93\.3% {2}\$4,410\.41$/u,
+        /^2 {2}● composer-2 {8}━+ +368M/u,
       ],
     },
     {
       name: "cost by day",
       options: { mode: "cost" as const, breakdown: "day" as const },
       header: /^ # {2}Day +Cost {2}Share {2}Tokens$/,
-      rows: [/^ 1 {2}Sat, Oct 10 +\$903\.35 {2}16\.7% {3}2\.48B$/, /^ 2 {2}Fri, Oct 9 /],
+      rows: [/^ 1 {2}Sat, Oct 10 {2}━+ +\$903\.35 {2}16\.7% {3}2\.48B$/u, /^ 2 {2}Fri, Oct 9 /],
     },
-  ])("breakdown, $name: right-aligned numbers, the mode's amount first", ({
+  ])("breakdown, $name: a bar of each amount, right-aligned numbers, the mode's amount first", ({
     options,
     header,
     rows,
@@ -538,6 +587,25 @@ describe("usageView", () => {
     expect(texts[1]).toMatch(header);
     for (const [index, row] of rows.entries()) expect(texts[index + 2]).toMatch(row);
     for (const text of texts.slice(1)) expect(text).toHaveLength(80);
+  });
+
+  it("breakdown bars: the biggest amount's bar is full, the others in proportion", () => {
+    const lines = t3From("Breakdown").slice(2);
+    const bars = lines.map(
+      (line) => line.find((part) => part.text.startsWith("━"))?.text.length ?? 0,
+    );
+    const full = bars[0];
+    expect(full).toBeGreaterThan(20);
+    // composer-2: $353.05 of the top model's $4,410.41.
+    expect(bars[1]).toBe(Math.round((353.05 / 4410.41) * full));
+    // exo-free has no price, so no cost and no bar.
+    expect(bars.at(-1)).toBe(0);
+    const opus = lines[0].find((part) => part.text.startsWith("━"));
+    expect(opus?.role).toBe("provider:0");
+  });
+
+  it("text has no breakdown bars", () => {
+    expect(usageText(t3Report(), { mode: "cost", breakdown: "model" })).not.toContain("━");
   });
 
   it("breakdown by model: provider colors, no price, and the provider for a shared model id", () => {
@@ -553,7 +621,8 @@ describe("usageView", () => {
       usageView(unpricedReport(), { mode: "cost", breakdown: "day", width: 64 }),
       "Breakdown",
     );
-    expect(lines.slice(2).map((line) => textOf(line).replace(/ {2,}/g, " | "))).toEqual([
+    const cells = (line: UsageLine) => textOf(line).replace(/━+/g, "").replace(/ {2,}/g, " | ");
+    expect(lines.slice(2).map(cells)).toEqual([
       "1 | Thu, Oct 8 | no price | 0% | 1.00M",
       "2 | Wed, Oct 7 | $0.00 | 0% | 1.00M",
       "3 | Tue, Oct 6 | $1.50 | 100.0% | 3.00M",
@@ -565,7 +634,7 @@ describe("usageView", () => {
     {
       name: "a fifth unpriced",
       report: unpricedReport(),
-      width: 80,
+      width: 64,
       note: [
         { text: "Unpriced tokens excluded: ", role: "muted" },
         { text: "20.0%", role: "warning" },
@@ -675,7 +744,9 @@ describe("modelDetailView", () => {
     expect(textOf(chart[7]).trim()).toMatch(/^Sep 11 +Sep 26 +Oct 10$/);
     const byType = from(lines, "Cost by type");
     expect(textOf(byType[0])).toMatch(/^Cost by type +Tokens by type$/);
-    expect(textOf(byType[2])).toMatch(/^▒ Input \$0\.52 {3}░ Cache read \$2,436\.00 +▒ Input 146K/);
+    expect(textOf(byType[2])).toMatch(
+      /^━━ Input \$0\.52 {3}━━ Cache read \$2,436\.00 +━━ Input 146K/u,
+    );
   });
 
   it.each([

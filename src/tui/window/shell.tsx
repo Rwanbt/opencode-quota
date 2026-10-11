@@ -2,12 +2,15 @@
 /**
  * The quota window. `/quota_usage`, `/quota_status` and `/quota_settings` (and u and s in the
  * `/quota` quick look) open it above the message box of a session, where it covers the chat
- * with the same size on every tab: Limits, Usage, Notices, Status and the Settings tabs
- * (`settings.tsx`). While it is focused (it is after opening; click it to give it the keyboard
- * again) its keys work: ↑↓ select or scroll, space/enter use a line, ←/→ change it, tab switches
- * tabs, esc closes. Closing gives the keyboard back to whatever had it before. Notices asks the
- * server again every 15 seconds while it shows, so a new notice or a change made in another
- * window appears.
+ * with the same size on every tab: Usage, Limits, Notices, Status and the Settings tabs
+ * (`settings.tsx`). The tab bar is one line, with "esc" at its right end to close the window:
+ * when its tabs don't fit, it drops the "Settings" label, then shows the tabs around the
+ * current one between ‹ and ›. The bottom line lists the
+ * tab's keys; the Settings tabs have Save and Discard above it. While the window is focused (it
+ * is after opening; click it to give it the keyboard again) its keys work: ↑↓ select or scroll,
+ * space/enter use a line, ←/→ change it, tab switches tabs, esc closes. Closing gives the
+ * keyboard back to whatever had it before. Notices asks the server again every 15 seconds while
+ * it shows, so a new notice or a change made in another window appears.
  */
 import type { Plugin } from "@opencode/plugin/tui";
 import type { BoxRenderable, Renderable, RGBA, ScrollBoxRenderable } from "@opentui/core";
@@ -15,6 +18,7 @@ import type { JSX } from "@opentui/solid";
 import { createSignal, onCleanup, onMount, Show } from "solid-js";
 import { sanitizeDisplayText } from "../../lib/display-sanitize.js";
 import { QuotaRpc, type QuotaRpcNoticeListInput } from "../../rpc.js";
+import { columnsOf } from "../../view/columns.js";
 import { type ClientHost, errorToast, quotaCallOptions, rpcErrorMessage } from "../client.js";
 import type { SettingsTab } from "../display.js";
 import type { SurfaceHost } from "../sidebar.js";
@@ -42,31 +46,85 @@ const DEFAULT_WIDTH = 120;
 
 export type WindowTab = "limits" | "usage" | "notices" | "status" | SettingsTab;
 
-/** The view tabs; the Settings tabs (`SETTINGS_TABS`) follow them after a │ in the tab bar. */
-const TABS: ReadonlyArray<{ tab: WindowTab; title: string; note: string }> = [
-  {
-    tab: "limits",
-    title: "Limits",
-    note: "Every limit, with its reset. The │ in a bar is where you'd be if you used it evenly: left of it = you use it faster than it refills.",
-  },
-  {
-    tab: "usage",
-    title: "Usage",
-    note: "Tokens and what they would cost at API prices, from OpenCode's history. c/t cost or tokens · ←/→ range · m/d by model or day · ↑↓ pick a model, enter its details.",
-  },
-  {
-    tab: "notices",
-    title: "Notices",
-    note: "Short notes from the OpenCode Quota maintainer (a provider changed its limits, a new version).",
-  },
-  {
-    tab: "status",
-    title: "Status",
-    note: "What quota found and when it last checked. Copy it into a bug report.",
-  },
+/** The view tabs; the Settings tabs (`SETTINGS_TABS`) follow them under their own label. */
+const TABS: ReadonlyArray<{ tab: WindowTab; title: string }> = [
+  { tab: "usage", title: "Usage" },
+  { tab: "limits", title: "Limits" },
+  { tab: "notices", title: "Notices" },
+  { tab: "status", title: "Status" },
 ];
-/** Every tab in the order tab and shift+tab go through them. */
-const ALL_TABS: readonly WindowTab[] = [...TABS, ...SETTINGS_TABS].map((item) => item.tab);
+/** Every tab in the order the tab bar shows them and tab and shift+tab go through them. */
+const ALL_TABS: ReadonlyArray<{ tab: WindowTab; title: string }> = [...TABS, ...SETTINGS_TABS];
+
+const WINDOW_TITLE = "OpenCode Quota";
+const SETTINGS_LABEL = "Settings";
+/** Between the tab bar's items. */
+const TAB_GAP = 2;
+/** "‹" or "›" and its gap. */
+const ARROW_WIDTH = 1 + TAB_GAP;
+/** The "esc" that closes the window, at the right end of the tab bar, and the gap before it. */
+const CLOSE_WIDTH = "esc".length + TAB_GAP;
+
+/** The tabs the tab bar shows, `first` to `last`, and whether "Settings" labels its group. */
+const HINT_SEPARATOR = " · ";
+
+/** The keyboard hint in `width` columns, its lines broken between " · " items, never inside one. */
+export function hintLines(hint: string, width: number): string {
+  const lines: string[] = [];
+  for (const item of hint.split(HINT_SEPARATOR)) {
+    const last = lines.length - 1;
+    if (last >= 0 && columnsOf(lines[last] + HINT_SEPARATOR + item) <= width) {
+      lines[last] += HINT_SEPARATOR + item;
+    } else {
+      lines.push(item);
+    }
+  }
+  return lines.join("\n");
+}
+
+export type TabStrip = { first: number; last: number; settingsLabel: boolean };
+
+/**
+ * What fits in `room` columns after the window's title: every tab under both labels; every tab
+ * with a │ before the Settings tabs; or the tabs around `active` between ‹ and ›.
+ */
+export function tabStrip(
+  titles: readonly string[],
+  settingsFrom: number,
+  active: number,
+  room: number,
+): TabStrip {
+  const runWidth = (first: number, last: number, label: boolean) => {
+    let width = 0;
+    for (let index = first; index <= last; index += 1) {
+      width += titles[index].length + (index > first ? TAB_GAP : 0);
+    }
+    if (first < settingsFrom && last >= settingsFrom) {
+      width += (label ? SETTINGS_LABEL.length : 1) + TAB_GAP;
+    }
+    return width;
+  };
+  const end = titles.length - 1;
+  if (runWidth(0, end, true) <= room) return { first: 0, last: end, settingsLabel: true };
+  if (runWidth(0, end, false) <= room) return { first: 0, last: end, settingsLabel: false };
+  const fits = (first: number, last: number) =>
+    runWidth(first, last, false) + (first > 0 ? ARROW_WIDTH : 0) + (last < end ? ARROW_WIDTH : 0) <=
+    room;
+  let first = active;
+  let last = active;
+  for (let grew = true; grew; ) {
+    grew = false;
+    if (last < end && fits(first, last + 1)) {
+      last += 1;
+      grew = true;
+    }
+    if (first > 0 && fits(first - 1, last)) {
+      first -= 1;
+      grew = true;
+    }
+  }
+  return { first, last, settingsLabel: false };
+}
 
 /** The theme tokens the window reads, besides the surfaces' ones (OpenCode's `ResolvedTheme`). */
 export type WindowTheme = Theme & {
@@ -291,8 +349,8 @@ export function createQuotaWindow(
   }
 
   function switchTab(delta: number): void {
-    const index = ALL_TABS.indexOf(tab() ?? "limits");
-    showTab(ALL_TABS[(index + delta + ALL_TABS.length) % ALL_TABS.length] as WindowTab);
+    const index = ALL_TABS.findIndex((item) => item.tab === (tab() ?? "usage"));
+    showTab(ALL_TABS[(index + delta + ALL_TABS.length) % ALL_TABS.length].tab);
   }
 
   /** ↑↓ select the next line; past the first or last one (or with none) they scroll. */
@@ -398,26 +456,77 @@ export function createQuotaWindow(
       ],
     }));
 
-    const current = () => TABS.find((item) => item.tab === tab()) ?? TABS[0];
     const settingsTab = () => {
       const shown = tab();
       return isSettingsTab(shown) ? shown : undefined;
     };
+    const viewHint = () => {
+      if (tab() === "usage") return usage.hint();
+      const end = "tab next tab · esc close";
+      if (tab() === "limits") return `┃ where even use would be · ↑↓ scroll · ${end}`;
+      return `↑↓ select · space/enter or click to use · ‹ › (or ←/→) change · ${end}`;
+    };
     const hint = () =>
-      tab() === "usage" && usage.typingDate()
-        ? "Typing a date: enter next date, then apply · tab other date · esc back to the window"
-        : (settings.hint(tab() ?? "", hasKeyboard()) ??
-          (hasKeyboard()
-            ? "↑↓ select or scroll · space/enter or click to use a line · ‹ › (or ←/→) to change · tab next tab · esc close"
-            : "The keyboard is somewhere else (the message box, a dialog). Click this box to use ↑↓ space tab esc here."));
-    const tabTitle = (item: { tab: WindowTab; title: string }) => (
-      <Choice
-        label={item.title}
-        active={item.tab === tab()}
-        theme={theme()}
-        run={settings.click(() => showTab(item.tab))}
-      />
+      (tab() === "usage" && usage.typingDate() ? usage.hint() : undefined) ??
+      settings.hint(tab() ?? "", hasKeyboard()) ??
+      (hasKeyboard()
+        ? viewHint()
+        : "The keyboard is somewhere else (the message box, a dialog). Click this box to use ↑↓ space tab esc here.");
+    /** The drawn tab bodies' width: the scrollbar's column and a gap before it stay free. */
+    const bodyWidth = () => width() - 2;
+    const strip = () =>
+      tabStrip(
+        ALL_TABS.map((item) => item.title),
+        TABS.length,
+        Math.max(
+          0,
+          ALL_TABS.findIndex((item) => item.tab === tab()),
+        ),
+        width() - WINDOW_TITLE.length - TAB_GAP - CLOSE_WIDTH,
+      );
+    const label = (text: string) => (
+      <text fg={theme().text.base} wrapMode="none" selectable={false}>
+        <b>{text}</b>
+      </text>
     );
+    const arrow = (text: string, delta: number) => (
+      <text
+        fg={theme().text.action.primary.selected}
+        wrapMode="none"
+        selectable={false}
+        onMouseUp={settings.click(() => switchTab(delta))}
+      >
+        {text}
+      </text>
+    );
+    /** The tab bar after the title: the shown tabs, with "Settings" or │ before the Settings tabs. */
+    const stripItems = () => {
+      const { first, last, settingsLabel } = strip();
+      const items: JSX.Element[] = [];
+      for (let index = first; index <= last; index += 1) {
+        const item = ALL_TABS[index];
+        if (index === TABS.length && index > first) {
+          items.push(
+            settingsLabel ? (
+              label(SETTINGS_LABEL)
+            ) : (
+              <text fg={theme().text.muted} wrapMode="none" selectable={false}>
+                │
+              </text>
+            ),
+          );
+        }
+        items.push(
+          <Choice
+            label={item.title}
+            active={item.tab === tab()}
+            theme={theme()}
+            run={settings.click(() => showTab(item.tab))}
+          />,
+        );
+      }
+      return items;
+    };
 
     return (
       <box
@@ -463,31 +572,18 @@ export function createQuotaWindow(
           if (measured > 0 && measured !== width()) queueMicrotask(() => setWidth(measured));
         }}
       >
-        <box flexDirection="row" flexWrap="wrap" columnGap={2} flexShrink={0}>
-          <text fg={theme().text.base} wrapMode="none" selectable={false}>
-            <b>Quota</b>
-          </text>
-          {TABS.map(tabTitle)}
-          <text fg={theme().text.muted} wrapMode="none" selectable={false}>
-            │ Settings:
-          </text>
-          {SETTINGS_TABS.map(tabTitle)}
-          <box flexGrow={1} />
+        <box flexDirection="row" flexShrink={0}>
+          <box flexDirection="row" columnGap={TAB_GAP} flexGrow={1}>
+            {label(WINDOW_TITLE)}
+            <Show when={strip().first > 0}>{arrow("‹", -1)}</Show>
+            {stripItems()}
+            <Show when={strip().last < ALL_TABS.length - 1}>{arrow("›", 1)}</Show>
+          </box>
           <text fg={theme().text.muted} selectable={false} onMouseUp={settings.click(close)}>
             esc
           </text>
         </box>
-        <Show
-          when={settingsTab()}
-          fallback={
-            // Padding instead of leading spaces, so a note that wraps stays indented.
-            <box paddingLeft={3} marginTop={1} flexShrink={0}>
-              <text fg={theme().text.muted} wrapMode="word" selectable={false}>
-                {current().note}
-              </text>
-            </box>
-          }
-        >
+        <Show when={settingsTab()}>
           {(shown: () => SettingsTab) => (
             <settings.Header tab={shown()} refocus={() => windowBox?.focus()} />
           )}
@@ -515,10 +611,15 @@ export function createQuotaWindow(
             />
           ))}
           <Show when={tab() === "limits"}>
-            <LimitsView host={host} sessionID={props.sessionID} nowMs={nowMs()} width={width()} />
+            <LimitsView
+              host={host}
+              sessionID={props.sessionID}
+              nowMs={nowMs()}
+              width={bodyWidth()}
+            />
           </Show>
           <Show when={tab() === "usage"}>
-            <usage.View width={width()} keyTarget={() => windowBox} />
+            <usage.View width={bodyWidth()} keyTarget={() => windowBox} />
           </Show>
           <Show when={tab() === "notices"}>
             <NoticesView
@@ -544,25 +645,20 @@ export function createQuotaWindow(
             )}
           </Show>
         </scrollbox>
-        <box flexDirection="row" gap={2} marginTop={1} flexShrink={0}>
-          <settings.Buttons
-            tab={tab() ?? ""}
-            host={host}
-            sessionID={props.sessionID}
-            box={() => windowBox}
-            close={close}
-          />
+        <box flexDirection="column" marginTop={1} flexShrink={0}>
+          <box flexDirection="row" gap={2}>
+            <settings.Buttons
+              tab={tab() ?? ""}
+              host={host}
+              sessionID={props.sessionID}
+              box={() => windowBox}
+              close={close}
+            />
+          </box>
+          <text fg={theme().text.muted} wrapMode="word" selectable={false}>
+            {hintLines(hint(), width())}
+          </text>
         </box>
-        {/* Two lines tall either way, so the box doesn't move when the hint changes. */}
-        <text
-          fg={theme().text.muted}
-          wrapMode="word"
-          minHeight={2}
-          flexShrink={0}
-          selectable={false}
-        >
-          {hint()}
-        </text>
       </box>
     );
   }

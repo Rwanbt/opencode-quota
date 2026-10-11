@@ -220,10 +220,7 @@ describe("quick look: providers", () => {
     const under = " ".repeat(43);
     const zai = lines.findIndex((line) => line.startsWith("    5h"));
     expect(lines[zai]).toMatch(/ {4}0% left · resets in 2h 30m$/u);
-    expect(lines.slice(zai + 1, zai + 3)).toEqual([
-      `${under}using it faster than it`,
-      `${under}refills`,
-    ]);
+    expect(lines[zai + 1]).toBe(`${under}faster than it refills`);
     const copilot = lines.findIndex((line) => line.startsWith("    Premium requests"));
     expect(lines[copilot]).toMatch(/ {3}80% left$/u);
     expect(lines[copilot + 1]).toBe(`${under}resets in 20d 3h 4m`);

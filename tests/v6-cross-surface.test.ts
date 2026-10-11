@@ -628,7 +628,7 @@ describe("v6 surfaces on the quota snapshot", () => {
         "● Copilot (pro) $1.50 33.3% of cost · 500K tokens · 1 session",
         "Plan ████████████████░░░░ 81% left",
         "● MiniMax Token Plan — no usage in OpenCode",
-        "5h ░░░░░░░░░│░░░░░░░░░░ 0% left · resets in 2h 14m · using it faster than it refills",
+        "5h ░░░░░░░░░│░░░░░░░░░░ 0% left · resets in 2h 14m · faster than it refills",
         "Weekly ████████░░░░░░░░░░░░ 40% left",
         "● Custom providers (Team) — no usage in OpenCode",
         "Cost by type",
@@ -645,47 +645,48 @@ describe("v6 surfaces on the quota snapshot", () => {
     tui.pressDialog("u");
     expect(tui.dialog.clear).toHaveBeenCalledOnce();
     const quotaWindow = () => textLines(tui.render("session.composer.top", { sessionID: "ses_1" }));
-    const usageNote = /^Tokens and what they would cost at API prices, from OpenCode's history\./u;
-    await vi.waitFor(() => expect(quotaWindow()).toContainEqual(expect.stringMatching(usageNote)));
+    // The Usage tab's ranges; the window starts without the keyboard, so no key hint.
+    const usageKeys = "Session + subagents";
+    await vi.waitFor(() => expect(quotaWindow()).toContain(usageKeys));
 
     // /quota_status opens the window on Status, /quota_settings on the first Settings tab. A
     // click on Limits shows every row with its bar, percent, reset and pace.
     await tui.command("status").run();
-    expect(quotaWindow()).toContain(
-      "What quota found and when it last checked. Copy it into a bug report.",
-    );
+    expect(quotaWindow()).toContainEqual(expect.stringContaining("Copy this report"));
     await tui.command("settings").run();
     expect(quotaWindow()).toContainEqual(
       expect.stringContaining("Show the Quota panel in the session sidebar"),
     );
     await tui.command("usage").run();
-    expect(quotaWindow()).toContainEqual(expect.stringMatching(usageNote));
+    expect(quotaWindow()).toContain(usageKeys);
     const tabs = findAll(
       tui.render("session.composer.top", { sessionID: "ses_1" }),
       (node) => node.type === "text" && typeof node.props.onMouseUp === "function",
     );
     tabs.find((node) => textLines(node)[0] === "Limits")?.props.onMouseUp();
-    await vi.waitFor(() =>
-      expect(quotaWindow()).toContain(" Custom providers · Team   Provider error 503"),
-    );
+    await vi.waitFor(() => expect(quotaWindow()).toContain("  Provider error 503"));
     expect(quotaWindow()).toEqual(
       expect.arrayContaining([
-        "Limits",
+        "OpenCode Quota",
         "Usage",
+        "Limits",
         "Notices",
         "Status",
-        "│ Settings:",
+        "│",
         "Sidebar",
         "Words",
-        "Providers",
-        " Copilot · pro   checked just now",
-        expect.stringMatching(/^ {3}Plan +█+░+ {2}81% left/u),
+        // The tabs after Words don't fit in the 120 columns the window starts with.
+        "›",
+        "esc",
+        expect.stringMatching(/^Copilot {2}pro +checked just now$/u),
+        expect.stringMatching(/^ {2}Plan +━+─+ {2}81% left$/u),
         expect.stringMatching(
-          /^ {3}5h +░+│░+ {2}0% left +resets in 2h 14m +using it faster than it refills$/u,
+          /^ {2}5h +─+┃─+ {3}0% left {3}resets in 2h 14m {3}faster than it refills$/u,
         ),
-        "Close",
+        expect.stringMatching(/^Custom providers {2}Team +checked just now$/u),
       ]),
     );
+    expect(quotaWindow()).not.toContain("Close");
 
     // The quick look as a toast, and as a message in the session: the TUI runs the server's
     // /quota there, which posts the same short text as on Web and Desktop. In a 120-column
@@ -808,6 +809,13 @@ describe("v6 surfaces on the quota snapshot", () => {
       const tui = await startHosts();
       await tui.command("settings").run();
       const windowTree = () => tui.render("session.composer.top", { sessionID: "ses_1" });
+      // The tab bar shows the tabs around the current one; tab steps on to the others.
+      for (let step = 0; step < 12 && !clickable(windowTree(), tab); step += 1) {
+        tui
+          .layer(10)
+          .commands.find((command) => command.bind === "tab")
+          ?.run();
+      }
       clickable(windowTree(), tab).props.onMouseUp();
       return { tui, windowTree };
     }
@@ -836,7 +844,7 @@ describe("v6 surfaces on the quota snapshot", () => {
       expect(tui.layer(10).enabled?.()).toBe(false);
 
       // Each render makes new nodes, so the window box is "the focusable box".
-      clickable(windowTree(), "Limits").props.onMouseUp();
+      clickable(windowTree(), "Layout").props.onMouseUp();
       expect(tui.layer(10).enabled?.()).toBe(true);
       expect(tui.focused()).toMatchObject({ type: "box", props: { focusable: true } });
       await tui.dispose();
@@ -998,14 +1006,13 @@ describe("v6 surfaces on the quota snapshot", () => {
       expect.arrayContaining([
         "Usage",
         "Last 7 days",
-        "▸ Download new prices",
-        // From 110 columns on, the daily chart sits beside the total.
+        // The daily chart sits beside the total when it gets 32 columns there.
         expect.stringMatching(/^\$\d+\.\d\d 1 session · API estimate Daily cost$/u),
         expect.stringMatching(/^Unpriced tokens excluded: 10\.9% \(mystery-1\) /u),
         "Totals",
         "Cost by type",
         "# Model Cost Share Tokens",
-        expect.stringMatching(/^1 ● claude-sonnet-4-5 \$\d+\.\d\d 100\.0% 4\.10M$/u),
+        expect.stringMatching(/^1 ● claude-sonnet-4-5 ━+ \$\d+\.\d\d 100\.0% 4\.10M$/u),
         "2 ● mystery-1 no price 0% 500K",
       ]),
     );
@@ -1178,7 +1185,12 @@ describe("v6 surfaces on the quota snapshot", () => {
       state: { version: 1, updatedAt: 1 },
     });
 
-    textNode(usageTab(), "▸ Download new prices")?.props.onMouseUp();
+    // Every range fits in the 120 columns the window starts with, "Update prices" doesn't: p.
+    expect(textNode(usageTab(), "Update prices")).toBeUndefined();
+    tui
+      .layer(11)
+      .commands.find((command) => command.bind === "p")
+      ?.run();
 
     await vi.waitFor(() =>
       expect(tui.toast).toHaveBeenCalledWith({

@@ -1,7 +1,9 @@
 /** @jsxImportSource @opentui/solid */
 /**
  * The quota window's Usage tab: tokens and API cost from OpenCode's own history, laid out by
- * `view/usage.ts`, and the model detail popup. Its keys, while the window has the keyboard:
+ * `view/usage.ts`, and the model detail popup. Its top line picks cost or tokens and the range
+ * (every range when they fit, else ‹ the one shown ›) and has "Update prices" on the right when
+ * there is room. Its keys, while the window has the keyboard:
  * c/t cost or tokens, ←/→ the range, m/d breakdown by model or by day, ↑↓ pick a model, enter
  * its details, p download new prices. "Between" asks for two dates in the tab: enter goes to
  * the next date and then applies them, tab switches dates, esc gives the keyboard back to the
@@ -13,14 +15,19 @@
 import {
   type InputRenderable,
   type Renderable,
-  type RGBA,
+  RGBA,
   type ScrollBoxRenderable,
   TextAttributes,
 } from "@opentui/core";
 import { type JSX, useTerminalDimensions } from "@opentui/solid";
 import { createSignal, Show } from "solid-js";
 import type { UsageModelRow, UsageQuery, UsageReport } from "../../core/usage.js";
-import { DEFAULT_USAGE_RANGE, USAGE_RANGES, type UsageRange } from "../../core/usage-ranges.js";
+import {
+  DEFAULT_USAGE_RANGE,
+  USAGE_RANGES,
+  type UsageRange,
+  usageRangeLabel,
+} from "../../core/usage-ranges.js";
 import { parseCalendarDate } from "../../lib/calendar-date.js";
 import { sanitizeDisplayText } from "../../lib/display-sanitize.js";
 import { QuotaRpc } from "../../rpc.js";
@@ -51,6 +58,54 @@ const DIALOG_WIDTH = 88;
 const CLOSE_LABEL_ROOM = " esc".length;
 const KEYS = "Usage";
 const MODEL_ROW_ID = "quota-usage-model-";
+/** Between the choices of the top line, as the tab bar. */
+const CHOICE_GAP = 2;
+const MODES_WIDTH = "Cost".length + CHOICE_GAP + "Tokens".length;
+/** "│" and the gaps around it. */
+const SEPARATOR_WIDTH = 1 + 2 * CHOICE_GAP;
+const RANGES_WIDTH =
+  USAGE_RANGES.reduce((sum, item) => sum + item.label.length, 0) +
+  CHOICE_GAP * (USAGE_RANGES.length - 1);
+/** "‹ Session + subagents ›", the longest label: the stepper fits with any range. */
+const RANGE_LABEL_WIDTH = Math.max(...USAGE_RANGES.map((item) => item.label.length));
+const STEPPER_WIDTH = 2 * (1 + CHOICE_GAP) + RANGE_LABEL_WIDTH;
+const PRICES_LABEL = "Update prices";
+const PRICES_BUSY_LABEL = "Updating prices…";
+/** The gaps around the spacer before the label, and its longer text. */
+const PRICES_WIDTH = 2 * CHOICE_GAP + PRICES_BUSY_LABEL.length;
+
+/** How each "by type" part is shaded, from the muted color (0) to the text color (1). */
+const PART_SHADES: Record<string, number> = {
+  "part:cacheRead": 0,
+  "part:input": 0.45,
+  "part:cacheWrite": 0.75,
+  "part:output": 1,
+};
+
+const KEYS_HINT =
+  "c/t cost/tokens · ←/→ range · m/d model/day · ↑↓ pick a model, enter details · p update prices · tab next tab · esc close";
+const DATE_HINT =
+  "Typing a date: enter next date, then apply · tab other date · esc back to the window";
+
+/** The top line in `width` columns: every range or ‹ one ›, and whether "Update prices" fits. */
+export function usageControls(width: number): { allRanges: boolean; prices: boolean } {
+  const all = MODES_WIDTH + SEPARATOR_WIDTH + RANGES_WIDTH;
+  if (all + PRICES_WIDTH <= width) return { allRanges: true, prices: true };
+  if (all <= width) return { allRanges: true, prices: false };
+  const stepper = MODES_WIDTH + SEPARATOR_WIDTH + STEPPER_WIDTH;
+  return { allRanges: false, prices: stepper + PRICES_WIDTH <= width };
+}
+
+/** `from` moved `share` of the way to `to`. */
+function mix(from: RGBA, to: RGBA, share: number): RGBA {
+  const step = (a: number, b: number) => a + (b - a) * share;
+  return RGBA.fromValues(
+    step(from.r, to.r),
+    step(from.g, to.g),
+    step(from.b, to.b),
+    step(from.a, to.a),
+  );
+}
 
 type DateField = "from" | "to";
 
@@ -67,10 +122,10 @@ function roleColor(theme: UsageTheme, role: UsageRole): RGBA {
     const scale = scales[Number(role.slice("provider:".length)) % Math.max(1, scales.length)];
     return scale?.[200] ?? theme.hue.accent[500] ?? theme.text.base;
   }
+  if (role.startsWith("part:"))
+    return mix(theme.text.muted, theme.text.base, PART_SHADES[role] ?? 1);
   switch (role) {
     case "muted":
-    case "part:input":
-    case "part:cacheRead":
       return theme.text.muted;
     case "warning":
       return theme.text.feedback.warning.base;
@@ -200,6 +255,8 @@ export type UsageTab = {
   typingDate(): boolean;
   /** Asks the server for the report again, for the window's session. */
   show(sessionID: string): void;
+  /** The tab's keys, for the window's bottom line. */
+  hint(): string;
   View(props: { width: number; keyTarget: () => Renderable | undefined }): JSX.Element;
 };
 
@@ -405,11 +462,11 @@ export function createUsageTab(
       })),
     }));
 
-    // The tab is taller than the window, so its scrollbar takes a column.
+    const controls = () => usageControls(props.width);
     const lines = () => {
       const report = readyReport();
       return report
-        ? usageView(report, { mode: mode(), breakdown: breakdown(), width: props.width - 1 })
+        ? usageView(report, { mode: mode(), breakdown: breakdown(), width: props.width })
         : [];
     };
     /** The view's last lines are the model rows (see `breakdownModels`). */
@@ -439,8 +496,8 @@ export function createUsageTab(
     );
 
     return (
-      <box flexDirection="column" flexShrink={0}>
-        <box flexDirection="row" flexWrap="wrap" columnGap={2}>
+      <box flexDirection="column" flexShrink={0} width={props.width}>
+        <box flexDirection="row" columnGap={CHOICE_GAP}>
           <Choice
             label="Cost"
             active={mode() === "cost"}
@@ -456,14 +513,54 @@ export function createUsageTab(
           <text fg={theme().text.muted} selectable={false}>
             │
           </text>
-          {USAGE_RANGES.map((item) => (
-            <Choice
-              label={item.label}
-              active={item.range === range()}
-              theme={theme()}
-              run={() => chooseRange(item.range)}
-            />
-          ))}
+          <Show
+            when={controls().allRanges}
+            fallback={
+              <>
+                <text
+                  fg={theme().text.action.primary.selected}
+                  selectable={false}
+                  onMouseUp={() => stepRange(-1)}
+                >
+                  ‹
+                </text>
+                <Choice
+                  label={usageRangeLabel(range())}
+                  active
+                  theme={theme()}
+                  run={() => stepRange(1)}
+                />
+                <text
+                  fg={theme().text.action.primary.selected}
+                  selectable={false}
+                  onMouseUp={() => stepRange(1)}
+                >
+                  ›
+                </text>
+              </>
+            }
+          >
+            {USAGE_RANGES.map((item) => (
+              <Choice
+                label={item.label}
+                active={item.range === range()}
+                theme={theme()}
+                run={() => chooseRange(item.range)}
+              />
+            ))}
+          </Show>
+          <Show when={controls().prices}>
+            <box flexGrow={1} />
+            <text
+              fg={theme().text.action.primary.selected}
+              wrapMode="none"
+              flexShrink={0}
+              selectable={false}
+              onMouseUp={() => void downloadPrices()}
+            >
+              {downloading() ? PRICES_BUSY_LABEL : PRICES_LABEL}
+            </text>
+          </Show>
         </box>
         <Show when={range() === "between"}>
           <box flexDirection="row" columnGap={1} marginTop={1}>
@@ -475,25 +572,13 @@ export function createUsageTab(
               to
             </text>
             {dateBox("to")}
-            <text fg={theme().text.muted} selectable={false}>
-              {editingDates()
-                ? "  enter next date, then apply · esc back"
-                : "  click a date to change it"}
-            </text>
+            <Show when={!editingDates()}>
+              <text fg={theme().text.muted} wrapMode="none" selectable={false}>
+                {"  click a date to change it"}
+              </text>
+            </Show>
           </box>
         </Show>
-        <box flexDirection="row" marginTop={1}>
-          <text
-            fg={theme().text.action.primary.selected}
-            selectable={false}
-            onMouseUp={() => void downloadPrices()}
-          >
-            {downloading() ? "Downloading new prices…" : "▸ Download new prices"}
-          </text>
-          <text fg={theme().text.muted} selectable={false}>
-            {"  from models.dev, for the API estimate (p)"}
-          </text>
-        </box>
         <box flexDirection="column" marginTop={1}>
           <Show when={result().state === "loading"}>
             <text fg={theme().text.muted}>Loading usage…</text>
@@ -547,6 +632,7 @@ export function createUsageTab(
       setEditingDates(false);
     },
     typingDate: () => dateFocus() !== undefined,
+    hint: () => (dateFocus() !== undefined ? DATE_HINT : KEYS_HINT),
     show(nextSessionID) {
       sessionID = nextSessionID;
       void load();
