@@ -46,10 +46,10 @@ export function paceOf(row: QuotaRow, nowMs: number): Pace | undefined {
   return { evenLeft, kind: "fast", runsOutInMs };
 }
 
-/** "plenty to spare", "on track", "using it faster than it refills", or "runs out in 2h 10m". */
+/** "plenty to spare", "on track", "faster than it refills", or "runs out in 2h 10m". */
 export function paceText(pace: Pace, words: Words): string {
   if (pace.kind === "spare") return "plenty to spare";
   if (pace.kind === "on_track") return "on track";
-  if (pace.runsOutInMs === undefined) return "using it faster than it refills";
+  if (pace.runsOutInMs === undefined) return "faster than it refills";
   return `runs out in ${formatDuration(pace.runsOutInMs, words.reset, words.resetDecimals)}`;
 }

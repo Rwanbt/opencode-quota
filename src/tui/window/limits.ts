@@ -1,15 +1,21 @@
 /**
  * The lines of the quota window's Limits tab: every provider and row of the snapshot, in the
- * sidebar's order and under your row names. A row with a percent shows a wide bar with the
- * even-use marker (│), its percent, its reset and its pace (`core/pace.ts`). A window too
- * narrow for all of that on one line (an 80-column terminal) shows the reset and the pace on a
- * line under the bar, and the pace on one more line when the two don't fit together. Pure.
+ * sidebar's order and under your row names. Pure.
+ *
+ * All rows share one grid: label │ bar │ percent │ reset │ pace, each column as wide as its
+ * widest entry, the percent right-aligned. The bar is thin (━ filled, ─ used) with the even-use
+ * marker ┃ (`core/pace.ts`) and takes the room the other columns leave, so the grid always
+ * spans the window. A provider's line has its name and plan on the left and when it was checked
+ * at the grid's right edge; an error gets its own line under it.
+ *
+ * A narrower window first shortens "resets in 2h 30m" to "2h", then the labels, and then puts
+ * the reset and the pace on a line under the bar (on two lines when they don't fit together).
  */
 import { describeError } from "../../core/errors.js";
 import { paceOf, paceText } from "../../core/pace.js";
 import type { QuotaSnapshot, Words } from "../../core/types.js";
+import { columnsOf, padEndColumns, padStartColumns, sliceColumns } from "../../view/columns.js";
 import {
-  type BarShape,
   barParts,
   DEFAULT_WORDS,
   evenUseCell,
@@ -22,46 +28,64 @@ import {
 import { type Group, type RowSettings, type VisibleRow, visibleGroups } from "../../view/select.js";
 import type { Line, Segment } from "../../view/text.js";
 
-const INDENT = "   ";
-const LABEL_WIDTH = 16;
-const PERCENT_WIDTH = 15;
-const RESET_WIDTH = 22;
-/** Columns left after the reset for the pace words; the bar gets shorter to keep them. */
-const PACE_WIDTH = 31;
-const MIN_BAR_WIDTH = 8;
-const MAX_BAR_WIDTH = 30;
-/** Where the bar starts; the narrow layout's reset and pace line starts there too. */
-const BAR_COLUMN = INDENT.length + LABEL_WIDTH + 1;
-/** What one line holds besides the bar: label, percent, reset and pace. */
-const WIDE_FIXED = BAR_COLUMN + 2 + PERCENT_WIDTH + RESET_WIDTH + PACE_WIDTH;
-/** What the narrow layout's bar line holds besides the bar: label and percent. */
-const NARROW_FIXED = BAR_COLUMN + 2 + PERCENT_WIDTH;
+const INDENT = "  ";
+/** Between the label, the bar and the percent. */
+const GAP = "  ";
+/** Before the reset and before the pace. */
+const WIDE_GAP = "   ";
+const LABEL_MAX = 24;
+/** The labels are cut to this before the reset and the pace move under the bar. */
+const LABEL_NARROW = 12;
+const BAR_MAX = 80;
+/** The bar each step down to a narrower grid needs; below the last, rows take two lines. */
+const BAR_ROOMY = 20;
+const BAR_SHORT = 14;
+const BAR_MIN = 8;
 
-/** The bar's width, and whether the reset and the pace go under the bar. */
-type RowLayout = { barWidth: number; narrow: boolean; width: number };
+/** One row's texts, before they are fitted to the grid. */
+type RowTexts = {
+  item: VisibleRow;
+  percent?: number;
+  percentWords: string;
+  /** The reset in the words' style, and in the short style ("2h", "4d 12h"). */
+  reset: string;
+  shortReset: string;
+  pace?: Segment;
+  evenLeft?: number;
+};
+
+/** The grid's column widths; `narrow` puts the reset and the pace under the bar. */
+type Grid = {
+  label: number;
+  bar: number;
+  percent: number;
+  reset: number;
+  pace: number;
+  longReset: boolean;
+  narrow: boolean;
+  /** Where the bar starts; the narrow layout's reset and pace line starts there too. */
+  barColumn: number;
+  /** The grid's whole width: the provider line's right edge. */
+  width: number;
+};
 
 export type LimitsInput = {
   snapshot: QuotaSnapshot;
-  /** The display settings: row names, the sidebar's order and the bar shape. */
-  display: RowSettings & { layout: { bar: BarShape } };
+  /** The display settings: row names and the sidebar's order. */
+  display: RowSettings;
   nowMs: number;
   /** Columns inside the window. */
   width: number;
 };
 
-/** A bar with the even-use marker │ in place of one of its cells; filled, empty and │ each in their color. */
-function markedBar(
-  shape: Exclude<BarShape, "none">,
-  percent: number,
-  width: number,
-  evenLeft: number | undefined,
-): Segment[] {
-  const [filled, empty] = barParts(shape, percent, width);
+/** A thin bar with the even-use marker ┃ in place of one of its cells. */
+function markedBar(percent: number, width: number, evenLeft: number | undefined): Segment[] {
+  const [filled, empty] = barParts("line", percent, width);
   const cells: Segment[] = [
     ...[...filled].map((text): Segment => ({ text, role: "bar", percent })),
     ...[...empty].map((text): Segment => ({ text, role: "empty", percent })),
   ];
-  if (evenLeft !== undefined) cells[evenUseCell(evenLeft, width)] = { text: "│", role: "label" };
+  if (evenLeft !== undefined) cells[evenUseCell(evenLeft, width)] = { text: "┃", role: "label" };
   const segments: Segment[] = [];
   for (const cell of cells) {
     const last = segments[segments.length - 1];
@@ -71,75 +95,175 @@ function markedBar(
   return segments;
 }
 
-/** What the provider line says after the name: the error, "checking…", or when it was checked. */
-function providerState(group: Group, snapshot: QuotaSnapshot, nowMs: number): Segment {
-  if (group.error) return { text: describeError(group.error, group.name, nowMs), role: "error" };
+/** When the provider was checked, or "checking…"; the error is a line of its own. */
+function checkedText(group: Group, snapshot: QuotaSnapshot, nowMs: number): string {
   const provider = snapshot.providers.find((item) => item.providerId === group.providerId);
-  if (provider?.refreshing) return { text: "checking…", role: "value" };
+  if (provider?.refreshing) return "checking…";
   const checkedAtMs = provider?.checkedAtMs ?? provider?.okAtMs;
-  if (checkedAtMs === undefined) return { text: "not checked yet", role: "value" };
+  if (checkedAtMs === undefined) return "not checked yet";
   const minutes = Math.floor((nowMs - checkedAtMs) / 60_000);
-  if (minutes < 1) return { text: "checked just now", role: "value" };
-  return { text: `checked ${formatDuration(minutes * 60_000, "short", 0)} ago`, role: "value" };
+  if (minutes < 1) return "checked just now";
+  return `checked ${formatDuration(minutes * 60_000, "short", 0)} ago`;
 }
 
-function rowLines(
-  item: VisibleRow,
-  words: Words,
-  shape: Exclude<BarShape, "none">,
-  layout: RowLayout,
-  nowMs: number,
-): Line[] {
-  const { row } = item;
-  const percent = row.percentRemaining;
+function rowTexts(item: VisibleRow, words: Words, nowMs: number): RowTexts {
+  const percent = item.row.percentRemaining;
+  if (percent === undefined) {
+    return { item, percentWords: rowValueText(item.row), reset: "", shortReset: "" };
+  }
+  const pace = paceOf(item.row, nowMs);
+  return {
+    item,
+    percent,
+    percentWords: percentText(words, percent, true),
+    reset: resetText(item.row, nowMs, words),
+    shortReset: resetText(item.row, nowMs, {
+      ...words,
+      reset: words.reset === "decimal" ? "decimal" : "short",
+    }),
+    ...(pace
+      ? {
+          pace: { text: paceText(pace, words), role: pace.kind === "fast" ? "warning" : "value" },
+          evenLeft: pace.evenLeft,
+        }
+      : {}),
+  };
+}
+
+const widest = (texts: string[]) => Math.max(0, ...texts.map(columnsOf));
+function resetWords(row: RowTexts, long: boolean): string {
+  if (!row.reset) return "";
+  return long ? `resets in ${row.reset}` : row.shortReset;
+}
+
+/** The widest grid that fits `width`, giving way in the order the file comment describes. */
+function gridFor(rows: RowTexts[], width: number): Grid {
+  const bars = rows.filter((row) => row.percent !== undefined);
+  const labelWidest = Math.min(LABEL_MAX, widest(rows.map((row) => row.item.label)));
+  if (bars.length === 0) {
+    // Only balances and other values: they line up at their right ends.
+    const barColumn = INDENT.length + labelWidest + GAP.length;
+    const values = widest(rows.map((row) => row.percentWords));
+    const percent = Math.max(1, Math.min(values, width - barColumn));
+    return {
+      label: labelWidest,
+      bar: 0,
+      percent,
+      reset: 0,
+      pace: 0,
+      longReset: true,
+      narrow: false,
+      barColumn,
+      width: barColumn + percent,
+    };
+  }
+  const percent = widest(bars.map((row) => row.percentWords));
+  const pace = widest(bars.map((row) => row.pace?.text ?? ""));
+  const build = (longReset: boolean, label: number, narrow: boolean): Grid => {
+    const reset = widest(bars.map((row) => resetWords(row, longReset)));
+    const barColumn = INDENT.length + label + GAP.length;
+    const tail = narrow
+      ? 0
+      : (reset > 0 ? WIDE_GAP.length + reset : 0) + (pace > 0 ? WIDE_GAP.length + pace : 0);
+    const fixed = barColumn + GAP.length + percent + tail;
+    const bar = Math.min(BAR_MAX, Math.max(1, width - fixed));
+    return { label, bar, percent, reset, pace, longReset, narrow, barColumn, width: fixed + bar };
+  };
+  const roomy = build(true, labelWidest, false);
+  if (roomy.bar >= BAR_ROOMY) return roomy;
+  const short = build(false, labelWidest, false);
+  if (short.bar >= BAR_SHORT) return short;
+  const cut = build(false, Math.min(labelWidest, LABEL_NARROW), false);
+  if (cut.bar >= BAR_MIN) return cut;
+  // A very narrow window cuts the labels further, down to 4 columns, to keep the bar.
+  const room = width - INDENT.length - 2 * GAP.length - percent - BAR_MIN;
+  return build(true, Math.min(labelWidest, LABEL_NARROW, Math.max(4, room)), true);
+}
+
+/** The line without the spaces at its end. */
+function trimmed(segments: Segment[]): Segment[] {
+  const out = segments.map((segment) => ({ ...segment }));
+  while (out.length > 0) {
+    const last = out[out.length - 1];
+    last.text = last.text.trimEnd();
+    if (last.text !== "") break;
+    out.pop();
+  }
+  return out;
+}
+
+function rowLines(texts: RowTexts, grid: Grid, width: number): Line[] {
+  const { item, percent, percentWords } = texts;
+  const id = item.row.id;
   const label: Segment = {
-    text: `${INDENT}${fit(item.label, LABEL_WIDTH)} `,
+    text: `${INDENT}${fit(item.label, grid.label)}${GAP}`,
     role: "label",
     percent,
   };
   if (percent === undefined) {
-    return [{ id: row.id, segments: [label, { text: rowValueText(row), role: "value" }] }];
+    // A balance or other value ends where the percents end, so the amounts line up.
+    const end = grid.bar > 0 ? grid.bar + GAP.length + grid.percent : grid.percent;
+    const room = Math.max(1, Math.min(end, width - grid.barColumn));
+    const value = padStartColumns(fit(percentWords, room).trimEnd(), room);
+    return [{ id, segments: [label, { text: value, role: "value" }] }];
   }
-  const pace = paceOf(row, nowMs);
-  const reset = resetText(row, nowMs, words);
-  const bar = [label, ...markedBar(shape, percent, layout.barWidth, pace?.evenLeft)];
-  const percentWords = percentText(words, percent, true);
-  const resetWords = reset ? `resets in ${reset}` : "";
-  const paceSegment: Segment | undefined = pace && {
-    text: paceText(pace, words),
-    role: pace.kind === "fast" ? "warning" : "value",
+  const bar = markedBar(percent, grid.bar, texts.evenLeft);
+  const percentSegment: Segment = {
+    text: `${GAP}${padStartColumns(percentWords, grid.percent)}`,
+    role: "percent",
+    percent,
   };
-  if (!layout.narrow) {
-    return [
-      {
-        id: row.id,
-        segments: [
-          ...bar,
-          { text: `  ${fit(percentWords, PERCENT_WIDTH)}`, role: "percent", percent },
-          { text: fit(resetWords, RESET_WIDTH), role: "reset", percent },
-          ...(paceSegment ? [paceSegment] : []),
-        ],
-      },
-    ];
+  const reset = resetWords(texts, grid.longReset);
+  if (!grid.narrow) {
+    const segments: Segment[] = [label, ...bar, percentSegment];
+    if (grid.reset > 0) {
+      const text = `${WIDE_GAP}${padEndColumns(reset, grid.reset)}`;
+      segments.push({ text, role: "reset", percent });
+    }
+    if (texts.pace) segments.push({ ...texts.pace, text: `${WIDE_GAP}${texts.pace.text}` });
+    return [{ id, segments: trimmed(segments) }];
   }
-  const under = { text: " ".repeat(BAR_COLUMN), role: "label" } as const;
-  const resetSegment: Segment = { text: resetWords, role: "reset", percent };
-  const lines: Line[] = [
-    { id: row.id, segments: [...bar, { text: `  ${percentWords}`, role: "percent", percent }] },
-  ];
-  const together = BAR_COLUMN + resetWords.length + 3 + (paceSegment?.text.length ?? 0);
-  if (resetWords && paceSegment && together <= layout.width) {
+  const under: Segment = { text: " ".repeat(grid.barColumn), role: "label" };
+  const lines: Line[] = [{ id, segments: [label, ...bar, percentSegment] }];
+  const resetSegment: Segment = { text: reset, role: "reset", percent };
+  const together = grid.barColumn + columnsOf(reset) + 3 + columnsOf(texts.pace?.text ?? "");
+  if (reset && texts.pace && together <= width) {
     const dot: Segment = { text: " · ", role: "reset", percent };
-    lines.push({ id: row.id, segments: [under, resetSegment, dot, paceSegment] });
+    lines.push({ id, segments: [under, resetSegment, dot, texts.pace] });
     return lines;
   }
-  if (resetWords) lines.push({ id: row.id, segments: [under, resetSegment] });
-  if (paceSegment) lines.push({ id: row.id, segments: [under, paceSegment] });
+  if (reset) lines.push({ id, segments: [under, resetSegment] });
+  if (texts.pace) lines.push({ id, segments: [under, texts.pace] });
   return lines;
 }
 
+/** `line` cut to `width` columns: the last guard that keeps every line inside the window. */
+function clipped(line: Line, width: number): Line {
+  const segments: Segment[] = [];
+  let room = width;
+  for (const segment of line.segments) {
+    const text = sliceColumns(segment.text, Math.max(0, room));
+    if (text) segments.push({ ...segment, text });
+    room -= columnsOf(text);
+  }
+  return { id: line.id, segments };
+}
+
+/** The provider's line: name and plan, and when it was checked at the grid's right edge. */
+function providerLine(group: Group, checked: string, right: number): Line {
+  const name: Segment = { text: group.name, role: "provider", bold: true };
+  const account: Segment[] = group.account ? [{ text: `  ${group.account}`, role: "account" }] : [];
+  const used = columnsOf(group.name) + columnsOf(account[0]?.text ?? "");
+  const gap = right - used - columnsOf(checked);
+  if (gap < 3) return { id: group.id, segments: [name, ...account] };
+  return {
+    id: group.id,
+    segments: [name, ...account, { text: `${" ".repeat(gap)}${checked}`, role: "reset" }],
+  };
+}
+
 export function limitsLines(input: LimitsInput): Line[] {
-  const { snapshot, display, nowMs } = input;
+  const { snapshot, display, nowMs, width } = input;
   // Every row: the supplementary ones too, and none hidden.
   const words: Words = { ...(snapshot.words ?? DEFAULT_WORDS), detail: "detailed" };
   const sidebar = { ...display.surfaces.sidebar, hidden: [] };
@@ -152,29 +276,38 @@ export function limitsLines(input: LimitsInput): Line[] {
     return [
       {
         id: "",
-        segments: [{ text: " No quota providers found. The Status tab says why.", role: "value" }],
+        segments: [{ text: "No quota providers found. The Status tab says why.", role: "value" }],
       },
     ];
   }
-  const shape = display.layout.bar === "none" ? "line" : display.layout.bar;
-  const narrow = input.width < WIDE_FIXED + MIN_BAR_WIDTH;
-  const room = input.width - (narrow ? NARROW_FIXED : WIDE_FIXED);
-  const layout: RowLayout = {
-    barWidth: Math.max(MIN_BAR_WIDTH, Math.min(MAX_BAR_WIDTH, room)),
-    narrow,
-    width: input.width,
-  };
+  const texts = new Map(
+    groups.map((group) => [group.id, group.rows.map((item) => rowTexts(item, words, nowMs))]),
+  );
+  const grid = gridFor([...texts.values()].flat(), width);
+  const checked = new Map(groups.map((group) => [group.id, checkedText(group, snapshot, nowMs)]));
+  // The provider lines end at the grid's right edge; a grid too narrow for "checked …" (only
+  // short values) widens to it, as far as the window allows.
+  const headWidest = Math.max(
+    ...groups.map(
+      (group) =>
+        columnsOf(group.name) +
+        (group.account ? 2 + columnsOf(group.account) : 0) +
+        3 +
+        columnsOf(checked.get(group.id) ?? ""),
+    ),
+  );
+  const right = grid.narrow ? width : Math.min(width, Math.max(grid.width, headWidest));
   return groups.flatMap((group, index) => {
-    const state = providerState(group, snapshot, nowMs);
-    const title: Line = {
-      id: group.id,
-      segments: [
-        { text: ` ${group.name}`, role: "provider", bold: true },
-        ...(group.account ? [{ text: ` · ${group.account}`, role: "account" } as const] : []),
-        { ...state, text: `   ${state.text}` },
-      ],
-    };
-    const rows = group.rows.flatMap((item) => rowLines(item, words, shape, layout, nowMs));
-    return index > 0 ? [{ id: "", segments: [] }, title, ...rows] : [title, ...rows];
+    const lines: Line[] = index > 0 ? [{ id: "", segments: [] }] : [];
+    lines.push(providerLine(group, checked.get(group.id) ?? "", right));
+    if (group.error) {
+      const error = describeError(group.error, group.name, nowMs);
+      lines.push({
+        id: group.id,
+        segments: [{ text: fit(`${INDENT}${error}`, width).trimEnd(), role: "error" }],
+      });
+    }
+    for (const row of texts.get(group.id) ?? []) lines.push(...rowLines(row, grid, width));
+    return lines.map((line) => clipped(line, width));
   });
 }

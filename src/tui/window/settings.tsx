@@ -64,10 +64,8 @@ import type { WindowHost, WindowTheme } from "./shell.js";
 export const SETTINGS_TABS: ReadonlyArray<{
   tab: SettingsTab;
   title: string;
-  note: string;
-  /** A surface tab's switch on top, and its note while the switch is off. */
+  /** A surface tab's switch on top. */
   switchTitle?: string;
-  offNote?: string;
   /** Its changes show in the sidebar, so it says when the sidebar is hidden. */
   watchesSidebar: boolean;
 }> = [
@@ -75,56 +73,44 @@ export const SETTINGS_TABS: ReadonlyArray<{
     tab: "sidebar",
     title: "Sidebar",
     switchTitle: "Show the Quota panel in the session sidebar",
-    offNote: "Off: the Quota panel is gone from the sidebar →",
-    note: "Watch the Quota panel in the sidebar →  Drag ⠿ to move a provider (its rows come along) or a row inside its provider. [x] shows or hides it.",
     watchesSidebar: true,
   },
   {
     tab: "collapsed",
     title: "Collapsed",
     switchTitle: "When the panel is collapsed, show one line per provider",
-    offNote: "Off: the collapsed panel shows only its title →",
-    note: "The sidebar panel stays collapsed while this tab is open →  Click ‹ › to pick a window.",
     watchesSidebar: true,
   },
   {
     tab: "statusLine",
     title: "Status line",
     switchTitle: "Show the quota line under the message box",
-    offNote: "Off: the quota line under the message box is gone ↓",
-    note: "Watch the line under the message box ↓  It fills the room OpenCode leaves free. Mouse wheel scrolls it.",
     watchesSidebar: false,
   },
   {
     tab: "toast",
     title: "Toast",
     switchTitle: "Show quota toasts",
-    offNote: "Off: quota never shows a toast.",
-    note: "OpenCode shows one toast at a time, so quota only takes a turn when you say so. The toast shows again after each change here. Toasts can't have colors.",
     watchesSidebar: false,
   },
   {
     tab: "colors",
     title: "Colors",
-    note: "Quota uses your OpenCode theme's colors, so changing the theme here recolors everything. Change one line below to override only that color.",
     watchesSidebar: true,
   },
   {
     tab: "layout",
     title: "Layout",
-    note: "Bars, spacing, and how /quota shows. Watch the sidebar → and the line under the message box ↓",
     watchesSidebar: true,
   },
   {
     tab: "words",
     title: "Words",
-    note: "How numbers and times read here, in Web and Desktop /quota and in the CLI. Saved in the server's settings.jsonc. Watch the sidebar →",
     watchesSidebar: true,
   },
   {
     tab: "providers",
     title: "Providers",
-    note: "Which providers quota checks, and how. Saved in the server's settings.jsonc; the sidebar → follows after Save.",
     watchesSidebar: true,
   },
 ];
@@ -562,6 +548,8 @@ export function createSettingsEditor(api: WindowHost, display: DisplayStore) {
       <box
         paddingLeft={2}
         paddingRight={2}
+        flexShrink={0}
+        alignSelf="flex-start"
         backgroundColor={props.primary ? background.action.primary.focused : background.raised.high}
         onMouseUp={click(props.run)}
       >
@@ -580,7 +568,7 @@ export function createSettingsEditor(api: WindowHost, display: DisplayStore) {
     api.ui.toast.show({ variant: "info", title: TOAST_TITLE, message, duration });
   }
 
-  /** The surface switch and the note above a Settings tab's body. */
+  /** The surface switch above a Settings tab's body, and a warning when the sidebar is hidden. */
   function Header(props: { tab: SettingsTab; refocus: () => void }): JSX.Element {
     const info = () => SETTINGS_TABS.find((item) => item.tab === props.tab) ?? SETTINGS_TABS[0];
     const surface = () => (isSurfaceTab(props.tab) ? props.tab : undefined);
@@ -607,27 +595,22 @@ export function createSettingsEditor(api: WindowHost, display: DisplayStore) {
             </box>
           )}
         </Show>
-        {/* Padding instead of leading spaces, so a note that wraps stays indented. */}
-        <box
-          paddingLeft={3}
-          marginTop={surface() ? 0 : 1}
-          flexDirection="row"
-          gap={2}
-          flexShrink={0}
-        >
-          <text
-            fg={sidebarHidden() ? theme().text.feedback.warning.base : theme().text.muted}
-            wrapMode="word"
-            selectable={false}
-            flexShrink={1}
+        <Show when={sidebarHidden()}>
+          <box
+            paddingLeft={3}
+            marginTop={surface() ? 0 : 1}
+            flexDirection="row"
+            gap={2}
+            flexShrink={0}
           >
-            {sidebarHidden()
-              ? "The sidebar is hidden, so there is nothing to watch here."
-              : surfaceOn() || props.tab === "collapsed"
-                ? info().note
-                : info().offNote}
-          </text>
-          <Show when={sidebarHidden()}>
+            <text
+              fg={theme().text.feedback.warning.base}
+              wrapMode="word"
+              selectable={false}
+              flexShrink={1}
+            >
+              The sidebar is hidden, so there is nothing to watch here.
+            </text>
             <Button
               label="Show sidebar"
               run={() => {
@@ -635,8 +618,8 @@ export function createSettingsEditor(api: WindowHost, display: DisplayStore) {
                 setTimeout(props.refocus, 50);
               }}
             />
-          </Show>
-        </box>
+          </box>
+        </Show>
       </>
     );
   }
@@ -1027,7 +1010,10 @@ export function createSettingsEditor(api: WindowHost, display: DisplayStore) {
     );
   }
 
-  /** The bottom bar: Close, or Save and Discard, or the "Keep your changes?" question. */
+  /**
+   * The bottom bar of a Settings tab: Close, or Save and Discard, or the "Keep your changes?"
+   * question, which also shows on the other tabs when closing asks it.
+   */
   function Buttons(props: {
     tab: string;
     host: SurfaceHost;
@@ -1081,32 +1067,34 @@ export function createSettingsEditor(api: WindowHost, display: DisplayStore) {
     }));
 
     return (
-      <Show
-        when={!confirming()}
-        fallback={
-          <>
-            <Cell fg={warning()} bold>
-              Keep your changes?
-            </Cell>
+      <Show when={settingsTab() !== undefined || confirming()}>
+        <Show
+          when={!confirming()}
+          fallback={
+            <>
+              <Cell fg={warning()} bold>
+                Keep your changes?
+              </Cell>
+              <Button label="Save" primary run={() => void save()} />
+              <Button label="Discard" run={discardChanges} />
+              <Button label="Keep editing" run={() => setConfirming(false)} />
+            </>
+          }
+        >
+          <Show when={dirty()} fallback={<Button label="Close" primary run={props.close} />}>
             <Button label="Save" primary run={() => void save()} />
             <Button label="Discard" run={discardChanges} />
-            <Button label="Keep editing" run={() => setConfirming(false)} />
-          </>
-        }
-      >
-        <Show when={dirty()} fallback={<Button label="Close" primary run={props.close} />}>
-          <Button label="Save" primary run={() => void save()} />
-          <Button label="Discard" run={discardChanges} />
+          </Show>
+          <Show when={settingsTab()}>
+            {(current: () => SettingsTab) => (
+              <Button label="Reset tab" run={() => resetTabLines(current())} />
+            )}
+          </Show>
+          <Show when={settingsTab() === "toast" && shown().surfaces.toast.enabled}>
+            <Button label="Show toast" run={() => previewToast(props.host, props.sessionID)} />
+          </Show>
+          <Cell fg={warning()}>{dirty() ? " unsaved changes" : ""}</Cell>
         </Show>
-        <Show when={settingsTab()}>
-          {(current: () => SettingsTab) => (
-            <Button label="Reset tab" run={() => resetTabLines(current())} />
-          )}
-        </Show>
-        <Show when={settingsTab() === "toast" && shown().surfaces.toast.enabled}>
-          <Button label="Show toast" run={() => previewToast(props.host, props.sessionID)} />
-        </Show>
-        <Cell fg={warning()}>{dirty() ? " unsaved changes" : ""}</Cell>
       </Show>
     );
   }

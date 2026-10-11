@@ -62,7 +62,7 @@ describe("core/pace", () => {
   it.each<{ pace: Pace; text: string }>([
     { pace: { evenLeft: 50, kind: "spare" }, text: "plenty to spare" },
     { pace: { evenLeft: 50, kind: "on_track" }, text: "on track" },
-    { pace: { evenLeft: 50, kind: "fast" }, text: "using it faster than it refills" },
+    { pace: { evenLeft: 50, kind: "fast" }, text: "faster than it refills" },
     {
       pace: { evenLeft: 50, kind: "fast", runsOutInMs: 64 * MINUTE },
       text: "runs out in 1h 4m",
