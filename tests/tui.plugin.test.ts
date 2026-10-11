@@ -276,6 +276,7 @@ const rpc = {
   snapshot: vi.fn(),
   refresh: vi.fn(),
   notices: vi.fn(),
+  noticeList: vi.fn(),
   status: vi.fn(),
   usage: vi.fn(),
   settings: vi.fn(),
@@ -360,6 +361,7 @@ beforeEach(() => {
   rpc.refresh.mockReset().mockResolvedValue({ snapshot: OK });
   rpc.settings.mockReset().mockResolvedValue({ values: {}, providers: [], custom: [] });
   rpc.saveSettings.mockReset().mockResolvedValue({ ok: true, issues: [] });
+  rpc.noticeList.mockReset().mockResolvedValue({ notices: [] });
   rpc.status.mockReset().mockResolvedValue({ text: "status" });
   // The Usage tab's data never arrives here: these tests check what opens.
   rpc.usage.mockReset().mockReturnValue(new Promise(() => {}));

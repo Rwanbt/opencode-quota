@@ -9,8 +9,8 @@
  * tab's keys; the Settings tabs have Save and Discard above it. While the window is focused (it
  * is after opening; click it to give it the keyboard again) its keys work: ↑↓ select or scroll,
  * space/enter use a line, ←/→ change it, tab switches tabs, esc closes. Closing gives the
- * keyboard back to whatever had it before. System asks the server for the notices again every
- * 15 seconds while it shows, so active notices stay current.
+ * keyboard back to whatever had it before. System shows the maintainer notices, the switches
+ * for other tools and the status report, each under its own title.
  */
 import type { Plugin } from "@opencode/plugin/tui";
 import type { BoxRenderable, Renderable, RGBA, ScrollBoxRenderable } from "@opentui/core";
@@ -39,7 +39,6 @@ import {
   StatusView,
 } from "./views.js";
 
-const NOTICE_POLL_MS = 15_000;
 /** System's switches for other tools; each saves to settings.jsonc straight away. */
 const TOOL_SWITCHES: ReadonlyArray<{ key: string; title: string; note?: string }> = [
   {
@@ -205,11 +204,6 @@ export function createQuotaWindow(
   /** Numbers the notice and status requests; only the newest one's answer shows. */
   let noticeRequest = 0;
   let statusRequest = 0;
-  /** Notice requests not answered yet. */
-  let openNoticeRequests = 0;
-  /** The notice requests run one after another. */
-  let noticeQueue: Promise<void> = Promise.resolve();
-  let noticePoll: ReturnType<typeof setInterval> | undefined;
   /** System switches whose save is not back yet; another flip of the same one is ignored. */
   const savingSwitches = new Set<string>();
 
@@ -219,21 +213,14 @@ export function createQuotaWindow(
   const usage = createUsageTab(api, () => scroll);
   const showError = (error: unknown) => api.ui.toast.show(errorToast(error));
 
-  /** Asks for the notices once the earlier requests are done. */
-  function loadNotices(): Promise<void> {
+  async function loadNotices(): Promise<void> {
     const request = ++noticeRequest;
-    openNoticeRequests += 1;
-    noticeQueue = noticeQueue.then(async () => {
-      try {
-        const next = await rpc().noticeList({}, options());
-        if (request === noticeRequest) setBoard(next);
-      } catch (error) {
-        if (request === noticeRequest) showError(error);
-      } finally {
-        openNoticeRequests -= 1;
-      }
-    });
-    return noticeQueue;
+    try {
+      const next = await rpc().noticeList({}, options());
+      if (request === noticeRequest) setBoard(next);
+    } catch (error) {
+      if (request === noticeRequest) showError(error);
+    }
   }
 
   async function flipSwitch(key: string, on: boolean): Promise<void> {
@@ -260,11 +247,6 @@ export function createQuotaWindow(
     }
   }
 
-  function stopNoticePoll(): void {
-    clearInterval(noticePoll);
-    noticePoll = undefined;
-  }
-
   /** Each tab asks the server again when it shows: Limits a refresh, the others their data. */
   function showTab(next: WindowTab): void {
     settings.setTab(next);
@@ -272,20 +254,16 @@ export function createQuotaWindow(
     // A Settings line may have had the keyboard; it is gone with its tab.
     windowBox?.focus();
     const sessionID = routeSessionID(api);
-    stopNoticePoll();
     if (next === "limits") void host.quota.refresh("manual", sessionID);
     if (next === "system") {
       void loadNotices();
-      // A poll waits while a request is still out, so slow answers don't pile up.
-      noticePoll = setInterval(() => {
-        if (openNoticeRequests === 0) void loadNotices();
-      }, NOTICE_POLL_MS);
       void loadStatus(sessionID);
       // Snapshots bring the saved settings too, so the switches show even if this read fails.
       settings.loadSaved().catch(() => {});
     }
     if (next === "usage" && sessionID) usage.show(sessionID);
-    setSelected(tabOptions()[0]?.id ?? "");
+    // System picks Copy, so enter copies the report as soon as the tab opens.
+    setSelected(next === "system" ? "copy" : "");
     scroll?.scrollTo(0);
   }
 
@@ -304,15 +282,15 @@ export function createQuotaWindow(
   }
 
   /**
-   * The lines above a tab's body that ↑↓ can select: switches (‹ on ›) and buttons (▸). System
-   * has Copy for its status report first, so it is picked as soon as the tab opens, then the
-   * switches for other tools once the saved settings arrived.
+   * The lines that ↑↓ can select, under the notices: System's switches for other tools (‹ on ›)
+   * once the saved settings arrived, then Copy (▸) above the status report.
    */
   function tabOptions(): OptionLine[] {
     if (tab() !== "system") return [];
     const copy: OptionLine = {
       id: "copy",
-      title: "Copy the status report",
+      group: "Status report",
+      title: "Copy the report",
       value: () => "copy",
       run: copyReport,
       note: () => "then paste it into a GitHub issue",
@@ -331,7 +309,7 @@ export function createQuotaWindow(
         },
       ];
     });
-    return [copy, ...tools];
+    return [...tools, copy];
   }
 
   function open(next: WindowTab | "settings"): void {
@@ -354,7 +332,6 @@ export function createQuotaWindow(
     if (settings.askBeforeClose()) return;
     settings.setTab(undefined);
     setTab(undefined);
-    stopNoticePoll();
     // Answers still on their way belong to the closed window.
     noticeRequest += 1;
     statusRequest += 1;
@@ -614,6 +591,9 @@ export function createQuotaWindow(
           minHeight={0}
           marginTop={1}
         >
+          <Show when={tab() === "system"}>
+            <NoticesView theme={theme()} board={board()} />
+          </Show>
           {tabOptions().map((option) => (
             <OptionRow
               line={option}
@@ -638,7 +618,6 @@ export function createQuotaWindow(
             <usage.View width={bodyWidth()} keyTarget={() => windowBox} />
           </Show>
           <Show when={tab() === "system"}>
-            <NoticesView theme={theme()} board={board()} />
             <StatusView theme={theme()} report={status()} width={bodyWidth()} />
           </Show>
           <Show when={settingsTab()}>

@@ -1,6 +1,6 @@
 /**
  * The quota window (`src/tui/window/shell.tsx`) on a fake OpenCode host whose server answers
- * when the test says so: answers that arrive out of order, System's notice poll, and the keyboard
+ * when the test says so: answers that arrive out of order, System's sections, and the keyboard
  * when OpenCode draws the window again.
  */
 import { createRoot } from "solid-js";
@@ -303,29 +303,40 @@ describe("quota window shell", () => {
     expect(host.copied).toEqual(["# Quota Status (new)"]);
   });
 
-  it("asks for the notices again while System shows, and stops on another tab", async () => {
+  it("shows System's notices, switches and status report under their own titles", async () => {
     const host = fakeHost();
     host.quotaWindow.open("system");
-    // A poll waits while a request is still out.
-    await vi.advanceTimersByTimeAsync(15_000);
-    expect(host.noticeCalls).toHaveLength(1);
     host.noticeCalls[0]?.answer();
+    host.statusCalls[0]?.answer("# Quota Status");
     await flush();
 
-    // A new notice arrives.
+    const lines = textLines(draw(host.quotaWindow).tree);
+    const at = (text: string) => lines.findIndex((line) => line.includes(text));
+    expect(lines).toEqual(
+      expect.arrayContaining([" Notices", "   • ", "Copilot moves to AI Credits."]),
+    );
+    expect(at(" Notices")).toBeLessThan(at("Copilot moves to AI Credits."));
+    expect(at("v6 is out.")).toBeLessThan(at(" For other tools"));
+    expect(at(" For other tools")).toBeLessThan(at(" Status report"));
+    expect(at(" Status report")).toBeLessThan(at("Copy the report"));
+    expect(at("Copy the report")).toBeLessThan(at("# Quota Status"));
+  });
+
+  it("asks for the notices each time System shows, and shows the newest answer", async () => {
+    const host = fakeHost();
+    host.quotaWindow.open("system");
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(host.noticeCalls).toHaveLength(1);
+
+    // A notice starts; System shows again and its answer comes before the older one.
     host.server.notices.push({ id: "c", message: "A new notice." });
-    await vi.advanceTimersByTimeAsync(15_000);
+    host.quotaWindow.open("limits");
+    host.quotaWindow.open("system");
     expect(host.noticeCalls).toHaveLength(2);
     host.noticeCalls[1]?.answer();
+    host.noticeCalls[0]?.answer();
     await flush();
-    const view = draw(host.quotaWindow);
-    const lines = textLines(view.tree);
-    expect(lines).toContain("A new notice.");
-
-    press(host.layers, "tab");
-    await vi.advanceTimersByTimeAsync(60_000);
-    expect(host.noticeCalls).toHaveLength(2);
-    view.dispose();
+    expect(textLines(draw(host.quotaWindow).tree)).toContain("A new notice.");
   });
 
   it.each([

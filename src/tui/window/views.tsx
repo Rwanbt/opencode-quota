@@ -7,7 +7,7 @@ import { TextAttributes } from "@opentui/core";
 import type { JSX } from "@opentui/solid";
 import { Show } from "solid-js";
 import { sanitizeDisplayText } from "../../lib/display-sanitize.js";
-import type { QuotaRpcNoticeListOutput } from "../../rpc.js";
+import type { Notice, QuotaRpcNoticeListOutput } from "../../rpc.js";
 import { columnsOf } from "../../view/columns.js";
 import { LineText, type SurfaceHost } from "../sidebar.js";
 import { limitsLines } from "./limits.js";
@@ -16,22 +16,11 @@ import type { WindowTheme } from "./shell.js";
 /** The active maintainer notices. */
 export type NoticeBoard = QuotaRpcNoticeListOutput;
 
-export type NoticeItem = {
-  id: string;
-  message: string;
-  url?: string;
-};
-
-/** The notices, or the one line that says why there is none. */
-export function noticeItems(board: NoticeBoard): { items: NoticeItem[]; empty?: string } {
-  if (board.notices.length === 0) return { items: [], empty: "No notices right now." };
-  return {
-    items: board.notices.map((notice) => ({
-      id: notice.id,
-      message: notice.message,
-      ...(notice.url ? { url: notice.url } : {}),
-    })),
-  };
+/** The notices, or the one line that says there is none. */
+export function noticeItems(board: NoticeBoard): { items: Notice[]; empty?: string } {
+  return board.notices.length === 0
+    ? { items: [], empty: "No notices right now." }
+    : { items: board.notices };
 }
 
 export type StatusLine = { text: string; heading: boolean };
@@ -103,6 +92,7 @@ export function LimitsView(props: {
   );
 }
 
+/** System's notices under their title: a bullet, the message, and its link under it. */
 export function NoticesView(props: {
   theme: WindowTheme;
   board: NoticeBoard | undefined;
@@ -110,20 +100,27 @@ export function NoticesView(props: {
   const theme = () => props.theme;
   const body = () => (props.board ? noticeItems(props.board) : { items: [], empty: "Loading…" });
   return (
-    <box flexDirection="column" marginTop={1}>
+    <box flexDirection="column">
+      <text
+        fg={theme().text.action.primary.selected}
+        attributes={TextAttributes.BOLD}
+        wrapMode="none"
+        selectable={false}
+      >
+        {" Notices"}
+      </text>
       <Show when={body().empty}>
         <text fg={theme().text.muted} wrapMode="word" selectable={false}>
           {`   ${body().empty}`}
         </text>
       </Show>
-      {body().items.map((item, index) => (
-        <box
-          flexDirection="row"
-          // A blank line between notices; the status report under them keeps its own.
-          marginBottom={index < body().items.length - 1 ? 1 : 0}
-        >
+      {body().items.map((item) => (
+        <box flexDirection="row">
+          <text fg={theme().hue.accent[500]} wrapMode="none" selectable={false}>
+            {"   • "}
+          </text>
           <box flexDirection="column" flexShrink={1}>
-            <text fg={theme().text.base} attributes={TextAttributes.BOLD} wrapMode="word">
+            <text fg={theme().text.base} wrapMode="word">
               {sanitizeDisplayText(item.message)}
             </text>
             <Show when={item.url}>

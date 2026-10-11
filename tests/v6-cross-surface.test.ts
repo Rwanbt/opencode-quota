@@ -618,7 +618,7 @@ describe("v6 surfaces on the quota snapshot", () => {
     const usageKeys = "Session + subagents";
     await vi.waitFor(() => expect(quotaWindow()).toContain(usageKeys));
     await tui.command("status").run();
-    expect(quotaWindow()).toContainEqual(expect.stringContaining("Copy the status report"));
+    expect(quotaWindow()).toContainEqual(expect.stringContaining("Copy the report"));
     await tui.command("settings").run();
     expect(quotaWindow()).toContainEqual(
       expect.stringContaining("Show the Quota panel in the session sidebar"),
