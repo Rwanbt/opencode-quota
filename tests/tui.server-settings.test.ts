@@ -10,10 +10,10 @@ import {
   withTick,
 } from "../src/tui/server-settings.js";
 
-const SERVER_FIELDS = FIELDS.filter((item) => item.store === "server");
+const SERVER_FIELDS = FIELDS;
 const field = (path: string) => SERVER_FIELDS.find((item) => item.path === path) as Field;
 
-describe("the Words and Providers tabs' lines", () => {
+describe("the Settings tabs' lines", () => {
   it("starts every line at the server's default and steps only through values it accepts", () => {
     for (const item of SERVER_FIELDS) {
       const rule = SETTINGS_SCHEMA[item.path as keyof typeof SETTINGS_SCHEMA];
@@ -23,13 +23,13 @@ describe("the Words and Providers tabs' lines", () => {
     }
   });
 
-  it("has a line for every setting a client may change but the notices'", () => {
-    const shown = new Set([...SERVER_FIELDS.map((item) => item.path), "providers.enabled"]);
-    const editable = Object.entries(SETTINGS_SCHEMA)
-      .filter(([key, rule]) => key !== "version" && !("fileOnly" in rule))
-      .map(([key]) => key)
-      .filter((key) => !key.startsWith("announcements."));
-    expect(editable.filter((key) => !shown.has(key))).toEqual([]);
+  it("derives each field's tab from its first key and excludes System lines", () => {
+    for (const item of FIELDS) {
+      expect(item.tab).toBe(item.path.split(".")[0]);
+      expect(item.path).not.toMatch(/^system\./);
+    }
+    expect(FIELDS.map((item) => item.path)).not.toContain("words.runsOut");
+    expect(FIELDS.map((item) => item.path)).not.toContain("quickLook");
   });
 
   it.each([
@@ -55,7 +55,7 @@ describe("the Words and Providers tabs' lines", () => {
       "42% used",
     ]);
     expect(field("words.reset").show("compact")).toBe("2h14m · 5d3h20m");
-    expect(field("checking.minIntervalMs").show(300_000)).toBe("every 5 min");
+    expect(field("providers.checking.minIntervalMs").show(300_000)).toBe("every 5 min");
     expect(field("providers.cursor.includedApiUsd").show(null)).toBe("from the plan");
   });
 
@@ -79,36 +79,32 @@ describe("the Words and Providers tabs' lines", () => {
 });
 
 describe("provider ticks", () => {
-  const ids = ["copilot", "cursor", "openai", "custom"];
-  const found = ["copilot", "custom"];
-
-  it.each([
-    { enabled: "auto" as const, id: "cursor", on: true, list: ["copilot", "cursor", "custom"] },
-    { enabled: "auto" as const, id: "copilot", on: false, list: ["custom"] },
-    { enabled: ["openai"], id: "cursor", on: true, list: ["cursor", "openai"] },
-    { enabled: ["openai"], id: "openai", on: false, list: [] },
-  ])("ticks $id $on from $enabled", ({ enabled, id, on, list }) => {
-    expect(isTicked(enabled, id, found)).toBe(!on);
-    expect(withTick(enabled, ids, found, id, on)).toEqual(list);
+  it("checks found providers and providers found later unless switched off", () => {
+    expect(isTicked([], "copilot")).toBe(true);
+    const off = withTick([], "copilot", false);
+    expect(off).toEqual(["copilot"]);
+    expect(isTicked(off, "copilot")).toBe(false);
+    expect(isTicked(off, "cursor")).toBe(true);
+    expect(withTick(off, "copilot", true)).toEqual([]);
   });
 
   it("nests the changes into the patch saveSettings takes", () => {
     expect(
       settingsPatch({
         "words.percent": "used",
-        "providers.enabled": ["copilot"],
+        "providers.off": ["copilot"],
         "providers.cursor.includedApiUsd": null,
       }),
     ).toEqual({
       words: { percent: "used" },
-      providers: { enabled: ["copilot"], cursor: { includedApiUsd: null } },
+      providers: { off: ["copilot"], cursor: { includedApiUsd: null } },
     });
   });
 });
 
 describe("the server settings this window edits", () => {
   const SAVED: QuotaRpcSettingsOutput = {
-    values: { "words.percent": "left", "providers.enabled": "auto" },
+    values: { "words.percent": "left", "providers.off": [] },
     providers: [{ id: "copilot", label: "Copilot" }],
     custom: [{ id: "gw", label: "Gateway", enabled: false, request: null, fingerprint: "fp-a" }],
   };
@@ -234,5 +230,131 @@ describe("the server settings this window edits", () => {
       patch: {},
       customEnabled: { gw: { enabled: true, fingerprint: "fp-b" } },
     });
+  });
+  it("sends the definition fingerprint reviewed at the switch, even after a live update", async () => {
+    const rpc = fakeRpc({
+      ok: false,
+      issues: [{ key: "providers.custom.gw", message: CHANGED_SINCE_REVIEW }],
+    });
+    const server = createServerSettings(rpc);
+    await server.load();
+    server.switchCustom("gw", true);
+    server.receive({ ...SAVED, custom: [{ ...SAVED.custom[0]!, fingerprint: "fp-b" }] });
+    await expect(server.save()).rejects.toThrow(CHANGED_SINCE_REVIEW);
+    expect(rpc.saveSettings).toHaveBeenCalledWith({
+      patch: {},
+      customEnabled: { gw: { enabled: true, fingerprint: "fp-a" } },
+    });
+  });
+
+  it("shares one Save request when Save is pressed twice", async () => {
+    let release = () => {};
+    const rpc = fakeRpc(
+      undefined,
+      new Promise<void>((resolve) => {
+        release = resolve;
+      }),
+    );
+    const server = createServerSettings(rpc);
+    await server.load();
+    server.set("words.percent", "used");
+    const first = server.save();
+    const second = server.save();
+    expect(first).toBe(second);
+    server.set("words.percent", "bare");
+    release();
+    await first;
+    expect(rpc.saveSettings).toHaveBeenCalledTimes(1);
+    expect([server.value("words.percent"), server.dirty()]).toEqual(["bare", true]);
+  });
+
+  it("can retry a transport failure without losing drafts", async () => {
+    const rpc = fakeRpc();
+    const server = createServerSettings(rpc);
+    await server.load();
+    server.set("words.percent", "used");
+    rpc.saveSettings.mockRejectedValueOnce(new Error("disconnected"));
+    await expect(server.save()).rejects.toThrow("disconnected");
+    server.set("words.percent", "bare");
+    await server.save();
+    expect([server.value("words.percent"), server.dirty()]).toEqual(["bare", false]);
+  });
+
+  it("keeps a custom switch reverted while Save is waiting", async () => {
+    let release = () => {};
+    const rpc = fakeRpc(
+      undefined,
+      new Promise<void>((resolve) => {
+        release = resolve;
+      }),
+    );
+    const server = createServerSettings(rpc);
+    await server.load();
+    server.switchCustom("gw", true);
+    const saving = server.save();
+    server.switchCustom("gw", false);
+    release();
+    await saving;
+    expect([server.customOn("gw"), server.dirty()]).toEqual([false, true]);
+  });
+
+  it("keeps a newer live update when the Save follow-up read answers late", async () => {
+    let answer = (_next: QuotaRpcSettingsOutput) => {};
+    const rpc = fakeRpc();
+    const server = createServerSettings(rpc);
+    await server.load();
+    server.set("words.percent", "used");
+    rpc.settings.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          answer = resolve;
+        }),
+    );
+    const saving = server.save();
+    await vi.waitFor(() => expect(rpc.settings).toHaveBeenCalledTimes(2));
+    server.receive({
+      ...SAVED,
+      values: { ...SAVED.values, "words.percent": "bare", "layout.barWidth": 12 },
+    });
+    answer({
+      ...SAVED,
+      values: { ...SAVED.values, "words.percent": "used", "layout.barWidth": 8 },
+    });
+    await saving;
+    expect([
+      server.value("words.percent"),
+      server.value("layout.barWidth"),
+      server.dirty(),
+    ]).toEqual(["bare", 12, false]);
+  });
+
+  it("rebases a row rename made during Save over another TUI's names", async () => {
+    let release = () => {};
+    const next: QuotaRpcSettingsOutput = {
+      ...SAVED,
+      values: { ...SAVED.values, "sidebar.names": { first: "Saved", other: "Other TUI" } },
+    };
+    const rpc = {
+      settings: vi
+        .fn()
+        .mockResolvedValueOnce({ ...SAVED, values: { ...SAVED.values, "sidebar.names": {} } })
+        .mockResolvedValue(next),
+      saveSettings: vi.fn(async () => {
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        return { ok: true, issues: [] };
+      }),
+    };
+    const server = createServerSettings(rpc);
+    await server.load();
+    server.set("sidebar.names", { first: "Saved" });
+    const saving = server.save();
+    server.set("sidebar.names", { first: "Draft" });
+    server.receive(next);
+    release();
+    await saving;
+    expect(server.value("sidebar.names")).toEqual({ first: "Draft", other: "Other TUI" });
+    expect(server.dirty()).toBe(true);
   });
 });

@@ -1,13 +1,5 @@
 /** @jsxImportSource @opentui/solid */
-/**
- * The quota window's Settings tabs, one line per field of `FIELDS` (`display.ts`): Sidebar,
- * Collapsed, Status line, Toast, Colors and Layout edit the display settings; Words and Providers
- * edit the server settings (`server-settings.ts`). The surface tabs also list the
- * snapshot's providers (and rows) as a tree you drag, hide and rename. While you edit, the real
- * sidebar, status line and toast show your changes (the words too) and mark the selected line.
- * Save (ctrl+s) stores the display settings in plugin storage and sends the server ones with
- * `saveSettings`; Discard drops them, and closing the window with unsaved changes asks first.
- */
+/** The Settings tabs edit settings.jsonc; surfaces preview saved settings with draft changes. */
 import {
   type BoxRenderable,
   type MouseEvent,
@@ -21,13 +13,12 @@ import { createEffect, createMemo, createSignal, For, on, Show } from "solid-js"
 import { describeError } from "../../core/errors.js";
 import type { ProviderSnapshot, QuotaRow, QuotaSnapshot } from "../../core/types.js";
 import { WINDOWS } from "../../core/windows.js";
-import { QuotaRpc } from "../../rpc.js";
 import type { CustomProviderSwitch } from "../../settings/index.js";
 import { CHANGED_SINCE_REVIEW } from "../../settings/schema.js";
 import { DEFAULT_WORDS, fit, percentText, resetText, rowValueText } from "../../view/format.js";
 import { pickRow, type Surface, type SurfaceRows, type WindowChoice } from "../../view/select.js";
 import type { ColorRole } from "../../view/text.js";
-import { quotaCallOptions, rpcErrorMessage } from "../client.js";
+import { rpcErrorMessage } from "../client.js";
 import {
   COLOR_NAMES,
   type DisplayStore,
@@ -48,13 +39,7 @@ import {
   typedNumber,
   valueAt,
 } from "../display.js";
-import {
-  createServerSettings,
-  foundProviderIds,
-  isTicked,
-  PROVIDERS_KEY,
-  withTick,
-} from "../server-settings.js";
+import { foundProviderIds, isTicked, PROVIDERS_KEY, withTick } from "../server-settings.js";
 import type { SurfaceHost } from "../sidebar.js";
 import { namedColor, roleColor } from "../theme.js";
 import { TOAST_TITLE, toastText } from "../toasts.js";
@@ -114,13 +99,6 @@ export const SETTINGS_TABS: ReadonlyArray<{
     watchesSidebar: true,
   },
 ];
-
-function isServerTab(tab: SettingsTab): boolean {
-  return tab === "words" || tab === "providers";
-}
-
-const isServerPath = (path: string) =>
-  FIELDS.some((field) => field.path === path && field.store === "server");
 
 export function isSettingsTab(tab: string | undefined): tab is SettingsTab {
   return SETTINGS_TABS.some((item) => item.tab === tab);
@@ -300,40 +278,16 @@ export function createSettingsEditor(api: WindowHost, display: DisplayStore) {
   const treeLines = new Map<string, TreeLine>();
   const theme = () => api.theme;
   const shown = () => display.shown();
-  // The RPC client is made per call, so nothing reaches OpenCode during plugin setup.
-  const server = createServerSettings({
-    settings: () => api.client.rpc(QuotaRpc).settings({}, quotaCallOptions(api)),
-    saveSettings: (input) => api.client.rpc(QuotaRpc).saveSettings(input, quotaCallOptions(api)),
-  });
-  /** Unsaved changes on any Settings tab, display or server. */
-  const dirty = () => display.dirty() || server.dirty();
-  const discard = () => {
-    display.discard();
-    server.discard();
-  };
-  /** A line's value, from the display settings or the server ones. */
-  const lineValue = (path: string): FieldValue =>
-    isServerPath(path) ? (server.value(path) as FieldValue) : valueAt(shown(), path);
-  /** Sets each line's value where it is stored. */
+  const server = display.server;
+  const dirty = server.dirty;
+  const discard = server.discard;
+  const lineValue = (path: string): FieldValue => server.value(path) as FieldValue;
   function setValues(values: Readonly<Record<string, FieldValue>>): void {
-    const own = Object.entries(values).filter(([path]) => !isServerPath(path));
-    for (const [path, value] of Object.entries(values)) {
-      if (isServerPath(path)) server.set(path, value);
-    }
-    if (own.length === 0) return;
-    display.edit((settings) =>
-      own.reduce((next, [path, value]) => setIn(next, path.split("."), value), settings),
-    );
+    for (const [path, value] of Object.entries(values)) server.set(path, value);
   }
-  /** A tab's lines back to their defaults; the custom provider switches stay as they are. */
   function resetTabLines(settingsTab: SettingsTab): void {
     display.edit((settings) => resetTab(settings, settingsTab));
-    for (const field of FIELDS) {
-      if (field.store === "server" && field.tab === settingsTab) {
-        server.set(field.path, field.initial);
-      }
-    }
-    if (settingsTab === "providers") server.set(PROVIDERS_KEY, "auto");
+    if (settingsTab === "providers") server.set(PROVIDERS_KEY, []);
   }
 
   /** `run` as a click handler that skips the click OpenCode sends right after a drag. */
@@ -350,9 +304,11 @@ export function createSettingsEditor(api: WindowHost, display: DisplayStore) {
   }
 
   function editSurface(surface: Surface, change: (rows: SurfaceRows) => SurfaceRows): void {
-    display.edit((settings) =>
-      setIn(settings, ["surfaces", surface], change(settings.surfaces[surface])),
-    );
+    const rows = change(shown().surfaces[surface]);
+    server.set(`${surface}.show`, rows.enabled);
+    server.set(`${surface}.hidden`, rows.hidden);
+    server.set(`${surface}.providerOrder`, rows.providerOrder);
+    server.set(`${surface}.rowOrder`, rows.rowOrder);
   }
 
   function toggleSurface(surface: Surface): void {
@@ -471,39 +427,26 @@ export function createSettingsEditor(api: WindowHost, display: DisplayStore) {
     const loaded = server.saved();
     if (!loaded) return [];
     const found = foundProviderIds(snapshot);
-    const ids = loaded.providers.map(({ id }) => id);
-    const enabled = () => server.value(PROVIDERS_KEY) as "auto" | string[];
+    const off = () => server.value(PROVIDERS_KEY) as string[];
     const ordered = [
       ...loaded.providers.filter(({ id }) => found.includes(id)),
       ...loaded.providers.filter(({ id }) => !found.includes(id)),
     ];
-    const check: OptionLine = {
-      id: PROVIDERS_KEY,
-      group: "Which providers",
-      title: "Check",
-      value: () => (enabled() === "auto" ? "every one it finds" : "only the ticked ones"),
-      cycle: () =>
-        server.set(
-          PROVIDERS_KEY,
-          enabled() === "auto" ? ids.filter((id) => isTicked("auto", id, found)) : "auto",
-        ),
-      note: () => "tick one to choose them yourself",
-    };
     const ticks = ordered.flatMap(({ id, label }): OptionLine[] => {
-      const ticked = isTicked(enabled(), id, found);
+      const ticked = isTicked(off(), id);
       const tick: OptionLine = {
         id: `provider.${id}`,
+        group: id === ordered[0]?.id ? "Which providers" : undefined,
         title: `${ticked ? "[x]" : "[ ]"} ${label}`,
         depth: 1,
-        value: () => (ticked ? "checked" : enabled() === "auto" ? "not found" : "skipped"),
-        cycle: () => server.set(PROVIDERS_KEY, withTick(enabled(), ids, found, id, !ticked)),
+        value: () => (ticked ? (found.includes(id) ? "checked" : "not found") : "skipped"),
+        cycle: () => server.set(PROVIDERS_KEY, withTick(off(), id, !ticked)),
       };
       const nested = ticked ? FIELDS.filter((field) => field.provider === id) : [];
       return [tick, ...nested.map(fieldLine)];
     });
     return [
       ...loaded.custom.map((entry, index) => customLine(entry, index === 0)),
-      check,
       ...ticks,
       ...FIELDS.filter((field) => field.tab === "providers" && !field.provider).map(fieldLine),
     ];
@@ -511,7 +454,7 @@ export function createSettingsEditor(api: WindowHost, display: DisplayStore) {
 
   function optionLines(settingsTab: SettingsTab, snapshot?: QuotaSnapshot): OptionLine[] {
     if (settingsTab === "providers") return providerLines(snapshot);
-    if (settingsTab === "words" && !server.saved()) return [];
+    if (!server.saved()) return [];
     const presets = (Object.keys(PRESETS) as PresetName[]).filter(
       (name) => PRESETS[name].tab === settingsTab,
     );
@@ -527,7 +470,7 @@ export function createSettingsEditor(api: WindowHost, display: DisplayStore) {
     return isSurfaceTab(settingsTab) ? SWITCH_ID : (optionLines(settingsTab)[0]?.id ?? "");
   }
 
-  /** Reads the server settings each time a Words or Providers tab shows. */
+  /** Reads the file settings each time a Settings tab shows. */
   async function loadServer(settingsTab: SettingsTab): Promise<void> {
     try {
       await server.load();
@@ -689,10 +632,20 @@ export function createSettingsEditor(api: WindowHost, display: DisplayStore) {
       const provider = tree().find((item) => item.provider.providerId === providerId)?.provider;
       const choices = provider ? windowChoices(provider) : [];
       if (choices.length === 0) return;
-      const index = Math.max(0, choices.indexOf(shown().window[providerId] ?? "lowest"));
+      const index = Math.max(
+        0,
+        choices.indexOf(
+          shown()[props.tab === "statusLine" ? "statusLine" : "collapsed"].window[providerId] ??
+            "lowest",
+        ),
+      );
       const next = choices[(index + delta + choices.length) % choices.length];
       display.edit((settings) =>
-        setIn(settings, ["window", providerId], next === "lowest" ? undefined : next),
+        setIn(
+          settings,
+          [props.tab === "statusLine" ? "statusLine" : "collapsed", "window", providerId],
+          next === "lowest" ? undefined : next,
+        ),
       );
     }
 
@@ -721,9 +674,19 @@ export function createSettingsEditor(api: WindowHost, display: DisplayStore) {
       setTyping({
         id: lineKey(line.id),
         value: "",
-        placeholder: shown().labels[line.id] ?? row.label,
+        placeholder:
+          shown()[props.tab === "toast" ? "toast" : "sidebar"].names[line.id] ?? row.label,
         hint: `Type a new name, then enter · enter with nothing typed = its own name ("${row.label}") · esc stop`,
-        apply: (text) => display.edit((settings) => renameRow(settings, line.id, row.label, text)),
+        apply: (text) =>
+          display.edit((settings) =>
+            renameRow(
+              settings,
+              props.tab === "toast" ? "toast" : "sidebar",
+              line.id,
+              row.label,
+              text,
+            ),
+          ),
       });
     }
 
@@ -782,10 +745,7 @@ export function createSettingsEditor(api: WindowHost, display: DisplayStore) {
     createEffect(
       on(
         () => {
-          const { surfaces, labels, toast, runsOut } = shown();
-          return (
-            props.tab === "toast" && JSON.stringify([surfaces.toast, labels, toast, runsOut.toast])
-          );
+          return props.tab === "toast" && JSON.stringify(shown().toast);
         },
         (key) => {
           if (key) previewToast(props.host, props.sessionID);
@@ -880,7 +840,9 @@ export function createSettingsEditor(api: WindowHost, display: DisplayStore) {
       const own = () => (line.row ? ownRow(line) : undefined);
       const label = () =>
         line.row
-          ? (shown().labels[line.id] ?? own()?.label ?? line.id)
+          ? (shown()[props.tab === "toast" ? "toast" : "sidebar"].names[line.id] ??
+            own()?.label ??
+            line.id)
           : (entry()?.provider.label ?? line.id);
       const summary = (row: QuotaRow) => {
         if (row.percentRemaining === undefined) return rowValueText(row);
@@ -890,7 +852,11 @@ export function createSettingsEditor(api: WindowHost, display: DisplayStore) {
       const detail = () => {
         const provider = entry()?.provider;
         const row = own();
-        if (row && shown().labels[line.id] !== undefined) return `was "${row.label}"`;
+        if (
+          row &&
+          shown()[props.tab === "toast" ? "toast" : "sidebar"].names[line.id] !== undefined
+        )
+          return `was "${row.label}"`;
         if (row?.prominence === "supplementary" && words().detail !== "detailed") {
           return "only with all rows";
         }
@@ -902,7 +868,9 @@ export function createSettingsEditor(api: WindowHost, display: DisplayStore) {
         if (withRows()) return "";
         const picked = pickRow(
           { rows: provider.rows.map((item) => ({ row: item, label: item.label })) },
-          shown().window[provider.providerId],
+          shown()[props.tab === "statusLine" ? "statusLine" : "collapsed"].window[
+            provider.providerId
+          ],
         );
         return picked ? summary(picked.row) : "";
       };
@@ -950,7 +918,7 @@ export function createSettingsEditor(api: WindowHost, display: DisplayStore) {
               fg={active() ? fg() : text.action.primary.selected}
               onUp={click(() => cycleWindow(line.providerId, 1))}
             >
-              {` ‹ ${fit(windowTitle(shown().window[line.providerId] ?? "lowest"), 11)} › `}
+              {` ‹ ${fit(windowTitle(shown()[props.tab === "statusLine" ? "statusLine" : "collapsed"].window[line.providerId] ?? "lowest"), 11)} › `}
             </Cell>
           </Show>
           <Cell fg={lit() ? fg() : text.muted} shrink>
@@ -987,7 +955,7 @@ export function createSettingsEditor(api: WindowHost, display: DisplayStore) {
         <Show when={surface() && !snapshot()}>
           <Cell fg={theme().text.muted}>{"   Loading quota…"}</Cell>
         </Show>
-        <Show when={isServerTab(props.tab) && !server.saved()}>
+        <Show when={!server.saved()}>
           <Cell fg={theme().text.muted}>{"   Loading settings…"}</Cell>
         </Show>
         <Show when={options().length > 0 && lines().length > 0}>
@@ -1025,7 +993,6 @@ export function createSettingsEditor(api: WindowHost, display: DisplayStore) {
     const warning = () => theme().text.feedback.warning.base;
     async function save(): Promise<void> {
       try {
-        await display.save();
         await server.save();
       } catch (error) {
         const message = rpcErrorMessage(error);
@@ -1137,7 +1104,7 @@ export function createSettingsEditor(api: WindowHost, display: DisplayStore) {
       const settingsTab = isSettingsTab(next) ? next : undefined;
       if (settingsTab !== tab()) setSelected(firstLine(settingsTab));
       setTabNow(settingsTab);
-      if (settingsTab && isServerTab(settingsTab)) void loadServer(settingsTab);
+      if (settingsTab) void loadServer(settingsTab);
     },
     /** Esc or Close: true while there are unsaved changes; the bottom bar then asks about them. */
     askBeforeClose(): boolean {

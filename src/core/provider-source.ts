@@ -50,10 +50,11 @@ export type ServerSettings = {
   telemetry: boolean;
 };
 
-/** `providers.enabled` with registry ids: the custom providers run as `quota-providers`. */
-function registryProviderIds(enabled: Settings["providers"]["enabled"]): string[] | "auto" {
-  if (enabled === "auto") return "auto";
-  return enabled.map((id) => (id === "custom" ? QUOTA_PROVIDERS_AGGREGATE_ID : id));
+/** All registered providers except the ids switched off, with custom mapped to its registry id. */
+function registryProviderIds(off: Settings["providers"]["off"]): string[] {
+  return getProviders()
+    .map((provider) => provider.id)
+    .filter((id) => !off.includes(id === QUOTA_PROVIDERS_AGGREGATE_ID ? "custom" : id));
 }
 
 /** What every provider reads from the settings when it checks its quota. */
@@ -73,9 +74,10 @@ export function providerContext(
       cursorIncludedApiUsd: cursor.includedApiUsd ?? undefined,
       cursorBillingCycleStartDay: cursor.billingCycleStartDay ?? undefined,
       opencodeMonthlyLimit: opencode.monthlyLimitUsd ?? undefined,
-      requestTimeoutMs: settings.checking.requestTimeoutMs,
-      requestTimeoutMsConfigured: fromFile.includes("checking.requestTimeoutMs"),
-      enabledProviders: registryProviderIds(settings.providers.enabled),
+      requestTimeoutMs: settings.providers.checking.requestTimeoutMs,
+      requestTimeoutMsConfigured: fromFile.includes("providers.checking.requestTimeoutMs"),
+      enabledProviders: registryProviderIds(settings.providers.off),
+      automaticDiscovery: true,
       quotaProviders: cloneQuotaProviders(settings.providers.custom),
     },
   };
@@ -255,7 +257,7 @@ export async function loadProviderSource(host: ProviderSourceHost): Promise<Stor
     providers: enabled
       .filter((_, index) => available[index])
       .map((provider) => storeProvider(provider, ctx, settingsKey)),
-    minIntervalMs: loaded.settings.checking.minIntervalMs,
+    minIntervalMs: loaded.settings.providers.checking.minIntervalMs,
     providerIdsForModel: (model) => providerIdsForModel(ctx, model),
     // A custom definition's rows serve only the models the definition serves.
     rowPrefixesForModel: (model) => ({
@@ -274,11 +276,11 @@ export async function loadServerSettings(host: ProviderSourceHost): Promise<Serv
   const ctx = providerContext(host, loaded);
   const availableProviderIds = await openCodeProviderIds(ctx);
   return {
-    waitForQuotaReset: settings.checking.waitForQuotaReset,
+    waitForQuotaReset: settings.providers.checking.waitForQuotaReset,
     providerIdsForModel: (model) => providerIdsForModel(ctx, model),
     customDefinitionIdsForModel: (model) =>
       customDefinitionIdsForModel(ctx, availableProviderIds, model),
-    export: settings.export,
-    telemetry: settings.telemetry.enabled,
+    export: { enabled: settings.system.exportFile, path: settings.system.exportPath },
+    telemetry: settings.system.telemetry,
   };
 }

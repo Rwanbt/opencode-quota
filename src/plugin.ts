@@ -5,7 +5,6 @@
  * It also writes the export file and the OpenTelemetry gauges from each snapshot. Inside
  * OpenCode, logins are read only here, through OpenCode's integration API.
  */
-import { randomUUID } from "node:crypto";
 import { Plugin } from "@opencode/plugin";
 import { quotaAgentTools } from "./agent-tools.js";
 import { snapshotFilePath } from "./core/persist.js";
@@ -52,13 +51,10 @@ import { resolveQuotaResetRetryDelayMs } from "./lib/quota-retry-wait.js";
 import { fetchSessionTokensForDisplay } from "./lib/session-tokens.js";
 import { QuotaRpc } from "./rpc.js";
 import {
-  acknowledgeDisplayImport,
   clientSettings,
   convertV5,
   type LoadedSettings,
   loadSettings,
-  type PendingDisplayImport,
-  pendingDisplayImport,
   saveSettings,
   type V5Conversion,
   watchSettings,
@@ -120,9 +116,12 @@ async function logRpcFailure<T>(method: string, handler: () => Promise<T>): Prom
  */
 function settingsWithSources(loaded: LoadedSettings, part?: "checking" | "pricing"): string {
   const fromFile = loaded.fromFile
-    .filter((key) => part === undefined || key.startsWith(`${part}.`))
+    .filter((key) => part === undefined || key.startsWith(`providers.${part}.`))
     .sort();
-  return JSON.stringify([part === undefined ? loaded.settings : loaded.settings[part], fromFile]);
+  return JSON.stringify([
+    part === undefined ? loaded.settings : loaded.settings.providers[part],
+    fromFile,
+  ]);
 }
 
 /** Writes the v5 settings into settings.jsonc once; a failure leaves them converted in memory. */
@@ -154,18 +153,11 @@ export const QuotaToastPlugin = Plugin.define({
     // The v5 settings move into settings.jsonc before anything reads the settings. The server
     // holds the settings it read last; every reader takes them from here.
     const conversion = await convertV5Settings();
+    let settingsConverted = conversion?.written ?? false;
     let loaded: LoadedSettings = await loadSettings({ projectDir });
     // Local estimates use prices, so the price list is chosen before any check.
-    applyPricingSettings(loaded.settings.pricing);
-    // The v5 looks the conversion found, sent with every snapshot until a TUI applied them and
-    // acknowledged their id. Empty looks still tell the TUI that the settings were converted.
-    let displayImport: PendingDisplayImport | undefined =
-      (await pendingDisplayImport()) ??
-      (conversion?.written ? { id: randomUUID(), display: {} } : undefined);
-    /** The looks a TUI acknowledged; a file read before that never offers them again. */
-    const acknowledgedImportIds = new Set<string>();
-
-    // In auto mode, /quota_status reports the providers it detected. The slash commands and
+    applyPricingSettings(loaded.settings.providers.pricing);
+    // /quota_status reports the providers it detected. The slash commands and
     // the tool add them to the global OpenCode config; the TUI palette (via RPC) never writes it.
     const buildStatusOutput = (
       sessionID: string | undefined,
@@ -235,7 +227,7 @@ export const QuotaToastPlugin = Plugin.define({
       };
     };
     // Every snapshot a client gets carries the server's words, the OpenCode provider of each
-    // custom definition, and the v5 looks still to apply, and none of the export parts the
+    // custom definition, and the settings, and none of the export parts the
     // server keeps for the export file.
     const forClients = (snapshot: QuotaSnapshot): QuotaSnapshot => {
       const custom = loaded.settings.providers.custom;
@@ -253,14 +245,15 @@ export const QuotaToastPlugin = Plugin.define({
               ),
             }
           : {}),
-        ...(displayImport ? { displayImport } : {}),
+        settings: clientSettings(loaded.settings),
+        ...(settingsConverted ? { settingsConverted: true } : {}),
       };
     };
 
     // The usage report with the configured price list. A due price download gets up to
     // 0.75 s to finish first.
     const loadUsageReport = async (query: UsageQuery): Promise<UsageReport> => {
-      const { pricing } = loaded.settings;
+      const { pricing } = loaded.settings.providers;
       applyPricingSettings(pricing);
       await kickPricingRefresh({ reason: "tokens", snapshotSelection: pricing.source });
       return usageReport(query);
@@ -288,7 +281,11 @@ export const QuotaToastPlugin = Plugin.define({
         }),
       notices: () =>
         logRpcFailure("notices", async () => {
-          const { enabled, home, homeFrequency } = loaded.settings.announcements;
+          const {
+            notices: enabled,
+            noticesOnHome: home,
+            noticesOnHomeEvery: homeFrequency,
+          } = loaded.settings.system;
           if (!enabled || !home) return { homeLine: "" };
           return {
             homeLine: await homeNoticeLine({
@@ -301,11 +298,11 @@ export const QuotaToastPlugin = Plugin.define({
       noticeList: (input) =>
         logRpcFailure("noticeList", async () => {
           const patch = {
-            ...(input.enabled === undefined ? {} : { enabled: input.enabled }),
-            ...(input.home === undefined ? {} : { home: input.home }),
+            ...(input.enabled === undefined ? {} : { notices: input.enabled }),
+            ...(input.home === undefined ? {} : { noticesOnHome: input.home }),
           };
           if (Object.keys(patch).length > 0) {
-            const saved = await saveSettings({ announcements: patch }, { allowFileOnly: false });
+            const saved = await saveSettings({ system: patch }, { allowFileOnly: false });
             if (!saved.ok) {
               const reasons = saved.issues.map((issue) => `${issue.key}: ${issue.message}`);
               throw new Error(`cannot save the notice settings (${reasons.join("; ")})`);
@@ -314,7 +311,7 @@ export const QuotaToastPlugin = Plugin.define({
           }
           if (input.read?.length) await markNotices(input.read, true);
           if (input.unread?.length) await markNotices(input.unread, false);
-          const { enabled, home } = loaded.settings.announcements;
+          const { notices: enabled, noticesOnHome: home } = loaded.settings.system;
           const notices = enabled ? await listNotices({ providerIds: await noticeTargets() }) : [];
           return { enabled, home, notices };
         }),
@@ -331,7 +328,9 @@ export const QuotaToastPlugin = Plugin.define({
           return { report: await loadUsageReport({ range, sessionID, from, to }) };
         }),
       downloadPrices: () =>
-        logRpcFailure("downloadPrices", async () => downloadPrices(loaded.settings.pricing.source)),
+        logRpcFailure("downloadPrices", async () =>
+          downloadPrices(loaded.settings.providers.pricing.source),
+        ),
       // Read now, so a custom provider changed a moment ago shows as it is before a switch-on.
       settings: () =>
         logRpcFailure("settings", async () =>
@@ -341,21 +340,16 @@ export const QuotaToastPlugin = Plugin.define({
       // `customEnabled` is the user's switch in the quota window; no agent tool calls this.
       saveSettings: (input) =>
         logRpcFailure("saveSettings", async () => {
+          const converting = !loaded.exists && Boolean(loaded.conversion);
           const result = await saveSettings(input.patch, {
             allowFileOnly: false,
             customEnabled: input.customEnabled,
           });
-          if (result.ok) await applySettings(await loadSettings({ projectDir }));
-          return { ok: result.ok, issues: result.issues };
-        }),
-      acknowledgeDisplayImport: (input) =>
-        logRpcFailure("acknowledgeDisplayImport", async () => {
-          if (displayImport?.id === input.id) {
-            acknowledgedImportIds.add(input.id);
-            displayImport = undefined;
+          if (result.ok) {
+            if (converting) settingsConverted = true;
+            await applySettings(await loadSettings({ projectDir }));
           }
-          await acknowledgeDisplayImport(input.id);
-          return {};
+          return { ok: result.ok, issues: result.issues };
         }),
     });
     // The export file and the gauges follow the snapshot; neither asks a provider again.
@@ -375,22 +369,6 @@ export const QuotaToastPlugin = Plugin.define({
     };
     const unsubscribeStore = store.subscribe(announce);
 
-    /** Every client gets a snapshot now: the words and the v5 looks travel with it. */
-    const announceNow = () => {
-      store.snapshot({ refresh: false }).then(announce, (error) => {
-        console.warn(
-          `[opencode-quota] snapshot after a settings change failed: ${logReason(error)}`,
-        );
-      });
-    };
-    /** Offers the v5 looks a save kept since the start (it finished the conversion). */
-    async function adoptPendingDisplayImport(): Promise<boolean> {
-      const pending = await pendingDisplayImport();
-      if (!pending || pending.id === displayImport?.id) return false;
-      if (acknowledgedImportIds.has(pending.id)) return false;
-      displayImport = pending;
-      return true;
-    }
     // New settings can change the providers, who each one is signed in as, the words and the
     // prices. They supersede the store's running work: every client gets a snapshot built from
     // them at once, then the new rows as more `changed` events. A check made with another time
@@ -398,14 +376,13 @@ export const QuotaToastPlugin = Plugin.define({
     async function applySettings(next: LoadedSettings): Promise<void> {
       const previous = loaded;
       loaded = next;
-      applyPricingSettings(next.settings.pricing);
+      applyPricingSettings(next.settings.providers.pricing);
       if (settingsWithSources(next) !== settingsWithSources(previous)) {
         const recheck =
           settingsWithSources(next, "checking") !== settingsWithSources(previous, "checking") ||
           settingsWithSources(next, "pricing") !== settingsWithSources(previous, "pricing");
         store.settingsChanged({ recheck });
       }
-      if (await adoptPendingDisplayImport()) announceNow();
     }
     // settings.jsonc edited by hand, by an agent or by another OpenCode process. A change made
     // while this setup ran is read once more right after the watch starts.
@@ -470,7 +447,7 @@ export const QuotaToastPlugin = Plugin.define({
               return undefined;
             },
           );
-          const notices = loaded.settings.announcements.enabled
+          const notices = loaded.settings.system.notices
             ? await listNotices({ providerIds: await noticeTargets() })
             : [];
           const report = quotaMessageText({ snapshot, usage, notices, nowMs: Date.now() });

@@ -84,8 +84,6 @@ export type QuotaClient = {
   watch(sessionID?: string): () => void;
   /** Loads the Home notice line now and on every poll until the returned stop. */
   watchHome(): () => void;
-  /** Tells the server this TUI applied the snapshot's `displayImport` with this `id`. */
-  acknowledgeDisplayImport(id: string): Promise<void>;
   /** Asks the server to refresh; answers the new snapshot, or undefined when the call failed. */
   refresh(reason: QuotaRpcRefreshReason, sessionID?: string): Promise<QuotaSnapshot | undefined>;
   /**
@@ -264,10 +262,6 @@ export function createQuotaClient(
       return () => {
         homeWatchers -= 1;
       };
-    },
-
-    async acknowledgeDisplayImport(id) {
-      await rpc().acknowledgeDisplayImport({ id }, quotaCallOptions(host));
     },
 
     async refresh(reason, sessionID) {

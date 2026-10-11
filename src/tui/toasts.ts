@@ -76,7 +76,7 @@ function resetMessage(notice: ResetNotice, snapshot: QuotaSnapshot, display: Dis
   const provider = snapshot.providers.find((item) => item.providerId === notice.providerId);
   const name = provider?.label ?? notice.providerId;
   const title = notice.account ? `${name} (${notice.account})` : name;
-  const label = display.labels[notice.rowId] ?? notice.label;
+  const label = display.toast.names[notice.rowId] ?? notice.label;
   const left = Math.max(0, Math.min(100, Math.round(notice.percentRemaining)));
   return `${WINDOWS[notice.window].label} quota reset: ${title} ${label} is available again (${left}% left).`;
 }

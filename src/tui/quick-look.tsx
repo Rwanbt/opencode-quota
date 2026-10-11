@@ -304,7 +304,7 @@ export function createQuickLook(
   return {
     open() {
       const sessionID = routeSessionID(api);
-      const form = host.display().quickLook;
+      const form: string = "dialog";
       if (form === "chat" && sessionID) void postToChat(sessionID);
       else if (form === "dialog") openDialog(sessionID);
       else void showToast(sessionID);

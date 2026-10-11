@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { PROVIDER_IDS as CONFIG_PROVIDER_IDS } from "../src/settings/schema.js";
 
 import { answer, percentRow } from "./helpers/fake-answers.js";
 
@@ -148,7 +149,9 @@ beforeEach(() => {
   mockProviders.length = 0;
   vi.mocked(buildStatusReportData).mockClear();
   __resetPricingSnapshotForTests();
-  writeSettings({ providers: { enabled: ["synthetic"] } });
+  writeSettings({
+    providers: { off: CONFIG_PROVIDER_IDS.filter((id) => !["synthetic"].includes(id)) },
+  });
 });
 
 afterEach(() => {
@@ -244,8 +247,10 @@ describe("show and status arguments", () => {
 describe.each(["show", "status"] as const)("%s report frame", (command) => {
   it("checks the providers with the price list and refresh age the settings choose", async () => {
     writeSettings({
-      providers: { enabled: ["synthetic"] },
-      pricing: { source: "bundled", autoRefreshDays: 3 },
+      providers: {
+        off: CONFIG_PROVIDER_IDS.filter((id) => !["synthetic"].includes(id)),
+        pricing: { source: "bundled", autoRefreshDays: 3 },
+      },
     });
     const seen: Array<{ source: string; maxAgeMs: number }> = [];
     const provider = synthetic();
@@ -322,7 +327,9 @@ describe("runCliShowCommand", () => {
       fetch: vi.fn().mockResolvedValue(answer()),
     };
     mockProviders.push(openAiProvider, copilotProvider);
-    writeSettings({ providers: { enabled: ["openai"] } });
+    writeSettings({
+      providers: { off: CONFIG_PROVIDER_IDS.filter((id) => !["openai"].includes(id)) },
+    });
 
     const result = await run("show", ["--provider=github-copilot"]);
 

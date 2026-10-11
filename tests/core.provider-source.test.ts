@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { keyedLogins, loadProviderSource } from "../src/core/provider-source.js";
+import { keyedLogins, loadProviderSource, providerContext } from "../src/core/provider-source.js";
 import { createQuotaStore } from "../src/core/store.js";
 import type { QuotaProvider } from "../src/lib/entries.js";
 import { buildQuotaExportFromSnapshot } from "../src/lib/quota-export.js";
@@ -77,6 +77,28 @@ describe("provider source logins", () => {
   afterEach(async () => {
     __resetResolvedAuthIdentityForTests();
     await rm(runtime.root, { recursive: true, force: true });
+  });
+
+  it("checks found and later registered providers unless their id is switched off", async () => {
+    const first = fakeProvider("copilot", async () => answer());
+    const later = fakeProvider("future-provider", async () => answer());
+    registry.providers = [first];
+    const loaded = {
+      path: "settings.jsonc",
+      exists: true,
+      settings: defaultSettings(),
+      issues: [],
+      fromFile: [],
+      notRead: [],
+    };
+    const host = { client: {} as never, workspaceRoot: runtime.root, settings: () => loaded };
+    expect((await loadProviderSource(host)).providers.map(({ id }) => id)).toEqual(["copilot"]);
+    loaded.settings.providers.off = ["copilot"];
+    registry.providers = [first, later];
+    expect((await loadProviderSource(host)).providers.map(({ id }) => id)).toEqual([
+      "future-provider",
+    ]);
+    expect(providerContext(host).config.automaticDiscovery).toBe(true);
   });
 
   it.runIf(POSIX_IDENTITY_STORAGE)(

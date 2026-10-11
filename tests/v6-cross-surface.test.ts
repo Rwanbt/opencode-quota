@@ -1,16 +1,22 @@
+import { QUOTA_PROVIDER_CATALOG } from "../src/lib/provider-metadata.js";
+
+const CONFIG_PROVIDER_IDS = Object.keys(QUOTA_PROVIDER_CATALOG).map((id) =>
+  id === "quota-providers" ? "custom" : id,
+);
+
 /**
  * The v6 surfaces end to end: the real server plugin (`src/plugin.ts`) and the real TUI plugin
  * (`src/tui/index.tsx`) on fake OpenCode hosts, joined by a JSON RPC bridge. Three providers:
  * Copilot with only its plan, MiniMax over its quota, and a custom json-v1 source next to a
  * failing one. OpenCode's history (a session database) used Anthropic and GitHub Copilot.
  * API keys and a private error body are canaries no surface may show. Then the quota window's
- * Settings tabs change a surface and save to plugin storage, and save words and a custom
+ * Settings tabs change a surface, words and a custom
  * provider switched on to settings.jsonc.
  *
  * Agent tool to plugin: a custom provider an agent replaces is switched off, and the running
  * server stops its requests through the settings reload alone.
  */
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parse as parseJsonc } from "jsonc-parser";
@@ -336,13 +342,6 @@ async function startHosts() {
       return [value, async (mutation: (draft: any) => void) => mutation(value)];
     },
   };
-  storage.store("settings", {
-    initial: {
-      version: 1,
-      settings: { toast: { afterReply: "always" }, statusLine: { detail: "one" } },
-    },
-  });
-
   const listeners = new Map<string, Listener>();
   const renderers = new Map<string, (props?: { sessionID?: string }) => unknown>();
   let commands: Array<{ id: string; run: () => Promise<void> }> = [];
@@ -517,12 +516,23 @@ describe("v6 surfaces on the quota snapshot", () => {
     process.env.V6_FAILING_KEY = CANARIES.failingKey;
     seedDefaultPluginBootstrapMocks(mocks, { resetPluginState: true });
     writePluginTestSettings(mocks.root, {
-      providers: { enabled: ["copilot", "minimax-coding-plan", "custom"], custom: CUSTOM_SOURCES },
-      checking: { minIntervalMs: 60_000 },
+      toast: { afterReply: "always" },
+      statusLine: { detail: "one" },
       words: { sessionTokens: "current" },
-      announcements: { enabled: false, home: false },
-      export: { enabled: true, path: join(mocks.root, "quota-export.json") },
-      telemetry: { enabled: true },
+      providers: {
+        off: CONFIG_PROVIDER_IDS.filter(
+          (id) => !["copilot", "minimax-coding-plan", "custom"].includes(id),
+        ),
+        custom: CUSTOM_SOURCES,
+        checking: { minIntervalMs: 60_000 },
+      },
+      system: {
+        notices: false,
+        noticesOnHome: false,
+        exportFile: true,
+        exportPath: join(mocks.root, "quota-export.json"),
+        telemetry: true,
+      },
     });
     mocks.fetchSessionTokensForDisplay.mockResolvedValue({
       sessionTokens: { totalInput: 1200, totalCachedInput: 300, totalOutput: 45 },
@@ -688,37 +698,6 @@ describe("v6 surfaces on the quota snapshot", () => {
     );
     expect(quotaWindow()).not.toContain("Close");
 
-    // The quick look as a toast, and as a message in the session: the TUI runs the server's
-    // /quota there, which posts the same short text as on Web and Desktop. In a 120-column
-    // terminal the toast's text gets 54 columns: a longer line goes on under itself.
-    const settings = tui.stored.get("settings").settings;
-    settings.quickLook = "toast";
-    await tui.command("quick_look").run();
-    await vi.waitFor(() => expect(tui.toast).toHaveBeenCalledTimes(2));
-    const shortText = [
-      "Quota · 7 days · $4.50 · 1.50M tokens",
-      "● Anthropic             $3.00",
-      "● Copilot (pro)         Plan 81% left  $1.50",
-      "● MiniMax Token Plan    5h 0% left · 7d 40% left",
-      "● Custom providers (T…  Provider error 503",
-      "  30d 64% left",
-    ];
-    expect(tui.toast.mock.calls[1]?.[0]).toMatchObject({
-      variant: "info",
-      message: shortText.join("\n"),
-    });
-    settings.quickLook = "chat";
-    await tui.command("quick_look").run();
-    expect(tui.sessionCommand).toHaveBeenCalledExactlyOnceWith(
-      { sessionID: "ses_1", name: "quota", text: "" },
-      expect.anything(),
-    );
-    await vi.waitFor(() => expect(tui.posted).toHaveBeenCalledOnce());
-    expect(tui.posted.mock.calls[0]?.[0].text.split("\n").slice(0, 2)).toEqual([
-      "[OpenCode Quota report]",
-      "Quota · 7 days · $4.50 · 1.50M tokens",
-    ]);
-
     // The export file (version 3) and the gauges follow the snapshot without asking a provider
     // again.
     const exportPath = join(mocks.root, "quota-export.json");
@@ -783,7 +762,7 @@ describe("v6 surfaces on the quota snapshot", () => {
     );
 
     // Settings: the window's Sidebar tab edits a draft that the real sidebar shows at once (the
-    // tab expands the panel collapsed above); Save stores it in plugin storage and closes.
+    // tab expands the panel collapsed above); Save writes settings.jsonc and closes.
     const windowTree = () => tui.render("session.composer.top", { sessionID: "ses_1" });
     clickable(windowTree(), "Sidebar").props.onMouseUp();
     expect(words(sidebar())).toContain("Session 1.20K in · 45 out");
@@ -791,13 +770,15 @@ describe("v6 surfaces on the quota snapshot", () => {
     expect(words(sessionTokens)).toEqual(["Session tokens line", "‹", "shown", "›", ""]);
     clickable(sessionTokens, "›").props.onMouseUp();
     expect(words(sidebar())).not.toContain("Session 1.20K in · 45 out");
-    expect(tui.stored.get("settings").settings.sidebar).toBeUndefined();
+    expect(tui.stored.has("settings")).toBe(false);
     clickable(windowTree(), "Save").props.onMouseUp();
-    await vi.waitFor(() => expect(windowTree()).toBe(""));
-    expect(tui.stored.get("settings")).toMatchObject({
-      version: 1,
-      settings: { sidebar: { sessionTokens: false }, toast: { afterReply: "always" } },
-    });
+    await vi.waitFor(() => expect(windowTree()).toBe(""), { timeout: 5_000 });
+    expect(
+      parseJsonc(
+        await readFile(join(mocks.root, "config", "opencode-quota", "settings.jsonc"), "utf8"),
+      ),
+    ).toMatchObject({ sidebar: { sessionTokens: false } });
+    expect(tui.stored.has("settings")).toBe(false);
     expect(tui.toast).toHaveBeenLastCalledWith(
       expect.objectContaining({ variant: "success", title: "Quota settings saved" }),
     );
@@ -817,8 +798,86 @@ describe("v6 surfaces on the quota snapshot", () => {
           ?.run();
       }
       clickable(windowTree(), tab).props.onMouseUp();
+      await vi.waitFor(() => expect(words(windowTree())).not.toContain("Loading settings…"));
       return { tui, windowTree };
     }
+
+    it("checks found providers by default, saves unticks and checks a provider found later", async () => {
+      writePluginTestSettings(mocks.root, {
+        providers: { off: [], checking: { minIntervalMs: 1 } },
+        system: { notices: false, noticesOnHome: false },
+      });
+      let cursorFound = false;
+      const cursor = {
+        ...fakeProvider("cursor", "Cursor", [percentRow("monthly", "Month", 60)]),
+        isAvailable: async () => cursorFound,
+      };
+      mocks.getProviders.mockReturnValue([
+        fakeProvider("copilot", "Copilot", [percentRow("allowance", "Plan", 81)]),
+        cursor,
+      ]);
+      const { tui, windowTree } = await openSettings("Providers");
+      try {
+        await vi.waitFor(() =>
+          expect(words(settingLine(windowTree(), "provider.copilot"))).toContain("checked"),
+        );
+        expect(words(settingLine(windowTree(), "provider.cursor"))).toContain("not found");
+        expect(words(windowTree())).not.toContain("Check");
+        clickable(settingLine(windowTree(), "provider.copilot"), "›").props.onMouseUp();
+        expect(words(settingLine(windowTree(), "provider.copilot"))).toContain("skipped");
+        clickable(windowTree(), "Save").props.onMouseUp();
+        await vi.waitFor(() => expect(windowTree()).toBe(""), { timeout: 5_000 });
+        expect(
+          parseJsonc(
+            await readFile(join(mocks.root, "config", "opencode-quota", "settings.jsonc"), "utf8"),
+          ).providers.off,
+        ).toEqual(["copilot"]);
+        cursorFound = true;
+        await tui.handlers.refresh!({ reason: "manual", sessionID: "ses_1" }, {});
+        await tui.command("settings").run();
+        for (let step = 0; step < 12 && !clickable(windowTree(), "Providers"); step += 1)
+          tui.press(10, "tab");
+        clickable(windowTree(), "Providers").props.onMouseUp();
+        await vi.waitFor(() =>
+          expect(words(settingLine(windowTree(), "provider.cursor"))).toContain("checked"),
+        );
+        expect(words(settingLine(windowTree(), "provider.cursor")).join(" ")).toContain(
+          "[x] Cursor",
+        );
+      } finally {
+        await tui.dispose();
+      }
+    });
+
+    it("a hand edit updates the real sidebar, footer, toast and Limits tab over a draft", async () => {
+      const { tui, windowTree } = await openSettings("Sidebar");
+      try {
+        const sidebar = () => words(tui.render("sidebar.content", { sessionID: "ses_1" }));
+        await vi.waitFor(() => expect(sidebar()).toContain("Plan ██████░░ 81% left"));
+        clickable(settingLine(windowTree(), "sidebar.sessionTokens"), "›").props.onMouseUp();
+        const path = join(mocks.root, "config", "opencode-quota", "settings.jsonc");
+        const file = parseJsonc(await readFile(path, "utf8"));
+        file.sidebar = { names: { "copilot.allowance": "Sidebar quota" } };
+        file.toast = { afterReply: "always", names: { "copilot.allowance": "Reply" } };
+        file.statusLine = { detail: "one", window: { copilot: "month" } };
+        file.words = { percent: "used" };
+        await writeFile(path, JSON.stringify(file));
+        await vi.waitFor(() => expect(sidebar().join(" ")).toContain("Sidebar… ██████░░ 19% used"));
+        expect(sidebar().join(" ")).not.toContain("Session 1.20K");
+        const footer = () => words(tui.render("prompt.footer", { sessionID: "ses_1" })).join(" ");
+        await vi.waitFor(() => expect(footer()).toContain("19%"));
+        tui.emit("session.execution.succeeded", { sessionID: "ses_1" });
+        await vi.waitFor(() =>
+          expect(tui.toast).toHaveBeenLastCalledWith(
+            expect.objectContaining({ message: expect.stringContaining("Reply") }),
+          ),
+        );
+        clickable(windowTree(), "Limits").props.onMouseUp();
+        expect(words(windowTree()).join(" ")).toContain("Sidebar quota");
+      } finally {
+        await tui.dispose();
+      }
+    });
 
     it("closes with unsaved changes only after Save or Discard", async () => {
       const { tui, windowTree } = await openSettings("Layout");
@@ -826,7 +885,7 @@ describe("v6 surfaces on the quota snapshot", () => {
       clickable(windowTree(), "esc").props.onMouseUp();
       clickable(windowTree(), "esc").props.onMouseUp();
       expect(words(windowTree())).toContain("Keep your changes?");
-      expect(tui.stored.get("settings").settings.layout).toBeUndefined();
+      expect(tui.stored.has("settings")).toBe(false);
       clickable(windowTree(), "Discard").props.onMouseUp();
       expect(windowTree()).toBe("");
       await tui.dispose();
@@ -850,27 +909,10 @@ describe("v6 surfaces on the quota snapshot", () => {
       await tui.dispose();
     });
 
-    it("shows /quota in the Layout tab's form at once, and saves it to plugin storage", async () => {
+    it("has no /quota form setting on the Layout tab", async () => {
       const { tui, windowTree } = await openSettings("Layout");
-      const line = () => settingLine(windowTree(), "quickLook");
-      expect(words(line())).toEqual(expect.arrayContaining(["/quota shows", "a popup"]));
-
-      // A toast before Save: /quota already uses the changed line.
-      clickable(line(), "›").props.onMouseUp();
-      expect(words(line())).toContain("a toast");
-      await tui.command("quick_look").run();
-      await vi.waitFor(() =>
-        expect(tui.toast).toHaveBeenLastCalledWith(
-          expect.objectContaining({
-            variant: "info",
-            message: expect.stringMatching(/^Quota · 7 days/u),
-          }),
-        ),
-      );
-      expect(tui.dialog.show).not.toHaveBeenCalled();
-
-      clickable(windowTree(), "Save").props.onMouseUp();
-      await vi.waitFor(() => expect(tui.stored.get("settings").settings?.quickLook).toBe("toast"));
+      expect(words(windowTree())).not.toContain("/quota shows");
+      expect(tui.stored.has("settings")).toBe(false);
       await tui.dispose();
     });
 
@@ -884,11 +926,11 @@ describe("v6 surfaces on the quota snapshot", () => {
     it("saves Words and a custom provider switched on in Providers to settings.jsonc, then fetches it", async () => {
       writePluginTestSettings(mocks.root, {
         providers: {
-          enabled: ["copilot", "custom"],
+          off: CONFIG_PROVIDER_IDS.filter((id) => !["copilot", "custom"].includes(id)),
           custom: [{ ...CUSTOM_SOURCES[0], enabled: false }],
+          checking: { minIntervalMs: 1 },
         },
-        checking: { minIntervalMs: 1 },
-        announcements: { enabled: false, home: false },
+        system: { notices: false, noticesOnHome: false },
       });
       const teamUrl = CUSTOM_SOURCES[0]?.url;
       const fetchedTeam = () => vi.mocked(fetch).mock.calls.some(([url]) => url === teamUrl);
@@ -925,7 +967,7 @@ describe("v6 surfaces on the quota snapshot", () => {
         }),
       );
       // The window closes once the save's answer is back, a moment after the file changed.
-      await vi.waitFor(() => expect(windowTree()).toBe(""));
+      await vi.waitFor(() => expect(windowTree()).toBe(""), { timeout: 5_000 });
 
       // The plugin uses the saved settings at once: the next check asks the custom provider.
       await tui.command("settings").run();
@@ -937,11 +979,11 @@ describe("v6 surfaces on the quota snapshot", () => {
       const settings = (url: string) =>
         writePluginTestSettings(mocks.root, {
           providers: {
-            enabled: ["copilot", "custom"],
+            off: CONFIG_PROVIDER_IDS.filter((id) => !["copilot", "custom"].includes(id)),
             custom: [{ ...CUSTOM_SOURCES[0], url, enabled: false }],
+            checking: { minIntervalMs: 1 },
           },
-          checking: { minIntervalMs: 1 },
-          announcements: { enabled: false, home: false },
+          system: { notices: false, noticesOnHome: false },
         });
       settings("https://team-gateway.example/accounting");
       const settingsFile = join(mocks.root, "config", "opencode-quota", "settings.jsonc");
@@ -953,6 +995,9 @@ describe("v6 surfaces on the quota snapshot", () => {
 
       // An agent points the provider somewhere else (saved switched off) before the user saves.
       settings("https://other.example/accounting");
+      await vi.waitFor(() =>
+        expect(words(team()).join(" ")).toContain("https://other.example/accounting"),
+      );
       clickable(windowTree(), "Save").props.onMouseUp();
 
       await vi.waitFor(() =>
@@ -1285,10 +1330,12 @@ describe("an agent tool replacing an active custom provider", () => {
     process.env.V6_NEW_TEAM_KEY = NEW_TEAM_KEY;
     seedDefaultPluginBootstrapMocks(mocks, { resetPluginState: true });
     writePluginTestSettings(mocks.root, {
-      providers: { enabled: ["custom"], custom: [ACTIVE_SOURCE] },
-      // Only a manual refresh asks the provider; nothing in the background does.
-      checking: { minIntervalMs: 3_600_000 },
-      announcements: { enabled: false, home: false },
+      providers: {
+        off: CONFIG_PROVIDER_IDS.filter((id) => !["custom"].includes(id)),
+        custom: [ACTIVE_SOURCE],
+        checking: { minIntervalMs: 3_600_000 },
+      },
+      system: { notices: false, noticesOnHome: false },
     });
     const { quotaProvidersProvider } = await import("../src/providers/quota-providers.js");
     mocks.getProviders.mockReturnValue([quotaProvidersProvider]);

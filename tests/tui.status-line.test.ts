@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { convertV5 } from "../src/settings/index.js";
-import { applyDisplayImport, createDisplayStore } from "../src/tui/display.js";
+import { displaySettings } from "../src/tui/display.js";
 import type { SurfaceHost } from "../src/tui/sidebar.js";
 import { findAll } from "./helpers/jsx-tree.js";
 
@@ -37,18 +37,6 @@ afterEach(async () => {
   await rm(root, { recursive: true, force: true });
 });
 
-/** OpenCode's plugin storage: one live value per key, changed only through `update`. */
-function memoryStorage() {
-  const values = new Map<string, unknown>();
-  return {
-    store<Value extends object>(key: string, options: { readonly initial: Value }) {
-      if (!values.has(key)) values.set(key, structuredClone(options.initial));
-      const value = values.get(key) as Value;
-      return [value, async (mutation: (draft: Value) => void) => mutation(value)] as const;
-    },
-  };
-}
-
 describe("HomeFooter", () => {
   it("shows the status line on Home for a v5 config that showed it only on Home", async () => {
     const v5 = join(root, "config", "opencode-quota", "quota-toast.jsonc");
@@ -60,9 +48,7 @@ describe("HomeFooter", () => {
       }),
     );
     const conversion = await convertV5();
-    const storage = memoryStorage();
-    await applyDisplayImport(storage, conversion?.displayImport ?? {});
-    const display = createDisplayStore(storage).shown;
+    const display = () => displaySettings(conversion!.settings);
     expect(display().surfaces.statusLine.enabled).toBe(false);
 
     const { HomeFooter, StatusLine } = await import("../src/tui/status-line.tsx");

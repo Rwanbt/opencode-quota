@@ -353,6 +353,15 @@ describe("OpenCode Zen provider", () => {
     ).resolves.toBe(expected);
   });
 
+  it("does not treat the v6 discovery list as an explicit request without a Console sign-in", async () => {
+    world.storeLogins([]);
+    const config = { ...EXPLICIT, automaticDiscovery: true };
+    await expect(opencodeZenProvider.isAvailable({ config } as never)).resolves.toBe(false);
+    const http = consoleHttp();
+    expect((await fetchRows(opencodeZenProvider, config)).rows).toEqual([]);
+    expect(http).not.toHaveBeenCalled();
+  });
+
   it.each([
     ["opencode/gpt-5", true],
     ["OPENCODE/gemini", true],

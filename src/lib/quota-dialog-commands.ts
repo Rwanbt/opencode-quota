@@ -15,6 +15,7 @@ import { type UsageReport, usageReport } from "../core/usage.js";
 import { getProviders } from "../providers/registry.js";
 import { apiKeyStatusDetails, simpleApiKeyStatusDetails } from "../providers/result-helpers.js";
 import type { Settings, V5Conversion } from "../settings/index.js";
+import { PROVIDER_IDS } from "../settings/schema.js";
 import { DEFAULT_WORDS } from "../view/format.js";
 import { type RowSettings, type SurfaceRows, visibleGroups } from "../view/select.js";
 import { plainLines } from "../view/text.js";
@@ -59,14 +60,14 @@ const EVERY_ROW_SETTINGS: RowSettings = {
 
 /**
  * The quota lines `opencode-quota show` prints, in the snapshot's words: a line per row (with
- * "runs out in …" when `words.runsOut` is on), a line per provider problem, then the session's
+ * "runs out in …" when the quota runs out before its reset), a line per provider problem, then the session's
  * tokens when the snapshot has them.
  */
 export function quotaReportLines(snapshot: QuotaSnapshot, nowMs: number): string[] {
   const words = snapshot.words ?? DEFAULT_WORDS;
   const groups = visibleGroups(snapshot, EVERY_ROW_SETTINGS, "toast", words);
   const sessionTokens = snapshot.sessionTokens ? { sessionTokens: snapshot.sessionTokens } : {};
-  return plainLines({ groups, words, nowMs, runsOut: words.runsOut, ...sessionTokens }).map(
+  return plainLines({ groups, words, nowMs, runsOut: true, ...sessionTokens }).map(
     sanitizeDisplayText,
   );
 }
@@ -75,7 +76,7 @@ export function quotaReportLines(snapshot: QuotaSnapshot, nowMs: number): string
  * Uses the pricing settings from now on: the price list (`source`) and how many days old it
  * may get before a refresh. Applied before any provider check, as local estimates use prices.
  */
-export function applyPricingSettings(pricing: Settings["pricing"]): void {
+export function applyPricingSettings(pricing: Settings["providers"]["pricing"]): void {
   setPricingSnapshotAutoRefresh(pricing.autoRefreshDays);
   setPricingSnapshotSelection(pricing.source);
 }
@@ -240,8 +241,6 @@ async function checkKnownProviders(
   const checks = await Promise.all(
     known.map(async (provider): Promise<ProviderCheck> => {
       if (sourceIds.has(provider.id)) return { provider, enabled: true, available: true };
-      // In auto mode a provider is enabled when it is available, as v5 reports it.
-      if (enabledProviders === "auto") return { provider, enabled: false, available: false };
       if (turnedOn(provider.id)) return { provider, enabled: true, available: false };
       return { provider, enabled: false, available: await isAvailable(provider, ctx) };
     }),
@@ -297,7 +296,10 @@ export async function buildStatusReportData(params: {
   const { host } = params;
   const loaded = host.settings();
   const { settings } = loaded;
-  await kickPricingRefresh({ reason: "status", snapshotSelection: settings.pricing.source });
+  await kickPricingRefresh({
+    reason: "status",
+    snapshotSelection: settings.providers.pricing.source,
+  });
 
   const currentModel = params.sessionModel?.id;
   const currentProviderID = params.sessionModel?.providerID;
@@ -328,11 +330,9 @@ export async function buildStatusReportData(params: {
         : undefined,
   }));
 
-  if (enabledProviders === "auto") {
-    await params.onDetectedProviderIds?.(
-      availability.filter((item) => item.available).map((item) => item.id),
-    );
-  }
+  await params.onDetectedProviderIds?.(
+    availability.filter((item) => item.enabled && item.available).map((item) => item.id),
+  );
   const checkedIds = new Set(
     availability.filter((item) => item.enabled && item.available).map((item) => item.id),
   );
@@ -349,17 +349,24 @@ export async function buildStatusReportData(params: {
     settings: loaded,
     conversion: loaded.conversion ?? params.conversion,
     workspaceRoot: host.workspaceRoot,
-    enabledProviders: settings.providers.enabled,
+    enabledProviders:
+      settings.providers.off.length === 0
+        ? "auto"
+        : PROVIDER_IDS.filter((id) => !settings.providers.off.includes(id)),
     onlyCurrentModel: settings.words.onlyCurrentModel,
     quotaProviders: settings.providers.custom,
-    pricingSnapshotSource: settings.pricing.source,
+    pricingSnapshotSource: settings.providers.pricing.source,
     currentModel,
     sessionModelLookup,
     providerAvailability: availability,
     providers: snapshots,
     credentialSource: getCredentialSourceDiagnostics(),
     maintainerAnnouncements: {
-      config: settings.announcements,
+      config: {
+        enabled: settings.system.notices,
+        home: settings.system.noticesOnHome,
+        homeFrequency: settings.system.noticesOnHomeEvery,
+      },
       summary: maintainerAnnouncementsSummary,
     },
     usage,
@@ -374,13 +381,17 @@ export async function buildStatusReportData(params: {
     config: {
       settingsPath: statusPathText(loaded.path),
       settingsFileExists: loaded.exists,
-      enabledProviders: knownProviderIds(settings.providers.enabled),
+      enabledProviders: knownProviderIds(
+        settings.providers.off.length === 0
+          ? "auto"
+          : PROVIDER_IDS.filter((id) => !settings.providers.off.includes(id)),
+      ),
       onlyCurrentModel: settings.words.onlyCurrentModel,
-      pricingSnapshotSource: settings.pricing.source,
+      pricingSnapshotSource: settings.providers.pricing.source,
     },
     providers: availability,
     pricing: {
-      selection: settings.pricing.source,
+      selection: settings.providers.pricing.source,
       activeSource: getPricingSnapshotSource(),
       snapshot: {
         source: pricingMeta.source,
@@ -416,7 +427,7 @@ export async function buildQuotaDialogCommandOutput(params: {
   onDetectedProviderIds?: (providerIds: string[]) => Promise<void>;
 }): Promise<{ output: string }> {
   const generatedAtMs = params.generatedAtMs ?? Date.now();
-  applyPricingSettings(params.host.settings().settings.pricing);
+  applyPricingSettings(params.host.settings().settings.providers.pricing);
   const sessionModel =
     params.sessionID && params.resolveSessionModel
       ? await params.resolveSessionModel(params.sessionID)

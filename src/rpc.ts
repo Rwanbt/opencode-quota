@@ -9,7 +9,7 @@
  * /quota_status report), `usage` (tokens and cost from OpenCode's history for one range),
  * `downloadPrices` (a new price list from models.dev), `settings` (the server settings a client
  * may change), `saveSettings` (a patch of the server settings file, and custom provider
- * switches) and `acknowledgeDisplayImport` (a TUI applied the snapshot's `displayImport`); the
+ * switches); the
  * `changed` event carries every new snapshot.
  */
 import type { Rpc } from "@opencode/plugin";
@@ -64,10 +64,6 @@ export type QuotaRpcSaveSettingsInput = {
 };
 /** Nothing is saved unless `ok`; `issues` say why. */
 export type QuotaRpcSaveSettingsOutput = { ok: boolean; issues: SettingsIssue[] };
-/** The `id` of the snapshot's `displayImport` that the TUI applied. */
-export type QuotaRpcAcknowledgeInput = { id: string };
-export type QuotaRpcAcknowledgeOutput = Record<string, never>;
-
 type StandardValueSchema = Extract<Rpc.PortableValueSchema, { "~standard": unknown }>;
 type StandardEventSchema = Extract<Rpc.PortableEventDefinition["schema"], { "~standard": unknown }>;
 type Typed<T> = { "~standard": { types?: { input: T; output: T } } };
@@ -268,14 +264,6 @@ export const QuotaRpc = {
         isRecord(value) && typeof value.ok === "boolean" && Array.isArray(value.issues)
           ? null
           : "output must carry ok and issues",
-      ),
-    },
-    acknowledgeDisplayImport: {
-      input: schema<QuotaRpcAcknowledgeInput>((value) =>
-        isRecord(value) && typeof value.id === "string" ? null : "input must carry an id",
-      ),
-      output: schema<QuotaRpcAcknowledgeOutput>((value) =>
-        isRecord(value) ? null : "output must be an object",
       ),
     },
   },

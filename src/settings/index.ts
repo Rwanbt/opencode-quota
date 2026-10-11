@@ -2,20 +2,16 @@
  * The server settings, one module: `loadSettings`, `saveSettings(patch)`, `editSettings`,
  * `editSettingsFile`, `watchSettings`, `convertV5` and the schema the agent tools describe and
  * check values with.
- * Display settings (looks) are not here; the TUI keeps them in OpenCode's plugin storage and
- * takes the v5 ones from `pendingDisplayImport`.
+ * Every client reads these settings from settings.jsonc through the quota RPC.
  */
-export type { ConvertedKey, DisplayImport, SkippedKey, V5Conversion } from "./convert.js";
+export type { ConvertedKey, SkippedKey, V5Conversion } from "./convert.js";
 export {
-  acknowledgeDisplayImport,
   type CustomSwitch,
   convertV5,
   editSettings,
   editSettingsFile,
   type LoadedSettings,
   loadSettings,
-  type PendingDisplayImport,
-  pendingDisplayImport,
   type SaveResult,
   type SettingsChange,
   type SettingsFileEdit,

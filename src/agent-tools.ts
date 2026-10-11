@@ -1,7 +1,7 @@
 /**
  * Tools for AI agents: read the server settings, change the provider, checking and pricing
  * settings, and add, test and remove custom providers. Words, notices, export and telemetry
- * are the user's (in /quota_settings); looks are not server settings at all. Every write
+ * are the user's, edited in the quota window or the settings file. Every write
  * holds the settings lock and goes into OpenCode Quota's own settings file, never opencode.json.
  *
  * Keys: a provider added by an agent is saved switched off (`"enabled": false`), so it is never
@@ -71,7 +71,7 @@ type Redact = (text: string) => string;
 const REDACTED = "[redacted]";
 
 /** The top-level settings agents may change; the user changes the others in /quota_settings. */
-const AGENT_GROUPS: readonly string[] = ["providers", "checking", "pricing"];
+const AGENT_GROUPS: readonly string[] = ["providers"];
 
 const TOP_LEVEL_SETTINGS: ReadonlySet<string> = new Set(
   Object.keys(SETTINGS_SCHEMA).map((key) => key.split(".")[0]),
@@ -322,9 +322,9 @@ async function getSettings(): Promise<ToolResult> {
   );
   const notes = [
     `quota_settings_set changes only ${AGENT_GROUPS.join(", ")}, as nested objects, e.g. ` +
-      '{ "checking": { "minIntervalMs": 600000 } }; null resets a key. The user changes the ' +
+      '{ "providers": { "checking": { "minIntervalMs": 600000 } } }; null resets a key. The user changes the ' +
       "other settings in /quota_settings.",
-    "Looks (sidebar, status line, toasts) are not in this file; these tools do not change them.",
+    "All quota settings are in this file. The user changes display settings in /quota_settings.",
   ];
   if (!loaded.exists && loaded.conversion) {
     notes.push(
@@ -361,7 +361,7 @@ function patchIssues(patch: Record<string, unknown>): SettingsIssue[] {
       return [
         {
           key: "patch",
-          message: `use nested objects, not dotted keys (${position}), e.g. { "checking": { "minIntervalMs": 600000 } }`,
+          message: `use nested objects, not dotted keys (${position}), e.g. { "providers": { "checking": { "minIntervalMs": 600000 } } }`,
         },
       ];
     }
@@ -497,10 +497,10 @@ async function visibilityNotes(
   host: QuotaAgentToolsHost,
 ): Promise<string[]> {
   const notes: string[] = [];
-  const enabled = settings.providers.enabled;
-  if (enabled !== "auto" && !enabled.includes("custom")) {
+  const off = settings.providers.off;
+  if (off.includes("custom")) {
     notes.push(
-      'providers.enabled does not list "custom", so custom providers are not shown; add it with quota_settings_set.',
+      'providers.off lists "custom", so custom providers are not shown; remove it with quota_settings_set.',
     );
   }
   let openCodeIds: readonly string[] | undefined;
@@ -593,7 +593,11 @@ async function testProvider(
       ...(problems.length > 0 ? { problemsInFile: problems } : {}),
     };
   }
-  const test = await testFetch(definition, loaded.settings.checking.requestTimeoutMs, redact);
+  const test = await testFetch(
+    definition,
+    loaded.settings.providers.checking.requestTimeoutMs,
+    redact,
+  );
   const notes = await visibilityNotes(definition, loaded.settings, host);
   return { id: definition.id, ...test, ...(notes.length > 0 ? { notes } : {}) };
 }
@@ -695,7 +699,7 @@ export function quotaAgentTools(host: QuotaAgentToolsHost): QuotaAgentTool[] {
         patch: {
           type: "object",
           description:
-            'Nested settings to change, e.g. { "checking": { "minIntervalMs": 600000 } }.',
+            'Nested settings to change, e.g. { "providers": { "checking": { "minIntervalMs": 600000 } } }.',
         },
       },
       setSettings,

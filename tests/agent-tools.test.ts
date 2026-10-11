@@ -9,6 +9,7 @@ import { bindCredentialSource, type CredentialRow } from "../src/lib/opencode-au
 import type { RemoteApiQuotaProviderDefinition } from "../src/lib/quota-providers.js";
 import { resolveQuotaProviderApiKey } from "../src/lib/quota-providers-remote.js";
 import { loadSettings, settingsPath } from "../src/settings/index.js";
+import { PROVIDER_IDS as CONFIG_PROVIDER_IDS } from "../src/settings/schema.js";
 
 let root: string;
 let openCodeProviderIds: string[];
@@ -228,11 +229,14 @@ const NAMED_DEFINITIONS: Array<{ where: string; definition: (name: string) => un
 
 const NAMED_PATCHES: Array<{ where: string; patch: (name: string) => unknown }> = [
   { where: "at the top level", patch: (name) => ({ [name]: 1 }) },
-  { where: "in a group", patch: (name) => ({ checking: { [name]: 1 } }) },
+  { where: "in a group", patch: (name) => ({ providers: { checking: { [name]: 1 } } }) },
   { where: "in a nested group", patch: (name) => ({ providers: { cursor: { [name]: 1 } } }) },
   { where: "with a dot at the top level", patch: (name) => ({ [`checking.${name}`]: 1 }) },
-  { where: "with a dot in a group", patch: (name) => ({ checking: { [`a.${name}`]: 1 } }) },
-  { where: "in an array", patch: (name) => ({ providers: { enabled: [{ [name]: 1 }] } }) },
+  {
+    where: "with a dot in a group",
+    patch: (name) => ({ providers: { checking: { [`a.${name}`]: 1 } } }),
+  },
+  { where: "in an array", patch: (name) => ({ providers: { off: [{ [name]: 1 }] } }) },
 ];
 
 /** The custom providers in the settings file, as the plugin loads them. */
@@ -396,16 +400,16 @@ describe("quota_settings_set", () => {
     writeSettings(FILE_WITH_COMMENTS);
 
     const result = await call("quota_settings_set", {
-      patch: { checking: { minIntervalMs: 600_000 } },
+      patch: { providers: { checking: { minIntervalMs: 600_000 } } },
     });
 
     expect(result).toMatchObject({
       ok: true,
-      diff: [{ key: "checking.minIntervalMs", before: 300_000, after: 600_000 }],
+      diff: [{ key: "providers.checking.minIntervalMs", before: 300_000, after: 600_000 }],
       message: "Saved.",
     });
     expect(settingsText()).toContain("// keep me");
-    expect((await loadSettings()).settings.checking.minIntervalMs).toBe(600_000);
+    expect((await loadSettings()).settings.providers.checking.minIntervalMs).toBe(600_000);
     expect(existsSync(join(root, "config", "opencode.json"))).toBe(false);
   });
 
@@ -430,21 +434,20 @@ describe("quota_settings_set", () => {
   it.each([
     {
       name: "an unknown key, with the valid ones",
-      patch: { checking: { minIntervalMz: 1 } },
-      message: /^unknown setting \(key 1\); valid in checking: minIntervalMs,/,
+      patch: { providers: { checking: { minIntervalMz: 1 } } },
+      message: /^unknown setting \(key 1\); valid in providers.checking: minIntervalMs,/,
     },
     {
       name: "an unknown group, with the ones agents may change",
       patch: { wordz: {} },
-      message:
-        /^unknown setting \(key 1 of the patch\); agents may change: providers, checking, pricing$/,
+      message: /^unknown setting \(key 1 of the patch\); agents may change: providers$/,
     },
     {
       name: "a bad value",
-      patch: { checking: { minIntervalMs: 0 } },
+      patch: { providers: { checking: { minIntervalMs: 0 } } },
       message: /^expected a number/,
     },
-    ...["words", "announcements", "export", "telemetry", "version"].map((group) => ({
+    ...["words", "sidebar", "colors", "layout", "system", "version"].map((group) => ({
       name: `the user's ${group}`,
       patch: { [group]: group === "version" ? 6 : { enabled: true } },
       message: new RegExp(`^the user changes ${group} in /quota_settings`),

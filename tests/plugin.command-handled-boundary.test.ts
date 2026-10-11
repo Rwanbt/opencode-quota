@@ -51,6 +51,7 @@ const SNAPSHOT = {
       debug: [],
     },
   ],
+  settings: { values: { "toast.afterReply": "always" }, providers: [], custom: [] },
   resetNotices: [],
   generatedAtMs: 1,
 };
@@ -67,15 +68,8 @@ function startTui() {
     location: { directory: process.cwd() },
     client: { rpc: vi.fn(() => rpc) },
     theme: { text: { base: "base", muted: "muted" } },
-    // Display settings with a toast after every reply.
     storage: {
-      store: (key: string, options: { initial: any }) => {
-        const value =
-          key === "settings"
-            ? { ...options.initial, settings: { toast: { afterReply: "always" } } }
-            : options.initial;
-        return [value, async () => {}];
-      },
+      store: (_key: string, options: { initial: unknown }) => [options.initial, async () => {}],
     },
     data: {
       session: { get: vi.fn() },

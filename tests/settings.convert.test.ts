@@ -12,15 +12,13 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  acknowledgeDisplayImport,
   convertV5,
-  type DisplayImport,
   defaultSettings,
   loadSettings,
-  pendingDisplayImport,
   saveSettings,
   settingsPath,
 } from "../src/settings/index.js";
+import { PROVIDER_IDS, type SettingsPatch } from "../src/settings/schema.js";
 import {
   quotaProvider,
   VALID_QUOTA_PROVIDER_INPUTS,
@@ -72,24 +70,24 @@ const GO_SURFACES = Object.fromEntries(
 const ROWS: Array<{
   v5: Record<string, unknown>;
   server?: Record<string, unknown>;
-  display?: DisplayImport;
+  sections?: SettingsPatch;
   dropped?: string[];
 }> = [
   { v5: { enabled: false }, dropped: ["enabled"] },
-  { v5: { enableToast: false }, display: { surfaces: { toast: { enabled: false } } } },
-  { v5: { showOnIdle: true }, display: { toast: { afterReply: "always" } } },
-  { v5: { showOnQuestion: true }, display: { toast: { afterQuestion: true } } },
-  { v5: { showOnCompact: false }, display: { toast: { afterCompaction: false } } },
-  { v5: { showOnBothFail: false }, display: { toast: { whenAllFail: false } } },
-  { v5: { toastDurationMs: 4_600 }, display: { toast: { seconds: 5 } } },
-  { v5: { resetNotifications: { enabled: true } }, display: { toast: { resetNotice: "weekly" } } },
+  { v5: { enableToast: false }, sections: { toast: { show: false } } },
+  { v5: { showOnIdle: true }, sections: { toast: { afterReply: "always" } } },
+  { v5: { showOnQuestion: true }, sections: { toast: { afterQuestion: true } } },
+  { v5: { showOnCompact: false }, sections: { toast: { afterCompaction: false } } },
+  { v5: { showOnBothFail: false }, sections: { toast: { whenAllFail: false } } },
+  { v5: { toastDurationMs: 4_600 }, sections: { toast: { seconds: 5 } } },
+  { v5: { resetNotifications: { enabled: true } }, sections: { toast: { resetNotice: "weekly" } } },
   {
     v5: { resetNotifications: { enabled: true, windows: ["daily", "weekly"] } },
-    display: { toast: { resetNotice: "all" } },
+    sections: { toast: { resetNotice: "all" } },
   },
   {
     v5: { resetNotifications: { enabled: false, windows: ["monthly"] } },
-    display: { toast: { resetNotice: "off" } },
+    sections: { toast: { resetNotice: "off" } },
   },
   { v5: { tuiCommandDisplay: "inline" }, dropped: ["tuiCommandDisplay"] },
   {
@@ -112,21 +110,27 @@ const ROWS: Array<{
   },
   {
     v5: { quotaProjection: "runway" },
-    server: { "words.runsOut": true },
-    display: { runsOut: { sidebar: true, collapsed: true, statusLine: true, toast: true } },
+    sections: {
+      sidebar: { runsOut: true },
+      collapsed: { runsOut: true },
+      statusLine: { runsOut: true },
+      toast: { runsOut: true },
+    },
   },
   {
     v5: { resetTimeDecimals: 2, resetTimeSpaced: false },
     server: { "words.reset": "decimal", "words.resetDecimals": 2 },
   },
   { v5: { resetTimeSpaced: false }, server: { "words.reset": "compact" } },
-  { v5: { minIntervalMs: 60_000 }, server: { "checking.minIntervalMs": 60_000 } },
-  { v5: { requestTimeoutMs: 9_000 }, server: { "checking.requestTimeoutMs": 9_000 } },
-  { v5: { waitForQuotaReset: false }, server: { "checking.waitForQuotaReset": false } },
+  { v5: { minIntervalMs: 60_000 }, server: { "providers.checking.minIntervalMs": 60_000 } },
+  { v5: { requestTimeoutMs: 9_000 }, server: { "providers.checking.requestTimeoutMs": 9_000 } },
+  { v5: { waitForQuotaReset: false }, server: { "providers.checking.waitForQuotaReset": false } },
   { v5: { debug: true }, dropped: ["debug"] },
   {
     v5: { enabledProviders: ["nano-gpt", "quota-providers", "copilot"] },
-    server: { "providers.enabled": ["nanogpt", "custom", "copilot"] },
+    server: {
+      "providers.off": PROVIDER_IDS.filter((id) => !["nanogpt", "custom", "copilot"].includes(id)),
+    },
   },
   {
     v5: { quotaProviders: VALID_QUOTA_PROVIDER_INPUTS },
@@ -139,44 +143,43 @@ const ROWS: Array<{
   { v5: { cursorPlan: "pro" }, server: { "providers.cursor.plan": "pro" } },
   { v5: { cursorIncludedApiUsd: 25 }, server: { "providers.cursor.includedApiUsd": 25 } },
   { v5: { cursorBillingCycleStartDay: 3 }, server: { "providers.cursor.billingCycleStartDay": 3 } },
-  { v5: { opencodeGoWindows: ["weekly"] }, display: { surfaces: GO_SURFACES } },
+  { v5: { opencodeGoWindows: ["weekly"] }, sections: GO_SURFACES },
   { v5: { opencodeMonthlyLimit: 20 }, server: { "providers.opencode.monthlyLimitUsd": 20 } },
   {
     v5: { pricingSnapshot: { source: "bundled", autoRefresh: 3 } },
-    server: { "pricing.source": "bundled", "pricing.autoRefreshDays": 3 },
+    server: { "providers.pricing.source": "bundled", "providers.pricing.autoRefreshDays": 3 },
   },
   { v5: { onlyCurrentModel: true }, server: { "words.onlyCurrentModel": true } },
   {
     v5: { showSessionTokens: false },
-    display: { sidebar: { sessionTokens: false }, toast: { sessionTokens: false } },
+    sections: { sidebar: { sessionTokens: false }, toast: { sessionTokens: false } },
   },
   { v5: { sessionTokenScope: "tree" }, server: { "words.sessionTokens": "tree" } },
   {
     v5: { tuiSidebarPanel: { enabled: false } },
-    display: { surfaces: { sidebar: { enabled: false } } },
+    sections: { sidebar: { show: false } },
   },
   {
     v5: { tuiSidebarPanel: { opencodeGoPreferredWindow: "rolling" } },
-    display: { window: { "opencode-go": "five_hour" } },
+    sections: { collapsed: { window: { "opencode-go": "five_hour" } } },
   },
   {
     v5: { tuiCompactStatus: { enabled: true, homeBottom: false } },
-    display: { surfaces: { statusLine: { enabled: true } }, statusLine: { home: false } },
+    sections: { statusLine: { show: true, home: false } },
   },
   {
     v5: { tuiPromptBar: { enabled: true } },
-    display: {
-      surfaces: { statusLine: { enabled: true } },
-      statusLine: { home: false, detail: "one" },
+    sections: {
+      statusLine: { show: true, home: false, detail: "one" },
     },
   },
   { v5: { tuiCompactStatus: { maxWidth: 80 } }, dropped: ["tuiCompactStatus.maxWidth"] },
   {
     v5: { maintainerAnnouncements: { enabled: false, home: false, homeFrequency: "always" } },
     server: {
-      "announcements.enabled": false,
-      "announcements.home": false,
-      "announcements.homeFrequency": "always",
+      "system.notices": false,
+      "system.noticesOnHome": false,
+      "system.noticesOnHomeEvery": "always",
     },
   },
   {
@@ -185,9 +188,9 @@ const ROWS: Array<{
   },
   {
     v5: { export: { enabled: true, path: "~/quota.json" } },
-    server: { "export.enabled": true, "export.path": "~/quota.json" },
+    server: { "system.exportFile": true, "system.exportPath": "~/quota.json" },
   },
-  { v5: { telemetry: { enabled: true } }, server: { "telemetry.enabled": true } },
+  { v5: { telemetry: { enabled: true } }, server: { "system.telemetry": true } },
   { v5: { alibabaCodingPlanTier: "pro" }, dropped: ["alibabaCodingPlanTier"] },
   { v5: { customSources: [], someTypo: 1 }, dropped: ["customSources", "someTypo"] },
   { v5: { tuiCompactStatus: { suppressWhenNativeProviderQuota: true } } },
@@ -202,8 +205,8 @@ describe("convertV5, key by key", () => {
 
     expect(conversion?.written).toBe(true);
     expect(conversion?.invalid).toEqual([]);
-    expect(conversion?.displayImport).toEqual(row.display ?? {});
-    expect((await pendingDisplayImport())?.display).toEqual(row.display);
+    if (row.sections) expect(loaded.settings).toMatchObject(row.sections);
+    expect(conversion).not.toHaveProperty("displayImport");
     expect(conversion?.dropped.map((item) => item.key).sort()).toEqual(
       [...(row.dropped ?? [])].sort(),
     );
@@ -212,9 +215,8 @@ describe("convertV5, key by key", () => {
     for (const [key, value] of Object.entries(row.server ?? {})) {
       expect(valueAt(loaded.settings, key), key).toEqual(value);
     }
-    // Only what the user set is written, so every other key keeps its v6 default.
-    const userKeys = loaded.fromFile.filter((key) => key !== "version").sort();
-    expect(userKeys).toEqual(Object.keys(row.server ?? {}).sort());
+    expect(loaded.fromFile).toContain("sidebar.show");
+    expect(loaded.fromFile).toContain("system.telemetry");
   });
 
   it("lists values v5 rejected too and converts the rest", async () => {
@@ -227,41 +229,42 @@ describe("convertV5, key by key", () => {
       "enabledProviders",
     ]);
     expect(conversion?.settings.words.percent).toBe("left");
-    expect(conversion?.settings.providers.enabled).toEqual(["copilot"]);
+    expect(conversion?.settings.providers.off).toEqual(
+      PROVIDER_IDS.filter((id) => id !== "copilot"),
+    );
   });
 });
 
 describe("convertV5, which v5 files", () => {
-  it("writes settings.jsonc once (0600), keeps the looks until the TUI acknowledges them", async () => {
+  it("writes all settings into settings.jsonc once, with mode 0600", async () => {
     const old = writeV5({ percentDisplayMode: "used", enableToast: false });
-    const looks = join(root, "state", "opencode", "opencode-quota", "display-import.json");
-
     const conversion = await convertV5();
-
     expect(conversion?.sources).toEqual([old]);
-    const text = readFileSync(settingsPath(), "utf8");
-    expect(text).toMatch(
-      /^\/\/ OpenCode Quota server settings, converted on \d{4}-\d{2}-\d{2} from:/,
-    );
-    expect(text).toContain(old);
+    expect((await loadSettings()).settings).toMatchObject({
+      words: { percent: "used" },
+      toast: { show: false },
+    });
     expect(readFileSync(old, "utf8")).toContain('"percentDisplayMode": "used"');
-    if (process.platform !== "win32") {
-      expect(statSync(settingsPath()).mode & 0o777).toBe(0o600);
-      expect(statSync(looks).mode & 0o777).toBe(0o600);
-    }
+    if (process.platform !== "win32") expect(statSync(settingsPath()).mode & 0o777).toBe(0o600);
     expect(await convertV5()).toBeUndefined();
-    const first = await pendingDisplayImport();
-    expect(first?.display).toEqual({ surfaces: { toast: { enabled: false } } });
+    expect(
+      existsSync(join(root, "state", "opencode", "opencode-quota", "display-import.json")),
+    ).toBe(false);
+  });
 
-    // A later conversion publishes a new import; acknowledging the first one leaves it.
-    rmSync(settingsPath());
-    await convertV5();
-    const second = await pendingDisplayImport();
-    await acknowledgeDisplayImport(first?.id ?? "");
-    expect(await pendingDisplayImport()).toEqual(second);
-    expect(second?.id).not.toBe(first?.id);
-    await acknowledgeDisplayImport(second?.id ?? "");
-    expect(await pendingDisplayImport()).toBeUndefined();
+  it.each([
+    undefined,
+    "auto",
+  ])("converts a missing or auto v5 provider choice to no exclusions: %s", async (enabledProviders) => {
+    writeV5(enabledProviders === undefined ? {} : { enabledProviders });
+    expect((await convertV5())?.settings.providers.off).toEqual([]);
+  });
+
+  it("uses automatic discovery for a v5 list with only unknown ids", async () => {
+    writeV5({ enabledProviders: ["unknown-provider"] });
+    const conversion = await convertV5();
+    expect(conversion?.settings.providers.off).toEqual([]);
+    expect(conversion?.invalid.map(({ key }) => key)).toEqual(["enabledProviders"]);
   });
 
   it("converts the sidecar and names the experimental.quotaToast block v5 ignored", async () => {
@@ -302,7 +305,7 @@ describe("convertV5, which v5 files", () => {
     expect(conversion?.written).toBe(true);
     expect(conversion?.sources).toHaveLength(2);
     expect(conversion?.settings.words.percent).toBe("used");
-    expect(conversion?.settings.checking.minIntervalMs).toBe(120_000);
+    expect(conversion?.settings.providers.checking.minIntervalMs).toBe(120_000);
     expect(conversion?.settings.providers.custom).toEqual(VALID_QUOTA_PROVIDERS);
     expect(conversion?.settings.providers.cursor).toMatchObject({
       includedApiUsd: 25,
@@ -364,9 +367,7 @@ describe("convertV5, which v5 files", () => {
       percent: "used",
       reset: "short",
     });
-    expect((await pendingDisplayImport())?.display).toEqual({
-      surfaces: { toast: { enabled: false } },
-    });
+    expect((await loadSettings()).settings.toast.show).toBe(false);
   });
 
   it("on the first save reports an old file that does not parse, even with nothing to convert", async () => {
@@ -381,7 +382,9 @@ describe("convertV5, which v5 files", () => {
         message: `${host} does not parse, so its experimental.quotaToast was not converted`,
       },
     ]);
-    expect(readFileSync(settingsPath(), "utf8")).toMatch(/^\/\/ OpenCode Quota server settings\./);
+    expect(readFileSync(settingsPath(), "utf8")).toMatch(
+      /^\/\/ OpenCode Quota settings, one section per Settings tab\./,
+    );
   });
 
   it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(

@@ -255,7 +255,7 @@ describe("view select", () => {
         value.surfaces.sidebar.providerOrder = ["openrouter"];
         value.surfaces.sidebar.rowOrder = { anthropic: ["anthropic.weekly"] };
         value.surfaces.sidebar.hidden = ["opencode", "anthropic.five_hour"];
-        value.labels = { "anthropic.weekly": "Week" };
+        value.surfaces.sidebar.names = { "anthropic.weekly": "Week" };
       }),
       words: words(),
       expected: [

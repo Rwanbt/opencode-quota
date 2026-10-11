@@ -7,6 +7,8 @@ import { createHash } from "node:crypto";
 import { isAbsolute } from "node:path";
 import type { Node } from "jsonc-parser";
 import { getNodeValue } from "jsonc-parser";
+import type { QuotaWindow } from "../core/types.js";
+import { isQuotaWindow } from "../core/windows.js";
 import { isRecord } from "../lib/json-guards.js";
 import { normalizeQuotaProviderId, QUOTA_PROVIDER_CATALOG } from "../lib/provider-metadata.js";
 import {
@@ -24,7 +26,17 @@ export type SettingRule = (
   | ({ kind: "number"; integer: boolean; nullable?: boolean } & NumberBounds)
   /** An absolute or `~/` path without `..`; also "" or a command name when allowed. */
   | { kind: "path"; allowEmpty?: boolean; allowCommand?: boolean }
-  | { kind: "providers" | "customProviders" }
+  | {
+      kind:
+        | "providers"
+        | "customProviders"
+        | "strings"
+        | "names"
+        | "rowOrder"
+        | "window"
+        | "color"
+        | "separator";
+    }
 ) & {
   default: unknown;
   /** Only the file sets it (by hand or by an agent): `saveSettings` needs `allowFileOnly`. */
@@ -42,8 +54,77 @@ const USD = { kind: "number", integer: false, above: 0, nullable: true, default:
 /** Every setting by its dotted key with its default, in the order a new file lists them. */
 export const SETTINGS_SCHEMA = {
   version: { ...whole(6, 6), default: 6 },
-  /** "auto" = every provider quota finds; a list = only these (`custom` = the custom providers). */
-  "providers.enabled": { kind: "providers", default: "auto" },
+  "sidebar.show": bool(true),
+  "sidebar.sessionTokens": bool(true),
+  "sidebar.runsOut": bool(false),
+  "sidebar.hidden": { kind: "strings", default: [] },
+  "sidebar.providerOrder": { kind: "strings", default: [] },
+  "sidebar.rowOrder": { kind: "rowOrder", default: {} },
+  "sidebar.names": { kind: "names", default: {} },
+  "collapsed.show": bool(true),
+  "collapsed.runsOut": bool(false),
+  "collapsed.hidden": { kind: "strings", default: [] },
+  "collapsed.providerOrder": { kind: "strings", default: [] },
+  "collapsed.rowOrder": { kind: "rowOrder", default: {} },
+  "collapsed.window": { kind: "window", default: {} },
+  "statusLine.show": bool(true),
+  "statusLine.runsOut": bool(false),
+  "statusLine.hidden": { kind: "strings", default: [] },
+  "statusLine.providerOrder": { kind: "strings", default: [] },
+  "statusLine.rowOrder": { kind: "rowOrder", default: {} },
+  "statusLine.window": { kind: "window", default: {} },
+  "statusLine.detail": choice(["auto", "one", "full", "bar", "reset", "numbers"], "auto"),
+  "statusLine.width": { ...whole(0, 1000), default: 0 },
+  "statusLine.autoScrollSeconds": { ...whole(0, 600), default: 0 },
+  "statusLine.home": bool(false),
+  "toast.show": bool(true),
+  "toast.runsOut": bool(false),
+  "toast.hidden": { kind: "strings", default: [] },
+  "toast.providerOrder": { kind: "strings", default: [] },
+  "toast.rowOrder": { kind: "rowOrder", default: {} },
+  "toast.names": { kind: "names", default: {} },
+  "toast.afterReply": choice(["off", "always", "low"], "off"),
+  "toast.afterQuestion": bool(false),
+  "toast.afterCompaction": bool(true),
+  "toast.whenAllFail": bool(true),
+  "toast.resetNotice": choice(["off", "weekly", "all"], "off"),
+  "toast.seconds": { ...whole(1, 120), default: 9 },
+  "toast.sessionTokens": bool(true),
+  "colors.good": { kind: "color", default: undefined },
+  "colors.warning": { kind: "color", default: undefined },
+  "colors.low": { kind: "color", default: undefined },
+  "colors.empty": { kind: "color", default: undefined },
+  "colors.title": { kind: "color", default: undefined },
+  "colors.provider": { kind: "color", default: undefined },
+  "colors.account": { kind: "color", default: undefined },
+  "colors.label": { kind: "color", default: undefined },
+  "colors.percent": { kind: "color", default: undefined },
+  "colors.reset": { kind: "color", default: undefined },
+  "colors.value": { kind: "color", default: undefined },
+  "colors.error": { kind: "color", default: undefined },
+  "colors.statusName": { kind: "color", default: undefined },
+  "colors.separator": { kind: "color", default: undefined },
+  "colors.arrows": { kind: "color", default: undefined },
+  "colors.warningBelow": { ...whole(0, 100), default: 50 },
+  "colors.lowBelow": { ...whole(0, 100), default: 20 },
+  "layout.bar": choice(["blocks", "shades", "line", "squares", "dots", "none"], "blocks"),
+  "layout.barWidth": { ...whole(1, 30), default: 8 },
+  "layout.indent": { ...whole(0, 4), default: 1 },
+  "layout.labelWidth": { ...whole(3, 20), default: 8 },
+  "layout.providerGap": { ...whole(0, 2), default: 0 },
+  "layout.separator": { kind: "separator", default: " · " },
+  /** The words every client uses: "58% left", "58% remaining", "58%", or "42% used". */
+  "words.percent": choice(["left", "remaining", "bare", "used"], "left"),
+  /** "2h 14m", "2h14m", "2h", or "2.2h" (with `resetDecimals`). */
+  "words.reset": choice(["exact", "compact", "short", "decimal"], "exact"),
+  "words.resetDecimals": { ...whole(0, 4), default: 1 },
+  /** "detailed" also shows supplementary rows. */
+  "words.detail": choice(["summary", "detailed"], "summary"),
+  /** Show only the providers serving the session's current model. */
+  "words.onlyCurrentModel": bool(false),
+  /** Session tokens of this session, or with its subagents. */
+  "words.sessionTokens": choice(["current", "tree"], "current"),
+  "providers.off": { kind: "providers", default: [] },
   "providers.custom": { kind: "customProviders", default: [], fileOnly: true },
   /** The Claude CLI quota runs for Claude limits. */
   "providers.anthropic.binaryPath": {
@@ -56,31 +137,19 @@ export const SETTINGS_SCHEMA = {
   "providers.cursor.includedApiUsd": USD,
   "providers.cursor.billingCycleStartDay": { ...whole(1, 28), nullable: true, default: null },
   "providers.opencode.monthlyLimitUsd": USD,
-  "checking.minIntervalMs": above0(300_000),
-  "checking.requestTimeoutMs": above0(5_000),
-  "checking.waitForQuotaReset": bool(true),
-  /** The words every client uses: "58% left", "58% remaining", "58%", or "42% used". */
-  "words.percent": choice(["left", "remaining", "bare", "used"], "left"),
-  /** "2h 14m", "2h14m", "2h", or "2.2h" (with `resetDecimals`). */
-  "words.reset": choice(["exact", "compact", "short", "decimal"], "exact"),
-  "words.resetDecimals": { ...whole(0, 4), default: 1 },
-  /** "detailed" also shows supplementary rows. */
-  "words.detail": choice(["summary", "detailed"], "summary"),
-  "words.runsOut": bool(false),
-  /** Show only the providers serving the session's current model. */
-  "words.onlyCurrentModel": bool(false),
-  /** Session tokens of this session, or with its subagents. */
-  "words.sessionTokens": choice(["current", "tree"], "current"),
-  "pricing.source": choice(["auto", "bundled", "runtime"], "auto"),
-  "pricing.autoRefreshDays": { ...whole(1), default: 7 },
+  "providers.checking.minIntervalMs": above0(300_000),
+  "providers.checking.requestTimeoutMs": above0(5_000),
+  "providers.checking.waitForQuotaReset": bool(true),
+  "providers.pricing.source": choice(["auto", "bundled", "runtime"], "auto"),
+  "providers.pricing.autoRefreshDays": { ...whole(1), default: 7 },
   /** Maintainer notices; `home` shows their count on Home, once a day or every time. */
-  "announcements.enabled": bool(true),
-  "announcements.home": bool(true),
-  "announcements.homeFrequency": choice(["daily", "always"], "daily"),
-  "export.enabled": bool(false),
+  "system.notices": bool(true),
+  "system.noticesOnHome": bool(true),
+  "system.noticesOnHomeEvery": { ...choice(["daily", "always"], "daily"), fileOnly: true },
+  "system.exportFile": bool(false),
   /** "" = `$XDG_CACHE_HOME/opencode/quota-export.json`. */
-  "export.path": { kind: "path", allowEmpty: true, default: "", fileOnly: true },
-  "telemetry.enabled": bool(false),
+  "system.exportPath": { kind: "path", allowEmpty: true, default: "", fileOnly: true },
+  "system.telemetry": bool(false),
 } as const satisfies Record<string, SettingRule>;
 
 const RULES: Readonly<Record<string, SettingRule>> = SETTINGS_SCHEMA;
@@ -89,7 +158,23 @@ type KindValue = {
   boolean: boolean;
   number: number;
   path: string;
-  providers: "auto" | string[];
+  providers: string[];
+  strings: string[];
+  names: Record<string, string>;
+  rowOrder: Record<string, string[]>;
+  window: Record<string, "lowest" | QuotaWindow>;
+  color:
+    | "text"
+    | "muted"
+    | "accent"
+    | "green"
+    | "yellow"
+    | "red"
+    | "blue"
+    | "bar"
+    | `#${string}`
+    | undefined;
+  separator: string;
   customProviders: QuotaProviderDefinition[];
 };
 type ValueOf<R> = R extends { values: readonly (infer V)[] }
@@ -156,12 +241,12 @@ export function keysUnder(group: string): string[] {
   return [...new Set(names)];
 }
 
-/** Provider ids `providers.enabled` accepts; v5's `quota-providers` is called `custom` now. */
+/** Provider ids `providers.off` accepts; `custom` switches all custom providers off. */
 export const PROVIDER_IDS: readonly string[] = Object.keys(QUOTA_PROVIDER_CATALOG).map((id) =>
   id === "quota-providers" ? "custom" : id,
 );
 
-/** A provider id or one of its aliases ("nano-gpt", "quota-providers") as `providers.enabled` keeps it. */
+/** A provider id or one of its aliases ("nano-gpt", "quota-providers") as `providers.off` stores it. */
 function canonicalProviderId(id: string): string | undefined {
   const normalized = normalizeQuotaProviderId(id);
   const canonical = normalized === "quota-providers" ? "custom" : normalized;
@@ -194,9 +279,21 @@ export function describeRule(rule: SettingRule): string {
       return `${or}an absolute or ~/ path without ".."`;
     }
     case "providers":
-      return `"auto" or a list of: ${PROVIDER_IDS.join(", ")}`;
+      return `a list of: ${PROVIDER_IDS.join(", ")}`;
     case "customProviders":
       return "a list of custom provider definitions";
+    case "strings":
+      return "a list of strings";
+    case "names":
+      return "an object of row ids and names";
+    case "rowOrder":
+      return "an object of provider ids and lists of row ids";
+    case "window":
+      return "an object of provider ids and quota windows or lowest";
+    case "color":
+      return "a theme color, bar, or #rrggbb";
+    case "separator":
+      return "a string of at most 5 characters";
   }
 }
 
@@ -223,7 +320,6 @@ function isSafePath(path: string): boolean {
 }
 
 function checkProviders(key: string, value: unknown): CheckedSetting {
-  if (value === "auto") return { value, issues: [] };
   if (!Array.isArray(value)) {
     return { issues: [{ key, message: `expected ${describeRule(RULES[key])}` }] };
   }
@@ -238,7 +334,7 @@ function checkProviders(key: string, value: unknown): CheckedSetting {
   if (unknown.length === 0) return { value: [...new Set(known)], issues: [] };
   const message = `unknown provider id(s): ${unknown.join(", ")}; valid: ${PROVIDER_IDS.join(", ")}`;
   const issues = [{ key, message }];
-  // Keep the ids that are right; a list of only wrong ids falls back to "auto".
+  // Keep valid ids; a list of only unknown ids uses the empty default.
   return known.length > 0 ? { value: [...new Set(known)], issues } : { issues };
 }
 
@@ -251,6 +347,15 @@ function checkCustomProviders(key: string, value: unknown): CheckedSetting {
       message: issue.message,
     })),
   };
+}
+
+export function isRecordSetting(key: string): boolean {
+  const kind = RULES[key]?.kind;
+  return kind === "names" || kind === "rowOrder" || kind === "window";
+}
+
+function isStringList(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === "string");
 }
 
 /** Checks one value against its rule; `key` must be in SETTINGS_SCHEMA. */
@@ -278,6 +383,35 @@ export function checkSetting(key: string, value: unknown): CheckedSetting {
       return checkProviders(key, value);
     case "customProviders":
       return checkCustomProviders(key, value);
+    case "strings":
+      return isStringList(value) ? { value, issues: [] } : invalid;
+    case "separator":
+      return typeof value === "string" && value.length <= 5 ? { value, issues: [] } : invalid;
+    case "color":
+      return value === undefined ||
+        ["text", "muted", "accent", "green", "yellow", "red", "blue", "bar"].includes(
+          String(value),
+        ) ||
+        (typeof value === "string" && /^#[0-9a-f]{6}$/iu.test(value))
+        ? { value, issues: [] }
+        : invalid;
+    case "names":
+    case "rowOrder":
+    case "window": {
+      if (!isRecord(value)) return invalid;
+      const entries = Object.entries(value);
+      const valid = (item: unknown) =>
+        rule.kind === "names"
+          ? typeof item === "string"
+          : rule.kind === "rowOrder"
+            ? isStringList(item)
+            : item === "lowest" || isQuotaWindow(item);
+      const kept = entries.filter(([, item]) => valid(item));
+      return {
+        value: Object.fromEntries(kept),
+        issues: kept.length === entries.length ? [] : invalid.issues,
+      };
+    }
   }
 }
 
@@ -406,6 +540,8 @@ export function settingsFrom(assignments: readonly Assignment[]): {
     setPath(settings, key, checked.value);
     fromFile.add(key);
   }
+  // The warning level stays at or above the low level, as the display settings require.
+  settings.colors.warningBelow = Math.max(settings.colors.warningBelow, settings.colors.lowBelow);
   return { settings, issues, fromFile: [...fromFile] };
 }
 
@@ -445,11 +581,11 @@ export function customProviderFingerprint(definition: QuotaProviderDefinition): 
   return createHash("sha256").update(JSON.stringify(seen)).digest("hex");
 }
 
-/** The settings a client shows and may change, for the quota window's Words and Providers tabs. */
+/** The file settings a client shows and edits in the quota window. */
 export type ClientSettings = {
   /** Every setting but `version` and the file-only ones, by dotted key ("words.percent"). */
   values: Record<string, unknown>;
-  /** The ids `providers.enabled` takes, with their names. */
+  /** The ids `providers.off` takes, with their names. */
   providers: Array<{ id: string; label: string }>;
   /** The custom providers in settings.jsonc, without the maintained tunings. */
   custom: CustomProviderSwitch[];
@@ -458,7 +594,9 @@ export type ClientSettings = {
 export function clientSettings(settings: Settings): ClientSettings {
   const values = Object.fromEntries(
     Object.keys(RULES)
-      .filter((key) => key !== "version" && !isFileOnly(key))
+      .filter(
+        (key) => key !== "version" && !isFileOnly(key) && getSetting(settings, key) !== undefined,
+      )
       .map((key) => [key, getSetting(settings, key)]),
   );
   const providers = PROVIDER_IDS.map((id) => ({

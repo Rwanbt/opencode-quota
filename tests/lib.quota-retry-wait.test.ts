@@ -143,7 +143,7 @@ describe("resolveQuotaResetRetryDelayMs", () => {
   ): void {
     mocks.getProviders.mockReturnValue(providers);
     useSettings((settings) => {
-      settings.providers.enabled = providers.map((provider) => provider.id);
+      settings.providers.off = [];
       edit(settings);
     });
   }
@@ -211,7 +211,7 @@ describe("resolveQuotaResetRetryDelayMs", () => {
   it("asks the provider for fresh quota on every limit error, whatever the interval", async () => {
     const zai = { ...usedUpZai(), cachePolicy: { kind: "account-neutral" } };
     useProviders([zai], (settings) => {
-      settings.checking.minIntervalMs = 60 * MINUTE_MS;
+      settings.providers.checking.minIntervalMs = 60 * MINUTE_MS;
     });
 
     const { resolveQuotaResetRetryDelayMs } = await import("../src/lib/quota-retry-wait.js");
@@ -265,8 +265,8 @@ describe("resolveQuotaResetRetryDelayMs", () => {
     });
     mocks.getProviders.mockReturnValue([custom]);
     useSettings((settings) => {
-      settings.providers.enabled = ["custom"];
-      settings.checking.minIntervalMs = 60 * MINUTE_MS;
+      settings.providers.off = [];
+      settings.providers.checking.minIntervalMs = 60 * MINUTE_MS;
       settings.providers.custom = [definition("gateway-a"), definition("gateway-b")];
     });
 
@@ -292,7 +292,7 @@ describe("resolveQuotaResetRetryDelayMs", () => {
   it("keeps OpenCode's decision when the setting is off", async () => {
     const zai = usedUpZai();
     useProviders([zai], (settings) => {
-      settings.checking.waitForQuotaReset = false;
+      settings.providers.checking.waitForQuotaReset = false;
     });
 
     await expect(resolve(limitEvent)).resolves.toBeUndefined();

@@ -50,14 +50,14 @@ opencode-quota show --json --provider copilot \
 Use this for a status bar or another tool that checks quota often. Add this to `opencode-quota/settings.jsonc` ([where](configuration.md#where-settings-live)):
 
 ```jsonc
-{ "export": { "enabled": true } }
+{ "system": { "exportFile": true } }
 ```
 
-- The file is `~/.cache/opencode/quota-export.json` (or `$XDG_CACHE_HOME/opencode/quota-export.json` when `XDG_CACHE_HOME` is set). `export.path` changes it.
+- The file is `~/.cache/opencode/quota-export.json` (or `$XDG_CACHE_HOME/opencode/quota-export.json` when `XDG_CACHE_HOME` is set). `system.exportPath` changes it.
 - OpenCode's background service rewrites it each time its quota snapshot changes. The file keeps its last contents when OpenCode stops.
-- After a model step, the plugin may check providers again once 30 seconds have passed since the last check, even when that is sooner than `checking.minIntervalMs`.
-- The TUI dialog and toast forms of `/quota`, and the Limits tab, ask providers right away.
-- Web, Desktop, and the TUI chat form of `/quota` use `poll` refreshes and wait out `checking.minIntervalMs`.
+- After a model step, the plugin may check providers again once 30 seconds have passed since the last check, even when that is sooner than `providers.checking.minIntervalMs`.
+- The TUI `/quota` popup and the Limits tab ask providers right away.
+- Web and Desktop `/quota` use `poll` refreshes and wait out `providers.checking.minIntervalMs`.
 - A write error is logged but never breaks the TUI.
 
 ### tmux example (add to your tmux config)
@@ -81,7 +81,7 @@ interval = 60
 Use this only when OpenCode's server process (normally the background service) already has an OpenTelemetry metrics provider and exporter. OpenCode Quota does not create or configure them. Add this to `opencode-quota/settings.jsonc` ([where](configuration.md#where-settings-live)):
 
 ```jsonc
-{ "telemetry": { "enabled": true } }
+{ "system": { "telemetry": true } }
 ```
 
 OpenCode Quota then publishes two gauges:

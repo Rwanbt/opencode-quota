@@ -1,43 +1,34 @@
-/**
- * The server settings the quota window's Words and Providers tabs edit. They live in the
- * server's settings.jsonc, because Web, Desktop and the CLI print quota too: the window reads
- * them with the `settings` RPC and saves its changes with `saveSettings`, which also switches
- * custom providers on or off. Their lines are in `FIELDS` (`display.ts`), stored as "server".
- */
+/** All Settings tabs edit the server's settings.jsonc through the quota RPC. */
 import { createSignal } from "solid-js";
 import type { QuotaSnapshot, Words } from "../core/types.js";
+import { isRecord } from "../lib/json-guards.js";
 import type {
   QuotaRpcSaveSettingsInput,
   QuotaRpcSaveSettingsOutput,
   QuotaRpcSettingsOutput,
 } from "../rpc.js";
-import { CHANGED_SINCE_REVIEW } from "../settings/schema.js";
+import {
+  CHANGED_SINCE_REVIEW,
+  clientSettings,
+  defaultSettings,
+  isRecordSetting,
+} from "../settings/schema.js";
 
-/** `providers.enabled`: "auto" checks every provider quota finds, a list only those. */
-export const PROVIDERS_KEY = "providers.enabled";
-type Enabled = "auto" | string[];
+/** The ids switched off; every other provider is checked when found. */
+export const PROVIDERS_KEY = "providers.off";
 
-/** The snapshot's provider ids as `providers.enabled` names them: custom providers are "custom". */
 export function foundProviderIds(snapshot: QuotaSnapshot | undefined): string[] {
   return (snapshot?.providers ?? []).map(({ providerId }) =>
     providerId === "quota-providers" ? "custom" : providerId,
   );
 }
 
-/** "auto" ticks every provider quota found; a list ticks the ones it names. */
-export function isTicked(enabled: Enabled, id: string, found: readonly string[]): boolean {
-  return enabled === "auto" ? found.includes(id) : enabled.includes(id);
+export function isTicked(off: readonly string[], id: string): boolean {
+  return !off.includes(id);
 }
 
-/** The list after ticking `id` on or off; from "auto", the ones it found are the start. */
-export function withTick(
-  enabled: Enabled,
-  ids: readonly string[],
-  found: readonly string[],
-  id: string,
-  on: boolean,
-): string[] {
-  return ids.filter((other) => (other === id ? on : isTicked(enabled, other, found)));
+export function withTick(off: readonly string[], id: string, on: boolean): string[] {
+  return on ? off.filter((other) => other !== id) : [...new Set([...off, id])];
 }
 
 /** Changes by dotted key as the JSON merge patch `saveSettings` takes. */
@@ -84,21 +75,141 @@ export function createServerSettings(rpc: ServerSettingsRpc) {
   const [switches, setSwitches] = createSignal<Readonly<Record<string, boolean>>>({});
   /** Custom providers the server would not switch on: their definition changed since shown. */
   const [changedIds, setChangedIds] = createSignal<readonly string[]>([]);
-  const savedValue = (key: string) => saved()?.values[key];
+  const defaults = clientSettings(defaultSettings()).values;
+  /** The definition shown when each custom switch was changed, kept across live updates. */
+  const reviewedFingerprints = new Map<string, string>();
+  let received = 0;
+  let reads = 0;
+  let saving: Promise<void> | undefined;
+  let savingEdits: Map<string, unknown> | undefined;
+  let savingSwitches: Map<string, boolean> | undefined;
+  const savedValue = (key: string) => saved()?.values[key] ?? defaults[key];
   const savedCustom = (id: string) => saved()?.custom.find((entry) => entry.id === id);
-  const value = (key: string): unknown =>
-    Object.hasOwn(changes(), key) ? changes()[key] : savedValue(key);
+  const value = (key: string): unknown => {
+    const patch = changes()[key];
+    if (!Object.hasOwn(changes(), key)) return savedValue(key);
+    if (isRecordSetting(key) && isRecord(patch)) {
+      const next = { ...(savedValue(key) as Record<string, unknown>) };
+      for (const [id, item] of Object.entries(patch)) {
+        if (item === null) delete next[id];
+        else next[id] = item;
+      }
+      return next;
+    }
+    return patch === null ? defaults[key] : patch;
+  };
+  const draftValue = (key: string, next: unknown): unknown => {
+    if (!isRecordSetting(key) || !isRecord(next)) return next === undefined ? null : next;
+    const before = savedValue(key) as Record<string, unknown>;
+    return Object.fromEntries(
+      [...new Set([...Object.keys(before), ...Object.keys(next)])]
+        .filter((id) => !same(before[id], next[id]))
+        .map((id) => [id, next[id] ?? null]),
+    );
+  };
   const customOn = (id: string): boolean => switches()[id] ?? savedCustom(id)?.enabled ?? false;
   const dirty = () => Object.keys(changes()).length + Object.keys(switches()).length > 0;
+  async function readSaved(): Promise<void> {
+    const read = ++reads;
+    const at = received;
+    const next = await rpc.settings();
+    if (read === reads && at === received) setSaved(next);
+  }
+  async function saveDraft(): Promise<void> {
+    const sentChanges = changes();
+    const sentSwitches = switches();
+    const customEnabled = Object.fromEntries(
+      Object.entries(sentSwitches).map(([id, enabled]) => [
+        id,
+        {
+          enabled,
+          fingerprint: reviewedFingerprints.get(id) ?? savedCustom(id)?.fingerprint ?? "",
+        },
+      ]),
+    );
+    savingEdits = new Map();
+    savingSwitches = new Map();
+    try {
+      const result = await rpc.saveSettings({
+        patch: settingsPatch(sentChanges),
+        ...(Object.keys(customEnabled).length > 0 ? { customEnabled } : {}),
+      });
+      const changedSince = result.issues
+        .filter((issue) => issue.message === CHANGED_SINCE_REVIEW)
+        .map((issue) => issue.key.slice("providers.custom.".length));
+      if (changedSince.length > 0) {
+        await readSaved();
+        setChangedIds(changedSince);
+        for (const id of changedSince) reviewedFingerprints.delete(id);
+        setSwitches((current) =>
+          Object.fromEntries(Object.entries(current).filter(([id]) => !changedSince.includes(id))),
+        );
+      }
+      if (!result.ok) {
+        throw new Error(result.issues.map((issue) => `${issue.key}: ${issue.message}`).join("; "));
+      }
+      await readSaved();
+      // Only edits made after Save started remain drafts, over the latest saved settings.
+      const remaining: Record<string, unknown> = {};
+      for (const [key, patch] of savingEdits) {
+        if (isRecordSetting(key) && isRecord(patch)) {
+          const before = savedValue(key) as Record<string, unknown>;
+          const entries = Object.entries(patch).filter(
+            ([id, item]) => !same(item === null ? undefined : item, before[id]),
+          );
+          if (entries.length > 0) remaining[key] = Object.fromEntries(entries);
+        } else if (!same(patch === null ? defaults[key] : patch, savedValue(key))) {
+          remaining[key] = patch;
+        }
+      }
+      setChanges(remaining);
+      setSwitches(
+        Object.fromEntries(
+          [...savingSwitches].filter(([id, on]) => on !== (savedCustom(id)?.enabled ?? false)),
+        ),
+      );
+    } finally {
+      savingEdits = undefined;
+      savingSwitches = undefined;
+    }
+  }
   return {
-    /** Undefined until the first `load` answers. */
+    /** Undefined until the first server answer. */
     saved,
+    receive(next: QuotaRpcSettingsOutput): void {
+      received += 1;
+      setSaved(next);
+    },
     value,
     set(key: string, next: unknown): void {
-      setChanges((current) => changed(current, key, next, savedValue(key)));
+      if (savingEdits) {
+        if (isRecordSetting(key) && isRecord(next)) {
+          const before = value(key) as Record<string, unknown>;
+          const edits = Object.fromEntries(
+            [...new Set([...Object.keys(before), ...Object.keys(next)])]
+              .filter((id) => !same(before[id], next[id]))
+              .map((id) => [id, next[id] ?? null]),
+          );
+          savingEdits.set(key, { ...(savingEdits.get(key) as Record<string, unknown>), ...edits });
+        } else {
+          savingEdits.set(key, next === undefined ? null : next);
+        }
+      }
+      const patch = draftValue(key, next);
+      const unchanged =
+        same(next, savedValue(key)) ||
+        (isRecordSetting(key) && isRecord(patch) && Object.keys(patch).length === 0);
+      setChanges((current) => {
+        const result = { ...current };
+        if (unchanged) delete result[key];
+        else result[key] = patch;
+        return result;
+      });
     },
     customOn,
     switchCustom(id: string, on: boolean): void {
+      reviewedFingerprints.set(id, savedCustom(id)?.fingerprint ?? "");
+      savingSwitches?.set(id, on);
       setChangedIds((current) => current.filter((other) => other !== id));
       setSwitches((current) => changed(current, id, on, savedCustom(id)?.enabled));
     },
@@ -109,11 +220,14 @@ export function createServerSettings(rpc: ServerSettingsRpc) {
       return Object.fromEntries(
         Object.entries(changes())
           .filter(([key]) => key.startsWith("words."))
-          .map(([key, value]) => [key.slice("words.".length), value]),
+          .map(([key, value]) => [
+            key.slice("words.".length),
+            value === null ? defaults[key] : value,
+          ]),
       );
     },
     async load(): Promise<void> {
-      setSaved(await rpc.settings());
+      await readSaved();
     },
     /**
      * Sends the changes and switches in one save; nothing is saved when the server refuses any
@@ -121,48 +235,18 @@ export function createServerSettings(rpc: ServerSettingsRpc) {
      * shown: one that changed since is reloaded and marked, not switched on. A change made while
      * it saves (one back to the old value too) stays unsaved.
      */
-    async save(): Promise<void> {
-      if (!dirty()) return;
-      const sentChanges = changes();
-      const sentSwitches = switches();
-      const customEnabled = Object.fromEntries(
-        Object.entries(sentSwitches).map(([id, enabled]) => [
-          id,
-          { enabled, fingerprint: savedCustom(id)?.fingerprint ?? "" },
-        ]),
-      );
-      const result = await rpc.saveSettings({
-        patch: settingsPatch(sentChanges),
-        ...(Object.keys(customEnabled).length > 0 ? { customEnabled } : {}),
+    save(): Promise<void> {
+      if (saving) return saving;
+      if (!dirty()) return Promise.resolve();
+      saving = saveDraft().finally(() => {
+        saving = undefined;
       });
-      const changedSince = result.issues
-        .filter((issue) => issue.message === CHANGED_SINCE_REVIEW)
-        .map((issue) => issue.key.slice("providers.custom.".length));
-      if (changedSince.length > 0) {
-        setSaved(await rpc.settings());
-        setChangedIds(changedSince);
-        setSwitches((current) =>
-          Object.fromEntries(Object.entries(current).filter(([id]) => !changedSince.includes(id))),
-        );
-      }
-      if (!result.ok) {
-        throw new Error(result.issues.map((issue) => `${issue.key}: ${issue.message}`).join("; "));
-      }
-      const next = await rpc.settings();
-      // What the window shows now, over the settings it read before: kept where it differs.
-      const keys = new Set([...Object.keys(sentChanges), ...Object.keys(changes())]);
-      const wanted = [...keys].map((key) => [key, value(key)] as const);
-      const ids = new Set([...Object.keys(sentSwitches), ...Object.keys(switches())]);
-      const wantedOn = [...ids].map((id) => [id, customOn(id)] as const);
-      setSaved(next);
-      setChanges(Object.fromEntries(wanted.filter(([key, v]) => !same(v, next.values[key]))));
-      setSwitches(
-        Object.fromEntries(
-          wantedOn.filter(([id, on]) => on !== (savedCustom(id)?.enabled ?? false)),
-        ),
-      );
+      return saving;
     },
     discard(): void {
+      reviewedFingerprints.clear();
+      savingEdits?.clear();
+      savingSwitches?.clear();
       setChanges({});
       setSwitches({});
       setChangedIds([]);

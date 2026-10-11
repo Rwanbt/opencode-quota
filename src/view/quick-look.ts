@@ -497,7 +497,7 @@ function shortLimits(group: Group, words: Words, nowMs: number): string[] {
     const name = row.window ? WINDOWS[row.window].short : fit(label, LABEL_MAX_WIDTH).trimEnd();
     if (row.percentRemaining === undefined) return `${name} ${rowValueText(row)}`;
     const percent = `${name} ${percentText(words, row.percentRemaining, true)}`;
-    const pace = words.runsOut ? paceOf(row, nowMs) : undefined;
+    const pace = paceOf(row, nowMs);
     return pace?.kind === "fast" ? `${percent} ${paceText(pace, words)}` : percent;
   });
   return [...error, ...limits];
@@ -527,7 +527,7 @@ function flowPieces(pieces: Piece[], width: number | undefined): string[] {
 
 /**
  * The quick look as short text for the toast and the chat: the range and totals, then one line
- * per provider with its limits and its cost. Pace words show only with `words.runsOut`. With
+ * per provider with its limits and its cost. Pace words show when the quota runs out before its reset. With
  * `width`, a line that would be wider goes on under itself, never inside an amount or a limit.
  */
 export function quickLookText(input: QuickLookTextInput): string {

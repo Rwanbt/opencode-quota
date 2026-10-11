@@ -6,7 +6,8 @@
 import { createRoot } from "solid-js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { QuotaRpcNoticeListInput, QuotaRpcNoticeListOutput } from "../src/rpc.js";
-import { createDisplayStore, type DisplayStorage } from "../src/tui/display.js";
+import { createFileDisplay } from "../src/tui/display.js";
+import { createServerSettings } from "../src/tui/server-settings.js";
 import { createSettingsEditor } from "../src/tui/window/settings.tsx";
 import { createQuotaWindow, type QuotaWindow } from "../src/tui/window/shell.tsx";
 import { findAll, THEME, textLines } from "./helpers/jsx-tree.js";
@@ -166,11 +167,12 @@ function fakeHost() {
       toast: { show: vi.fn() },
     },
   };
-  // Nothing is saved yet: the Settings tabs start from the defaults.
-  const storage: DisplayStorage = {
-    store: (_key, options) => [options.initial, async () => {}],
-  };
-  const display = createDisplayStore(storage);
+  const display = createFileDisplay(
+    createServerSettings({
+      settings: async () => ({ values: {}, providers: [], custom: [] }),
+      saveSettings: async () => ({ ok: true, issues: [] }),
+    }),
+  );
   const settings = createSettingsEditor(api as never, display);
   const surface = {
     theme: () => THEME,
