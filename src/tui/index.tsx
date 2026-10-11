@@ -4,7 +4,7 @@
  * session sidebar, the status line under the message box (and on Home when turned on), the
  * toasts, and the quota window that `/quota`, `/quota_usage`, `/quota_status` and
  * `/quota_settings` open above the message box (`window/`).
- * It reads only the quota RPC and the display settings in OpenCode's plugin storage.
+ * It reads all settings through the quota RPC; plugin storage keeps only the sidebar state.
  *
  * The quota slash commands typed in the prompt run in the TUI: on Enter, before OpenCode submits
  * the prompt, a prompt that starts with /quota, /quota_usage, /quota_status or /quota_settings is
@@ -15,10 +15,11 @@
 import { Plugin } from "@opencode/plugin/tui";
 import type { JSX } from "@opentui/solid";
 import { onCleanup, Show } from "solid-js";
-import type { QuotaSnapshot } from "../core/types.js";
 import { parseUsageArguments } from "../core/usage-ranges.js";
-import { type ClientHost, createQuotaClient, reportFailure } from "./client.js";
-import { applyDisplayImport, createDisplayStore, type DisplayStorage } from "./display.js";
+import { QuotaRpc } from "../rpc.js";
+import { type ClientHost, createQuotaClient, quotaCallOptions, reportFailure } from "./client.js";
+import { createFileDisplay } from "./display.js";
+import { createServerSettings } from "./server-settings.js";
 import { SidebarPanel, type SurfaceHost } from "./sidebar.js";
 import { HomeFooter, StatusLine } from "./status-line.js";
 import type { Theme } from "./theme.js";
@@ -33,7 +34,12 @@ type TuiEvent = { data?: Record<string, unknown> };
 type TuiContext = WindowHost &
   ClientHost & {
     theme: Theme & WindowHost["theme"];
-    storage: DisplayStorage;
+    storage: {
+      store<Value extends object>(
+        key: string,
+        options: { readonly initial: Value },
+      ): readonly [Value, (mutation: (draft: Value) => void) => Promise<void>];
+    };
     data: WindowHost["data"] & {
       on: (event: string, handler: (event: TuiEvent) => void) => () => void;
       session: { get: (sessionID: string) => { parentID?: string } | undefined };
@@ -53,10 +59,6 @@ type TuiContext = WindowHost &
     };
   };
 
-const SETTINGS_CONVERTED_MESSAGE =
-  "Settings converted from v5 to settings.jsonc, details in /quota_status";
-const SETTINGS_CONVERTED_TOAST_MS = 15_000;
-
 function eventSessionID(event: TuiEvent): string | undefined {
   const sessionID = event.data?.sessionID;
   return typeof sessionID === "string" && sessionID ? sessionID : undefined;
@@ -69,14 +71,17 @@ function eventToolCallID(event: TuiEvent): string | undefined {
 
 const plugin = Plugin.define({
   // OpenCode names this plugin's storage files after its id (`plugin.<id>.<key>.json`), so the
-  // id may hold only letters, digits, ".", "_" and "-". The saved display settings live under
-  // it: changing it again loses them.
+  // id may hold only letters, digits, ".", "_" and "-".
   id: "slkiser.opencode-quota",
   setup(context) {
     const api = context as unknown as TuiContext;
     // Plugin storage is first read when a surface draws, never during setup.
-    const display = createDisplayStore(api.storage);
-    let sidebarStore: ReturnType<DisplayStorage["store"]> | undefined;
+    const server = createServerSettings({
+      settings: () => api.client.rpc(QuotaRpc).settings({}, quotaCallOptions(api)),
+      saveSettings: (input) => api.client.rpc(QuotaRpc).saveSettings(input, quotaCallOptions(api)),
+    });
+    const display = createFileDisplay(server);
+    let sidebarStore: ReturnType<TuiContext["storage"]["store"]> | undefined;
     const sidebarState = () => {
       sidebarStore ??= api.storage.store<SidebarState>("sidebar", { initial: { open: true } });
       return sidebarStore as readonly [
@@ -87,42 +92,39 @@ const plugin = Plugin.define({
 
     const isChildSession = (sessionID: string) =>
       Boolean(api.data.session.get(sessionID)?.parentID);
-    // The server converted the v5 settings: apply their looks (only where nothing is saved),
-    // tell the server, and say so once in this TUI process.
     let conversionShown = false;
-    const showConversion = (snapshot: QuotaSnapshot) => {
-      const { displayImport } = snapshot;
-      if (!displayImport || conversionShown) return;
-      conversionShown = true;
-      api.ui.toast.show({
-        variant: "info",
-        title: TOAST_TITLE,
-        message: SETTINGS_CONVERTED_MESSAGE,
-        duration: SETTINGS_CONVERTED_TOAST_MS,
-      });
-      applyDisplayImport(api.storage, displayImport.display)
-        .then(() => quota.acknowledgeDisplayImport(displayImport.id))
-        .catch(reportFailure);
-    };
     const quota = createQuotaClient(api, (snapshot) => {
-      toasts.showResetNotices(snapshot);
-      showConversion(snapshot);
+      const current = quota.snapshot()?.settings;
+      if (current) server.receive(current);
+      toasts.showResetNotices(settings.withDraftWords(snapshot) ?? snapshot);
+      if (snapshot.settingsConverted && !conversionShown) {
+        conversionShown = true;
+        api.ui.toast.show({
+          variant: "info",
+          title: TOAST_TITLE,
+          message: "Settings converted from v5 to settings.jsonc, details in /quota_status",
+          duration: 15_000,
+        });
+      }
     });
+    const settings = createSettingsEditor(api, display);
+    const draftQuota = {
+      ...quota,
+      snapshot: (sessionID?: string) => settings.withDraftWords(quota.snapshot(sessionID)),
+      refresh: async (reason: Parameters<typeof quota.refresh>[0], sessionID?: string) =>
+        settings.withDraftWords(await quota.refresh(reason, sessionID)),
+    };
     const toasts = createToasts({
       show: (toast) => api.ui.toast.show(toast),
       display: display.shown,
-      quota,
+      quota: draftQuota,
       isChildSession,
     });
-    const settings = createSettingsEditor(api, display);
     const host: SurfaceHost = {
       theme: () => api.theme,
       display: display.shown,
       // While the Words tab has unsaved changes, every surface shows its words.
-      quota: {
-        ...quota,
-        snapshot: (sessionID) => settings.withDraftWords(quota.snapshot(sessionID)),
-      },
+      quota: draftQuota,
       editing: settings,
     };
     const quotaWindow = createQuotaWindow(api, host, settings);
@@ -154,9 +156,7 @@ const plugin = Plugin.define({
         // listeners, so each mount stops the last one's and registers everything again.
         disposeMount?.();
         const stopQuota = quota.start();
-        // The first snapshot carries the converted v5 looks (`displayImport`). Ask for it once
-        // the slot is mounted: on Home nothing else does until those looks turn the status
-        // line on.
+        // Load settings on Home too, including switches for otherwise hidden surfaces.
         queueMicrotask(() => {
           try {
             quota.watch()();

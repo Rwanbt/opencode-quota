@@ -116,7 +116,7 @@ To edit it yourself, put definitions in `providers.custom` in `settings.jsonc` (
 - **Remote API:** real quota data from a supported endpoint (formats below).
 - **Local estimate:** counts matching completed OpenCode requests in 1–16 windows, with optional spend estimates. `utc-day` resets at UTC midnight; `rolling` uses `durationMinutes` (up to 366 days). Every window needs `requestLimit`; `usdBudget` is optional.
 - **Credentials:** the variable named by `apiKeyEnv`, then trusted global `provider.<providerId>.options.apiKey` (no `{env:…}` unless it names `apiKeyEnv`), then an API-key login saved in OpenCode 2 (`opencode.db`) for that provider id. A switched-off provider is never fetched and its key is never sent. Project secrets are never read.
-- With `providers.enabled: "auto"`, switched-on definitions whose `providerId` OpenCode has run automatically. A list must include `custom` plus every built-in provider you still want.
+- Switched-on definitions whose `providerId` OpenCode has run automatically unless `providers.off` includes `custom`.
 - A custom model provider still needs its normal OpenCode provider/model config. `/connect` → **Other** stores its credential, not its model setup.
 - OpenRouter is built in. A custom OpenRouter definition only helps if you need a different endpoint or label.
 - Alibaba Personal Token Plan uses the reserved `alibaba-token-plan` ID and stays a separate official-CLI provider; it is not a local-estimate tuning target.
@@ -432,7 +432,7 @@ bl auth login --console
 - On Windows, use WSL. Native `bl.exe` and `.cmd` shims are not supported.
 - Team plans, China-only `alibaba-token-plan-cn` runtimes, and cookie-based console scraping are not supported.
 - After switching the CLI's console account, restart OpenCode or wait for the next live check.
-- With a manual provider list, include `alibaba-token-plan` in `providers.enabled`.
+- Remove `alibaba-token-plan` from `providers.off` if it is switched off.
 
 OpenCode Quota's Google integrations use independent community companion plugins. They are not endorsed by Google.
 
@@ -447,7 +447,7 @@ opencode auth login google-agy
 ```
 
 - It shows the companion's grouped weekly and five-hour windows for each account. AGY logins copied from OpenCode 1 keep working.
-- With a manual provider list, include `google-agy` in `providers.enabled`.
+- Remove `google-agy` from `providers.off` if it is switched off.
 - If the login has no project id, set `OPENCODE_AGY_PROJECT_ID`, or `providers.google-agy.settings.projectId` in your user/global `opencode.json` (the OpenCode 1 form `provider.google-agy.options.projectId` also works).
 
 <a id="gemini-cli"></a>
@@ -462,7 +462,7 @@ Use companion plugin [`opencode-gemini-auth`](https://github.com/jenslys/opencod
 opencode auth login google
 ```
 
-If you use manual provider selection, include `google-gemini-cli` in `providers.enabled`.
+Quota checks `google-gemini-cli` when it finds it. Remove it from `providers.off` if you switched it off.
 
 <a id="deepseek"></a>
 
@@ -473,7 +473,7 @@ Shows your on-demand account balance from `GET https://api.deepseek.com/user/bal
 - Each valid **Total balance** is its own currency row. Detailed output can add **Granted balance** and **Topped-up balance**. Currencies are never added up or converted.
 - With no valid total balance, it shows the API's availability status. A malformed number becomes a partial-data issue, not zero.
 - Key: `DEEPSEEK_API_KEY`, or `provider.deepseek.options.apiKey` in trusted user/global config (for example `"{env:DEEPSEEK_API_KEY}"`). See [API keys](#api-keys).
-- With a manual provider list, include `deepseek` in `providers.enabled`.
+- Remove `deepseek` from `providers.off` if it is switched off.
 
 <a id="nanogpt"></a>
 
@@ -487,7 +487,7 @@ Shows your on-demand account balance from `GET https://api.deepseek.com/user/bal
 
 ### Kilo Gateway
 
-Create an API key in your Kilo personal profile, then set `KILO_API_KEY` (or use trusted user/global `provider.kilo.options.apiKey`, or a `kilo` API-key login saved in OpenCode 2). The provider id is `kilo`; with a manual provider list, include `kilo` in `providers.enabled`.
+Create an API key in your Kilo personal profile, then set `KILO_API_KEY` (or use trusted user/global `provider.kilo.options.apiKey`, or a `kilo` API-key login saved in OpenCode 2). The provider id is `kilo`; remove `kilo` from `providers.off` if it is switched off.
 
 It checks the `kiloPass.getState` endpoint first, then shows:
 
@@ -592,7 +592,7 @@ Zen uses your OpenCode Console sign-in from OpenCode 2; no cookie or workspace I
 3. Check it with `/quota_status` in OpenCode, or `opencode-quota status` in a terminal.
 
 - Inside OpenCode, an expired token is refreshed; the terminal command does not refresh it.
-- An OpenCode API key alone is not a Console sign-in. Without a sign-in, auto mode skips Zen; include `opencode` in `providers.enabled` to see a sign-in hint instead.
+- An OpenCode API key alone is not a Console sign-in. Zen appears when a Console sign-in is found and `providers.off` does not include `opencode`.
 - Zen reads unofficial Console routes (`/api/billing/status`, `/api/billing/account`, `/api/billing/auto-recharge`, `/api/budgets/org`, and `/api/usage/cost-by-day`), so OpenCode may change them.
 - **Monthly budget:** a percentage with used, limit, and remaining USD. It uses the org budget (`/api/budgets/org`) and its reset date when that has a positive limit and usable spend. Otherwise it uses the Console credit limit (`/api/billing/account`) plus this month's usage costs (`/api/usage/cost-by-day`). `providers.opencode.monthlyLimitUsd` in `settings.jsonc` overrides the budget from either source.
 - **Balance:** always required. It is supplementary when a budget percentage exists, and primary otherwise (next to a **Monthly spend** row when this month's usage is known).

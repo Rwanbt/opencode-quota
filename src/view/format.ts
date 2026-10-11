@@ -39,7 +39,6 @@ export const DEFAULT_WORDS: Words = {
   reset: "exact",
   resetDecimals: 1,
   detail: "summary",
-  runsOut: false,
   onlyCurrentModel: false,
   sessionTokens: "current",
 };

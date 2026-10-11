@@ -2,9 +2,10 @@
  * `opencode-quota show` and `status`, and the frame every terminal report runs in: the settings (prices
  * included), the logins from OpenCode's database, and the providers OpenCode knows.
  */
-import { resolve } from "path";
+import { resolve } from "node:path";
 import type { ProviderSourceHost } from "../core/provider-source.js";
 import { loadSettings } from "../settings/index.js";
+import { PROVIDER_IDS } from "../settings/schema.js";
 import { hasAnthropicCredentialsConfigured } from "./anthropic.js";
 import { API_KEY_LOGIN_VENDORS, resolveApiKeyLogin } from "./api-key-resolver.js";
 import {
@@ -200,7 +201,10 @@ function withOnlyProvider(
 ): ProviderSourceHost {
   if (!providerId) return host;
   const loaded = host.settings();
-  const providers = { ...loaded.settings.providers, enabled: [providerId] };
+  const providers = {
+    ...loaded.settings.providers,
+    off: PROVIDER_IDS.filter((id) => (id === "custom" ? "quota-providers" : id) !== providerId),
+  };
   const only = { ...loaded, settings: { ...loaded.settings, providers } };
   return { ...host, settings: () => only };
 }
@@ -226,7 +230,7 @@ async function runCliReport(params: {
     const roots = resolveCliRoots(params.cwd);
     // The terminal reads the settings as they are; only OpenCode writes the v5 conversion.
     const loaded = await loadSettings({ projectDir: roots.workspaceRoot });
-    applyPricingSettings(loaded.settings.pricing);
+    applyPricingSettings(loaded.settings.providers.pricing);
     const host: ProviderSourceHost = {
       client: createCliQuotaClient({
         configRootDir: roots.configRoot,

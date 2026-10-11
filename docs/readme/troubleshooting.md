@@ -55,7 +55,7 @@ The TUI, Web, and Desktop get their numbers from OpenCode's background service. 
 
 ## Provider fixes
 
-Run `/quota_status` first and check that provider's section. Every known provider has a section, named after its id (for example `copilot:` or `opencode-go:`). It shows `state` (`ok`, `partial`, `error`, `not checked`, `unavailable`, or `disabled`; an error adds its kind and HTTP status, for example `Provider error 503 (provider_error, http 503)`), `checked_at`, the `rows` it returned (id, window, numbers, reset time), and the provider's details from its own list of known keys. An `unavailable` provider is not asked for quota; its section shows whether OpenCode lists it (`opencode_provider`) and, for an API-key provider or Cursor, whether a key is set and where it was looked for (`api_key_configured`, `api_key_source`, `api_key_checked_paths`, or Cursor's `auth_state` and `auth_candidate_paths`). A `disabled` provider (left out of `providers.enabled`) is never asked. The report prints only words from OpenCode Quota's own lists (provider ids, row keys, states, setting keys, known env variables, known OpenCode folders and files), numbers and times. Everything else stands in as a placeholder or a count: logins as `account 1`, a part of a row id the provider named as `(part 1)`, a custom definition as `custom 1`, a path outside the known folders as `(custom path)`, an env variable that provider does not read as `env:(other)`, and any other detail as `3 other details not shown`. Provider messages, labels, names, URLs and custom ids never appear. Amounts show at most three significant digits (`1.23K`, `988T`); counts, days, percents and versions show only in their usual range, else `(out of range)`; times show only from 2000 to 2099, else `(invalid date)`. Read the report before you paste it into an issue. Setup steps and API-key variable names are in [Providers](providers.md).
+Run `/quota_status` first and check that provider's section. Every known provider has a section, named after its id (for example `copilot:` or `opencode-go:`). It shows `state` (`ok`, `partial`, `error`, `not checked`, `unavailable`, or `disabled`; an error adds its kind and HTTP status, for example `Provider error 503 (provider_error, http 503)`), `checked_at`, the `rows` it returned (id, window, numbers, reset time), and the provider's details from its own list of known keys. An `unavailable` provider is not asked for quota; its section shows whether OpenCode lists it (`opencode_provider`) and, for an API-key provider or Cursor, whether a key is set and where it was looked for (`api_key_configured`, `api_key_source`, `api_key_checked_paths`, or Cursor's `auth_state` and `auth_candidate_paths`). A `disabled` provider (listed in `providers.off`) is never asked. The report prints only words from OpenCode Quota's own lists (provider ids, row keys, states, setting keys, known env variables, known OpenCode folders and files), numbers and times. Everything else stands in as a placeholder or a count: logins as `account 1`, a part of a row id the provider named as `(part 1)`, a custom definition as `custom 1`, a path outside the known folders as `(custom path)`, an env variable that provider does not read as `env:(other)`, and any other detail as `3 other details not shown`. Provider messages, labels, names, URLs and custom ids never appear. Amounts show at most three significant digits (`1.23K`, `988T`); counts, days, percents and versions show only in their usual range, else `(out of range)`; times show only from 2000 to 2099, else `(invalid date)`. Read the report before you paste it into an issue. Setup steps and API-key variable names are in [Providers](providers.md).
 
 <details>
 <summary><strong>Custom providers</strong></summary>
@@ -176,7 +176,7 @@ Check the `google-agy` section.
 | Symptom                             | Fix |
 | ----------------------------------- | --- |
 | Companion missing                   | Put `@anthonyhaussman/opencode-agy-auth` before `@slkiser/opencode-quota` in `opencode.json`. |
-| Provider not enabled in manual mode | Include `google-agy` in `providers.enabled`. |
+| Provider switched off | Remove `google-agy` from `providers.off`. |
 | Login missing                       | Run `opencode auth login google-agy`. |
 | Project missing                     | Set `OPENCODE_AGY_PROJECT_ID` or `provider.google-agy.options.projectId`. |
 | No rows                             | Check `state` and `rows`. |
@@ -191,7 +191,7 @@ Gemini CLI works only with Gemini Code Assist Standard or Enterprise (organizati
 | Symptom                             | Fix |
 | ----------------------------------- | --- |
 | Companion missing                   | Put `opencode-gemini-auth` before `@slkiser/opencode-quota` in `opencode.json`. |
-| Provider not enabled in manual mode | Include `google-gemini-cli` in `providers.enabled`. |
+| Provider switched off | Remove `google-gemini-cli` from `providers.off`. |
 | Login missing                       | Run `opencode auth login google`. |
 | Project missing                     | Set `provider.google.options.projectId`, `OPENCODE_GEMINI_PROJECT_ID`, `GOOGLE_CLOUD_PROJECT`, or `GOOGLE_CLOUD_PROJECT_ID`. |
 
@@ -206,7 +206,7 @@ Check the `xiaomi` section. It shows `config_state`, `config_source`, `config_ch
 | ----------------------------------- | --- |
 | Config not detected                 | Set `MIMO_USAGE_COOKIE` or create trusted user/global `opencode-quota/mimo.json`, then rerun `/quota_status`. |
 | Config is invalid                   | Fix or remove the reported higher-priority source; an invalid source blocks fallback on purpose. |
-| Provider not enabled in manual mode | Include `xiaomi` in `providers.enabled`. |
+| Provider switched off | Remove `xiaomi` from `providers.off`. |
 | Monthly quota missing               | Make sure the plan is active and check `state`; expired plans are hidden. |
 | Balance or plan details missing     | Check for `state: partial`. The requests fail independently, so other rows can still show. |
 | Session expired                     | Sign in again at `platform.xiaomimimo.com`, copy a fresh Cookie header ([how](providers.md#xiaomi-mimo)), and update the same source. |
@@ -230,8 +230,8 @@ Check the `opencode-go` section:
 | No Go quota, `console_error` set  | The Console request failed and no API key is set (`Not configured` in manual mode). Retry, or set an API key. |
 | API returns 401 or 403            | The usage API rejected the key. Update the source shown by `auth_source`, wait briefly for the credential cache to expire, and rerun `/quota_status`. |
 | Invalid API response              | `state` shows `Unexpected reply (bad_response)`. 5h, Weekly, and Monthly must all be valid; one bad window rejects the whole response. |
-| Request times out or fails        | Check the error's kind in `state`, make sure `https://opencode.ai/zen/go/v1/usage` is reachable, and retry. Raise `checking.requestTimeoutMs` only for timeouts. |
-| Provider missing in manual mode   | Include `opencode-go` in `providers.enabled`. |
+| Request times out or fails        | Check the error's kind in `state`, make sure `https://opencode.ai/zen/go/v1/usage` is reachable, and retry. Raise `providers.checking.requestTimeoutMs` only for timeouts. |
+| Provider switched off | Remove `opencode-go` from `providers.off`. |
 
 </details>
 
@@ -242,7 +242,7 @@ Check the `opencode` section (OpenCode Zen). `console_auth_state` shows whether 
 
 | Symptom                                                           | Fix |
 | ----------------------------------------------------------------- | --- |
-| Zen does not appear                                               | Run `opencode auth login opencode` and sign in to the Console. An API key alone is not a Console sign-in. To see a hint instead of nothing, include `opencode` in `providers.enabled`. |
+| Zen does not appear                                               | Run `opencode auth login opencode` and sign in to the Console. An API key alone is not a Console sign-in. Remove `opencode` from `providers.off` if it is switched off. |
 | Zen shows `Sign in again`, or a failed `console_auth_state`       | Run `opencode auth login opencode` again. |
 | Wrong organization                                                | Run `opencode auth switch opencode`, or sign in again and pick the organization. |
 | Zen shows `Provider error 403`                                    | Your sign-in cannot read that route for this organization. Zen still shows the other rows, unless the route is `billing/status` (the balance). |
@@ -258,6 +258,6 @@ Check the pricing snapshot health and the `opencode.db` path.
 | -------------------------------------- | --- |
 | `/quota_usage` is empty                | Start OpenCode once so it creates `opencode.db`, then use a model. |
 | Pricing looks stale                    | Press `p` in the TUI's Usage tab (`/quota_usage`). |
-| Runtime pricing does not change output | Check `pricing.source`; `bundled` keeps the packaged pricing. |
+| Runtime pricing does not change output | Check `providers.pricing.source`; `bundled` keeps the packaged pricing. |
 
 </details>

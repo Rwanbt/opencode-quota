@@ -14,12 +14,14 @@ export function matchesQuotaProviderCurrentSelection(params: {
   currentModel?: string;
   currentProviderID?: string;
   enabledProviders?: string[] | "auto";
+  automaticDiscovery?: boolean;
   quotaProviders?: QuotaProviderDefinition[];
 }): boolean {
   const matchesCurrentModel = (model: string): boolean =>
     params.provider.matchesCurrentModel
       ? params.provider.matchesCurrentModel(model, {
           enabledProviders: params.enabledProviders ?? "auto",
+          automaticDiscovery: params.automaticDiscovery,
           ...(params.quotaProviders ? { quotaProviders: params.quotaProviders } : {}),
           ...(params.currentProviderID ? { currentProviderID: params.currentProviderID } : {}),
         })

@@ -251,7 +251,7 @@ type MiniMaxSpec = {
 
 /** The ambiguous `minimax` runtime id counts for China only when China is explicitly enabled. */
 function isMiniMaxChinaExplicitlyEnabled(context?: QuotaProviderMatchContext): boolean {
-  if (!context || context.enabledProviders === "auto") return false;
+  if (!context || context.automaticDiscovery || context.enabledProviders === "auto") return false;
   return context.enabledProviders.some(
     (providerId) => normalizeQuotaProviderId(providerId) === "minimax-china-coding-plan",
   );

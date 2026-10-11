@@ -46,7 +46,6 @@ describe("quota RPC definition", () => {
       "downloadPrices",
       "settings",
       "saveSettings",
-      "acknowledgeDisplayImport",
     ]);
   });
 
@@ -222,7 +221,7 @@ describe("quota RPC definition", () => {
     }
   });
 
-  it("validates settings, saveSettings and acknowledgeDisplayImport", async () => {
+  it("validates settings and saveSettings", async () => {
     await expectAccepted(methods.settings.input, {});
     await expectRejected(methods.settings.input, null, "input must be an object");
     await expectAccepted(methods.settings.output, { values: {}, providers: [], custom: [] });
@@ -255,10 +254,6 @@ describe("quota RPC definition", () => {
     await expectAccepted(methods.saveSettings.output, { ok: false, issues: [] });
     for (const value of [{}, { ok: "yes", issues: [] }, { ok: true }]) {
       await expectRejected(methods.saveSettings.output, value, "output must carry ok and issues");
-    }
-    await expectAccepted(methods.acknowledgeDisplayImport.input, { id: "import-1" });
-    for (const value of [1, {}, { id: 1 }]) {
-      await expectRejected(methods.acknowledgeDisplayImport.input, value, "input must carry an id");
     }
   });
 

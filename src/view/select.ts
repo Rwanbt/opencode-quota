@@ -17,6 +17,8 @@ export type Surface = "sidebar" | "collapsed" | "statusLine" | "toast";
 /** What one surface shows. Ids not named in an order follow in the snapshot's order. */
 export type SurfaceRows = {
   enabled: boolean;
+  /** Names selected from this surface's tab. */
+  names?: Record<string, string>;
   /** Provider ids and row ids this surface leaves out. */
   hidden: string[];
   providerOrder: string[];
@@ -133,7 +135,7 @@ export function visibleGroups(
         (row) => prefixes === undefined || prefixes.some((prefix) => row.id.startsWith(prefix)),
       )
       .filter((row) => words.detail === "detailed" || row.prominence === "primary")
-      .map((row) => ({ row, label: settings.labels[row.id] ?? row.label }));
+      .map((row) => ({ row, label: (shown.names ?? settings.labels)[row.id] ?? row.label }));
     return groupsOf(provider, rows, provider.rows.length > 0);
   });
 }

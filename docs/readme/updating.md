@@ -16,8 +16,8 @@ Update as above; you don't need to edit your settings. On the first start, OpenC
 
 - It reads `opencode-quota/quota-toast.jsonc` or `.json` in the global OpenCode folder, or `experimental.quotaToast` in the global `opencode.json` or `opencode.jsonc` when there is no such file.
 - It writes the result to `opencode-quota/settings.jsonc` (see [Configuration](configuration.md)) and leaves the old file in place. From then on, only `settings.jsonc` is read.
-- Your old display choices (which surfaces and toasts show) move into the TUI.
-- The TUI shows a toast once. In that session, `/quota_status` lists what was converted, what was dropped, and why.
+- Display choices, words, provider checks and system switches share that file, with one section per Settings tab.
+- The TUI shows a conversion toast once. `/quota_status` lists what was converted, what was dropped, and why in the server session that performs the conversion.
 
 Project settings files (`<your-repo>/opencode-quota/quota-toast.jsonc`) are not read; `/quota_status` lists any it finds. Put what you still need in `settings.jsonc`.
 

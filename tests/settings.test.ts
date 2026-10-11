@@ -107,8 +107,7 @@ describe("loadSettings", () => {
 {
   "version": 6,
   /* words */ "words": { "percent": "used", "reset": "short", },
-  "checking": { "requestTimeoutMs": 9000 },
-  "providers": { "enabled": ["nano-gpt", "quota-providers"], "cursor": { "includedApiUsd": 20 } },
+  "providers": { "checking": { "requestTimeoutMs": 9000 }, "off": ["nano-gpt", "quota-providers"], "cursor": { "includedApiUsd": 20 } },
 }
 `);
 
@@ -116,22 +115,22 @@ describe("loadSettings", () => {
 
     expect(loaded.issues).toEqual([]);
     expect(loaded.settings.words).toMatchObject({ percent: "used", reset: "short" });
-    expect(loaded.settings.providers.enabled).toEqual(["nanogpt", "custom"]);
+    expect(loaded.settings.providers.off).toEqual(["nanogpt", "custom"]);
     expect(loaded.settings.providers.cursor.includedApiUsd).toBe(20);
     // Providers with a longer own timeout use it unless the user set one.
-    expect(loaded.fromFile).toContain("checking.requestTimeoutMs");
-    expect(loaded.fromFile).not.toContain("checking.minIntervalMs");
+    expect(loaded.fromFile).toContain("providers.checking.requestTimeoutMs");
+    expect(loaded.fromFile).not.toContain("providers.checking.minIntervalMs");
   });
 
   it.each([
     ["words.percent", "huge"],
-    ["checking.minIntervalMs", 0],
+    ["providers.checking.minIntervalMs", 0],
     ["providers.cursor.billingCycleStartDay", 29],
     ["words.resetDecimals", 1.5],
-    ["announcements.home", "yes"],
+    ["system.noticesOnHome", "yes"],
     ["providers.anthropic.binaryPath", "  "],
-    ["export.path", "../quota.json"],
-    ["providers.enabled", ["nope"]],
+    ["system.exportPath", "../quota.json"],
+    ["providers.off", ["nope"]],
     ["version", 7],
   ])("an invalid %s keeps its default and is reported", async (key, value) => {
     writeSettings(JSON.stringify(nested(key, value)));
@@ -171,16 +170,16 @@ describe("loadSettings", () => {
   });
 
   it("keeps the known provider ids and names the unknown ones", async () => {
-    writeSettings('{ "providers": { "enabled": ["copilot", "nope"] } }');
+    writeSettings('{ "providers": { "off": ["copilot", "nope"] } }');
 
     const loaded = await loadSettings();
 
-    expect(loaded.settings.providers.enabled).toEqual(["copilot"]);
+    expect(loaded.settings.providers.off).toEqual(["copilot"]);
     expect(loaded.issues[0]?.message).toMatch(/^unknown provider id\(s\): nope; valid: .*copilot/);
   });
 
   it("reports unknown keys with the valid ones, and a group that is not an object", async () => {
-    writeSettings('{ "wordz": {}, "words": { "percnt": "used" }, "checking": 5 }');
+    writeSettings('{ "wordz": {}, "words": { "percnt": "used" }, "providers": { "checking": 5 } }');
 
     const loaded = await loadSettings();
 
@@ -188,14 +187,14 @@ describe("loadSettings", () => {
       {
         key: "$top",
         message:
-          "unknown setting (key 1); valid: version, providers, checking, words, pricing, announcements, export, telemetry",
+          "unknown setting (key 1); valid: version, sidebar, collapsed, statusLine, toast, colors, layout, words, providers, system",
       },
       {
         key: "words",
         message:
-          "unknown setting (key 1); valid in words: percent, reset, resetDecimals, detail, runsOut, onlyCurrentModel, sessionTokens",
+          "unknown setting (key 1); valid in words: percent, reset, resetDecimals, detail, onlyCurrentModel, sessionTokens",
       },
-      { key: "checking", message: "expected an object" },
+      { key: "providers.checking", message: "expected an object" },
     ]);
     expect(loaded.settings).toEqual(defaultSettings());
   });
@@ -212,7 +211,7 @@ describe("loadSettings", () => {
   });
 
   it("names the line of a syntax error and still uses what parses", async () => {
-    writeSettings('{\n  "words": { "percent": "used" }\n  "checking": {}\n}\n');
+    writeSettings('{\n  "words": { "percent": "used" }\n  "providers": { "checking": {} }\n}\n');
 
     const loaded = await loadSettings();
 
@@ -231,15 +230,15 @@ describe("saveSettings", () => {
 
     const result = await saveSettings({
       words: { reset: "short" },
-      checking: { minIntervalMs: 60_000 },
+      providers: { checking: { minIntervalMs: 60_000 } },
     });
 
     expect(result).toEqual({
       ok: true,
       issues: [],
       diff: [
-        { key: "checking.minIntervalMs", before: 300_000, after: 60_000 },
         { key: "words.reset", before: "exact", after: "short" },
+        { key: "providers.checking.minIntervalMs", before: 300_000, after: 60_000 },
       ],
     });
     const text = readFileSync(path, "utf8");
@@ -265,7 +264,7 @@ describe("saveSettings", () => {
 
     expect(result.ok).toBe(true);
     const text = readFileSync(settingsPath(), "utf8");
-    expect(text).toMatch(/^\/\/ OpenCode Quota server settings\./);
+    expect(text).toMatch(/^\/\/ OpenCode Quota settings, one section per Settings tab\./);
     expect(text).toContain('"version": 6');
     expect((await loadSettings()).settings.words.percent).toBe("bare");
     if (process.platform !== "win32") {
@@ -276,14 +275,14 @@ describe("saveSettings", () => {
   it.each([
     { name: "an unknown key", patch: { wordz: { percent: "used" } }, message: /valid: version/ },
     { name: "a bad value", patch: { words: { percent: "huge" } }, message: /expected one of/ },
-    { name: "an unknown provider", patch: { providers: { enabled: ["nope"] } }, message: /nope/ },
+    { name: "an unknown provider", patch: { providers: { off: ["nope"] } }, message: /nope/ },
     { name: "a group set to a value", patch: { words: "short" }, message: /expected an object/ },
     { name: "a patch that is not an object", patch: "words", message: /expected an object/ },
     { name: "a file-only key", patch: { providers: { custom: [] } }, message: /file-only/ },
-    { name: "a group reset with a file-only key", patch: { export: null }, message: /file-only/ },
+    { name: "a group reset with a file-only key", patch: { system: null }, message: /file-only/ },
     {
       name: "a relative path, even with allowFileOnly",
-      patch: { export: { path: "../quota.json" } },
+      patch: { system: { exportPath: "../quota.json" } },
       allowFileOnly: true,
       message: /absolute or ~\/ path without "\.\."/,
     },
@@ -329,7 +328,7 @@ describe("saveSettings", () => {
       const path = writeSettings(file());
 
       const result = await saveSettings(
-        { words: { runsOut: true } },
+        { sidebar: { runsOut: true } },
         { customEnabled: await switchOnSecond() },
       );
 
@@ -342,7 +341,7 @@ describe("saveSettings", () => {
         [first.id, false],
         [second.id, true],
       ]);
-      expect(settings.words.runsOut).toBe(true);
+      expect(settings.sidebar.runsOut).toBe(true);
     });
 
     it("refuses to switch on a provider changed since the user reviewed it", async () => {
@@ -377,7 +376,10 @@ describe("saveSettings", () => {
       const path = writeSettings(text ?? file());
       const before = readFileSync(path, "utf8");
 
-      const result = await saveSettings({ words: { runsOut: true } }, { customEnabled: switches });
+      const result = await saveSettings(
+        { sidebar: { runsOut: true } },
+        { customEnabled: switches },
+      );
 
       expect(result.ok).toBe(false);
       expect(result.issues.map((issue) => issue.message).join("\n")).toMatch(message);
@@ -414,13 +416,13 @@ describe("saveSettings", () => {
     const results = await Promise.all([
       saveSettings({ words: { reset: "short" } }),
       saveSettings({ words: { detail: "detailed" } }),
-      saveSettings({ checking: { minIntervalMs: 60_000 } }),
+      saveSettings({ providers: { checking: { minIntervalMs: 60_000 } } }),
     ]);
 
     expect(results.map((result) => result.ok)).toEqual([true, true, true]);
     expect((await loadSettings()).settings).toMatchObject({
       words: { percent: "used", reset: "short", detail: "detailed" },
-      checking: { minIntervalMs: 60_000 },
+      providers: { checking: { minIntervalMs: 60_000 } },
     });
     expect(existsSync(lock)).toBe(false);
   });
@@ -473,15 +475,15 @@ describe("saveSettings", () => {
   });
 
   it("builds each edit from the settings it saves over, so overlapping edits both survive", async () => {
-    writeSettings('{ "providers": { "enabled": ["copilot"] } }');
+    writeSettings('{ "providers": { "off": ["copilot"] } }');
     const add = (id: string) => (current: Settings) => ({
-      providers: { enabled: [...(current.providers.enabled as string[]), id] },
+      providers: { off: [...(current.providers.off as string[]), id] },
     });
 
     const results = await Promise.all([editSettings(add("cursor")), editSettings(add("zai"))]);
 
     expect(results.map((result) => result.ok)).toEqual([true, true]);
-    const enabled = (await loadSettings()).settings.providers.enabled;
+    const enabled = (await loadSettings()).settings.providers.off;
     expect([...enabled].sort()).toEqual(["copilot", "cursor", "zai"]);
   });
 
@@ -546,7 +548,7 @@ describe("watchSettings", () => {
       () =>
         writeFileSync(
           path,
-          '{ "words": { "percent": "remaining" }, "checking": { "requestTimeoutMs": 5000 } }',
+          '{ "words": { "percent": "remaining" }, "providers": { "checking": { "requestTimeoutMs": 5000 } } }',
         ),
     ];
 
@@ -558,7 +560,7 @@ describe("watchSettings", () => {
     }
     const percents = seen.map((loaded) => loaded.settings.words.percent);
     expect(percents).toEqual(["bare", "remaining", "remaining"]);
-    expect(seen[2]?.fromFile).toContain("checking.requestTimeoutMs");
+    expect(seen[2]?.fromFile).toContain("providers.checking.requestTimeoutMs");
   });
 
   it("calls back once for a burst of writes, with the last one", async () => {

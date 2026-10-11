@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { PROVIDER_IDS as CONFIG_PROVIDER_IDS } from "../src/settings/schema.js";
 import { answer, percentRow, textRow } from "./helpers/fake-answers.js";
 
 const { mockProviders, runtimeDirs } = vi.hoisted(() => ({
@@ -130,7 +131,9 @@ describe("CLI reports", () => {
         rows: [percentRow("weekly", "Weekly", 75)],
       });
       mockProviders.push(provider);
-      writeSettings({ providers: { enabled: ["synthetic"] } });
+      writeSettings({
+        providers: { off: CONFIG_PROVIDER_IDS.filter((id) => !["synthetic"].includes(id)) },
+      });
 
       const report = await buildCliShowText(await hostFor());
 
@@ -156,7 +159,10 @@ describe("CLI reports", () => {
           ],
         }),
       );
-      writeSettings({ providers: { enabled: ["synthetic"] }, words: { percent: "used" } });
+      writeSettings({
+        words: { percent: "used" },
+        providers: { off: CONFIG_PROVIDER_IDS.filter((id) => !["synthetic"].includes(id)) },
+      });
 
       const report = await buildCliShowText(await hostFor());
 
@@ -171,7 +177,9 @@ describe("CLI reports", () => {
       const provider = fakeProvider({ name: "Copilot" }, "copilot");
       provider.isAvailable.mockResolvedValue(false);
       mockProviders.push(provider);
-      writeSettings({ providers: { enabled: ["copilot"] } });
+      writeSettings({
+        providers: { off: CONFIG_PROVIDER_IDS.filter((id) => !["copilot"].includes(id)) },
+      });
 
       const report = await buildCliShowText(await hostFor());
 
@@ -189,7 +197,11 @@ describe("CLI reports", () => {
         "google-gemini-cli",
       );
       mockProviders.push(copilotProvider, geminiCliProvider);
-      writeSettings({ providers: { enabled: ["copilot", "google-gemini-cli"] } });
+      writeSettings({
+        providers: {
+          off: CONFIG_PROVIDER_IDS.filter((id) => !["copilot", "google-gemini-cli"].includes(id)),
+        },
+      });
 
       const report = await buildCliShowText(await hostFor());
 
@@ -235,7 +247,9 @@ describe("CLI reports", () => {
         rows: [percentRow("weekly", "Weekly", 75)],
       });
       mockProviders.push(provider);
-      writeSettings({ providers: { enabled: ["synthetic"] } });
+      writeSettings({
+        providers: { off: CONFIG_PROVIDER_IDS.filter((id) => !["synthetic"].includes(id)) },
+      });
 
       await saveSnapshot();
       expect(provider.fetch).toHaveBeenCalledOnce();
@@ -265,7 +279,9 @@ describe("CLI reports", () => {
         rows: [percentRow("weekly", "Weekly", 100)],
       });
       mockProviders.push(provider);
-      writeSettings({ providers: { enabled: ["synthetic"] } });
+      writeSettings({
+        providers: { off: CONFIG_PROVIDER_IDS.filter((id) => !["synthetic"].includes(id)) },
+      });
 
       const report = await buildCliShowJson({ host: await hostFor() });
 
@@ -294,7 +310,9 @@ describe("CLI reports", () => {
           "kilo",
         ),
       );
-      writeSettings({ providers: { enabled: ["kilo"] } });
+      writeSettings({
+        providers: { off: CONFIG_PROVIDER_IDS.filter((id) => !["kilo"].includes(id)) },
+      });
 
       await saveSnapshot();
       const report = await buildCliShowJson({ host: await hostFor(), threshold });
@@ -306,7 +324,9 @@ describe("CLI reports", () => {
       mockProviders.push(
         fakeProvider({ name: "Synthetic", rows: [percentRow("weekly", "Weekly", 100)] }),
       );
-      writeSettings({ providers: { enabled: ["synthetic"] } });
+      writeSettings({
+        providers: { off: CONFIG_PROVIDER_IDS.filter((id) => !["synthetic"].includes(id)) },
+      });
 
       const report = await buildCliShowJson({ host: await hostFor(), threshold: 10 });
 
@@ -317,7 +337,9 @@ describe("CLI reports", () => {
       mockProviders.push(
         fakeProvider({ name: "Synthetic", rows: [textRow("usage", "Usage", "$42")] }),
       );
-      writeSettings({ providers: { enabled: ["synthetic"] } });
+      writeSettings({
+        providers: { off: CONFIG_PROVIDER_IDS.filter((id) => !["synthetic"].includes(id)) },
+      });
 
       await saveSnapshot();
       const report = await buildCliShowJson({ host: await hostFor(), threshold: 10 });
@@ -333,7 +355,9 @@ describe("CLI reports", () => {
           errors: ["quota endpoint unavailable"],
         }),
       );
-      writeSettings({ providers: { enabled: ["synthetic"] } });
+      writeSettings({
+        providers: { off: CONFIG_PROVIDER_IDS.filter((id) => !["synthetic"].includes(id)) },
+      });
 
       await saveSnapshot();
       const report = await buildCliShowJson({ host: await hostFor(), threshold: 50 });
@@ -355,10 +379,16 @@ describe("CLI reports", () => {
         copilotProvider,
         fakeProvider({ name: "Synthetic", rows: [percentRow("weekly", "Weekly", 50)] }),
       );
-      writeSettings({ providers: { enabled: ["copilot", "synthetic"] } });
+      writeSettings({
+        providers: {
+          off: CONFIG_PROVIDER_IDS.filter((id) => !["copilot", "synthetic"].includes(id)),
+        },
+      });
       await saveSnapshot();
 
-      writeSettings({ providers: { enabled: ["copilot"] } });
+      writeSettings({
+        providers: { off: CONFIG_PROVIDER_IDS.filter((id) => !["copilot"].includes(id)) },
+      });
       const report = await buildCliShowJson({ host: await hostFor() });
 
       expect(report.exitCode).toBe(0);
@@ -372,7 +402,9 @@ describe("CLI reports", () => {
     /** Synthetic, enabled; its check answers with `rows` and `errors`. */
     function useSynthetic(rows: ReturnType<typeof percentRow>[], errors: string[] = []): void {
       mockProviders.push(fakeProvider({ name: "Synthetic", rows, errors }));
-      writeSettings({ providers: { enabled: ["synthetic"] } });
+      writeSettings({
+        providers: { off: CONFIG_PROVIDER_IDS.filter((id) => !["synthetic"].includes(id)) },
+      });
     }
     const WEEKLY = percentRow("weekly", "Weekly", 75);
     const FAILED = "quota endpoint unavailable";
@@ -414,7 +446,10 @@ describe("CLI reports", () => {
       ["a failed check made no rows", [], [FAILED]],
     ])("exits 2 with JSON when %s", async (_case, rows, errors) => {
       if (errors.length > 0) useSynthetic(rows, errors);
-      else writeSettings({ providers: { enabled: ["synthetic"] } });
+      else
+        writeSettings({
+          providers: { off: CONFIG_PROVIDER_IDS.filter((id) => !["synthetic"].includes(id)) },
+        });
 
       const report = await buildCliStatus({ host: await hostFor(), json: true });
 

@@ -46,8 +46,8 @@ const NO_DISPLAY_CHOICES: RowSettings = {
 };
 
 /**
- * The /quota report of Web and Desktop: the quick look's short text (`view/quick-look.ts`) for
- * every provider, then the notices not read yet.
+ * The /quota report of Web and Desktop: the short text of `view/quick-look.ts` for every
+ * provider, then the notices not read yet.
  */
 export function quotaMessageText(params: {
   snapshot: QuotaSnapshot;

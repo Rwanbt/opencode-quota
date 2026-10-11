@@ -4,7 +4,7 @@
  * value is plain JSON, because snapshots travel over the RPC and are saved to disk.
  */
 import type { QuotaExportProvider } from "../lib/quota-export-types.js";
-import type { PendingDisplayImport } from "../settings/index.js";
+import type { ClientSettings } from "../settings/schema.js";
 
 /** What a row's number means (ADR 0001: the 7 legacy result types become 5). */
 export type RowType = "quota" | "budget" | "usage" | "balance" | "status";
@@ -145,7 +145,6 @@ export type Words = {
   resetDecimals: number;
   /** "detailed" also shows supplementary rows. */
   detail: "summary" | "detailed";
-  runsOut: boolean;
   /** Show only the providers serving the session's current model. */
   onlyCurrentModel: boolean;
   /** Session tokens of this session, or with its subagents. */
@@ -176,11 +175,10 @@ export type QuotaSnapshot = {
   customRowProviders?: Record<string, string>;
   /** The server's words; clients use their defaults until the server sends them. */
   words?: Words;
-  /**
-   * The v5 looks the settings conversion found (`display`, empty when it found none), until a
-   * TUI applied them and acknowledged their `id`.
-   */
-  displayImport?: PendingDisplayImport;
+  /** All editable file settings, refreshed with every settings change. */
+  settings?: ClientSettings;
+  /** This server converted v5 settings into the file; a TUI announces it once. */
+  settingsConverted?: boolean;
   resetNotices: ResetNotice[];
   generatedAtMs: number;
   /** Random for each server start; revisions compare only within one server. */

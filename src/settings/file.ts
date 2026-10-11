@@ -3,9 +3,8 @@
  * (defaults for what is missing or wrong), save a patch into it (comments kept), watch it for
  * edits, and convert the v5 settings into it once.
  */
-import { randomUUID } from "node:crypto";
 import { type FSWatcher, type Stats, unwatchFile, watch, watchFile } from "node:fs";
-import { chmod, lstat, mkdir, readFile, realpath, rm } from "node:fs/promises";
+import { chmod, lstat, mkdir, readFile, realpath } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import {
   applyEdits,
@@ -16,7 +15,6 @@ import {
   parseTree,
   printParseErrorCode,
 } from "jsonc-parser";
-import { writeTextAtomic } from "../lib/atomic-json.js";
 import {
   type ConfigWriteTargetSnapshot,
   configWriteTargetsEqual,
@@ -27,12 +25,7 @@ import {
 } from "../lib/config-write-target.js";
 import { type LockFence, LockLostError, withFileLock } from "../lib/file-lock.js";
 import { getOpencodeRuntimeDirs } from "../lib/opencode-runtime-paths.js";
-import {
-  type DisplayImport,
-  findUnreadV5Files,
-  planV5Conversion,
-  type V5Conversion,
-} from "./convert.js";
+import { findUnreadV5Files, planV5Conversion, type V5Conversion } from "./convert.js";
 import {
   CHANGED_SINCE_REVIEW,
   checkSetting,
@@ -43,6 +36,7 @@ import {
   diffSettings,
   flattenSettings,
   isFileOnly,
+  isRecordSetting,
   isSettingsGroup,
   NODE_WALKER,
   PLAIN_WALKER,
@@ -75,7 +69,7 @@ export type SaveResult = { ok: boolean; issues: SettingsIssue[]; diff: SettingsC
 export type SettingsWatch = { close(): void };
 
 const NEW_FILE_HEADER = [
-  "OpenCode Quota server settings. Every key is optional; a missing one uses its default.",
+  "OpenCode Quota settings, one section per Settings tab. Every key is optional; a missing one uses its default.",
   "Edit it by hand or ask your agent; OpenCode Quota keeps your comments when it saves.",
 ];
 
@@ -189,7 +183,7 @@ function applySettingsEdits(text: string, edits: readonly Edit[]): string {
 }
 
 function newFileText(header = NEW_FILE_HEADER, values: Record<string, unknown> = {}): string {
-  const start = `${header.map((line) => `// ${line}`).join("\n")}\n{\n  "version": 6\n}\n`;
+  const start = `${header.map((line) => `// ${line}`).join("\n")}\n${JSON.stringify(defaultSettings(), null, 2)}\n`;
   const edits = Object.entries(values)
     .filter(([key]) => key !== "version")
     .map(([key, value]) => ({ path: key.split("."), value }));
@@ -204,7 +198,7 @@ function convertedFileText(conversion: V5Conversion): string {
       ...conversion.sources.map((source) => `  ${source}`),
       ...conversion.notes,
       "The old file was left in place; OpenCode Quota no longer reads it.",
-      "Looks (sidebar, status line, toasts) are not in this file; OpenCode keeps them.",
+      "All quota settings are in this file, one section per Settings tab.",
     ],
     conversion.values,
   );
@@ -231,6 +225,18 @@ function planEdits(
       edits.push({ path: key.split("."), value: undefined });
     } else if (isSettingsGroup(key)) {
       issues.push({ key, message: "expected an object, or null to reset the whole group" });
+    } else if (
+      isRecordSetting(key) &&
+      value &&
+      typeof value === "object" &&
+      !Array.isArray(value)
+    ) {
+      for (const [id, item] of Object.entries(value)) {
+        const checked = item === null ? { issues: [] } : checkSetting(key, { [id]: item });
+        issues.push(...checked.issues);
+        if (checked.issues.length === 0)
+          edits.push({ path: [...key.split("."), id], value: item === null ? undefined : item });
+      }
     } else {
       const checked = checkSetting(key, value);
       if (checked.issues.length > 0) issues.push(...checked.issues);
@@ -255,8 +261,8 @@ async function readTarget(target: ConfigWriteTargetSnapshot): Promise<string | u
 
 /**
  * Runs `work` on the file a save writes (a symlink's real target, else settings.jsonc) and its
- * text, holding the lock next to it (`withFileLock`), so saves, the conversion and the display
- * import never interleave. `work` calls the fence right before each write commits: it checks
+ * text, holding the lock next to it (`withFileLock`), so saves and the conversion never
+ * interleave. `work` calls the fence right before each write commits: it checks
  * that the lock is still ours and that the file still holds the text `work` got, since a hand
  * edit takes no lock. Either way the work runs again on a new read. A hand edit between that
  * check and the rename that commits is still lost: a window of microseconds. After
@@ -295,43 +301,6 @@ async function withSettingsLock<T>(
     if (Date.now() > deadline) throw new Error(busyMessage);
     await sleep(20);
   }
-}
-
-function displayImportPath(): string {
-  return join(getOpencodeRuntimeDirs().stateDir, "opencode-quota", "display-import.json");
-}
-
-/** The v5 looks a conversion found, with the id `acknowledgeDisplayImport` takes. */
-export type PendingDisplayImport = { id: string; display: DisplayImport };
-
-/** Keeps the v5 looks under a new id until the TUI acknowledges it (the caller holds the lock). */
-async function keepDisplayImport(display: DisplayImport, fence: LockFence): Promise<void> {
-  if (Object.keys(display).length === 0) return;
-  const pending: PendingDisplayImport = { id: randomUUID(), display };
-  await writeTextAtomic(displayImportPath(), `${JSON.stringify(pending, null, 2)}\n`, {
-    policy: "configuration",
-    directoryMode: NEW_CONFIG_DIRECTORY_MODE,
-    fileMode: NEW_CONFIG_FILE_MODE,
-    beforeCommit: fence,
-  });
-}
-
-/** The v5 looks the TUI has not acknowledged yet. */
-export async function pendingDisplayImport(): Promise<PendingDisplayImport | undefined> {
-  try {
-    return JSON.parse(await readFile(displayImportPath(), "utf8")) as PendingDisplayImport;
-  } catch {
-    return undefined;
-  }
-}
-
-/** The TUI applied the looks with this id: forget them, but never a newer import. */
-export async function acknowledgeDisplayImport(id: string): Promise<void> {
-  await withSettingsLock(async (_target, _text, fence) => {
-    if ((await pendingDisplayImport())?.id !== id) return;
-    await fence();
-    await rm(displayImportPath(), { force: true });
-  });
 }
 
 type SettingsEdit = (current: Settings) => SettingsPatch | undefined;
@@ -482,7 +451,6 @@ async function editLocked(
   if (!configWriteTargetsEqual(target, await resolveConfigWriteTarget(path))) {
     return failedSave(`${path} changed while saving; nothing was saved, try again`);
   }
-  if (conversion) await keepDisplayImport(conversion.displayImport, fence);
   await writeResolvedConfigText(target, updated, fence);
   await chmod(target.writePath, NEW_CONFIG_FILE_MODE);
   return { ok: true, issues, diff };
@@ -504,7 +472,6 @@ export async function convertV5(): Promise<V5Conversion | undefined> {
     return await withSettingsLock(async (target, _text, fence) => {
       // Another OpenCode process converted first.
       if (target.terminalExisted) return undefined;
-      await keepDisplayImport(conversion.displayImport, fence);
       await writeResolvedConfigText(target, convertedFileText(conversion), fence);
       await chmod(target.writePath, NEW_CONFIG_FILE_MODE);
       return { ...conversion, written: true };

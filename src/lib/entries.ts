@@ -15,6 +15,7 @@ export interface FixedWindowProjectionEvidence {
 
 export interface QuotaProviderMatchContext {
   enabledProviders: string[] | "auto";
+  automaticDiscovery?: boolean;
   quotaProviders?: QuotaProviderDefinition[];
   currentProviderID?: string;
 }
@@ -38,12 +39,14 @@ export interface QuotaProviderContext {
     cursorBillingCycleStartDay?: number;
     opencodeMonthlyLimit?: number;
     requestTimeoutMs?: number;
-    /** True when the settings file sets checking.requestTimeoutMs (not its default). */
+    /** True when the settings file sets providers.checking.requestTimeoutMs (not its default). */
     requestTimeoutMsConfigured?: boolean;
     onlyCurrentModel?: boolean;
     currentModel?: string;
     currentProviderID?: string;
     enabledProviders: string[] | "auto";
+    /** The list filters automatic discovery, rather than explicitly enrolling providers. */
+    automaticDiscovery?: boolean;
     quotaProviders?: QuotaProviderDefinition[];
   };
 }

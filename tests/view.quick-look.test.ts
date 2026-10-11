@@ -139,14 +139,14 @@ describe("quick look: short text", () => {
     expect(lines[0]).toBe("Quota · 7 days · $202.92 · 7.00M tokens");
     expect(lines.slice(1)).toEqual([
       "● Anthropic   $190.42",
-      "● Z.ai        5h 30% left  $12.50",
+      "● Z.ai        5h 30% left runs out in 1h 5m  $12.50",
       "● Copilot     Premium 80% left",
       "● OpenRouter  Provider error 500",
     ]);
   });
 
-  it("adds the pace words only when the server's words ask for them", () => {
-    const words = { ...DEFAULT_WORDS, runsOut: true };
+  it("shows pace words when the quota runs out before its reset", () => {
+    const words = DEFAULT_WORDS;
     const message = shortText({ snapshot: snapshot([ZAI], words), usage: undefined });
     expect(message).toBe("Quota\n● Z.ai  5h 30% left runs out in 1h 5m");
   });
@@ -164,7 +164,8 @@ describe("quick look: short text", () => {
       "Quota · 7 days · $15.89",
       "  5.10M tokens",
       "● Z.ai",
-      "  5h 30% left  $12.50",
+      "  5h 30% left runs out in 1h 5m",
+      "  $12.50",
       "● Custom providers (T…",
       "  Monthly 64% left  $3.39",
     ]);

@@ -278,7 +278,8 @@ const rpc = {
   notices: vi.fn(),
   status: vi.fn(),
   usage: vi.fn(),
-  acknowledgeDisplayImport: vi.fn(),
+  settings: vi.fn(),
+  saveSettings: vi.fn(),
   events: { on: vi.fn(() => () => {}) },
 };
 
@@ -301,18 +302,13 @@ function startTui(route: Route = { type: "home" }) {
   const listeners = new Map<string, Listener>();
   const layers: Layer[] = [];
   const editor = { plainText: "", clear: vi.fn() };
-  /** The display settings in OpenCode's plugin storage, live like OpenCode's. */
-  const displayStore = { version: 1, settings: defaultDisplaySettings() };
   let renderApp: () => unknown = () => null;
   const context = {
     location: { directory: process.cwd() },
     renderer: { currentFocusedEditor: editor as typeof editor | null },
     client: { rpc: vi.fn(() => rpc) },
     storage: {
-      store: (key: string, options: { initial: unknown }) => [
-        key === "settings" ? displayStore : options.initial,
-        vi.fn(),
-      ],
+      store: vi.fn((_key: string, options: { initial: unknown }) => [options.initial, vi.fn()]),
     },
     data: {
       session: { get: vi.fn() },
@@ -343,7 +339,6 @@ function startTui(route: Route = { type: "home" }) {
   return {
     context,
     editor,
-    displayStore,
     listeners,
     toast: context.ui.toast.show,
     sessionGet: context.data.session.get,
@@ -363,7 +358,8 @@ beforeEach(() => {
   for (const mock of [rpc.notices, rpc.events.on]) mock.mockClear();
   rpc.snapshot.mockReset().mockResolvedValue({ snapshot: snapshot([]) });
   rpc.refresh.mockReset().mockResolvedValue({ snapshot: OK });
-  rpc.acknowledgeDisplayImport.mockReset().mockResolvedValue({});
+  rpc.settings.mockReset().mockResolvedValue({ values: {}, providers: [], custom: [] });
+  rpc.saveSettings.mockReset().mockResolvedValue({ ok: true, issues: [] });
   rpc.status.mockReset().mockResolvedValue({ text: "status" });
   // The Usage tab's data never arrives here: these tests check what opens.
   rpc.usage.mockReset().mockReturnValue(new Promise(() => {}));
@@ -507,25 +503,41 @@ describe("turn events of the TUI plugin", () => {
     expect(tui.sessionGet).not.toHaveBeenCalled();
   });
 
-  it("asks for the snapshot once mounted, so Home gets the converted looks too", () => {
+  it("asks for the snapshot once mounted, so Home gets all file settings too", () => {
     expect(rpc.snapshot).toHaveBeenCalledWith({}, expect.anything());
   });
 
-  it("says once that the settings were converted, then applies and acknowledges the looks", async () => {
-    const displayImport = { id: "import-1", display: { toast: { afterReply: "always" as const } } };
-    rpc.refresh.mockResolvedValue({ snapshot: { ...OK, displayImport } });
+  it("announces v5 conversion once without saving settings in plugin storage", async () => {
+    rpc.refresh.mockResolvedValue({
+      snapshot: { ...OK, settingsConverted: true, revision: OK.revision + 1 },
+    });
     tui.emit("session.step.ended", { sessionID: "ses_1" });
+    await vi.waitFor(() =>
+      expect(tui.toast).toHaveBeenCalledWith({
+        variant: "info",
+        title: "OpenCode Quota",
+        message: "Settings converted from v5 to settings.jsonc, details in /quota_status",
+        duration: 15_000,
+      }),
+    );
     tui.emit("session.step.ended", { sessionID: "ses_1" });
     await vi.waitFor(() => expect(rpc.refresh).toHaveBeenCalledTimes(2));
+    expect(tui.toast).toHaveBeenCalledTimes(1);
+    expect(tui.context.storage.store.mock.calls.some(([key]) => key === "settings")).toBe(false);
+  });
+
+  it("loads file settings from live snapshot updates without a settings store", async () => {
+    const settings = { values: { "toast.afterReply": "always" }, providers: [], custom: [] };
+    rpc.refresh.mockResolvedValue({ snapshot: { ...OK, settings, revision: OK.revision + 1 } });
+    tui.emit("session.step.ended", { sessionID: "ses_1" });
+    await vi.waitFor(() => expect(rpc.refresh).toHaveBeenCalledOnce());
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    tui.emit("session.execution.succeeded", { sessionID: "ses_1" });
     await vi.waitFor(() =>
-      expect(rpc.acknowledgeDisplayImport).toHaveBeenCalledExactlyOnceWith(
-        { id: "import-1" },
-        expect.anything(),
+      expect(tui.toast).toHaveBeenCalledWith(
+        expect.objectContaining({ variant: "info", message: expect.stringContaining("80% left") }),
       ),
     );
-    expect(tui.toast.mock.calls.map(([shown]) => shown.message)).toEqual([
-      "Settings converted from v5 to settings.jsonc, details in /quota_status",
-    ]);
   });
 
   it("stops listening when OpenCode unmounts the app slot", () => {
@@ -536,7 +548,6 @@ describe("turn events of the TUI plugin", () => {
   });
 
   it("drops the reset notices still waiting when OpenCode unmounts the app slot", async () => {
-    tui.displayStore.settings.toast.resetNotice = "all";
     let answer: (output: { snapshot: QuotaSnapshot }) => void = () => {};
     rpc.refresh.mockReset().mockImplementation(
       () =>
@@ -559,7 +570,14 @@ describe("turn events of the TUI plugin", () => {
     const changed = rpc.events.on.mock.lastCall?.[1] as unknown as (event: {
       data: { snapshot: QuotaSnapshot };
     }) => void;
-    changed({ data: { snapshot: snapshot([provider("Claude", 100)], [notice]) } });
+    changed({
+      data: {
+        snapshot: {
+          ...snapshot([provider("Claude", 100)], [notice]),
+          settings: { values: { "toast.resetNotice": "all" }, providers: [], custom: [] },
+        },
+      },
+    });
 
     for (const cleanup of cleanups.splice(0)) cleanup();
     answer({ snapshot: OK });

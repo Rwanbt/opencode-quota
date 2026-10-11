@@ -1,3 +1,9 @@
+import { QUOTA_PROVIDER_CATALOG } from "../src/lib/provider-metadata.js";
+
+const CONFIG_PROVIDER_IDS = Object.keys(QUOTA_PROVIDER_CATALOG).map((id) =>
+  id === "quota-providers" ? "custom" : id,
+);
+
 import { mkdtempSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -96,9 +102,16 @@ function configureQuestionQuotaToast(
   announcements: Record<string, unknown> = { enabled: true, home: true },
 ): void {
   writePluginTestSettings(TEST_RUNTIME_ROOT, {
-    providers: { enabled: ["copilot"] },
-    checking: { minIntervalMs: 1 },
-    announcements,
+    toast: { afterQuestion: true },
+    system: {
+      notices: announcements.enabled,
+      noticesOnHome: announcements.home,
+      noticesOnHomeEvery: announcements.homeFrequency,
+    },
+    providers: {
+      off: CONFIG_PROVIDER_IDS.filter((id) => !["copilot"].includes(id)),
+      checking: { minIntervalMs: 1 },
+    },
   });
   mocks.getProviders.mockReturnValue([
     {
@@ -137,15 +150,8 @@ async function startCli() {
     location: { directory: process.cwd() },
     client: { rpc: createQuotaRpcBridge(handlers) },
     theme: { text: { base: "base", muted: "muted" } },
-    // Display settings with the question toast turned on.
     storage: {
-      store: (key: string, options: { initial: any }) => {
-        const value =
-          key === "settings"
-            ? { ...options.initial, settings: { toast: { afterQuestion: true } } }
-            : options.initial;
-        return [value, async () => {}];
-      },
+      store: (_key: string, options: { initial: unknown }) => [options.initial, async () => {}],
     },
     data: {
       session: { get: vi.fn(() => undefined) },

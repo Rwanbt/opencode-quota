@@ -41,10 +41,10 @@ OpenCode Quota works without settings. To change something, create `opencode-quo
 ```jsonc
 {
   // Find providers from your OpenCode config and logins.
-  "providers": { "enabled": "auto" },
+  "providers": { "off": [] },
 
   // Show the count of maintainer notices on Home, once a day for 10 minutes.
-  "announcements": { "enabled": true, "home": true },
+  "system": { "notices": true, "noticesOnHome": true },
 }
 ```
 

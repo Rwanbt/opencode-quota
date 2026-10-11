@@ -15,17 +15,11 @@
 import { stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { classifyError, describeError, isQuotaErrorCode, LOCAL_TOOLS } from "../core/errors.js";
-import type {
-  Amount,
-  ProviderSnapshot,
-  QuotaError,
-  QuotaErrorCode,
-  QuotaRow,
-} from "../core/types.js";
+import type { Amount, ProviderSnapshot, QuotaError, QuotaRow } from "../core/types.js";
 import type { UsageReport } from "../core/usage.js";
 import { isQuotaWindow } from "../core/windows.js";
 import { isV5SettingKey } from "../settings/convert.js";
-import type { LoadedSettings, Settings, V5Conversion } from "../settings/index.js";
+import type { LoadedSettings, V5Conversion } from "../settings/index.js";
 import { isSettingsGroup, SETTINGS_SCHEMA } from "../settings/schema.js";
 import { formatShare, formatTokens } from "../view/format.js";
 import { COUNT_LABELS } from "./accounting-format.js";
@@ -189,7 +183,7 @@ export type QuotaStatusReportParams = {
   providers: readonly ProviderSnapshot[];
   credentialSource: CredentialSourceDiagnostics;
   maintainerAnnouncements?: {
-    config: Settings["announcements"];
+    config: { enabled: boolean; home: boolean; homeFrequency: "daily" | "always" };
     summary: MaintainerAnnouncementsSummary;
   };
   /** The last 30 days of usage, for the models without a price; null when it can't be read. */

@@ -21,7 +21,9 @@ const LOGIN_HINT = "Run `opencode auth login opencode`.";
 /** True when the user listed `opencode` in `enabledProviders` instead of using auto mode. */
 function isExplicitlyEnabled(ctx: QuotaProviderContext): boolean {
   return (
-    Array.isArray(ctx.config.enabledProviders) && ctx.config.enabledProviders.includes("opencode")
+    !ctx.config.automaticDiscovery &&
+    Array.isArray(ctx.config.enabledProviders) &&
+    ctx.config.enabledProviders.includes("opencode")
   );
 }
 

@@ -4,12 +4,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { keyedLogins, loadProviderSource } from "../src/core/provider-source.js";
+import { keyedLogins, loadProviderSource, providerContext } from "../src/core/provider-source.js";
 import { createQuotaStore } from "../src/core/store.js";
 import type { QuotaProvider } from "../src/lib/entries.js";
 import { buildQuotaExportFromSnapshot } from "../src/lib/quota-export.js";
 import { __resetResolvedAuthIdentityForTests } from "../src/lib/resolved-auth-identity.js";
 import type { ProviderFetchResult } from "../src/providers/contract.js";
+import { minimaxChinaCodingPlanProvider } from "../src/providers/minimax-coding-plan.js";
 import { defaultSettings } from "../src/settings/index.js";
 import { answer, percentRow, quotaRow } from "./helpers/fake-answers.js";
 
@@ -77,6 +78,63 @@ describe("provider source logins", () => {
   afterEach(async () => {
     __resetResolvedAuthIdentityForTests();
     await rm(runtime.root, { recursive: true, force: true });
+  });
+
+  it("checks found and later registered providers unless their id is switched off", async () => {
+    const first = fakeProvider("copilot", async () => answer());
+    const later = fakeProvider("future-provider", async () => answer());
+    registry.providers = [first];
+    const loaded = {
+      path: "settings.jsonc",
+      exists: true,
+      settings: defaultSettings(),
+      issues: [],
+      fromFile: [],
+      notRead: [],
+    };
+    const host = { client: {} as never, workspaceRoot: runtime.root, settings: () => loaded };
+    expect((await loadProviderSource(host)).providers.map(({ id }) => id)).toEqual(["copilot"]);
+    loaded.settings.providers.off = ["copilot"];
+    registry.providers = [first, later];
+    expect((await loadProviderSource(host)).providers.map(({ id }) => id)).toEqual([
+      "future-provider",
+    ]);
+    expect(providerContext(host).config.automaticDiscovery).toBe(true);
+  });
+
+  it.each([
+    { runtimeId: "minimax", expected: [] },
+    { runtimeId: "minimax-china-coding-plan", expected: ["minimax-china-coding-plan"] },
+  ])("discovers and matches MiniMax China with default settings for $runtimeId", async ({
+    runtimeId,
+    expected,
+  }) => {
+    vi.stubEnv("MINIMAX_CHINA_CODING_PLAN_API_KEY", "china-key");
+    registry.providers = [minimaxChinaCodingPlanProvider];
+    const loaded = {
+      path: "settings.jsonc",
+      exists: true,
+      settings: defaultSettings(),
+      issues: [],
+      fromFile: [],
+      notRead: [],
+    };
+    const host = {
+      client: {
+        config: { providers: async () => ({ data: { providers: [{ id: runtimeId }] } }) },
+      },
+      workspaceRoot: runtime.root,
+      settings: () => loaded,
+    };
+
+    const source = await loadProviderSource(host);
+
+    expect(loaded.settings.providers.off).toEqual([]);
+    expect(source.providers.map(({ id }) => id)).toEqual(expected);
+    expect(source.providerIdsForModel?.({ id: "MiniMax-M2.7", providerID: runtimeId })).toEqual(
+      expected,
+    );
+    expect(source.providerIdsForModel?.({ id: `${runtimeId}/MiniMax-M2.7` })).toEqual(expected);
   });
 
   it.runIf(POSIX_IDENTITY_STORAGE)(

@@ -39,7 +39,7 @@ export function StatusLine(props: { host: SurfaceHost; sessionID?: string }): JS
       layout: display().layout,
       words,
       nowMs: nowMs(),
-      window: display().window,
+      window: display().statusLine.window,
       runsOut: display().runsOut.statusLine,
     };
   };

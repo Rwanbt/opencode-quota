@@ -52,7 +52,7 @@ Also:
 - **Web and Desktop:** slash commands post the report in the chat.
 - **Scripts and status bars:** JSON, an export file, and metrics. See [External integration](docs/readme/external-integration.md).
 - **Your words:** used or left, reset style, and more. See [Configuration](docs/readme/configuration.md).
-- **Retry at the reset:** when a request hits a limit and that provider's quota shows a used-up window, OpenCode retries after it resets. Turn off with `checking.waitForQuotaReset: false`.
+- **Retry at the reset:** when a request hits a limit and that provider's quota shows a used-up window, OpenCode retries after it resets. Turn off with `providers.checking.waitForQuotaReset: false`.
 
 ## Updating
 
@@ -72,6 +72,8 @@ Restart OpenCode. Coming from 5.x? Your old settings are converted automatically
 > - OpenCode Zen uses your OpenCode Console sign-in: `opencode auth login opencode`.
 
 Full list: [Moving to OpenCode 2](docs/readme/updating.md#moving-to-opencode-2).
+
+All quota settings live in `opencode-quota/settings.jsonc`, with sections for Sidebar, Collapsed, Status line, Toast, Colors, Layout, Words, Providers and System. Save in `/quota_settings` keeps comments; file edits reach every open TUI within a few seconds. [Settings and defaults](docs/readme/configuration.md).
 
 ## Commands
 

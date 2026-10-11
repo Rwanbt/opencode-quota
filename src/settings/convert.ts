@@ -1,7 +1,6 @@
 /**
  * The one-time move from v5 settings. A frozen copy of how v5 read its GLOBAL settings (which
- * files, the authoritative-sidecar rule, each key's check), and where each v5 key went: server
- * keys into settings.jsonc, display keys into `displayImport` for the TUI's plugin storage.
+ * files, the authoritative-sidecar rule, each key's check), and where each v5 key goes in settings.jsonc.
  * This file only reads; `convertV5` in file.ts writes the result.
  */
 import { existsSync } from "node:fs";
@@ -12,40 +11,17 @@ import { isRecord } from "../lib/json-guards.js";
 import {
   type CheckedSetting,
   checkSetting,
+  PROVIDER_IDS,
   SETTINGS_SCHEMA,
   type Settings,
-  setPath,
   settingsFrom,
 } from "./schema.js";
 
-/** A v5 key that moved: `to` is a dotted key of settings.jsonc or of the TUI display settings. */
-export type ConvertedKey = { key: string; to: string; where: "server" | "display"; note?: string };
+/** A v5 key and its destination in settings.jsonc. */
+export type ConvertedKey = { key: string; to: string; where: "server"; note?: string };
 export type SkippedKey = { key: string; reason: string };
 
 type DisplaySurface = "sidebar" | "collapsed" | "statusLine" | "toast";
-
-/**
- * The display settings a v5 file chose, in the shape the TUI stores them (only what the user
- * set; the TUI fills in its defaults). Kept on disk from the write of settings.jsonc until the
- * TUI applies it: `pendingDisplayImport`, then `acknowledgeDisplayImport`.
- */
-export type DisplayImport = {
-  surfaces?: Partial<Record<DisplaySurface, { enabled?: boolean; hidden?: string[] }>>;
-  /** The collapsed sidebar's window per provider id. */
-  window?: Record<string, string>;
-  statusLine?: { detail?: "one"; home?: boolean };
-  sidebar?: { sessionTokens?: boolean };
-  runsOut?: Partial<Record<DisplaySurface, boolean>>;
-  toast?: {
-    afterReply?: "off" | "always";
-    afterQuestion?: boolean;
-    afterCompaction?: boolean;
-    whenAllFail?: boolean;
-    resetNotice?: "off" | "weekly" | "all";
-    seconds?: number;
-    sessionTokens?: boolean;
-  };
-};
 
 export type V5Conversion = {
   /** The v5 files the values came from, in the order v5 applied them. */
@@ -61,7 +37,6 @@ export type V5Conversion = {
   settings: Settings;
   /** The server keys the conversion set; every other key has its default. */
   fromFile: string[];
-  displayImport: DisplayImport;
   converted: ConvertedKey[];
   dropped: SkippedKey[];
   invalid: SkippedKey[];
@@ -110,27 +85,27 @@ const isListOf = (check: (value: unknown) => boolean) => (value: unknown) =>
  */
 const V5_KEYS: ReadonlyMap<string, string | ((value: unknown) => boolean)> = new Map(
   Object.entries({
-    enabledProviders: "providers.enabled",
+    enabledProviders: (value) => value === "auto" || Array.isArray(value),
     quotaProviders: "providers.custom",
     anthropicBinaryPath: "providers.anthropic.binaryPath",
     cursorPlan: "providers.cursor.plan",
     cursorIncludedApiUsd: "providers.cursor.includedApiUsd",
     cursorBillingCycleStartDay: "providers.cursor.billingCycleStartDay",
     opencodeMonthlyLimit: "providers.opencode.monthlyLimitUsd",
-    minIntervalMs: "checking.minIntervalMs",
-    requestTimeoutMs: "checking.requestTimeoutMs",
-    waitForQuotaReset: "checking.waitForQuotaReset",
+    minIntervalMs: "providers.checking.minIntervalMs",
+    requestTimeoutMs: "providers.checking.requestTimeoutMs",
+    waitForQuotaReset: "providers.checking.waitForQuotaReset",
     accountingDetail: "words.detail",
     onlyCurrentModel: "words.onlyCurrentModel",
     sessionTokenScope: "words.sessionTokens",
-    "pricingSnapshot.source": "pricing.source",
-    "pricingSnapshot.autoRefresh": "pricing.autoRefreshDays",
-    "maintainerAnnouncements.enabled": "announcements.enabled",
-    "maintainerAnnouncements.home": "announcements.home",
-    "maintainerAnnouncements.homeFrequency": "announcements.homeFrequency",
-    "export.enabled": "export.enabled",
-    "export.path": "export.path",
-    "telemetry.enabled": "telemetry.enabled",
+    "pricingSnapshot.source": "providers.pricing.source",
+    "pricingSnapshot.autoRefresh": "providers.pricing.autoRefreshDays",
+    "maintainerAnnouncements.enabled": "system.notices",
+    "maintainerAnnouncements.home": "system.noticesOnHome",
+    "maintainerAnnouncements.homeFrequency": "system.noticesOnHomeEvery",
+    "export.enabled": "system.exportFile",
+    "export.path": "system.exportPath",
+    "telemetry.enabled": "system.telemetry",
     percentDisplayMode: oneOf("remaining", "used"),
     percentLabelStyle: oneOf("full", "bare"),
     quotaProjection: oneOf("runway"),
@@ -166,16 +141,16 @@ const V5_GROUPS: ReadonlySet<string> = new Set(
   ),
 );
 
-/** v5 display keys that moved as they are (or through `map`) to these TUI display settings. */
+/** v5 display keys that moved as they are (or through `map`) to the tab sections. */
 const DISPLAY_MOVES: ReadonlyArray<[string, string[], ((value: unknown) => unknown)?]> = [
-  ["enableToast", ["surfaces.toast.enabled"]],
+  ["enableToast", ["toast.show"]],
   ["showOnIdle", ["toast.afterReply"], (value) => (value ? "always" : "off")],
   ["showOnQuestion", ["toast.afterQuestion"]],
   ["showOnCompact", ["toast.afterCompaction"]],
   ["showOnBothFail", ["toast.whenAllFail"]],
   ["toastDurationMs", ["toast.seconds"], (ms) => Math.max(1, Math.round(Number(ms) / 1000))],
   ["showSessionTokens", ["sidebar.sessionTokens", "toast.sessionTokens"]],
-  ["tuiSidebarPanel.enabled", ["surfaces.sidebar.enabled"]],
+  ["tuiSidebarPanel.enabled", ["sidebar.show"]],
 ];
 
 /** v5's OpenCode Go window names → v6 row ids and collapsed-sidebar windows. */
@@ -291,8 +266,14 @@ function readV5Values(sources: readonly V5Source[]): {
       } else if (!check) {
         dropped.push({ key, reason: "not a v5 setting" });
       } else if (typeof check === "function") {
-        if (check(value)) values.set(key, value);
-        else invalid.push({ key, reason: `${JSON.stringify(value)} was not valid in v5 either` });
+        if (check(value)) {
+          if (key === "enabledProviders" && value !== "auto") {
+            const checked = checkSetting("providers.off", value);
+            for (const issue of checked.issues) invalid.push({ key, reason: issue.message });
+            if (checked.value !== undefined) values.set(key, checked.value);
+            else if (!values.has(key)) values.set(key, []);
+          } else values.set(key, value);
+        } else invalid.push({ key, reason: `${JSON.stringify(value)} was not valid in v5 either` });
       } else {
         // v5 took no null; v6 reads null as "unset", which would erase an earlier file's value.
         const v5Rejects = { issues: [{ key: check, message: "null was not valid in v5 either" }] };
@@ -315,12 +296,10 @@ function readV5Values(sources: readonly V5Source[]): {
 /** Where every valid v5 value goes. */
 function mapV5Values(values: ReadonlyMap<string, unknown>): {
   server: Record<string, unknown>;
-  display: DisplayImport;
   converted: ConvertedKey[];
   dropped: SkippedKey[];
 } {
   const server: Record<string, unknown> = {};
-  const display: Record<string, unknown> = {};
   const converted: ConvertedKey[] = [];
   const dropped: SkippedKey[] = [];
 
@@ -331,12 +310,16 @@ function mapV5Values(values: ReadonlyMap<string, unknown>): {
     server[to] = value;
     converted.push({ key, to, where: "server", ...(note ? { note } : {}) });
   };
-  const toDisplay = (key: string, to: string, note?: string) => {
-    converted.push({ key, to, where: "display", ...(note ? { note } : {}) });
-  };
 
   for (const [key, to] of V5_KEYS) {
     if (typeof to === "string" && has(key)) toServer(key, to, values.get(key));
+  }
+
+  if (has("enabledProviders")) {
+    const enabled = values.get("enabledProviders");
+    const off =
+      enabled === "auto" ? [] : PROVIDER_IDS.filter((id) => !(enabled as string[]).includes(id));
+    toServer("enabledProviders", "providers.off", off);
   }
 
   const percentKeys = ["percentDisplayMode", "percentLabelStyle"].filter(has);
@@ -358,12 +341,9 @@ function mapV5Values(values: ReadonlyMap<string, unknown>): {
     if (decimals !== undefined) server["words.resetDecimals"] = decimals;
   }
 
-  // "runway", its only value, turns on every runs-out estimate: the web and CLI text's, and
-  // each TUI place's.
+  // The TUI switches retain the v5 pace choice; text reports always show pace.
   if (has("quotaProjection")) {
-    toServer("quotaProjection", "words.runsOut", true);
-    for (const name of SURFACES) setPath(display, `runsOut.${name}`, true);
-    toDisplay("quotaProjection", "runsOut.*");
+    for (const name of SURFACES) toServer("quotaProjection", `${name}.runsOut`, true);
   }
 
   if (has("opencodeZenDisplay")) {
@@ -379,8 +359,7 @@ function mapV5Values(values: ReadonlyMap<string, unknown>): {
 
   for (const [key, targets, map] of DISPLAY_MOVES) {
     if (!has(key)) continue;
-    for (const to of targets) setPath(display, to, map ? map(values.get(key)) : values.get(key));
-    toDisplay(key, targets.join(", "));
+    for (const to of targets) toServer(key, to, map ? map(values.get(key)) : values.get(key));
   }
 
   const resetNoticeKeys = ["resetNotifications.enabled", "resetNotifications.windows"].filter(has);
@@ -388,21 +367,23 @@ function mapV5Values(values: ReadonlyMap<string, unknown>): {
     const enabled = chosen("resetNotifications.enabled", false);
     const windows = chosen<string[]>("resetNotifications.windows", ["weekly"]);
     const onlyWeekly = windows.length === 1 && windows[0] === "weekly";
-    setPath(display, "toast.resetNotice", !enabled ? "off" : onlyWeekly ? "weekly" : "all");
+    server["toast.resetNotice"] = !enabled ? "off" : onlyWeekly ? "weekly" : "all";
     const note =
       enabled && !onlyWeekly
         ? `v6 notifies for weekly limits or for every limit; ${windows.join(", ")} became every limit`
         : undefined;
-    for (const key of resetNoticeKeys) toDisplay(key, "toast.resetNotice", note);
+    for (const key of resetNoticeKeys)
+      toServer(key, "toast.resetNotice", server["toast.resetNotice"], note);
   }
 
   if (has("tuiSidebarPanel.opencodeGoPreferredWindow")) {
     const v5Window = values.get("tuiSidebarPanel.opencodeGoPreferredWindow");
     const go = GO_WINDOWS.find((entry) => entry.v5 === v5Window);
-    if (go) setPath(display, "window.opencode-go", go.window);
-    toDisplay(
+    if (go) server["collapsed.window"] = { "opencode-go": go.window };
+    toServer(
       "tuiSidebarPanel.opencodeGoPreferredWindow",
-      'window["opencode-go"]',
+      "collapsed.window",
+      server["collapsed.window"],
       "v5 ignored this setting; the collapsed sidebar uses it now",
     );
   }
@@ -418,23 +399,32 @@ function mapV5Values(values: ReadonlyMap<string, unknown>): {
     const compact = chosen("tuiCompactStatus.enabled", false);
     const promptBar = chosen("tuiPromptBar.enabled", false);
     const sessionPrompt = chosen("tuiCompactStatus.sessionPrompt", true);
-    setPath(display, "surfaces.statusLine.enabled", promptBar || (compact && sessionPrompt));
-    setPath(display, "statusLine.home", compact && chosen("tuiCompactStatus.homeBottom", true));
-    if (promptBar) setPath(display, "statusLine.detail", "one");
-    for (const key of statusKeys) toDisplay(key, "surfaces.statusLine.enabled, statusLine");
+    server["statusLine.show"] = promptBar || (compact && sessionPrompt);
+    server["statusLine.home"] = compact && chosen("tuiCompactStatus.homeBottom", true);
+    if (promptBar) server["statusLine.detail"] = "one";
+    for (const key of statusKeys) {
+      for (const to of [
+        "statusLine.show",
+        "statusLine.home",
+        ...(promptBar ? ["statusLine.detail"] : []),
+      ]) {
+        toServer(key, to, server[to]);
+      }
+    }
   }
 
   if (has("opencodeGoWindows")) {
     const kept = chosen<string[]>("opencodeGoWindows", []);
     const hidden = GO_WINDOWS.filter((go) => !kept.includes(go.v5)).map((go) => go.row);
-    for (const name of SURFACES) setPath(display, `surfaces.${name}.hidden`, hidden);
-    toDisplay(
-      "opencodeGoWindows",
-      "surfaces.*.hidden",
-      "the other OpenCode Go windows are hidden now, not removed: export and the quota window's Limits tab still list them",
-    );
+    for (const name of SURFACES)
+      toServer(
+        "opencodeGoWindows",
+        `${name}.hidden`,
+        hidden,
+        "the other OpenCode Go windows are hidden now, not removed: export and the quota window's Limits tab still list them",
+      );
   }
-  return { server, display: display as DisplayImport, converted, dropped };
+  return { server, converted, dropped };
 }
 
 function firstPerKey(list: readonly SkippedKey[]): SkippedKey[] {
@@ -462,7 +452,6 @@ export async function planV5Conversion(configDir: string): Promise<V5Conversion 
     values,
     settings: checked.settings,
     fromFile: checked.fromFile,
-    displayImport: mapped.display,
     converted: mapped.converted,
     dropped: firstPerKey([...read.dropped, ...mapped.dropped]),
     invalid: firstPerKey(read.invalid),

@@ -38,6 +38,7 @@ import {
   SETTINGS_SCHEMA,
   type V5Conversion,
 } from "../src/settings/index.js";
+import { PROVIDER_IDS } from "../src/settings/schema.js";
 import { answer, percentRow } from "./helpers/fake-answers.js";
 import { PROVIDER_ROW_KEYS } from "./helpers/provider-assertions.js";
 
@@ -115,7 +116,6 @@ function conversion(extra: Partial<V5Conversion>): V5Conversion {
     values: {},
     settings: defaultSettings(),
     fromFile: [],
-    displayImport: {},
     converted: [],
     dropped: [],
     invalid: [],
@@ -201,7 +201,7 @@ const KNOWN_WORD_SECRETS = [
 
 /** The report's own fixed words: its keys, states, codes and the words of its sentences. */
 const REPORT_WORDS: readonly string[] = `
-  - Couldn Local Provider Rate a account account_count active age_ms and api_host
+  - enabled path keys Couldn Local Provider Rate a account account_count active age_ms and api_host
   api_key_checked_paths api_key_diagnostics api_key_source are arg at auth_selected_path
   auth_source auth_state auto auto_refresh_days billing_cycle_start_day binary_path bundled
   bundled_only check checked_at checked_commands checked_paths cli_version code config_source
@@ -841,16 +841,16 @@ describe("buildQuotaStatusReport", () => {
       },
     },
     {
-      name: "a token in a rejected providers.enabled value",
+      name: "a token in a rejected providers.off value",
       canary: HEX_CANARY,
-      shows: "- settings_issue: providers.enabled: unknown provider id",
+      shows: "- settings_issue: providers.off: unknown provider id",
       overrides: {
         settings: {
           path: "/cfg/settings.jsonc",
           exists: true,
           issues: [
             {
-              key: "providers.enabled",
+              key: "providers.off",
               message: `unknown provider id(s): ${HEX_CANARY}; valid: openai`,
             },
           ],
@@ -1208,7 +1208,7 @@ describe("buildQuotaStatusReport", () => {
           exists: false,
           issues: [
             { key: garbage(), message: garbage() },
-            { key: "providers.enabled", message: `unknown provider id(s): ${garbage()}` },
+            { key: "providers.off", message: `unknown provider id(s): ${garbage()}` },
             { key: "words.percent", message: `expected ${garbage()}` },
             { key: "$file", message: `syntax error on line ${pick(["3", DIGITS])}: ${garbage()}` },
           ],
@@ -1656,7 +1656,7 @@ describe("buildQuotaStatusReport", () => {
           exists: true,
           issues: [
             { key: "$file", message: "syntax error on line 2: ValueExpected" },
-            { key: "checking.minIntervalMs", message: "expected a number" },
+            { key: "providers.checking.minIntervalMs", message: "expected a number" },
             { key: "providers.custom[0].url", message: "expected an https URL" },
             { key: "words.percent", message: "duplicate key; the last valid value is used" },
             { key: "colour", message: "unknown setting; valid: version" },
@@ -1669,7 +1669,7 @@ describe("buildQuotaStatusReport", () => {
         "- currentModel: (error: session.get returned no modelID)",
         [
           "- settings_issue: $file: syntax error on line 2",
-          "- settings_issue: checking.minIntervalMs: invalid value",
+          "- settings_issue: providers.checking.minIntervalMs: invalid value",
           "- settings_issue: providers.custom: invalid value",
           "- settings_issue: words.percent: duplicate key",
           "- settings_issue: 1 unknown key",
@@ -1754,7 +1754,7 @@ describe("buildQuotaStatusReport", () => {
         conversion: conversion({
           written: true,
           converted: [
-            { key: "enabledProviders", to: "providers.enabled", where: "server" },
+            { key: "enabledProviders", to: "providers.off", where: "server" },
             {
               key: "percentDisplayMode",
               to: "words.percent",
@@ -2015,7 +2015,11 @@ describe("buildStatusReportData", () => {
     mkdirSync(settingsDir, { recursive: true });
     writeFileSync(
       join(settingsDir, "settings.jsonc"),
-      JSON.stringify({ providers: { enabled: ["synthetic", garbage(), garbage()] } }),
+      JSON.stringify({
+        providers: {
+          off: [...PROVIDER_IDS.filter((id) => id !== "synthetic"), garbage(), garbage()],
+        },
+      }),
     );
     const pricingDir = join(cacheHome, "opencode", "opencode-quota");
     mkdirSync(pricingDir, { recursive: true });
@@ -2091,7 +2095,7 @@ describe("buildStatusReportData", () => {
     // The access token and the error message.
     expect(syntheticSection).toContain("- 2 other details not shown");
     expect(text).not.toContain(SECRET);
-    expect(section(text, "providers")).toContain("- openai: disabled unavailable");
+    expect(section(text, "providers")).toContain("- openai: enabled unavailable");
     // An unavailable provider shows local setup details: it is never fetched.
     expect(section(text, "openai")).toContain("- state: unavailable\n");
     expect(section(text, "openai")).toMatch(/- opencode_provider: no looked_for=openai\b/u);
