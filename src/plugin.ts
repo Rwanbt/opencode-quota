@@ -436,8 +436,7 @@ export const QuotaToastPlugin = Plugin.define({
     });
 
     // Web and Desktop list these in their "/" menu and get the report as a chat message. The
-    // TUI shows /quota, /quota_usage and /quota_status itself; only its "chat" form of the
-    // /quota quick look runs /quota here.
+    // TUI shows /quota, /quota_usage and /quota_status in its quota window instead.
     const postReport = async (sessionID: string, command: string, report: string) => {
       // A message admitted while the AI works is delivered into that turn at its next
       // step, and can make the AI take one more step. Wait until the session is idle.

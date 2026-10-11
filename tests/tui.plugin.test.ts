@@ -365,7 +365,7 @@ beforeEach(() => {
   rpc.refresh.mockReset().mockResolvedValue({ snapshot: OK });
   rpc.acknowledgeDisplayImport.mockReset().mockResolvedValue({});
   rpc.status.mockReset().mockResolvedValue({ text: "status" });
-  // The quick look's and the Usage tab's data never arrive here: these tests check what opens.
+  // The Usage tab's data never arrives here: these tests check what opens.
   rpc.usage.mockReset().mockReturnValue(new Promise(() => {}));
 });
 
@@ -376,7 +376,7 @@ describe("commands of the TUI plugin", () => {
     // The RPC client is made per call, never during setup.
     expect(context.client.rpc).not.toHaveBeenCalled();
     expect(commands.map((command) => command.id)).toEqual([
-      "quota.quick_look",
+      "quota.limits",
       "quota.usage",
       "quota.status",
       "quota.settings",
@@ -429,25 +429,26 @@ describe("commands of the TUI plugin", () => {
     expect(enter()).not.toHaveProperty("slash");
   });
 
-  it("opens the quick look for a typed /quota, even on Home", () => {
-    const home = startTui();
-    home.editor.plainText = "/quota";
-    expect(home.enter()?.run()).toBeUndefined();
-    expect(home.editor.clear).toHaveBeenCalledOnce();
-    expect(home.context.ui.dialog.show).toHaveBeenCalledOnce();
-    expect(home.context.ui.dialog.set).toHaveBeenCalledWith({ size: "xlarge" });
-    expect(home.toast).not.toHaveBeenCalled();
-    expect(rpc.usage).toHaveBeenCalledExactlyOnceWith({ range: "7d" }, expect.anything());
+  it("opens the Limits tab for a typed /quota, with fresh rows", () => {
+    const session = startTui({ type: "session", sessionID: "ses_open" });
+    session.editor.plainText = "/quota";
+    expect(session.enter()?.run()).toBeUndefined();
+    expect(session.editor.clear).toHaveBeenCalledOnce();
+    expect(session.toast).not.toHaveBeenCalled();
+    expect(rpc.refresh).toHaveBeenCalledExactlyOnceWith(
+      { reason: "manual", sessionID: "ses_open" },
+      expect.anything(),
+    );
   });
 
-  it("opens the quota window for the other typed quota commands, and on Home says to open a session first", () => {
+  it("opens the quota window for every typed quota command, and on Home says to open a session first", () => {
     const home = startTui();
-    for (const name of ["quota_usage", "quota_status", "quota_settings"]) {
+    for (const name of ["quota", "quota_usage", "quota_status", "quota_settings"]) {
       home.editor.plainText = `/${name}`;
       expect(home.enter()?.run()).toBeUndefined();
     }
-    expect(home.editor.clear).toHaveBeenCalledTimes(3);
-    expect(home.toast).toHaveBeenCalledTimes(3);
+    expect(home.editor.clear).toHaveBeenCalledTimes(4);
+    expect(home.toast).toHaveBeenCalledTimes(4);
     expect(home.toast).toHaveBeenCalledWith(
       expect.objectContaining({
         message: "Open a session first: the quota window opens above its message box.",

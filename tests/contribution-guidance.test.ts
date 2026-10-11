@@ -17,7 +17,6 @@ const V6_SURFACES = [
   "TUI sidebar (open and collapsed)",
   "status line below the message input",
   "toasts",
-  "`/quota` quick look",
   "`/quota` window tabs (Limits, Usage, Notices, Status, Settings)",
   "Web and Desktop text commands",
   "CLI `show`/`status`",

@@ -56,8 +56,8 @@ Use this for a status bar or another tool that checks quota often. Add this to `
 - The file is `~/.cache/opencode/quota-export.json` (or `$XDG_CACHE_HOME/opencode/quota-export.json` when `XDG_CACHE_HOME` is set). `export.path` changes it.
 - OpenCode's background service rewrites it each time its quota snapshot changes. The file keeps its last contents when OpenCode stops.
 - After a model step, the plugin may check providers again once 30 seconds have passed since the last check, even when that is sooner than `checking.minIntervalMs`.
-- The TUI dialog and toast forms of `/quota`, and the Limits tab, ask providers right away.
-- Web, Desktop, and the TUI chat form of `/quota` use `poll` refreshes and wait out `checking.minIntervalMs`.
+- The quota window's Limits tab (the TUI's `/quota`) asks providers right away.
+- Web and Desktop `/quota` use `poll` refreshes and wait out `checking.minIntervalMs`.
 - A write error is logged but never breaks the TUI.
 
 ### tmux example (add to your tmux config)

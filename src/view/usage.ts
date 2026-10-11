@@ -710,30 +710,6 @@ function buildView(
     .map((line) => clip(line, width));
 }
 
-/** The daily chart alone, `rows` tall, each line at most `width`: the quick look's small chart. */
-export function dailyChartLines(
-  report: UsageReport,
-  options: { mode: UsageMode; width: number; rows: number },
-): UsageLine[] {
-  const thisYear = new Date(report.generatedAtMs).getFullYear();
-  const days = chartDays(report, options.mode);
-  return chartLines(days, options.mode, thisYear, options.width, options.rows).map((line) =>
-    clip(line, options.width),
-  );
-}
-
-/** Cost (or tokens) by type alone: its heading, the bar and the legend, each at most `width`. */
-export function byTypeBarLines(
-  report: UsageReport,
-  options: { mode: UsageMode; width: number },
-): UsageLine[] {
-  const { totals } = report;
-  const amounts = options.mode === "cost" ? totals.costByType : totals.tokensByType;
-  return byTypeLines(options.mode, amounts, options.width, false).map((line) =>
-    clip(line, options.width),
-  );
-}
-
 /** The usage view for the TUI Usage tab: lines of role-tagged spans, each at most `width`. */
 export function usageView(report: UsageReport, options: UsageViewOptions): UsageLine[] {
   return buildView(report, options, {

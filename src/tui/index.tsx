@@ -2,8 +2,8 @@
 /**
  * OpenCode Quota's TUI plugin. It draws the server's quota snapshot: the Quota panel in the
  * session sidebar, the status line under the message box (and on Home when turned on), the
- * toasts, the `/quota` quick look (`quick-look.tsx`), and the quota window that
- * `/quota_usage`, `/quota_status` and `/quota_settings` open above the message box (`window/`).
+ * toasts, and the quota window that `/quota`, `/quota_usage`, `/quota_status` and
+ * `/quota_settings` open above the message box (`window/`).
  * It reads only the quota RPC and the display settings in OpenCode's plugin storage.
  *
  * The quota slash commands typed in the prompt run in the TUI: on Enter, before OpenCode submits
@@ -19,7 +19,6 @@ import type { QuotaSnapshot } from "../core/types.js";
 import { parseUsageArguments } from "../core/usage-ranges.js";
 import { type ClientHost, createQuotaClient, reportFailure } from "./client.js";
 import { applyDisplayImport, createDisplayStore, type DisplayStorage } from "./display.js";
-import { createQuickLook, type QuickLookHost } from "./quick-look.js";
 import { SidebarPanel, type SurfaceHost } from "./sidebar.js";
 import { HomeFooter, StatusLine } from "./status-line.js";
 import type { Theme } from "./theme.js";
@@ -32,9 +31,8 @@ type TuiEvent = { data?: Record<string, unknown> };
 
 /** What the plugin needs from OpenCode's TUI context, besides the window's needs. */
 type TuiContext = WindowHost &
-  QuickLookHost &
   ClientHost & {
-    theme: Theme & WindowHost["theme"] & QuickLookHost["theme"];
+    theme: Theme & WindowHost["theme"];
     storage: DisplayStorage;
     data: WindowHost["data"] & {
       on: (event: string, handler: (event: TuiEvent) => void) => () => void;
@@ -128,7 +126,6 @@ const plugin = Plugin.define({
       editing: settings,
     };
     const quotaWindow = createQuotaWindow(api, host, settings);
-    const quickLook = createQuickLook(api, host, quotaWindow);
     /** `/quota_usage [range]`: the Usage tab, on the typed range; a wrong range says why. */
     const openUsage = (argumentsText: string) => {
       if (!argumentsText) {
@@ -141,7 +138,7 @@ const plugin = Plugin.define({
     };
     /** The quota slash commands, by name, with what follows the name. */
     const quotaCommands: Record<string, (argumentsText: string) => void> = {
-      quota: () => quickLook.open(),
+      quota: () => quotaWindow.open("limits"),
       quota_usage: openUsage,
       quota_status: () => quotaWindow.open("status"),
       quota_settings: () => quotaWindow.open("settings"),
@@ -171,11 +168,11 @@ const plugin = Plugin.define({
           mode: "global",
           commands: [
             {
-              id: "quota.quick_look",
-              title: "Quota: quick look",
+              id: "quota.limits",
+              title: "Quota limits",
               group: "OpenCode Quota",
               palette: true,
-              run: () => quickLook.open(),
+              run: () => quotaWindow.open("limits"),
             },
             {
               id: "quota.usage",

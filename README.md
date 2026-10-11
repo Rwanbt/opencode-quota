@@ -68,7 +68,7 @@ Restart OpenCode. Coming from 5.x? Your old settings are converted automatically
 > - OpenCode 1 is no longer supported. OpenCode 1 users stay on 4.x (`@slkiser/opencode-quota@4`).
 > - Logins come from OpenCode 2, never from `auth.json`. If a provider is missing, log in again.
 > - Web and Desktop get the slash commands, but no toasts or panels.
-> - TUI reports open in a popup, a toast or the quota window. Only `/quota` with the `chat` [quick look](docs/readme/configuration.md#tui-surfaces) leaves a chat message.
+> - TUI reports open in the quota window and leave no chat message.
 > - OpenCode Zen uses your OpenCode Console sign-in: `opencode auth login opencode`.
 
 Full list: [Moving to OpenCode 2](docs/readme/updating.md#moving-to-opencode-2).
@@ -81,7 +81,7 @@ Type these in OpenCode. Add a range after `/quota_usage`, like `/quota_usage 30d
 
 | Command                | What it shows                                                                                                     |
 | ---------------------- | ----------------------------------------------------------------------------------------------------------------- |
-| `/quota`               | Quick look: limits next to the last 7 days of usage                                                               |
+| `/quota`               | Limits. Web and Desktop: limits next to the last 7 days of usage                                                  |
 | `/quota_usage [range]` | Tokens and API cost: `today`, `24h`, `7d` (default), `30d`, `all`, `session`, `session_tree`, `between` two dates |
 | `/quota_status`        | Setup check: logins, providers, pricing, and notices                                                              |
 | `/quota_settings`      | TUI: quota window, Settings tabs                                                                                  |

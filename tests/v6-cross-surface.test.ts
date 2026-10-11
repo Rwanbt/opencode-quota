@@ -235,39 +235,6 @@ function writeUsageHistory(modelID = "claude-sonnet-4-5"): void {
   });
 }
 
-/**
- * OpenCode's history for the quick look, in its own database: an hour ago, Anthropic and GitHub
- * Copilot each answered once.
- */
-function writeQuickLookHistory(): void {
-  const databasePath = join(mocks.root, "opencode.db");
-  vi.stubEnv("OPENCODE_DB", databasePath);
-  const hourAgo = Date.now() - 60 * 60_000;
-  writeSessionDatabase(databasePath, {
-    sessions: [{ id: "ses_1", created: hourAgo }],
-    messages: [
-      {
-        id: "msg_1",
-        sessionID: "ses_1",
-        created: hourAgo,
-        completed: hourAgo + 1_000,
-        providerID: "anthropic",
-        modelID: "claude-sonnet-4-5",
-        tokens: { input: 1_000_000 },
-      },
-      {
-        id: "msg_2",
-        sessionID: "ses_1",
-        created: hourAgo + 2_000,
-        completed: hourAgo + 3_000,
-        providerID: "github-copilot",
-        modelID: "claude-sonnet-4-5",
-        tokens: { input: 500_000 },
-      },
-    ],
-  });
-}
-
 function expectNoCanary(...outputs: unknown[]): void {
   const text = JSON.stringify(outputs);
   for (const canary of Object.values(CANARIES)) expect(text).not.toContain(canary);
@@ -557,8 +524,7 @@ describe("v6 surfaces on the quota snapshot", () => {
     await rm(mocks.root, { recursive: true, force: true, maxRetries: 3 });
   });
 
-  it("shows one snapshot in the sidebar, status line, toast, /quota, the window, export and gauges", async () => {
-    writeQuickLookHistory();
+  it("shows one snapshot in the sidebar, status line, toast, the window, export and gauges", async () => {
     const tui = await startHosts();
     const sidebar = () => tui.render("sidebar.content", { sessionID: "ses_1" });
     // The first look asks the server; the providers answer in the background and the
@@ -612,58 +578,9 @@ describe("v6 surfaces on the quota snapshot", () => {
     expect(toast).toMatchObject({ variant: "info", title: "OpenCode Quota" });
     expect(toast.message).toContain("Custom providers (… Provider error 503\nSession  1.20K in");
 
-    // /quota opens the quick look: one block per provider, OpenCode's usage of the last 7 days
-    // next to the limits. Anthropic has only usage, MiniMax only limits.
-    await tui.command("quick_look").run();
-    expect(tui.dialog.show).toHaveBeenCalledOnce();
-    expect(tui.dialog.set).toHaveBeenCalledWith({ size: "xlarge" });
-    const quickLook = () => words(tui.renderDialog());
-    await vi.waitFor(() =>
-      expect(quickLook()).toContain("● Anthropic $3.00 66.7% of cost · 1.00M tokens · 1 session"),
-    );
-    expect(quickLook()).toEqual(
-      expect.arrayContaining([
-        "Quota Last 7 days Cost Tokens ‹ 7 days ›",
-        "$4.50 Daily cost",
-        "● Copilot (pro) $1.50 33.3% of cost · 500K tokens · 1 session",
-        "Plan ████████████████░░░░ 81% left",
-        "● MiniMax Token Plan — no usage in OpenCode",
-        "5h ░░░░░░░░░│░░░░░░░░░░ 0% left · resets in 2h 14m · faster than it refills",
-        "Weekly ████████░░░░░░░░░░░░ 40% left",
-        "● Custom providers (Team) — no usage in OpenCode",
-        "Cost by type",
-        "c/t cost or tokens · ←/→ range · u full usage · s settings · esc close",
-      ]),
-    );
-    // t shows tokens, → the next range; u opens the window on Usage.
-    tui.pressDialog("t");
-    expect(quickLook()).toContain("● Anthropic 1.00M 66.7% of tokens · $3.00 · 1 session");
-    tui.pressDialog("right");
-    await vi.waitFor(() =>
-      expect(quickLook()[0]).toBe("Quota Last 30 days Cost Tokens ‹ 30 days ›"),
-    );
-    tui.pressDialog("u");
-    expect(tui.dialog.clear).toHaveBeenCalledOnce();
+    // /quota opens the window on Limits: every row with its bar, percent, reset and pace.
+    await tui.command("limits").run();
     const quotaWindow = () => textLines(tui.render("session.composer.top", { sessionID: "ses_1" }));
-    // The Usage tab's ranges; the window starts without the keyboard, so no key hint.
-    const usageKeys = "Session + subagents";
-    await vi.waitFor(() => expect(quotaWindow()).toContain(usageKeys));
-
-    // /quota_status opens the window on Status, /quota_settings on the first Settings tab. A
-    // click on Limits shows every row with its bar, percent, reset and pace.
-    await tui.command("status").run();
-    expect(quotaWindow()).toContainEqual(expect.stringContaining("Copy this report"));
-    await tui.command("settings").run();
-    expect(quotaWindow()).toContainEqual(
-      expect.stringContaining("Show the Quota panel in the session sidebar"),
-    );
-    await tui.command("usage").run();
-    expect(quotaWindow()).toContain(usageKeys);
-    const tabs = findAll(
-      tui.render("session.composer.top", { sessionID: "ses_1" }),
-      (node) => node.type === "text" && typeof node.props.onMouseUp === "function",
-    );
-    tabs.find((node) => textLines(node)[0] === "Limits")?.props.onMouseUp();
     await vi.waitFor(() => expect(quotaWindow()).toContain("  Provider error 503"));
     expect(quotaWindow()).toEqual(
       expect.arrayContaining([
@@ -688,36 +605,17 @@ describe("v6 surfaces on the quota snapshot", () => {
     );
     expect(quotaWindow()).not.toContain("Close");
 
-    // The quick look as a toast, and as a message in the session: the TUI runs the server's
-    // /quota there, which posts the same short text as on Web and Desktop. In a 120-column
-    // terminal the toast's text gets 54 columns: a longer line goes on under itself.
-    const settings = tui.stored.get("settings").settings;
-    settings.quickLook = "toast";
-    await tui.command("quick_look").run();
-    await vi.waitFor(() => expect(tui.toast).toHaveBeenCalledTimes(2));
-    const shortText = [
-      "Quota · 7 days · $4.50 · 1.50M tokens",
-      "● Anthropic             $3.00",
-      "● Copilot (pro)         Plan 81% left  $1.50",
-      "● MiniMax Token Plan    5h 0% left · 7d 40% left",
-      "● Custom providers (T…  Provider error 503",
-      "  30d 64% left",
-    ];
-    expect(tui.toast.mock.calls[1]?.[0]).toMatchObject({
-      variant: "info",
-      message: shortText.join("\n"),
-    });
-    settings.quickLook = "chat";
-    await tui.command("quick_look").run();
-    expect(tui.sessionCommand).toHaveBeenCalledExactlyOnceWith(
-      { sessionID: "ses_1", name: "quota", text: "" },
-      expect.anything(),
+    // /quota_usage opens it on Usage (its ranges; the window starts without the keyboard, so no
+    // key hint), /quota_status on Status, /quota_settings on the first Settings tab.
+    await tui.command("usage").run();
+    const usageKeys = "Session + subagents";
+    await vi.waitFor(() => expect(quotaWindow()).toContain(usageKeys));
+    await tui.command("status").run();
+    expect(quotaWindow()).toContainEqual(expect.stringContaining("Copy this report"));
+    await tui.command("settings").run();
+    expect(quotaWindow()).toContainEqual(
+      expect.stringContaining("Show the Quota panel in the session sidebar"),
     );
-    await vi.waitFor(() => expect(tui.posted).toHaveBeenCalledOnce());
-    expect(tui.posted.mock.calls[0]?.[0].text.split("\n").slice(0, 2)).toEqual([
-      "[OpenCode Quota report]",
-      "Quota · 7 days · $4.50 · 1.50M tokens",
-    ]);
 
     // The export file (version 3) and the gauges follow the snapshot without asking a provider
     // again.
@@ -774,7 +672,6 @@ describe("v6 surfaces on the quota snapshot", () => {
       expanded,
       sidebar(),
       tui.toast.mock.calls,
-      quickLook(),
       quotaWindow(),
       tui.posted.mock.calls,
       exported,
@@ -847,30 +744,6 @@ describe("v6 surfaces on the quota snapshot", () => {
       clickable(windowTree(), "Layout").props.onMouseUp();
       expect(tui.layer(10).enabled?.()).toBe(true);
       expect(tui.focused()).toMatchObject({ type: "box", props: { focusable: true } });
-      await tui.dispose();
-    });
-
-    it("shows /quota in the Layout tab's form at once, and saves it to plugin storage", async () => {
-      const { tui, windowTree } = await openSettings("Layout");
-      const line = () => settingLine(windowTree(), "quickLook");
-      expect(words(line())).toEqual(expect.arrayContaining(["/quota shows", "a popup"]));
-
-      // A toast before Save: /quota already uses the changed line.
-      clickable(line(), "›").props.onMouseUp();
-      expect(words(line())).toContain("a toast");
-      await tui.command("quick_look").run();
-      await vi.waitFor(() =>
-        expect(tui.toast).toHaveBeenLastCalledWith(
-          expect.objectContaining({
-            variant: "info",
-            message: expect.stringMatching(/^Quota · 7 days/u),
-          }),
-        ),
-      );
-      expect(tui.dialog.show).not.toHaveBeenCalled();
-
-      clickable(windowTree(), "Save").props.onMouseUp();
-      await vi.waitFor(() => expect(tui.stored.get("settings").settings?.quickLook).toBe("toast"));
       await tui.dispose();
     });
 

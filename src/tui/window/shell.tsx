@@ -1,7 +1,7 @@
 /** @jsxImportSource @opentui/solid */
 /**
- * The quota window. `/quota_usage`, `/quota_status` and `/quota_settings` (and u and s in the
- * `/quota` quick look) open it above the message box of a session, where it covers the chat
+ * The quota window. `/quota`, `/quota_usage`, `/quota_status` and `/quota_settings` open it
+ * above the message box of a session, where it covers the chat
  * with the same size on every tab: Usage, Limits, Notices, Status and the Settings tabs
  * (`settings.tsx`). The tab bar is one line, with "esc" at its right end to close the window:
  * when its tabs don't fit, it drops the "Settings" label, then shows the tabs around the

@@ -126,7 +126,7 @@ describe("V2 CLI command boundary", () => {
   it("registers the palette commands, a slash entry only for the TUI-only one, not V1 server command hooks", () => {
     const tui = startTui();
     expect([...tui.commands.keys()]).toEqual([
-      "quota.quick_look",
+      "quota.limits",
       "quota.usage",
       "quota.status",
       "quota.settings",
@@ -151,8 +151,7 @@ describe("V2 CLI command boundary", () => {
     tui.slots.get("home.footer.status")?.render();
     tui.listeners.get("session.execution.succeeded")?.({ data: { sessionID: "ses_1" } });
     for (const command of tui.commands.values()) await command.run();
-    // On Home the quota window only says to open a session, the quick look opens its dialog,
-    // and the reply toast shows the quota.
+    // On Home the quota window only says to open a session, and the reply toast shows the quota.
     const toastMessages = () => tui.toast.mock.calls.map(([toast]) => toast.message as string);
     await vi.waitFor(() =>
       expect(toastMessages().filter((message) => message.includes("Copilot Plan"))).toHaveLength(1),
@@ -162,10 +161,8 @@ describe("V2 CLI command boundary", () => {
     expect(rpc.snapshot.mock.calls.filter(([input]) => input.sessionID === "ses_1")).toHaveLength(
       1,
     );
-    // The quick look asks for fresh rows when it opens.
     expect(rpc.refresh.mock.calls.map(([input]) => input)).toEqual([
       { reason: "turn", sessionID: "ses_1" },
-      { reason: "manual" },
     ]);
     expect(rpc.notices).toHaveBeenCalledOnce();
     expect(mocks.readAuthFile).not.toHaveBeenCalled();
