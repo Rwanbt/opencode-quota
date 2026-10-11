@@ -1,7 +1,8 @@
 /**
  * OpenCode V2 server plugin: quota slash commands for Web and Desktop, a diagnostics tool, and
- * the quota RPC that serves the quota snapshot, the notices and the reports to the TUI. It reads
- * the server settings (settings.jsonc, converted from v5 once) and follows every change to them.
+ * the quota RPC that serves the quota snapshot, the Home notice line, active notices and reports
+ * to the TUI. It reads the server settings (settings.jsonc, converted from v5 once) and follows
+ * every change to them.
  * It also writes the export file and the OpenTelemetry gauges from each snapshot. Inside
  * OpenCode, logins are read only here, through OpenCode's integration API.
  */
@@ -25,7 +26,7 @@ import {
 } from "./core/usage.js";
 import { resolveOpenCodeLocationRoots } from "./lib/config-file-utils.js";
 import { sanitizeDisplayText } from "./lib/display-sanitize.js";
-import { homeNoticeLine, listNotices, markNotices } from "./lib/maintainer-home-notice.js";
+import { homeNoticeLine, listNotices } from "./lib/maintainer-home-notice.js";
 import {
   bindCredentialSource,
   createIntegrationCredentialSource,
@@ -280,41 +281,13 @@ export const QuotaToastPlugin = Plugin.define({
           return { snapshot: forClients(await withSessionTokens(snapshot, input.sessionID)) };
         }),
       notices: () =>
-        logRpcFailure("notices", async () => {
-          const {
-            notices: enabled,
-            noticesOnHome: home,
-            noticesOnHomeEvery: homeFrequency,
-          } = loaded.settings.system;
-          if (!enabled || !home) return { homeLine: "" };
-          return {
-            homeLine: await homeNoticeLine({
-              frequency: homeFrequency,
-              providerIds: await noticeTargets(),
-            }),
-          };
-        }),
-      // The notice switches are settings: saved to settings.jsonc and in use before the answer.
-      noticeList: (input) =>
-        logRpcFailure("noticeList", async () => {
-          const patch = {
-            ...(input.enabled === undefined ? {} : { notices: input.enabled }),
-            ...(input.home === undefined ? {} : { noticesOnHome: input.home }),
-          };
-          if (Object.keys(patch).length > 0) {
-            const saved = await saveSettings({ system: patch }, { allowFileOnly: false });
-            if (!saved.ok) {
-              const reasons = saved.issues.map((issue) => `${issue.key}: ${issue.message}`);
-              throw new Error(`cannot save the notice settings (${reasons.join("; ")})`);
-            }
-            await applySettings(await loadSettings({ projectDir }));
-          }
-          if (input.read?.length) await markNotices(input.read, true);
-          if (input.unread?.length) await markNotices(input.unread, false);
-          const { notices: enabled, noticesOnHome: home } = loaded.settings.system;
-          const notices = enabled ? await listNotices({ providerIds: await noticeTargets() }) : [];
-          return { enabled, home, notices };
-        }),
+        logRpcFailure("notices", async () => ({
+          homeLine: await homeNoticeLine({ providerIds: await noticeTargets() }),
+        })),
+      noticeList: () =>
+        logRpcFailure("noticeList", async () => ({
+          notices: await listNotices({ providerIds: await noticeTargets() }),
+        })),
       status: (input) =>
         logRpcFailure("status", async () => {
           const result = await buildStatusOutput(input.sessionID, {
@@ -446,9 +419,7 @@ export const QuotaToastPlugin = Plugin.define({
               return undefined;
             },
           );
-          const notices = loaded.settings.system.notices
-            ? await listNotices({ providerIds: await noticeTargets() })
-            : [];
+          const notices = await listNotices({ providerIds: await noticeTargets() });
           const report = quotaMessageText({ snapshot, usage, notices, nowMs: Date.now() });
           await postReport(invocation.sessionID, "quota", report);
         },

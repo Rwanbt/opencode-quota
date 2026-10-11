@@ -75,7 +75,7 @@ const callContext = {
   error: (type: string, message: string, data?: unknown) => ({ type, message, data }),
 };
 
-/** settings.jsonc: Copilot only, checked on every call, no notices; `overrides` per group. */
+/** settings.jsonc: Copilot only, checked on every call; `overrides` per group. */
 function useSettings(overrides: Record<string, unknown> = {}): void {
   writePluginTestSettings(TEST_RUNTIME_ROOT, {
     ...overrides,
@@ -84,7 +84,6 @@ function useSettings(overrides: Record<string, unknown> = {}): void {
       checking: { minIntervalMs: 1 },
       ...(overrides.providers as object),
     },
-    system: { notices: false, noticesOnHome: false, ...(overrides.system as object) },
   });
 }
 
@@ -755,50 +754,34 @@ describe("server quota RPC", () => {
     expect(global.snapshot).not.toHaveProperty("sessionTokens");
   });
 
-  it("serves the Home notice line only when the Home notice is on", async () => {
-    const { BUNDLED_MAINTAINER_ANNOUNCEMENTS, getMaintainerAnnouncementsSummary } = await import(
-      "../src/lib/maintainer-announcements.js"
-    );
-    const active = getMaintainerAnnouncementsSummary({
-      enabledProviders: ["copilot"],
-      announcements: BUNDLED_MAINTAINER_ANNOUNCEMENTS,
-    }).activeCount;
-    const expected =
-      active === 0
-        ? ""
-        : `Notice: ${active} unread maintainer ${active === 1 ? "notice" : "notices"}, see /quota_status.`;
-    useSettings({ system: { notices: true, noticesOnHome: true, noticesOnHomeEvery: "always" } });
-    await expect((await setupServer()).call("notices", {})).resolves.toEqual({
-      homeLine: expected,
+  it("serves the daily Home notice line without settings", async () => {
+    const nowMs = new Date(2026, 9, 10, 9, 0).getTime();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(nowMs);
+    const { call } = await setupServer();
+    await expect(call("notices", {})).resolves.toEqual({
+      homeLine: "Notice: 2 maintainer notices, see /quota_status.",
     });
-
-    useSettings({ system: { notices: true, noticesOnHome: false } });
-    await expect((await setupServer()).call("notices", {})).resolves.toEqual({ homeLine: "" });
+    clock.mockReturnValue(nowMs + 10 * 60_000);
+    await expect(call("notices", {})).resolves.toEqual({ homeLine: "" });
   });
 
-  it("lists the notices, saves their read state and the notice settings", async () => {
-    useSettings({ system: { notices: true, noticesOnHome: true } });
+  it("lists the active notices without read state or settings", async () => {
+    const nowMs = Date.parse("2026-10-10T12:00:00.000Z");
+    vi.spyOn(Date, "now").mockReturnValue(nowMs);
+    const { getMaintainerAnnouncementsSummary } = await import(
+      "../src/lib/maintainer-announcements.js"
+    );
+    const expected = getMaintainerAnnouncementsSummary({
+      enabledProviders: ["copilot"],
+      nowMs,
+    }).activeAnnouncements.map(({ announcement }) => ({
+      id: announcement.id,
+      message: announcement.message,
+      ...(announcement.url ? { url: announcement.url } : {}),
+    }));
+    expect(expected).toHaveLength(2);
     const { call } = await setupServer();
-    const first = (await call("noticeList", {})) as {
-      enabled: boolean;
-      home: boolean;
-      notices: Array<{ id: string; read: boolean }>;
-    };
-    expect(first).toMatchObject({ enabled: true, home: true });
-    const ids = first.notices.map((notice) => notice.id);
-
-    const read = (await call("noticeList", { read: ids, home: false })) as typeof first;
-    expect(read.home).toBe(false);
-    expect(read.notices.every((notice) => notice.read)).toBe(true);
-    const saved = await readFile(SETTINGS_FILE, "utf8");
-    expect(saved).toContain('"noticesOnHome": false');
-
-    // With notices off, none is listed.
-    await expect(call("noticeList", { enabled: false })).resolves.toEqual({
-      enabled: false,
-      home: false,
-      notices: [],
-    });
+    await expect(call("noticeList", {})).resolves.toEqual({ notices: expected });
   });
 
   it("serves the /quota_status report as text, and never writes the global config", async () => {
@@ -896,7 +879,8 @@ describe("server quota RPC", () => {
     onTestFinished(() => rm(databaseDir, { recursive: true, force: true }));
     const databasePath = join(databaseDir, "opencode.db");
     vi.stubEnv("OPENCODE_DB", databasePath);
-    const now = Date.now();
+    const now = Date.parse("2026-10-10T12:00:00.000Z");
+    vi.spyOn(Date, "now").mockReturnValue(now);
     writeSessionDatabase(databasePath, {
       sessions: [{ id: "ses_root", created: now - 120_000 }],
       messages: [
@@ -930,6 +914,12 @@ describe("server quota RPC", () => {
       "Quota · 7 days · $3.00 · 1.00M tokens",
       "● Anthropic  $3.00",
       "● Copilot    Premium requests 81% left",
+      "",
+      "Notices",
+      "- Help OpenCode list this plugin: add a thumbs-up to issue #38281.",
+      "  https://github.com/anomalyco/opencode/issues/38281",
+      "- OpenCode Quota 5.0 runs on OpenCode 2. Ideas for the next version? Tell us!",
+      "  https://github.com/slkiser/opencode-quota/issues/293",
       "[End of OpenCode Quota report]",
     ]);
     expect(message.metadata.opencodeQuota?.command).toBe("quota");
@@ -972,7 +962,6 @@ describe("server quota RPC", () => {
 
   it("logs why a snapshot or notices RPC failed, without tokens, and still fails it", async () => {
     const token = `eyJ${"a".repeat(24)}.${"b".repeat(24)}.${"c".repeat(24)}`;
-    useSettings({ system: { notices: true, noticesOnHome: true } });
     mocks.getProviders.mockImplementation(() => {
       throw new Error(`registry broke ${token}`);
     });

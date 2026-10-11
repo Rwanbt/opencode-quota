@@ -4,12 +4,7 @@ import { defaultDisplaySettings } from "../src/tui/display.js";
 import { limitsLines } from "../src/tui/window/limits.js";
 import { hintLines, tabStrip } from "../src/tui/window/shell.tsx";
 import { usageControls } from "../src/tui/window/usage.tsx";
-import {
-  type NoticeBoard,
-  noticeItems,
-  noticeOptions,
-  statusLines,
-} from "../src/tui/window/views.tsx";
+import { noticeItems, statusLines } from "../src/tui/window/views.tsx";
 import { lineText } from "../src/view/text.js";
 
 const NOW = Date.parse("2026-10-10T12:00:00.000Z");
@@ -191,36 +186,9 @@ describe("quota window: Limits", () => {
   });
 });
 
-const BOARD: NoticeBoard = {
-  enabled: true,
-  home: true,
-  notices: [
-    { id: "a", message: "Copilot moves to AI Credits.", url: "https://example.com/a", read: false },
-    { id: "b", message: "v6 is out.", read: true },
-  ],
-};
-
 describe("quota window: Notices", () => {
-  it("offers the switches and mark all read with the unread count", () => {
-    expect(noticeOptions(BOARD).map(({ title, value }) => `${title}: ${value}`)).toEqual([
-      "Maintainer notices: on",
-      "Count on the Home screen: on",
-      "Mark all as read: 1 unread",
-    ]);
-  });
-
-  it("marks unread notices and says what a click does", () => {
-    expect(noticeItems(BOARD).items.map(({ mark, action }) => `${mark} ${action}`)).toEqual([
-      "● click: mark read",
-      "○ read (click: unread)",
-    ]);
-  });
-
   it("says why there is no notice", () => {
-    const off = { ...BOARD, enabled: false, notices: [] };
-    expect(noticeOptions(off).map(({ id }) => id)).toEqual(["enabled", "home"]);
-    expect(noticeItems(off).empty).toMatch(/Notices are off/u);
-    expect(noticeItems({ ...BOARD, notices: [] }).empty).toBe("No notices right now.");
+    expect(noticeItems({ notices: [] }).empty).toBe("No notices right now.");
   });
 });
 

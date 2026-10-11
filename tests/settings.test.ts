@@ -127,7 +127,6 @@ describe("loadSettings", () => {
     ["providers.checking.minIntervalMs", 0],
     ["providers.cursor.billingCycleStartDay", 29],
     ["words.resetDecimals", 1.5],
-    ["system.noticesOnHome", "yes"],
     ["providers.anthropic.binaryPath", "  "],
     ["system.exportPath", "../quota.json"],
     ["providers.off", ["nope"]],

@@ -367,11 +367,6 @@ export async function buildStatusReportData(params: {
     providers: snapshots,
     credentialSource: getCredentialSourceDiagnostics(),
     maintainerAnnouncements: {
-      config: {
-        enabled: settings.system.notices,
-        home: settings.system.noticesOnHome,
-        homeFrequency: settings.system.noticesOnHomeEvery,
-      },
       summary: maintainerAnnouncementsSummary,
     },
     usage,

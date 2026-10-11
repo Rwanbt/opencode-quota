@@ -9,7 +9,7 @@ export interface MaintainerAnnouncement {
   message: string;
   url?: string;
   startsAt?: string;
-  endsAt?: string;
+  endsAt: string;
   providerIds?: CanonicalQuotaProviderId[];
 }
 
@@ -43,13 +43,6 @@ export interface MaintainerAnnouncementsSummary {
 
 export const BUNDLED_MAINTAINER_ANNOUNCEMENTS: readonly MaintainerAnnouncement[] = [
   {
-    id: "opencode-ecosystem-listing-support",
-    message: "Support OpenCode Quota's ecosystem listing: review the issue and add a thumbs-up.",
-    url: "https://github.com/anomalyco/opencode/issues/38281",
-    startsAt: "2026-07-22T00:00:00.000Z",
-    endsAt: "2026-08-22T00:00:00.000Z",
-  },
-  {
     id: "opencode-2-feedback",
     message: "OpenCode Quota 5.0 runs on OpenCode 2. Ideas for the next version? Tell us!",
     url: "https://github.com/slkiser/opencode-quota/issues/293",
@@ -67,6 +60,7 @@ export const BUNDLED_MAINTAINER_ANNOUNCEMENTS: readonly MaintainerAnnouncement[]
     id: "google-gemini-cli-org-only",
     message:
       "Gemini CLI quota support stays. It only works with Gemini Code Assist Standard or Enterprise (organization) accounts because Google ended personal accounts on 2026-06-18. Personal Google users should use Google AGY.",
+    endsAt: "2027-01-01T00:00:00.000Z",
     providerIds: ["google-gemini-cli"],
   },
 ];

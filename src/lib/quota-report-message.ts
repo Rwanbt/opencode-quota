@@ -47,7 +47,7 @@ const NO_DISPLAY_CHOICES: RowSettings = {
 
 /**
  * The /quota report of Web and Desktop: the short text of `view/quick-look.ts` for every
- * provider, then the notices not read yet.
+ * provider, then all active notices.
  */
 export function quotaMessageText(params: {
   snapshot: QuotaSnapshot;
@@ -57,8 +57,9 @@ export function quotaMessageText(params: {
 }): string {
   const { snapshot, usage, nowMs } = params;
   const quickLook = quickLookText({ snapshot, usage, settings: NO_DISPLAY_CHOICES, nowMs });
-  const notices = params.notices
-    .filter((notice) => !notice.read)
-    .flatMap((notice) => [`- ${notice.message}`, ...(notice.url ? [`  ${notice.url}`] : [])]);
+  const notices = params.notices.flatMap((notice) => [
+    `- ${notice.message}`,
+    ...(notice.url ? [`  ${notice.url}`] : []),
+  ]);
   return [quickLook, ...(notices.length > 0 ? ["", "Notices", ...notices] : [])].join("\n");
 }

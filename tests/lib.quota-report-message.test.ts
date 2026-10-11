@@ -30,7 +30,7 @@ describe("quota report messages", () => {
     expect(removeQuotaReports("no report")).toBe("no report");
   });
 
-  it("writes the quick look of every limit, then the notices not read yet", () => {
+  it("writes the quick look of every limit, then all active notices", () => {
     const nowMs = Date.parse("2026-10-10T12:00:00.000Z");
     const row = (id: string, fields: Partial<QuotaRow>): QuotaRow => ({
       id,
@@ -78,9 +78,8 @@ describe("quota report messages", () => {
         id: "a",
         message: "Copilot moves to AI Credits.",
         url: "https://example.com/a",
-        read: false,
       },
-      { id: "b", message: "An old notice you read.", read: true },
+      { id: "b", message: "Another active notice." },
     ];
 
     expect(quotaMessageText({ snapshot, usage: undefined, notices, nowMs }).split("\n")).toEqual([
@@ -90,12 +89,13 @@ describe("quota report messages", () => {
       "Notices",
       "- Copilot moves to AI Credits.",
       "  https://example.com/a",
+      "- Another active notice.",
     ]);
     expect(
       quotaMessageText({
         snapshot: { ...snapshot, providers: [] },
         usage: undefined,
-        notices: [notices[1]],
+        notices: [],
         nowMs,
       }),
     ).toBe("Quota\nNo quota providers found. Run /quota_status to see why.");

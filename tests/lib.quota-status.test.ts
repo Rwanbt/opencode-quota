@@ -487,7 +487,6 @@ describe("buildQuotaStatusReport", () => {
         }),
       ],
       maintainerAnnouncements: {
-        config: { enabled: true, home: true, homeFrequency: "daily" },
         summary: {
           source: "bundled_only",
           network: false,
@@ -528,9 +527,6 @@ describe("buildQuotaStatusReport", () => {
     expect(section(text, "maintainer_announcements")).toBe(
       [
         "maintainer_announcements:",
-        "- system.notices: true",
-        "- system.noticesOnHome: true",
-        "- system.noticesOnHomeEvery: daily",
         "- source: bundled_only",
         "- network: false",
         "- active: 2",

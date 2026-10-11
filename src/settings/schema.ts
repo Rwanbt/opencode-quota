@@ -142,10 +142,6 @@ export const SETTINGS_SCHEMA = {
   "providers.checking.waitForQuotaReset": bool(true),
   "providers.pricing.source": choice(["auto", "bundled", "runtime"], "auto"),
   "providers.pricing.autoRefreshDays": { ...whole(1), default: 7 },
-  /** Maintainer notices; `home` shows their count on Home, once a day or every time. */
-  "system.notices": bool(true),
-  "system.noticesOnHome": bool(true),
-  "system.noticesOnHomeEvery": { ...choice(["daily", "always"], "daily"), fileOnly: true },
   "system.exportFile": bool(false),
   /** "" = `$XDG_CACHE_HOME/opencode/quota-export.json`. */
   "system.exportPath": { kind: "path", allowEmpty: true, default: "", fileOnly: true },

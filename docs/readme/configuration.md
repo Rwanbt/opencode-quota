@@ -15,7 +15,7 @@ There are no project settings. Comments and trailing commas are allowed. Every k
 
 Every quota setting lives here, with one section per Settings tab: `sidebar`, `collapsed`, `statusLine`, `toast`, `colors`, `layout`, `words`, `providers`, and `system`. In the TUI, `/quota_settings` edits the settings through the server. Save, or ctrl+s, writes them to this file and keeps its comments. While you edit, the sidebar, status line, toasts and quota window show saved values with your unsaved changes on top. Discard drops those changes. File edits and a Save from any TUI reach all open TUIs within a few seconds.
 
-Only the sidebar panel's open or collapsed state lives in OpenCode's plugin storage. Custom definitions, the Claude CLI path, the export path and `system.noticesOnHomeEvery` are file-only settings. The System tab (`/quota_status`) has the notice, quota file and OpenTelemetry switches; they save as soon as you change them.
+Only the sidebar panel's open or collapsed state lives in OpenCode's plugin storage. Custom definitions, the Claude CLI path and the export path are file-only settings. The System tab (`/quota_status`) has the quota file and OpenTelemetry switches; they save as soon as you change them.
 
 Without the file, OpenCode Quota uses its defaults and writes nothing. Saving creates the file with the default sections. The first start with global 5.x settings converts them into this file. See [Updating](updating.md#moving-from-5x).
 
@@ -48,7 +48,7 @@ Nest the keys in the file:
   "layout": { "barWidth": 10 },
   "words": { "percent": "used", "reset": "compact" },
   "providers": { "off": ["openai"], "checking": { "requestTimeoutMs": 12000 } },
-  "system": { "notices": true },
+  "system": { "exportFile": true },
 }
 ```
 
@@ -213,11 +213,10 @@ Roles are `good`, `warning`, `low`, `empty`, `title`, `provider`, `account`, `la
 
 ### System
 
+Maintainer notices are written into the plugin with an end date. Active notices show on the System tab (`/quota_status`) and at the end of `/quota` text on Web and Desktop. Their count shows on the first Home screen of each local day for 10 minutes, only when a notice is active.
+
 | Setting | Default | Values |
 | --- | --- | --- |
-| `system.notices` | `true` | Show maintainer notices. |
-| `system.noticesOnHome` | `true` | Show their count on Home. |
-| `system.noticesOnHomeEvery` | `"daily"` | `daily` shows the count for 10 minutes on the first Home screen of the day. `always` shows it each time. File only. |
 | `system.exportFile` | `false` | Write quota JSON when the snapshot changes. |
 | `system.exportPath` | `""` | Empty uses `$XDG_CACHE_HOME/opencode/quota-export.json`; otherwise an absolute or `~/` path without `..`. File only. |
 | `system.telemetry` | `false` | Publish quota and cache-age metrics through OpenCode's global OpenTelemetry MeterProvider. |

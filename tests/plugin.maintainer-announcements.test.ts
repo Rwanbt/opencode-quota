@@ -24,12 +24,13 @@ import { createQuotaRpcBridge } from "./helpers/quota-rpc-bridge.js";
 
 // A fresh folder per run, so test runs in sibling checkouts never share it.
 const TEST_RUNTIME_ROOT = mkdtempSync(join(tmpdir(), "opencode-quota-plugin-announcements-"));
-const ANNOUNCEMENT_HOME_MESSAGE = "Notice: 1 unread maintainer notice, see /quota_status.";
+const ANNOUNCEMENT_HOME_MESSAGE = "Notice: 1 maintainer notice, see /quota_status.";
 
 const TEST_ANNOUNCEMENT = vi.hoisted(() => ({
   id: "copilot-credits",
   message: "If you use Copilot, GitHub billing is moving to AI Credits.",
   url: "https://github.blog/example",
+  endsAt: "2027-01-01T00:00:00.000Z",
   providerIds: ["copilot"],
 }));
 
@@ -97,17 +98,10 @@ function makeAnnouncementSummary(overrides: Record<string, unknown> = {}) {
   };
 }
 
-/** Copilot with quota; the announcements as `announcements` sets them. */
-function configureQuestionQuotaToast(
-  announcements: Record<string, unknown> = { enabled: true, home: true },
-): void {
+/** Copilot with quota and the question toast enabled. */
+function configureQuestionQuotaToast(): void {
   writePluginTestSettings(TEST_RUNTIME_ROOT, {
     toast: { afterQuestion: true },
-    system: {
-      notices: announcements.enabled,
-      noticesOnHome: announcements.home,
-      noticesOnHomeEvery: announcements.homeFrequency,
-    },
     providers: {
       off: CONFIG_PROVIDER_IDS.filter((id) => !["copilot"].includes(id)),
       checking: { minIntervalMs: 1 },
@@ -227,16 +221,18 @@ describe("maintainer announcement plugin integration", () => {
     await cli.dispose();
   });
 
-  it("does not show the Home announcement when announcements.home is off", async () => {
-    configureQuestionQuotaToast({ enabled: true, home: false });
+  it("does not show the Home announcement when no notice is active", async () => {
+    configureQuestionQuotaToast();
+    announcementMocks.getMaintainerAnnouncementsSummary.mockReturnValue(
+      makeAnnouncementSummary({ activeCount: 0, activeAnnouncements: [] }),
+    );
     const cli = await startCli();
     cli.renderHome();
-    // The notices call reads the settings, then stops.
     await vi.waitFor(() => expect(cli.notices).toHaveBeenCalled());
     await expect(cli.notices.mock.results[0]?.value).resolves.toEqual({ homeLine: "" });
     await flushMaintainerFallbackWork();
 
-    expect(announcementMocks.getMaintainerAnnouncementsSummary).not.toHaveBeenCalled();
+    expect(announcementMocks.getMaintainerAnnouncementsSummary).toHaveBeenCalled();
     await cli.dispose();
   });
 });

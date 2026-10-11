@@ -176,11 +176,11 @@ const ROWS: Array<{
   { v5: { tuiCompactStatus: { maxWidth: 80 } }, dropped: ["tuiCompactStatus.maxWidth"] },
   {
     v5: { maintainerAnnouncements: { enabled: false, home: false, homeFrequency: "always" } },
-    server: {
-      "system.notices": false,
-      "system.noticesOnHome": false,
-      "system.noticesOnHomeEvery": "always",
-    },
+    dropped: [
+      "maintainerAnnouncements.enabled",
+      "maintainerAnnouncements.home",
+      "maintainerAnnouncements.homeFrequency",
+    ],
   },
   {
     v5: { layout: { maxWidth: 60, narrowAt: 40, tinyAt: 30 } },
@@ -217,6 +217,20 @@ describe("convertV5, key by key", () => {
     }
     expect(loaded.fromFile).toContain("sidebar.show");
     expect(loaded.fromFile).toContain("system.telemetry");
+  });
+
+  it("drops the three notice settings with their reason", async () => {
+    writeV5({ maintainerAnnouncements: { enabled: false, home: false, homeFrequency: "always" } });
+
+    const conversion = await convertV5();
+
+    expect(conversion?.dropped).toEqual([
+      { key: "maintainerAnnouncements.enabled", reason: "notices have no settings in v6" },
+      { key: "maintainerAnnouncements.home", reason: "notices have no settings in v6" },
+      { key: "maintainerAnnouncements.homeFrequency", reason: "notices have no settings in v6" },
+    ]);
+    expect(conversion?.converted).toEqual([]);
+    expect(conversion?.values).toEqual({});
   });
 
   it("lists values v5 rejected too and converts the rest", async () => {

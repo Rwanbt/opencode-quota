@@ -75,13 +75,6 @@ vi.mock("fs/promises", async (importOriginal) =>
   fsWithSteps(await importOriginal<typeof import("node:fs/promises")>()),
 );
 
-// Three notices, so three windows can each mark one.
-vi.mock("../src/lib/maintainer-announcements.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../src/lib/maintainer-announcements.js")>()),
-  BUNDLED_MAINTAINER_ANNOUNCEMENTS: ["a", "b", "c"].map((id) => ({ id, message: id })),
-}));
-
-import { markNotices } from "../src/lib/maintainer-home-notice.js";
 import { loadSettings, saveSettings, settingsPath } from "../src/settings/index.js";
 
 let root: string;
@@ -111,8 +104,6 @@ type Writer = {
   expected: unknown;
 };
 
-const noticesFile = () =>
-  join(root, "state", "opencode", "opencode-quota", "maintainer-announcements-read.json");
 const SETTINGS_WRITES = {
   a: { words: { percent: "used" } },
   b: { words: { reset: "short" } },
@@ -120,14 +111,6 @@ const SETTINGS_WRITES = {
 } as const;
 
 const writers: Writer[] = [
-  {
-    name: "notice read marks",
-    file: noticesFile,
-    start: () => writeFileSync(noticesFile(), '{ "read": [] }\n'),
-    write: (actor) => markNotices([actor], true),
-    written: async () => JSON.parse(readFileSync(noticesFile(), "utf8")),
-    expected: { read: ["a", "b", "c"] },
-  },
   {
     name: "settings saves",
     file: settingsPath,

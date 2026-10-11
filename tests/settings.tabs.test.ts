@@ -119,9 +119,6 @@ const EXPECTED = {
     pricing: { source: "auto", autoRefreshDays: 7 },
   },
   system: {
-    notices: true,
-    noticesOnHome: true,
-    noticesOnHomeEvery: "daily",
     exportFile: false,
     exportPath: "",
     telemetry: false,

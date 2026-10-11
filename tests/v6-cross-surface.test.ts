@@ -494,8 +494,6 @@ describe("v6 surfaces on the quota snapshot", () => {
         checking: { minIntervalMs: 60_000 },
       },
       system: {
-        notices: false,
-        noticesOnHome: false,
         exportFile: true,
         exportPath: join(mocks.root, "quota-export.json"),
         telemetry: true,
@@ -732,7 +730,6 @@ describe("v6 surfaces on the quota snapshot", () => {
     it("checks found providers by default, saves unticks and checks a provider found later", async () => {
       writePluginTestSettings(mocks.root, {
         providers: { off: [], checking: { minIntervalMs: 1 } },
-        system: { notices: false, noticesOnHome: false },
       });
       let cursorFound = false;
       const cursor = {
@@ -884,7 +881,6 @@ describe("v6 surfaces on the quota snapshot", () => {
           custom: [{ ...CUSTOM_SOURCES[0], enabled: false }],
           checking: { minIntervalMs: 1 },
         },
-        system: { notices: false, noticesOnHome: false },
       });
       const teamUrl = CUSTOM_SOURCES[0]?.url;
       const fetchedTeam = () => vi.mocked(fetch).mock.calls.some(([url]) => url === teamUrl);
@@ -937,7 +933,6 @@ describe("v6 surfaces on the quota snapshot", () => {
             custom: [{ ...CUSTOM_SOURCES[0], url, enabled: false }],
             checking: { minIntervalMs: 1 },
           },
-          system: { notices: false, noticesOnHome: false },
         });
       settings("https://team-gateway.example/accounting");
       const settingsFile = join(mocks.root, "config", "opencode-quota", "settings.jsonc");
@@ -1290,7 +1285,6 @@ describe("an agent tool replacing an active custom provider", () => {
         custom: [ACTIVE_SOURCE],
         checking: { minIntervalMs: 3_600_000 },
       },
-      system: { notices: false, noticesOnHome: false },
     });
     const { quotaProvidersProvider } = await import("../src/providers/quota-providers.js");
     mocks.getProviders.mockReturnValue([quotaProvidersProvider]);

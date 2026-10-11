@@ -8,7 +8,7 @@
 2. Find the provider or feature that fails, and follow the matching fix below.
 3. Restart OpenCode after changing `opencode.json`. Changes to logins and `settings.jsonc` apply without a restart.
 
-`/quota_status` labels settings with their `settings.jsonc` keys. `providers.off` lists switched-off provider ids, or `(none)` when every discovered provider is checked. `words.onlyCurrentModel` shows the current-model filter. The notice settings are `system.notices`, `system.noticesOnHome`, and `system.noticesOnHomeEvery`. Pricing settings appear as `providers.pricing.source` and `providers.pricing.autoRefreshDays`.
+`/quota_status` labels settings with their `settings.jsonc` keys. `providers.off` lists switched-off provider ids, or `(none)` when every discovered provider is checked. `words.onlyCurrentModel` shows the current-model filter. The `maintainer_announcements` section counts active, future and expired notices. Pricing settings appear as `providers.pricing.source` and `providers.pricing.autoRefreshDays`.
 
 Every provider missing? Check that `@slkiser/opencode-quota` is in the `plugin` list of `opencode.jsonc` or `.json`. That one entry also loads the TUI; no `tui.json` entry is needed.
 

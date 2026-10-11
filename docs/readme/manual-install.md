@@ -42,9 +42,6 @@ OpenCode Quota works without settings. To change something, create `opencode-quo
 {
   // Find providers from your OpenCode config and logins.
   "providers": { "off": [] },
-
-  // Show the count of maintainer notices on Home, once a day for 10 minutes.
-  "system": { "notices": true, "noticesOnHome": true },
 }
 ```
 
@@ -56,9 +53,11 @@ The TUI shows the `Quota` panel in the session sidebar, a status line under the 
 
 ## Web and Desktop notes
 
+Maintainer notices are written into the plugin with an end date. Active notices show on the System tab (`/quota_status`) and at the end of `/quota` text on Web and Desktop. Their count shows on the first Home screen of each local day for 10 minutes, only when a notice is active.
+
 - Slash commands work in the TUI, Web, and Desktop. Add a range after `/quota_usage`, like `/quota_usage between 2026-09-01 2026-09-25`.
 - **TUI:** `/quota`, `/quota_usage`, `/quota_status` and `/quota_settings` open the quota window above the message box on the Limits, Usage, System or first Settings tab. System has the status report, a Copy button for it, the maintainer notices, and the quota file and OpenTelemetry switches. On Home, which has no message box, they say to open a session first. The Settings tabs cover the sidebar, status line, toasts, words and providers. None of them leaves a chat message. The command palette has the same commands.
-- **Web and Desktop:** `/quota` posts each provider's limits next to what OpenCode used in the last 7 days as short text, with the maintainer notices you have not read, in the chat as your message; `/quota_usage` and `/quota_status` post their report the same way. `/quota_settings` exists only in the TUI. The AI never answers a report, and the plugin filters it out of every AI request. If you uninstall the plugin, old reports in past chats are no longer filtered.
+- **Web and Desktop:** `/quota` posts each provider's limits next to what OpenCode used in the last 7 days as short text, ending with all active maintainer notices, in the chat as your message; `/quota_usage` and `/quota_status` post their report the same way. `/quota_settings` exists only in the TUI. The AI never answers a report, and the plugin filters it out of every AI request. If you uninstall the plugin, old reports in past chats are no longer filtered.
 - Each report starts with `[OpenCode Quota report]` and ends with `[End of OpenCode Quota report]`, which also keeps it out of compaction summaries.
 - Web uses a proportional font, so columns may not line up. Use the TUI or `npx @slkiser/opencode-quota show` for aligned columns.
 - If the AI is busy, the report appears after it finishes. A new session whose first message is a report keeps its default title.

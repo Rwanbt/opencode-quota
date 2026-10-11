@@ -1,6 +1,6 @@
 /**
  * Tools for AI agents: read the server settings, change the provider, checking and pricing
- * settings, and add, test and remove custom providers. Words, notices, export and telemetry
+ * settings, and add, test and remove custom providers. Words, export and telemetry
  * are the user's, edited in the quota window or the settings file. Every write
  * holds the settings lock and goes into OpenCode Quota's own settings file, never opencode.json.
  *

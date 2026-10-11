@@ -1,4 +1,3 @@
-import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -15,16 +14,24 @@ vi.mock("../src/lib/opencode-runtime-paths.js", () => ({
   }),
 }));
 
-// One announcement for Copilot users and one for Z.ai users, active all the time.
+// One announcement for Copilot users and one for Z.ai users, with the same dates.
 vi.mock("../src/lib/maintainer-announcements.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/lib/maintainer-announcements.js")>()),
   BUNDLED_MAINTAINER_ANNOUNCEMENTS: [
     {
       id: "copilot-credits",
       message: "If you use Copilot, GitHub billing is moving to AI Credits.",
+      startsAt: new Date(2026, 9, 10, 8, 0).toISOString(),
+      endsAt: "2026-11-01T00:00:00.000Z",
       providerIds: ["copilot"],
     },
-    { id: "zai-plan", message: "Z.ai changed its plan limits.", providerIds: ["zai"] },
+    {
+      id: "zai-plan",
+      message: "Z.ai changed its plan limits.",
+      startsAt: new Date(2026, 9, 10, 8, 0).toISOString(),
+      endsAt: "2026-11-01T00:00:00.000Z",
+      providerIds: ["zai"],
+    },
   ],
 }));
 
@@ -32,17 +39,16 @@ import {
   __resetMaintainerHomeNoticeForTests,
   homeNoticeLine,
   listNotices,
-  markNotices,
 } from "../src/lib/maintainer-home-notice.js";
 
-const NOTICE = "Notice: 1 unread maintainer notice, see /quota_status.";
+const NOTICE = "Notice: 1 maintainer notice, see /quota_status.";
 const MINUTE = 60_000;
-const readStateFile = () =>
-  join(state.root, "state", "opencode-quota", "maintainer-announcements-read.json");
+const homeStateFile = () =>
+  join(state.root, "state", "opencode-quota", "maintainer-announcements-home.json");
 const MORNING = new Date(2026, 9, 10, 9, 0).getTime();
 
-function lineAt(nowMs: number, frequency: "off" | "daily" | "always" = "daily") {
-  return homeNoticeLine({ frequency, providerIds: ["copilot"], nowMs });
+function lineAt(nowMs: number) {
+  return homeNoticeLine({ providerIds: ["copilot"], nowMs });
 }
 
 describe("Home maintainer notice", () => {
@@ -56,13 +62,14 @@ describe("Home maintainer notice", () => {
   });
 
   it.each([
-    { name: "off", frequency: "off" as const, providerIds: ["copilot"], expected: "" },
-    { name: "no matching provider", frequency: "always" as const, providerIds: [], expected: "" },
-    { name: "always", frequency: "always" as const, providerIds: ["copilot"], expected: NOTICE },
-  ])("answers $name", async ({ frequency, providerIds, expected }) => {
-    await expect(homeNoticeLine({ frequency, providerIds, nowMs: MORNING })).resolves.toBe(
-      expected,
-    );
+    { providerIds: [], expected: "" },
+    { providerIds: ["copilot"], expected: NOTICE },
+    {
+      providerIds: ["copilot", "zai"],
+      expected: "Notice: 2 maintainer notices, see /quota_status.",
+    },
+  ])("counts the active notices for $providerIds", async ({ providerIds, expected }) => {
+    await expect(homeNoticeLine({ providerIds, nowMs: MORNING })).resolves.toBe(expected);
   });
 
   it("shows the daily notice for 10 minutes on the first Home screen of each day", async () => {
@@ -94,64 +101,37 @@ describe("Home maintainer notice", () => {
   });
 
   it("does not use up the day's showing while no notice is active", async () => {
-    await expect(
-      homeNoticeLine({ frequency: "daily", providerIds: [], nowMs: MORNING }),
-    ).resolves.toBe("");
+    await expect(homeNoticeLine({ providerIds: [], nowMs: MORNING })).resolves.toBe("");
     await expect(lineAt(MORNING + 60 * MINUTE)).resolves.toBe(NOTICE);
   });
 
-  it("keeps the read state in the state dir; the Home line counts only unread notices", async () => {
-    const notice = {
-      id: "copilot-credits",
-      message: "If you use Copilot, GitHub billing is moving to AI Credits.",
-    };
-    await expect(listNotices({ providerIds: ["copilot"] })).resolves.toEqual([
-      { ...notice, read: false },
-    ]);
-
-    // An id that names no bundled notice is not kept.
-    await markNotices(["copilot-credits", "gone"], true);
-    await expect(listNotices({ providerIds: ["copilot"] })).resolves.toEqual([
-      { ...notice, read: true },
-    ]);
-    const file = join(state.root, "state", "opencode-quota", "maintainer-announcements-read.json");
-    expect(JSON.parse(await readFile(file, "utf8"))).toEqual({ read: ["copilot-credits"] });
-    await expect(lineAt(MORNING, "always")).resolves.toBe("");
-    // A day with nothing unread does not use up its showing.
-    await expect(lineAt(MORNING)).resolves.toBe("");
-
-    await markNotices(["copilot-credits"], false);
-    await expect(lineAt(MORNING + MINUTE)).resolves.toBe(NOTICE);
+  it("does not use up the day's showing before a notice starts", async () => {
+    await expect(lineAt(new Date(2026, 9, 10, 7, 0).getTime())).resolves.toBe("");
+    await expect(readFile(homeStateFile(), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(lineAt(MORNING)).resolves.toBe(NOTICE);
   });
 
-  it("keeps both changes when two windows mark notices at the same time", async () => {
-    await Promise.all([markNotices(["copilot-credits"], true), markNotices(["zai-plan"], true)]);
-    expect(JSON.parse(await readFile(readStateFile(), "utf8"))).toEqual({
-      read: ["copilot-credits", "zai-plan"],
-    });
-    const notices = await listNotices({ providerIds: ["copilot", "zai"] });
-    expect(notices.map((notice) => [notice.id, notice.read])).toEqual([
-      ["copilot-credits", true],
-      ["zai-plan", true],
-    ]);
-    expect(existsSync(`${readStateFile()}.lock`)).toBe(false);
+  it("shows nothing after the notices end and writes no daily claim", async () => {
+    await expect(lineAt(Date.parse("2026-11-01T00:00:00.000Z"))).resolves.toBe("");
+    await expect(readFile(homeStateFile(), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
   });
 
-  it("waits while another OpenCode process holds the read state's lock", async () => {
-    const lock = `${readStateFile()}.lock`;
-    await mkdir(join(state.root, "state", "opencode-quota"), { recursive: true });
-    // A live process (this one) under another token: the lock of another window.
-    await writeFile(lock, JSON.stringify({ pid: process.pid, token: "other-window" }));
-    let done = false;
-    const marking = markNotices(["zai-plan"], true).then(() => {
-      done = true;
-    });
-    await new Promise((resolve) => setTimeout(resolve, 150));
-    expect(done).toBe(false);
-    expect(existsSync(readStateFile())).toBe(false);
+  it("keeps the daily claim across processes", async () => {
+    await expect(lineAt(MORNING)).resolves.toBe(NOTICE);
+    const claim = JSON.parse(await readFile(homeStateFile(), "utf8"));
+    expect(claim).toEqual({ day: "2026-10-10", shownAtMs: MORNING });
+    __resetMaintainerHomeNoticeForTests();
+    await expect(lineAt(MORNING + 9 * MINUTE)).resolves.toBe(NOTICE);
+    await expect(lineAt(MORNING + 10 * MINUTE)).resolves.toBe("");
+    expect(JSON.parse(await readFile(homeStateFile(), "utf8"))).toEqual(claim);
+  });
 
-    await rm(lock);
-    await marking;
-    expect(JSON.parse(await readFile(readStateFile(), "utf8"))).toEqual({ read: ["zai-plan"] });
+  it("lists active notices without read state", async () => {
+    await expect(listNotices({ providerIds: ["copilot"], nowMs: MORNING })).resolves.toEqual([
+      {
+        id: "copilot-credits",
+        message: "If you use Copilot, GitHub billing is moving to AI Credits.",
+      },
+    ]);
   });
 });

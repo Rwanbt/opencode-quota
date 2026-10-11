@@ -111,24 +111,11 @@ describe("quota RPC definition", () => {
 
   it("validates noticeList and status input and requires their output", async () => {
     await expectAccepted(methods.noticeList.input, {});
-    await expectAccepted(methods.noticeList.input, {
-      read: ["a"],
-      unread: [],
-      enabled: false,
-      home: true,
-    });
-    const cases: Array<[unknown, string]> = [
-      [null, "input must be an object"],
-      [{ read: "a" }, "read must be a list of strings"],
-      [{ unread: [1] }, "unread must be a list of strings"],
-      [{ enabled: "no" }, "enabled must be true or false"],
-      [{ home: 1 }, "home must be true or false"],
-    ];
-    for (const [input, issue] of cases) {
-      await expectRejected(methods.noticeList.input, input, issue);
+    for (const input of [undefined, null, []]) {
+      await expectRejected(methods.noticeList.input, input, "input must be an object");
     }
-    await expectAccepted(methods.noticeList.output, { enabled: true, home: true, notices: [] });
-    await expectRejected(methods.noticeList.output, { enabled: true }, "output must carry notices");
+    await expectAccepted(methods.noticeList.output, { notices: [] });
+    await expectRejected(methods.noticeList.output, {}, "output must carry notices");
 
     await expectAccepted(methods.status.input, {});
     await expectAccepted(methods.status.input, { sessionID: "ses_1" });

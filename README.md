@@ -90,6 +90,8 @@ Type these in OpenCode. Add a range after `/quota_usage`, like `/quota_usage 30d
 
 In the terminal, `/quota_usage` opens the window's Usage tab on that range: change it there, and click a model for its details. **Download new prices** there refreshes pricing from `models.dev`.
 
+Maintainer notices are written into the plugin with an end date. Active notices show on the System tab (`/quota_status`) and at the end of `/quota` text on Web and Desktop. Their count shows on the first Home screen of each local day for 10 minutes, only when a notice is active.
+
 ### CLI commands
 
 | Command                                     | What it does                      |

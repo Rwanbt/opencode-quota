@@ -189,7 +189,6 @@ export type QuotaStatusReportParams = {
   providers: readonly ProviderSnapshot[];
   credentialSource: CredentialSourceDiagnostics;
   maintainerAnnouncements?: {
-    config: { enabled: boolean; home: boolean; homeFrequency: "daily" | "always" };
     summary: MaintainerAnnouncementsSummary;
   };
   /** The last 30 days of usage, for the models without a price; null when it can't be read. */
@@ -498,12 +497,8 @@ function providerListSection(availability: readonly ProviderAvailability[]): Rep
 function announcementsSection(
   announcements: NonNullable<QuotaStatusReportParams["maintainerAnnouncements"]>,
 ): ReportSection {
-  const { config, summary } = announcements;
-  const frequency = config.homeFrequency === "always" ? "always" : "daily";
+  const { summary } = announcements;
   return kvSection("maintainer_announcements", [
-    { key: "system.notices", value: config.enabled === true ? "true" : "false" },
-    { key: "system.noticesOnHome", value: config.home === true ? "true" : "false" },
-    { key: "system.noticesOnHomeEvery", value: frequency },
     { key: "source", value: summary.source === "bundled_only" ? "bundled_only" : "(other)" },
     { key: "network", value: summary.network ? "true" : "false" },
     { key: "active", value: fmtInt(summary.activeCount) },

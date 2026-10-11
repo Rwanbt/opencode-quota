@@ -1,8 +1,7 @@
 /** @jsxImportSource @opentui/solid */
 /**
  * The bodies of the quota window's Limits and System tabs. Their text comes from pure
- * builders: `limits.ts`, and `noticeOptions`, `noticeItems` and `statusLines` here; the views
- * only color it and handle clicks.
+ * builders: `limits.ts`, and `noticeItems` and `statusLines` here; the views only color it.
  */
 import { TextAttributes } from "@opentui/core";
 import type { JSX } from "@opentui/solid";
@@ -14,62 +13,23 @@ import { LineText, type SurfaceHost } from "../sidebar.js";
 import { limitsLines } from "./limits.js";
 import type { WindowTheme } from "./shell.js";
 
-/** The notices' data: their two settings and the maintainer notices with their read state. */
+/** The active maintainer notices. */
 export type NoticeBoard = QuotaRpcNoticeListOutput;
-
-/** A notice setting line: a switch flips with ‹ › or a click, a button runs. */
-export type NoticeOption = {
-  id: "enabled" | "home" | "readAll";
-  title: string;
-  value: string;
-  kind: "switch" | "button";
-};
 
 export type NoticeItem = {
   id: string;
-  /** ● unread, ○ read. */
-  mark: string;
   message: string;
   url?: string;
-  read: boolean;
-  /** What a click does. */
-  action: string;
 };
-
-/** System's notice lines: notices on or off, the count on Home, mark all read. */
-export function noticeOptions(board: NoticeBoard): NoticeOption[] {
-  const unread = board.notices.filter((notice) => !notice.read).length;
-  const onOff = (on: boolean) => (on ? "on" : "off");
-  return [
-    { id: "enabled", title: "Maintainer notices", value: onOff(board.enabled), kind: "switch" },
-    { id: "home", title: "Count on the Home screen", value: onOff(board.home), kind: "switch" },
-    ...(board.enabled
-      ? [
-          {
-            id: "readAll",
-            title: "Mark all as read",
-            value: `${unread} unread`,
-            kind: "button",
-          } as const,
-        ]
-      : []),
-  ];
-}
 
 /** The notices, or the one line that says why there is none. */
 export function noticeItems(board: NoticeBoard): { items: NoticeItem[]; empty?: string } {
-  if (!board.enabled) {
-    return { items: [], empty: "Notices are off. Turn on 'Maintainer notices' above to see them." };
-  }
   if (board.notices.length === 0) return { items: [], empty: "No notices right now." };
   return {
     items: board.notices.map((notice) => ({
       id: notice.id,
-      mark: notice.read ? "○" : "●",
       message: notice.message,
       ...(notice.url ? { url: notice.url } : {}),
-      read: notice.read,
-      action: notice.read ? "read (click: unread)" : "click: mark read",
     })),
   };
 }
@@ -143,11 +103,9 @@ export function LimitsView(props: {
   );
 }
 
-/** Click a notice to mark it read, or unread again. */
 export function NoticesView(props: {
   theme: WindowTheme;
   board: NoticeBoard | undefined;
-  toggle: (id: string, read: boolean) => void;
 }): JSX.Element {
   const theme = () => props.theme;
   const body = () => (props.board ? noticeItems(props.board) : { items: [], empty: "Loading…" });
@@ -163,21 +121,9 @@ export function NoticesView(props: {
           flexDirection="row"
           // A blank line between notices; the status report under them keeps its own.
           marginBottom={index < body().items.length - 1 ? 1 : 0}
-          onMouseUp={() => props.toggle(item.id, item.read)}
         >
-          <text
-            fg={item.read ? theme().text.muted : theme().hue.accent[500]}
-            wrapMode="none"
-            selectable={false}
-          >
-            {`   ${item.mark} `}
-          </text>
           <box flexDirection="column" flexShrink={1}>
-            <text
-              fg={item.read ? theme().text.muted : theme().text.base}
-              attributes={item.read ? TextAttributes.NONE : TextAttributes.BOLD}
-              wrapMode="word"
-            >
+            <text fg={theme().text.base} attributes={TextAttributes.BOLD} wrapMode="word">
               {sanitizeDisplayText(item.message)}
             </text>
             <Show when={item.url}>
@@ -185,9 +131,6 @@ export function NoticesView(props: {
                 {sanitizeDisplayText(item.url ?? "")}
               </text>
             </Show>
-            <text fg={theme().text.muted} wrapMode="none" selectable={false}>
-              {item.action}
-            </text>
           </box>
         </box>
       ))}

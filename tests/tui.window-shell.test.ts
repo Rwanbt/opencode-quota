@@ -95,13 +95,12 @@ function fakeHost() {
     return self;
   };
 
-  // The server's notices; a change applies when its request arrives, the answer comes later.
+  // The server's notices; the answer comes when the test says so.
   const server = {
     notices: [
       { id: "a", message: "Copilot moves to AI Credits." },
       { id: "b", message: "v6 is out." },
     ],
-    read: new Set<string>(),
     /** The saved settings by dotted key, as the settings RPC answers them. */
     values: {} as Record<string, unknown>,
   };
@@ -119,15 +118,8 @@ function fakeHost() {
     client: {
       rpc: () => ({
         noticeList: (input: QuotaRpcNoticeListInput) => {
-          for (const id of input.read ?? []) server.read.add(id);
-          for (const id of input.unread ?? []) server.read.delete(id);
           const board: QuotaRpcNoticeListOutput = {
-            enabled: true,
-            home: true,
-            notices: server.notices.map((notice) => ({
-              ...notice,
-              read: server.read.has(notice.id),
-            })),
+            notices: server.notices.map((notice) => ({ ...notice })),
           };
           return new Promise<QuotaRpcNoticeListOutput>((resolve) => {
             const call = {
@@ -252,68 +244,6 @@ describe("quota window shell", () => {
     });
   });
 
-  it("shows the server's latest notice state when an older answer comes last", async () => {
-    const host = fakeHost();
-    host.quotaWindow.open("system");
-    await flush();
-    host.noticeCalls[0]?.answer();
-    await flush();
-
-    const view = draw(host.quotaWindow);
-    click(view.tree, "Copilot moves to AI Credits.");
-    click(view.tree, "v6 is out.");
-    view.dispose();
-    await flush();
-    // Whenever two requests are out, the server answers the newer one first.
-    for (let open = host.noticeCalls.filter((call) => !call.answered); open.length > 0; ) {
-      open.at(-1)?.answer();
-      await flush();
-      open = host.noticeCalls.filter((call) => !call.answered);
-    }
-
-    expect(host.noticeCalls.map((call) => call.input)).toEqual([
-      {},
-      { read: ["a"] },
-      { read: ["b"] },
-    ]);
-    const lines = textLines(draw(host.quotaWindow).tree);
-    expect(lines.filter((line) => line === "read (click: unread)")).toHaveLength(2);
-  });
-
-  it("sends one change for two quick clicks on one line, and the next click undoes it", async () => {
-    const host = fakeHost();
-    host.quotaWindow.open("system");
-    await flush();
-    host.noticeCalls[0]?.answer();
-    await flush();
-
-    // Two clicks before the server answers: the board still shows both as unread.
-    let view = draw(host.quotaWindow);
-    click(view.tree, "Copilot moves to AI Credits.");
-    click(view.tree, "Copilot moves to AI Credits.");
-    clickLine(view.tree, "Count on the Home screen");
-    clickLine(view.tree, "Count on the Home screen");
-    view.dispose();
-    await flush();
-    // The requests run one after another: answer each as it goes out.
-    for (let open = host.noticeCalls.find((call) => !call.answered); open; ) {
-      open.answer();
-      await flush();
-      open = host.noticeCalls.find((call) => !call.answered);
-    }
-
-    view = draw(host.quotaWindow);
-    click(view.tree, "Copilot moves to AI Credits.");
-    view.dispose();
-    await flush();
-    expect(host.noticeCalls.map((call) => call.input)).toEqual([
-      {},
-      { read: ["a"] },
-      { home: false },
-      { unread: ["a"] },
-    ]);
-  });
-
   it("saves a switch for other tools straight away and shows the saved value", async () => {
     const host = fakeHost();
     host.quotaWindow.open("system");
@@ -382,9 +312,8 @@ describe("quota window shell", () => {
     host.noticeCalls[0]?.answer();
     await flush();
 
-    // A new notice arrives, and another window marks "a" read.
+    // A new notice arrives.
     host.server.notices.push({ id: "c", message: "A new notice." });
-    host.server.read.add("a");
     await vi.advanceTimersByTimeAsync(15_000);
     expect(host.noticeCalls).toHaveLength(2);
     host.noticeCalls[1]?.answer();
@@ -392,7 +321,6 @@ describe("quota window shell", () => {
     const view = draw(host.quotaWindow);
     const lines = textLines(view.tree);
     expect(lines).toContain("A new notice.");
-    expect(lines.filter((line) => line === "read (click: unread)")).toHaveLength(1);
 
     press(host.layers, "tab");
     await vi.advanceTimersByTimeAsync(60_000);

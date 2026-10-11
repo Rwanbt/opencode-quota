@@ -10,14 +10,14 @@
  * is after opening; click it to give it the keyboard again) its keys work: ↑↓ select or scroll,
  * space/enter use a line, ←/→ change it, tab switches tabs, esc closes. Closing gives the
  * keyboard back to whatever had it before. System asks the server for the notices again every
- * 15 seconds while it shows, so a new notice or a change made in another window appears.
+ * 15 seconds while it shows, so active notices stay current.
  */
 import type { Plugin } from "@opencode/plugin/tui";
 import type { BoxRenderable, Renderable, RGBA, ScrollBoxRenderable } from "@opentui/core";
 import type { JSX } from "@opentui/solid";
 import { createSignal, onCleanup, onMount, Show } from "solid-js";
 import { sanitizeDisplayText } from "../../lib/display-sanitize.js";
-import { QuotaRpc, type QuotaRpcNoticeListInput } from "../../rpc.js";
+import { QuotaRpc } from "../../rpc.js";
 import { columnsOf } from "../../view/columns.js";
 import { type ClientHost, errorToast, quotaCallOptions, rpcErrorMessage } from "../client.js";
 import type { SettingsTab } from "../display.js";
@@ -35,7 +35,6 @@ import {
   LimitsView,
   type NoticeBoard,
   NoticesView,
-  noticeOptions,
   type StatusReport,
   StatusView,
 } from "./views.js";
@@ -208,13 +207,8 @@ export function createQuotaWindow(
   let statusRequest = 0;
   /** Notice requests not answered yet. */
   let openNoticeRequests = 0;
-  /** The notice requests run one after another, so changes reach the server in click order. */
+  /** The notice requests run one after another. */
   let noticeQueue: Promise<void> = Promise.resolve();
-  /**
-   * What the clicks not on the board yet change: a notice id, or a notice line. Another click
-   * on the same thing is ignored until the newest answer shows, since it would send the same.
-   */
-  const changing = new Set<string>();
   let noticePoll: ReturnType<typeof setInterval> | undefined;
   /** System switches whose save is not back yet; another flip of the same one is ignored. */
   const savingSwitches = new Set<string>();
@@ -225,30 +219,21 @@ export function createQuotaWindow(
   const usage = createUsageTab(api, () => scroll);
   const showError = (error: unknown) => api.ui.toast.show(errorToast(error));
 
-  /** Asks for the notices, after making the given changes, once the earlier requests are done. */
-  function changeNotices(input: QuotaRpcNoticeListInput): Promise<void> {
+  /** Asks for the notices once the earlier requests are done. */
+  function loadNotices(): Promise<void> {
     const request = ++noticeRequest;
     openNoticeRequests += 1;
     noticeQueue = noticeQueue.then(async () => {
       try {
-        const next = await rpc().noticeList(input, options());
+        const next = await rpc().noticeList({}, options());
         if (request === noticeRequest) setBoard(next);
       } catch (error) {
         if (request === noticeRequest) showError(error);
       } finally {
         openNoticeRequests -= 1;
-        // The newest answer came after every earlier change: the board shows them all.
-        if (request === noticeRequest) changing.clear();
       }
     });
     return noticeQueue;
-  }
-
-  /** A click's change; ignored while the same thing's last change is not on the board. */
-  function changeOnce(what: string, input: QuotaRpcNoticeListInput): void {
-    if (changing.has(what)) return;
-    changing.add(what);
-    void changeNotices(input);
   }
 
   async function flipSwitch(key: string, on: boolean): Promise<void> {
@@ -290,10 +275,10 @@ export function createQuotaWindow(
     stopNoticePoll();
     if (next === "limits") void host.quota.refresh("manual", sessionID);
     if (next === "system") {
-      void changeNotices({});
+      void loadNotices();
       // A poll waits while a request is still out, so slow answers don't pile up.
       noticePoll = setInterval(() => {
-        if (openNoticeRequests === 0) void changeNotices({});
+        if (openNoticeRequests === 0) void loadNotices();
       }, NOTICE_POLL_MS);
       void loadStatus(sessionID);
       // Snapshots bring the saved settings too, so the switches show even if this read fails.
@@ -321,8 +306,7 @@ export function createQuotaWindow(
   /**
    * The lines above a tab's body that ↑↓ can select: switches (‹ on ›) and buttons (▸). System
    * has Copy for its status report first, so it is picked as soon as the tab opens, then the
-   * notice lines once the notices arrived, then the switches for other tools once the saved
-   * settings arrived.
+   * switches for other tools once the saved settings arrived.
    */
   function tabOptions(): OptionLine[] {
     if (tab() !== "system") return [];
@@ -347,23 +331,7 @@ export function createQuotaWindow(
         },
       ];
     });
-    const current = board();
-    if (!current) return [copy, ...tools];
-    const unreadIds = current.notices.filter((notice) => !notice.read).map(({ id }) => id);
-    const runs = {
-      enabled: () => changeOnce("enabled", { enabled: !current.enabled }),
-      home: () => changeOnce("home", { home: !current.home }),
-      readAll: () => changeOnce("readAll", { read: unreadIds }),
-    };
-    const notices = noticeOptions(current).map(
-      ({ id, title, value, kind }): OptionLine => ({
-        id,
-        title,
-        value: () => value,
-        ...(kind === "switch" ? { cycle: runs[id] } : { run: runs[id] }),
-      }),
-    );
-    return [copy, ...notices, ...tools];
+    return [copy, ...tools];
   }
 
   function open(next: WindowTab | "settings"): void {
@@ -390,7 +358,6 @@ export function createQuotaWindow(
     // Answers still on their way belong to the closed window.
     noticeRequest += 1;
     statusRequest += 1;
-    changing.clear();
     keyboardWanted = false;
     if (focusBefore && !focusBefore.isDestroyed) focusBefore.focus();
     focusBefore = null;
@@ -671,13 +638,7 @@ export function createQuotaWindow(
             <usage.View width={bodyWidth()} keyTarget={() => windowBox} />
           </Show>
           <Show when={tab() === "system"}>
-            <NoticesView
-              theme={theme()}
-              board={board()}
-              toggle={(id, read) =>
-                changeOnce(`notice ${id}`, read ? { unread: [id] } : { read: [id] })
-              }
-            />
+            <NoticesView theme={theme()} board={board()} />
             <StatusView theme={theme()} report={status()} width={bodyWidth()} />
           </Show>
           <Show when={settingsTab()}>

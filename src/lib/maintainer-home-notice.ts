@@ -1,14 +1,12 @@
 /**
- * The maintainer notices clients show: the active ones with their read state, which every
- * OpenCode window shares through the state dir, and the line at the bottom of Home that counts
- * the unread ones. With the daily frequency that line shows on the first Home screen of each
- * day, for ten minutes, and the state dir remembers that day's showing.
+ * The active maintainer notices clients show, and the line at the bottom of Home that counts
+ * them. The line shows on the first Home screen of each local day, for ten minutes, and the
+ * state dir remembers that day's showing.
  */
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Notice } from "../rpc.js";
 import { writeJsonAtomic } from "./atomic-json.js";
-import { withFileLock } from "./file-lock.js";
 import {
   BUNDLED_MAINTAINER_ANNOUNCEMENTS,
   getMaintainerAnnouncementsSummary,
@@ -20,7 +18,6 @@ import { getOpencodeRuntimeDirs } from "./opencode-runtime-paths.js";
 const DAILY_HOME_NOTICE_VISIBLE_MS = 10 * 60_000;
 
 const STATE_FILE_OPTIONS = { trailingNewline: true, directoryMode: 0o700, fileMode: 0o600 };
-const READ_STATE_LOCK_WAIT_MS = 2_000;
 
 type DailyHomeNoticeClaim = { day: string; shownAtMs: number };
 
@@ -31,46 +28,8 @@ function statePath(name: string): string {
   return join(getOpencodeRuntimeDirs().stateDir, "opencode-quota", name);
 }
 
-/** The ids of the notices marked read; none when the file is missing or unreadable. */
-async function readNoticeIds(): Promise<Set<string>> {
-  try {
-    const state = JSON.parse(
-      await readFile(statePath("maintainer-announcements-read.json"), "utf8"),
-    ) as { read?: unknown };
-    const ids = Array.isArray(state.read) ? state.read : [];
-    return new Set(ids.filter((id): id is string => typeof id === "string"));
-  } catch {
-    return new Set();
-  }
-}
-
 /**
- * Marks notices read or unread. Only the ids of bundled notices are kept. The read, change and
- * write hold the read state's lock, so changes from several windows at once all stay.
- */
-export async function markNotices(ids: readonly string[], read: boolean): Promise<void> {
-  const known = new Set(BUNDLED_MAINTAINER_ANNOUNCEMENTS.map((announcement) => announcement.id));
-  const path = statePath("maintainer-announcements-read.json");
-  await withFileLock(
-    `${path}.lock`,
-    async (fence) => {
-      const readIds = await readNoticeIds();
-      for (const id of ids) {
-        if (read) readIds.add(id);
-        else readIds.delete(id);
-      }
-      const kept = [...readIds].filter((id) => known.has(id)).sort();
-      await writeJsonAtomic(path, { read: kept }, { ...STATE_FILE_OPTIONS, beforeCommit: fence });
-    },
-    {
-      waitMs: READ_STATE_LOCK_WAIT_MS,
-      busyMessage: `the notice read state is busy: another window holds ${path}.lock; try again`,
-    },
-  );
-}
-
-/**
- * The active notices, each with its read state.
+ * The active notices.
  * @param providerIds the providers quota shows (a notice can target some of them).
  */
 export async function listNotices(params: {
@@ -82,12 +41,10 @@ export async function listNotices(params: {
     announcements: BUNDLED_MAINTAINER_ANNOUNCEMENTS,
     nowMs: params.nowMs ?? Date.now(),
   });
-  const readIds = await readNoticeIds();
   return summary.activeAnnouncements.map(({ announcement }) => ({
     id: announcement.id,
     message: announcement.message,
     ...(announcement.url ? { url: announcement.url } : {}),
-    read: readIds.has(announcement.id),
   }));
 }
 
@@ -135,22 +92,20 @@ async function claimDailyHomeNotice(nowMs: number): Promise<boolean> {
 }
 
 /**
- * The Home line that counts the unread notices, or "" when there is none to show now.
+ * The Home line that counts the active notices, or "" when there is none to show now.
  * @param providerIds the providers quota shows (a notice can target some of them).
  */
 export async function homeNoticeLine(params: {
-  frequency: "off" | "daily" | "always";
   providerIds: string[];
   nowMs?: number;
 }): Promise<string> {
-  if (params.frequency === "off") return "";
   const nowMs = params.nowMs ?? Date.now();
   const notices = await listNotices({ providerIds: params.providerIds, nowMs });
-  const unread = notices.filter((notice) => !notice.read).length;
-  // Only a day with an unread notice uses up that day's showing.
-  if (unread === 0) return "";
-  if (params.frequency === "daily" && !(await claimDailyHomeNotice(nowMs))) return "";
-  const count = unread === 1 ? "1 unread maintainer notice" : `${unread} unread maintainer notices`;
+  // Only a day with an active notice uses up that day's showing.
+  if (notices.length === 0) return "";
+  if (!(await claimDailyHomeNotice(nowMs))) return "";
+  const count =
+    notices.length === 1 ? "1 maintainer notice" : `${notices.length} maintainer notices`;
   return `Notice: ${count}, see /quota_status.`;
 }
 

@@ -5,8 +5,8 @@
  * OpenCode package and no server code.
  *
  * Methods: `snapshot` (the last known quota, instantly), `refresh`, `notices` (the Home
- * notice line), `noticeList` (the maintainer notices with their read state), `status` (the
- * /quota_status report), `usage` (tokens and cost from OpenCode's history for one range),
+ * notice line), `noticeList` (the active maintainer notices), `status` (the /quota_status report),
+ * `usage` (tokens and cost from OpenCode's history for one range),
  * `downloadPrices` (a new price list from models.dev), `settings` (the server settings a client
  * may change), `saveSettings` (a patch of the server settings file, and custom provider
  * switches); the
@@ -36,16 +36,10 @@ export type QuotaRpcNoticesOutput = { homeLine: string };
 /** The /quota_status report as text; with a session, it also checks that session's model. */
 export type QuotaRpcStatusInput = { sessionID?: string };
 export type QuotaRpcStatusOutput = { text: string };
-export type Notice = { id: string; message: string; url?: string; read: boolean };
-/** Changes made before the answer: notices marked read or unread, and the two notice settings. */
-export type QuotaRpcNoticeListInput = {
-  read?: string[];
-  unread?: string[];
-  enabled?: boolean;
-  home?: boolean;
-};
-/** `home`: the bottom of Home counts the unread notices. `notices` is empty while `enabled` is off. */
-export type QuotaRpcNoticeListOutput = { enabled: boolean; home: boolean; notices: Notice[] };
+export type Notice = { id: string; message: string; url?: string };
+export type QuotaRpcNoticeListInput = Record<string, never>;
+/** The active maintainer notices for the providers quota shows. */
+export type QuotaRpcNoticeListOutput = { notices: Notice[] };
 export type QuotaRpcUsageInput = UsageQuery;
 export type QuotaRpcUsageOutput = { report: UsageReport };
 export type QuotaRpcDownloadPricesInput = Record<string, never>;
@@ -117,12 +111,6 @@ function checkOptionalString(input: Record<string, unknown>, field: string): str
   return input[field] === undefined || typeof input[field] === "string"
     ? null
     : `${field} must be a string`;
-}
-
-function checkOptionalBoolean(input: Record<string, unknown>, field: string): string | null {
-  return input[field] === undefined || typeof input[field] === "boolean"
-    ? null
-    : `${field} must be true or false`;
 }
 
 function checkOptionalStringList(input: Record<string, unknown>, field: string): string | null {
@@ -201,15 +189,7 @@ export const QuotaRpc = {
       ),
     },
     noticeList: {
-      input: schema<QuotaRpcNoticeListInput>((value) => {
-        if (!isRecord(value)) return "input must be an object";
-        return (
-          checkOptionalStringList(value, "read") ??
-          checkOptionalStringList(value, "unread") ??
-          checkOptionalBoolean(value, "enabled") ??
-          checkOptionalBoolean(value, "home")
-        );
-      }),
+      input: schema<QuotaRpcNoticeListInput>(checkObjectInput),
       output: schema<QuotaRpcNoticeListOutput>((value) =>
         isRecord(value) && Array.isArray(value.notices) ? null : "output must carry notices",
       ),
