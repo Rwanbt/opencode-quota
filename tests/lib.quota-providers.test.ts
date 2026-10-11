@@ -743,12 +743,12 @@ describe("the enabled field of a custom provider", () => {
     expect(result.value?.map(describeQuotaProviderRequest)).toEqual([
       {
         url: "https://off.example/v1/quota",
-        key: `environment variable OFF_GATEWAY_KEY, else OpenCode's API key for provider "vendor"`,
+        key: "OFF_GATEWAY_KEY, else OpenCode's vendor key",
         insecure: false,
       },
       {
         url: "https://keyless.example/quota",
-        key: `OpenCode's API key for provider "other"`,
+        key: "OpenCode's other key",
         insecure: false,
       },
       null,

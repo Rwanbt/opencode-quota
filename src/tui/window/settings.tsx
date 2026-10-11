@@ -124,6 +124,8 @@ export type OptionLine = {
   detail?: string;
   /** Nesting under the line above: 1 for a provider's settings under its tick. */
   depth?: number;
+  /** A tick box ([x] or [ ] in its title): no ‹ ›, a click on the title flips it too. */
+  tick?: boolean;
   swatches?: () => RGBA[];
 };
 
@@ -191,7 +193,7 @@ export function Cell(props: {
   );
 }
 
-/** A window tab's option line: title, ‹ value › or value ▸, color swatches, then a note. */
+/** A window tab's option line: title, ‹ value ›, value ▸ or a tick, color swatches, then a note. */
 export function OptionRow(props: {
   line: OptionLine;
   theme: WindowTheme;
@@ -242,14 +244,16 @@ export function OptionRow(props: {
         backgroundColor={props.active ? props.theme.background.action.primary.focused : TRANSPARENT}
         onMouseDown={props.press}
       >
-        <Cell fg={fg()}>{`   ${indent}${fit(line.title, 26 - indent.length)} `}</Cell>
+        <Cell fg={fg()} onUp={line.tick ? props.click(props.use) : undefined}>
+          {`   ${indent}${fit(line.title, 26 - indent.length)} `}
+        </Cell>
         <Cell fg={arrow()} onUp={props.click(() => line.cycle?.(-1))}>
-          {line.cycle ? "‹ " : "  "}
+          {line.cycle && !line.tick ? "‹ " : "  "}
         </Cell>
         <Show
           when={props.input}
           fallback={
-            <Cell fg={fg()} onUp={props.click(props.use)}>
+            <Cell fg={line.tick ? noteColor() : fg()} onUp={props.click(props.use)}>
               {fit(line.value(), props.valueWidth ?? 24)}
             </Cell>
           }
@@ -257,7 +261,7 @@ export function OptionRow(props: {
           {props.input?.()}
         </Show>
         <Cell fg={arrow()} onUp={props.click(props.use)}>
-          {line.run ? " ▸" : line.cycle ? " ›" : "  "}
+          {line.run ? " ▸" : line.cycle && !line.tick ? " ›" : "  "}
         </Cell>
         <Show when={line.swatches}>
           <Cell>
@@ -445,7 +449,7 @@ export function createSettingsEditor(api: WindowHost, display: DisplayStore) {
       cycle: () => server.switchCustom(entry.id, !on()),
       note: () => (changed ? `${CHANGED_SINCE_REVIEW} · ${where}` : where),
       warning: changed || request?.insecure,
-      detail: request ? `sends ${request.key}` : undefined,
+      detail: request ? `key: ${request.key}` : undefined,
     };
   }
 
@@ -469,7 +473,10 @@ export function createSettingsEditor(api: WindowHost, display: DisplayStore) {
         id: `provider.${id}`,
         group: id === ordered[0]?.id ? "Which providers" : undefined,
         title: `${ticked ? "[x]" : "[ ]"} ${label}`,
-        value: () => (ticked ? (found.includes(id) ? "checked" : "not found") : "skipped"),
+        tick: true,
+        warning: true,
+        // The tick says on or off; only a ticked provider quota can't find says more.
+        value: () => (ticked && snapshot && !found.includes(id) ? "not set up" : ""),
         cycle: () => server.set(PROVIDERS_KEY, withTick(off(), id, !ticked)),
       };
       const nested = ticked ? FIELDS.filter((field) => field.provider === id) : [];

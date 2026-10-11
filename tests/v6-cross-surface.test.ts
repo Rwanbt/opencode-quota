@@ -745,17 +745,28 @@ describe("v6 surfaces on the quota snapshot", () => {
       ]);
       const { tui, windowTree } = await openSettings("Providers");
       try {
+        // Only a ticked provider quota can't find has a word; the tick says the rest.
         await vi.waitFor(() =>
-          expect(words(settingLine(windowTree(), "provider.copilot"))).toContain("checked"),
+          expect(words(settingLine(windowTree(), "provider.cursor"))).toContain("not set up"),
         );
-        expect(words(settingLine(windowTree(), "provider.cursor"))).toContain("not found");
+        expect(words(settingLine(windowTree(), "provider.copilot"))).toEqual([
+          "[x] Copilot",
+          "",
+          "",
+          "",
+        ]);
         expect(words(windowTree())).not.toContain("Check");
         // The ticks are the tab's top lines, as far in as any other line.
         expect(textLines(settingLine(windowTree(), "provider.copilot"))[0]).toMatch(
           /^ {3}\[x\] Copilot/u,
         );
-        clickable(settingLine(windowTree(), "provider.copilot"), "›").props.onMouseUp();
-        expect(words(settingLine(windowTree(), "provider.copilot"))).toContain("skipped");
+        clickable(settingLine(windowTree(), "provider.copilot"), "[x] Copilot").props.onMouseUp();
+        expect(words(settingLine(windowTree(), "provider.copilot"))).toEqual([
+          "[ ] Copilot",
+          "",
+          "",
+          "",
+        ]);
         clickable(windowTree(), "Save").props.onMouseUp();
         await vi.waitFor(() => expect(windowTree()).toBe(""), { timeout: 5_000 });
         expect(
@@ -770,11 +781,9 @@ describe("v6 surfaces on the quota snapshot", () => {
           tui.press(10, "tab");
         clickable(windowTree(), "Providers").props.onMouseUp();
         await vi.waitFor(() =>
-          expect(words(settingLine(windowTree(), "provider.cursor"))).toContain("checked"),
+          expect(words(settingLine(windowTree(), "provider.cursor"))).not.toContain("not set up"),
         );
-        expect(words(settingLine(windowTree(), "provider.cursor")).join(" ")).toContain(
-          "[x] Cursor",
-        );
+        expect(words(settingLine(windowTree(), "provider.cursor"))).toContain("[x] Cursor");
       } finally {
         await tui.dispose();
       }
@@ -883,7 +892,7 @@ describe("v6 surfaces on the quota snapshot", () => {
           "Team",
           "off",
           "https://team-gateway.example/accounting",
-          'sends environment variable V6_TEAM_KEY, else OpenCode\'s API key for provider "team-gateway"',
+          "key: V6_TEAM_KEY, else OpenCode's team-gateway key",
         ]),
       );
       expect(fetchedTeam()).toBe(false);

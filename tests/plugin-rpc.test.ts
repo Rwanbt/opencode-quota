@@ -395,7 +395,7 @@ describe("server quota RPC", () => {
         enabled: false,
         request: {
           url: "http://127.0.0.2:8080/quota",
-          key: 'environment variable MY_GATEWAY_KEY, else OpenCode\'s API key for provider "my-gateway"',
+          key: "MY_GATEWAY_KEY, else OpenCode's my-gateway key",
           insecure: true,
         },
         fingerprint: expect.stringMatching(/^[0-9a-f]{64}$/),

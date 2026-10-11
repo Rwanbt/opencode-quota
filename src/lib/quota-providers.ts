@@ -45,12 +45,10 @@ export function describeQuotaProviderRequest(
 ): { url: string; key: string; insecure: boolean } | null {
   if (definition.mode !== "remote-api") return null;
   const url = new URL(definition.url);
-  const saved = `OpenCode's API key for provider "${definition.providerId}"`;
+  const saved = `OpenCode's ${definition.providerId} key`;
   return {
     url: `${url.origin}${url.pathname}`,
-    key: definition.apiKeyEnv
-      ? `environment variable ${definition.apiKeyEnv}, else ${saved}`
-      : saved,
+    key: definition.apiKeyEnv ? `${definition.apiKeyEnv}, else ${saved}` : saved,
     insecure: url.protocol === "http:" && !LOCAL_HOSTNAMES.has(url.hostname),
   };
 }

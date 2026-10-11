@@ -743,7 +743,7 @@ describe("quota_provider_add", () => {
       enabled: false,
       request: {
         url: "https://gateway.example/v1/quota",
-        key: `environment variable ${GATEWAY_VARIABLE}, else OpenCode's API key for provider "my-gateway"`,
+        key: `${GATEWAY_VARIABLE}, else OpenCode's my-gateway key`,
         insecure: false,
       },
     });

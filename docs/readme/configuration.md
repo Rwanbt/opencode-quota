@@ -63,7 +63,7 @@ The `words` settings apply to the sidebar, status line, toasts, `/quota`, and te
 
 `/quota`, `/quota_usage`, `/quota_status` and `/quota_settings` open the quota window on Limits, Usage, System and the first Settings tab.
 
-On Providers, every provider is ticked unless its id is in `providers.off`. Ticked providers show "checked" when found, or "not found" when absent. Unticked providers show "skipped". Space or a click switches a provider on or off. A provider found later is checked automatically unless it is switched off.
+On Providers, every provider is ticked unless its id is in `providers.off`. A ticked provider that quota can't use yet, for example without a login, shows "not set up". Space or a click ticks or unticks a provider. A provider found later is checked automatically unless it is unticked.
 
 ## Custom providers
 
