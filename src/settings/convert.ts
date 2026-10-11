@@ -272,7 +272,7 @@ function readV5Values(sources: readonly V5Source[]): {
             const checked = checkSetting("providers.off", value);
             for (const issue of checked.issues) invalid.push({ key, reason: issue.message });
             if (checked.value !== undefined) values.set(key, checked.value);
-            else if (!values.has(key)) values.set(key, "auto");
+            else if (!values.has(key)) values.set(key, []);
           } else values.set(key, value);
         } else invalid.push({ key, reason: `${JSON.stringify(value)} was not valid in v5 either` });
       } else {

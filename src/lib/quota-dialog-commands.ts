@@ -309,7 +309,10 @@ export async function buildStatusReportData(params: {
       ? "ok"
       : "not_found";
 
-  const { enabledProviders, quotaProviders } = providerContext(host, loaded).config;
+  const { enabledProviders, automaticDiscovery, quotaProviders } = providerContext(
+    host,
+    loaded,
+  ).config;
   const [{ checks, snapshots }, usage] = await Promise.all([
     checkKnownProviders(host, params.providerFilterId),
     readRecentUsage(params.generatedAtMs),
@@ -325,6 +328,7 @@ export async function buildStatusReportData(params: {
             currentModel,
             currentProviderID,
             enabledProviders,
+            automaticDiscovery,
             quotaProviders,
           })
         : undefined,

@@ -92,6 +92,7 @@ function providerIdsForModel(ctx: QuotaProviderContext, model: SessionModel): st
         currentModel: model.id,
         currentProviderID: model.providerID,
         enabledProviders: ctx.config.enabledProviders,
+        automaticDiscovery: ctx.config.automaticDiscovery,
         quotaProviders: ctx.config.quotaProviders,
       }),
     )

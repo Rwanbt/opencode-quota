@@ -260,10 +260,10 @@ describe("convertV5, which v5 files", () => {
     expect((await convertV5())?.settings.providers.off).toEqual([]);
   });
 
-  it("uses automatic discovery for a v5 list with only unknown ids", async () => {
+  it("switches off every provider for a v5 list with only unknown ids", async () => {
     writeV5({ enabledProviders: ["unknown-provider"] });
     const conversion = await convertV5();
-    expect(conversion?.settings.providers.off).toEqual([]);
+    expect(conversion?.settings.providers.off).toEqual(PROVIDER_IDS);
     expect(conversion?.invalid.map(({ key }) => key)).toEqual(["enabledProviders"]);
   });
 

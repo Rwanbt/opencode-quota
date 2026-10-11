@@ -10,6 +10,7 @@ import type { QuotaProvider } from "../src/lib/entries.js";
 import { buildQuotaExportFromSnapshot } from "../src/lib/quota-export.js";
 import { __resetResolvedAuthIdentityForTests } from "../src/lib/resolved-auth-identity.js";
 import type { ProviderFetchResult } from "../src/providers/contract.js";
+import { minimaxChinaCodingPlanProvider } from "../src/providers/minimax-coding-plan.js";
 import { defaultSettings } from "../src/settings/index.js";
 import { answer, percentRow, quotaRow } from "./helpers/fake-answers.js";
 
@@ -99,6 +100,41 @@ describe("provider source logins", () => {
       "future-provider",
     ]);
     expect(providerContext(host).config.automaticDiscovery).toBe(true);
+  });
+
+  it.each([
+    { runtimeId: "minimax", expected: [] },
+    { runtimeId: "minimax-china-coding-plan", expected: ["minimax-china-coding-plan"] },
+  ])("discovers and matches MiniMax China with default settings for $runtimeId", async ({
+    runtimeId,
+    expected,
+  }) => {
+    vi.stubEnv("MINIMAX_CHINA_CODING_PLAN_API_KEY", "china-key");
+    registry.providers = [minimaxChinaCodingPlanProvider];
+    const loaded = {
+      path: "settings.jsonc",
+      exists: true,
+      settings: defaultSettings(),
+      issues: [],
+      fromFile: [],
+      notRead: [],
+    };
+    const host = {
+      client: {
+        config: { providers: async () => ({ data: { providers: [{ id: runtimeId }] } }) },
+      },
+      workspaceRoot: runtime.root,
+      settings: () => loaded,
+    };
+
+    const source = await loadProviderSource(host);
+
+    expect(loaded.settings.providers.off).toEqual([]);
+    expect(source.providers.map(({ id }) => id)).toEqual(expected);
+    expect(source.providerIdsForModel?.({ id: "MiniMax-M2.7", providerID: runtimeId })).toEqual(
+      expected,
+    );
+    expect(source.providerIdsForModel?.({ id: `${runtimeId}/MiniMax-M2.7` })).toEqual(expected);
   });
 
   it.runIf(POSIX_IDENTITY_STORAGE)(

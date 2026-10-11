@@ -15,6 +15,7 @@ export interface FixedWindowProjectionEvidence {
 
 export interface QuotaProviderMatchContext {
   enabledProviders: string[] | "auto";
+  automaticDiscovery?: boolean;
   quotaProviders?: QuotaProviderDefinition[];
   currentProviderID?: string;
 }
