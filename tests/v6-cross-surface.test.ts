@@ -595,12 +595,12 @@ describe("v6 surfaces on the quota snapshot", () => {
         // The tabs after Words don't fit in the 120 columns the window starts with.
         "›",
         "esc",
-        expect.stringMatching(/^Copilot {2}pro +checked just now$/u),
+        "Copilot  pro",
         expect.stringMatching(/^ {2}Plan +━+─+ {2}81% left$/u),
         expect.stringMatching(
           /^ {2}5h +─+┃─+ {3}0% left {3}resets in 2h 14m {3}faster than it refills$/u,
         ),
-        expect.stringMatching(/^Custom providers {2}Team +checked just now$/u),
+        "Custom providers  Team",
       ]),
     );
     expect(quotaWindow()).not.toContain("Close");

@@ -5,8 +5,7 @@
  * All rows share one grid: label │ bar │ percent │ reset │ pace, each column as wide as its
  * widest entry, the percent right-aligned. The bar is thin (━ filled, ─ used) with the even-use
  * marker ┃ (`core/pace.ts`) and takes the room the other columns leave, so the grid always
- * spans the window. A provider's line has its name and plan on the left and when it was checked
- * at the grid's right edge; an error gets its own line under it.
+ * spans the window. A provider's line has its name and plan; an error gets its own line under it.
  *
  * A narrower window first shortens "resets in 2h 30m" to "2h", then the labels, and then puts
  * the reset and the pace on a line under the bar (on two lines when they don't fit together).
@@ -20,7 +19,6 @@ import {
   DEFAULT_WORDS,
   evenUseCell,
   fit,
-  formatDuration,
   percentText,
   resetText,
   rowValueText,
@@ -65,8 +63,6 @@ type Grid = {
   narrow: boolean;
   /** Where the bar starts; the narrow layout's reset and pace line starts there too. */
   barColumn: number;
-  /** The grid's whole width: the provider line's right edge. */
-  width: number;
 };
 
 export type LimitsInput = {
@@ -93,17 +89,6 @@ function markedBar(percent: number, width: number, evenLeft: number | undefined)
     else segments.push({ ...cell });
   }
   return segments;
-}
-
-/** When the provider was checked, or "checking…"; the error is a line of its own. */
-function checkedText(group: Group, snapshot: QuotaSnapshot, nowMs: number): string {
-  const provider = snapshot.providers.find((item) => item.providerId === group.providerId);
-  if (provider?.refreshing) return "checking…";
-  const checkedAtMs = provider?.checkedAtMs ?? provider?.okAtMs;
-  if (checkedAtMs === undefined) return "not checked yet";
-  const minutes = Math.floor((nowMs - checkedAtMs) / 60_000);
-  if (minutes < 1) return "checked just now";
-  return `checked ${formatDuration(minutes * 60_000, "short", 0)} ago`;
 }
 
 function rowTexts(item: VisibleRow, words: Words, nowMs: number): RowTexts {
@@ -154,7 +139,6 @@ function gridFor(rows: RowTexts[], width: number): Grid {
       longReset: true,
       narrow: false,
       barColumn,
-      width: barColumn + percent,
     };
   }
   const percent = widest(bars.map((row) => row.percentWords));
@@ -167,7 +151,7 @@ function gridFor(rows: RowTexts[], width: number): Grid {
       : (reset > 0 ? WIDE_GAP.length + reset : 0) + (pace > 0 ? WIDE_GAP.length + pace : 0);
     const fixed = barColumn + GAP.length + percent + tail;
     const bar = Math.min(BAR_MAX, Math.max(1, width - fixed));
-    return { label, bar, percent, reset, pace, longReset, narrow, barColumn, width: fixed + bar };
+    return { label, bar, percent, reset, pace, longReset, narrow, barColumn };
   };
   const roomy = build(true, labelWidest, false);
   if (roomy.bar >= BAR_ROOMY) return roomy;
@@ -249,17 +233,11 @@ function clipped(line: Line, width: number): Line {
   return { id: line.id, segments };
 }
 
-/** The provider's line: name and plan, and when it was checked at the grid's right edge. */
-function providerLine(group: Group, checked: string, right: number): Line {
+/** The provider's line: its name and plan. */
+function providerLine(group: Group): Line {
   const name: Segment = { text: group.name, role: "provider", bold: true };
   const account: Segment[] = group.account ? [{ text: `  ${group.account}`, role: "account" }] : [];
-  const used = columnsOf(group.name) + columnsOf(account[0]?.text ?? "");
-  const gap = right - used - columnsOf(checked);
-  if (gap < 3) return { id: group.id, segments: [name, ...account] };
-  return {
-    id: group.id,
-    segments: [name, ...account, { text: `${" ".repeat(gap)}${checked}`, role: "reset" }],
-  };
+  return { id: group.id, segments: [name, ...account] };
 }
 
 export function limitsLines(input: LimitsInput): Line[] {
@@ -284,22 +262,9 @@ export function limitsLines(input: LimitsInput): Line[] {
     groups.map((group) => [group.id, group.rows.map((item) => rowTexts(item, words, nowMs))]),
   );
   const grid = gridFor([...texts.values()].flat(), width);
-  const checked = new Map(groups.map((group) => [group.id, checkedText(group, snapshot, nowMs)]));
-  // The provider lines end at the grid's right edge; a grid too narrow for "checked …" (only
-  // short values) widens to it, as far as the window allows.
-  const headWidest = Math.max(
-    ...groups.map(
-      (group) =>
-        columnsOf(group.name) +
-        (group.account ? 2 + columnsOf(group.account) : 0) +
-        3 +
-        columnsOf(checked.get(group.id) ?? ""),
-    ),
-  );
-  const right = grid.narrow ? width : Math.min(width, Math.max(grid.width, headWidest));
   return groups.flatMap((group, index) => {
     const lines: Line[] = index > 0 ? [{ id: "", segments: [] }] : [];
-    lines.push(providerLine(group, checked.get(group.id) ?? "", right));
+    lines.push(providerLine(group));
     if (group.error) {
       const error = describeError(group.error, group.name, nowMs);
       lines.push({

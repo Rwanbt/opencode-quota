@@ -85,14 +85,14 @@ const BAR_COLUMN = 2 + "Balance".length + 2;
 describe("quota window: Limits", () => {
   it("shows every row, hidden and supplementary ones too, with reset and pace", () => {
     const lines = limits([CLAUDE], WIDE, ["anthropic.five_hour"]);
-    expect(lines[0]).toMatch(/^Claude +checked just now$/u);
+    expect(lines[0]).toBe("Claude");
     expect(lines[1]).toMatch(
       /^ {2}5h +[━─┃]+ {2}30% left {3}resets in 2h 30m {3}runs out in 1h 5m$/u,
     );
     expect(lines[2]).toMatch(/^ {2}Fable +[━─]+ {2}90% left$/u);
   });
 
-  it("lines every provider up in one grid, its right edge where the checked times end", () => {
+  it("lines every provider up in one grid that fills the window, under name-only provider lines", () => {
     const lines = limits([CLAUDE, ZEN]);
     const [claude, fiveHour, fable, gap, zen, balance] = lines;
     expect(gap).toBe("");
@@ -104,11 +104,10 @@ describe("quota window: Limits", () => {
     expect(balance).toBe(
       `  Balance${" ".repeat(percentEnd - "  Balance".length - "$12.50 left".length)}$12.50 left`,
     );
-    // The grid fills the window, and "checked …" ends at its right edge.
+    // The grid fills the window; a provider's line has only its name.
     expect(fiveHour.length).toBe(WIDE);
-    expect(claude.length).toBe(WIDE);
-    expect(zen).toMatch(/^OpenCode Zen +checked just now$/u);
-    expect(zen.length).toBe(WIDE);
+    expect(claude).toBe("Claude");
+    expect(zen).toBe("OpenCode Zen");
   });
 
   it("draws a thin bar in the level color with the even-use marker where even use would be", () => {
@@ -175,33 +174,16 @@ describe("quota window: Limits", () => {
     }
   });
 
-  it.each([
-    { extra: { refreshing: true }, state: /^Claude +checking…$/u },
-    {
-      extra: { checkedAtMs: undefined, okAtMs: undefined },
-      state: /^Claude +not checked yet$/u,
-    },
-    { extra: { checkedAtMs: NOW - 5 * MINUTE }, state: /^Claude +checked 5m ago$/u },
-  ])("says when the provider was checked", ({ extra, state }) => {
-    expect(limits([provider("anthropic", "Claude", [FIVE_HOUR], extra)])[0]).toMatch(state);
-  });
-
   it("puts a provider's error on its own line under its name", () => {
     const failed = provider("anthropic", "Claude", [], { error: { code: "login_expired" } });
     const lines = limitLines([failed]);
-    expect(lines.map(lineText)).toEqual([
-      expect.stringMatching(/^Claude +checked just now$/u),
-      "  Sign in again",
-    ]);
+    expect(lines.map(lineText)).toEqual(["Claude", "  Sign in again"]);
     expect(lines[1].segments[0].role).toBe("error");
   });
 
   it("lines balances up at their right ends when no row has a bar", () => {
     const lines = limits([ZEN]);
-    expect(lines).toEqual([
-      expect.stringMatching(/^OpenCode Zen +checked just now$/u),
-      "  Balance  $12.50 left",
-    ]);
+    expect(lines).toEqual(["OpenCode Zen", "  Balance  $12.50 left"]);
   });
 
   it("says where to look when no provider is found", () => {

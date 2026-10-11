@@ -377,7 +377,7 @@ export function createQuotaWindow(
     const [hasKeyboard, setHasKeyboard] = createSignal(false);
     const [width, setWidth] = createSignal(DEFAULT_WIDTH);
     const [nowMs, setNowMs] = createSignal(Date.now());
-    // Reset times and "checked … ago" count on between snapshots.
+    // Reset times and the pace count on between snapshots.
     const clock = setInterval(() => setNowMs(Date.now()), 60_000);
     onCleanup(() => clearInterval(clock));
     const stopWatch = host.quota.watch(props.sessionID);
