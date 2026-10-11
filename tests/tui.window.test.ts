@@ -276,32 +276,34 @@ describe("quota window: tab bar", () => {
     });
   });
 
+  // In 40 columns: the active tab and as many neighbours as fit between ‹ and ›.
   it.each([
-    0, 3, 4, 6,
-  ])("shows the tabs around tab %i between ‹ and › when they don't fit", (active) => {
-    const room = 40;
-    const strip = tabStrip(TITLES, SETTINGS_FROM, active, room);
-    expect(strip.settingsLabel).toBe(false);
-    expect(strip.first).toBeLessThanOrEqual(active);
-    expect(strip.last).toBeGreaterThanOrEqual(active);
-    let width = 0;
-    for (let index = strip.first; index <= strip.last; index += 1) {
-      width += TITLES[index].length + (index > strip.first ? 2 : 0);
-    }
-    if (strip.first < SETTINGS_FROM && strip.last >= SETTINGS_FROM) width += 3;
-    width += (strip.first > 0 ? 3 : 0) + (strip.last < TITLES.length - 1 ? 3 : 0);
-    expect(width).toBeLessThanOrEqual(room);
-    // One more tab on either side would not fit.
-    expect(width + 3 + 7).toBeGreaterThan(room);
+    { active: 0, first: 0, last: 3 },
+    { active: 3, first: 2, last: 4 },
+    { active: 4, first: 3, last: 5 },
+    { active: 6, first: 4, last: 6 },
+  ])("shows tabs $first to $last around tab $active when they don't all fit", ({
+    active,
+    first,
+    last,
+  }) => {
+    expect(tabStrip(TITLES, SETTINGS_FROM, active, 40)).toEqual({
+      first,
+      last,
+      settingsLabel: false,
+    });
   });
 });
 
 describe("quota window: Usage top line", () => {
+  // Every range: 118 columns. The ‹ range › stepper: 42. "Updating prices…" and its gaps: 20.
   it.each([
-    { width: 140, expected: { allRanges: true, prices: true } },
-    { width: 119, expected: { allRanges: true, prices: false } },
-    { width: 100, expected: { allRanges: false, prices: true } },
-    { width: 40, expected: { allRanges: false, prices: false } },
+    { width: 138, expected: { allRanges: true, prices: true } },
+    { width: 137, expected: { allRanges: true, prices: false } },
+    { width: 118, expected: { allRanges: true, prices: false } },
+    { width: 117, expected: { allRanges: false, prices: true } },
+    { width: 62, expected: { allRanges: false, prices: true } },
+    { width: 61, expected: { allRanges: false, prices: false } },
   ])("at $width columns: $expected", ({ width, expected }) => {
     expect(usageControls(width)).toEqual(expected);
   });

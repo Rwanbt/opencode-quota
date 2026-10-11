@@ -70,8 +70,9 @@ const RANGES_WIDTH =
 const RANGE_LABEL_WIDTH = Math.max(...USAGE_RANGES.map((item) => item.label.length));
 const STEPPER_WIDTH = 2 * (1 + CHOICE_GAP) + RANGE_LABEL_WIDTH;
 const PRICES_LABEL = "Update prices";
-/** "Update prices" keeps at least this much space before it. */
-const PRICES_GAP = 3;
+const PRICES_BUSY_LABEL = "Updating prices…";
+/** The gaps around the spacer before the label, and its longer text. */
+const PRICES_WIDTH = 2 * CHOICE_GAP + PRICES_BUSY_LABEL.length;
 
 /** How each "by type" part is shaded, from the muted color (0) to the text color (1). */
 const PART_SHADES: Record<string, number> = {
@@ -88,12 +89,11 @@ const DATE_HINT =
 
 /** The top line in `width` columns: every range or ‹ one ›, and whether "Update prices" fits. */
 export function usageControls(width: number): { allRanges: boolean; prices: boolean } {
-  const prices = PRICES_GAP + PRICES_LABEL.length;
   const all = MODES_WIDTH + SEPARATOR_WIDTH + RANGES_WIDTH;
-  if (all + prices <= width) return { allRanges: true, prices: true };
+  if (all + PRICES_WIDTH <= width) return { allRanges: true, prices: true };
   if (all <= width) return { allRanges: true, prices: false };
   const stepper = MODES_WIDTH + SEPARATOR_WIDTH + STEPPER_WIDTH;
-  return { allRanges: false, prices: stepper + prices <= width };
+  return { allRanges: false, prices: stepper + PRICES_WIDTH <= width };
 }
 
 /** `from` moved `share` of the way to `to`. */
@@ -553,10 +553,12 @@ export function createUsageTab(
             <box flexGrow={1} />
             <text
               fg={theme().text.action.primary.selected}
+              wrapMode="none"
+              flexShrink={0}
               selectable={false}
               onMouseUp={() => void downloadPrices()}
             >
-              {downloading() ? "Updating prices…" : PRICES_LABEL}
+              {downloading() ? PRICES_BUSY_LABEL : PRICES_LABEL}
             </text>
           </Show>
         </box>
@@ -570,11 +572,11 @@ export function createUsageTab(
               to
             </text>
             {dateBox("to")}
-            <text fg={theme().text.muted} selectable={false}>
-              {editingDates()
-                ? "  enter next date, then apply · esc back"
-                : "  click a date to change it"}
-            </text>
+            <Show when={!editingDates()}>
+              <text fg={theme().text.muted} wrapMode="none" selectable={false}>
+                {"  click a date to change it"}
+              </text>
+            </Show>
           </box>
         </Show>
         <box flexDirection="column" marginTop={1}>
