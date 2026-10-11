@@ -1,8 +1,8 @@
 /**
  * A lock file next to a file that several OpenCode processes change: it holds its owner's pid
  * and a random token. Only one process at a time creates it; a lock whose owner is gone is taken
- * over in one atomic rename. The settings file and the notice read state use it, so a read,
- * change and write never interleaves with another one.
+ * over in one atomic rename. The settings file uses it, so a read, change and write never
+ * interleaves with another one.
  *
  * A waiter that saw an abandoned lock and stalled can rename a lock another process has just
  * created. So the holder's write checks its token right before it commits (the fence): a holder

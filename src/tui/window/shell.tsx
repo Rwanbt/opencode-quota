@@ -33,7 +33,7 @@ import {
 import { Choice, createUsageTab, type UsageChoice } from "./usage.js";
 import {
   LimitsView,
-  type NoticeBoard,
+  type NoticeReport,
   NoticesView,
   type StatusReport,
   StatusView,
@@ -181,7 +181,7 @@ export function createQuotaWindow(
 ): QuotaWindow {
   const [tab, setTab] = createSignal<WindowTab>();
   const [selected, setSelected] = createSignal("");
-  const [board, setBoard] = createSignal<NoticeBoard>();
+  const [notices, setNotices] = createSignal<NoticeReport>({ state: "loading" });
   const [status, setStatus] = createSignal<StatusReport>({ state: "loading" });
   let windowBox: BoxRenderable | undefined;
   let scroll: ScrollBoxRenderable | undefined;
@@ -215,11 +215,13 @@ export function createQuotaWindow(
 
   async function loadNotices(): Promise<void> {
     const request = ++noticeRequest;
+    setNotices({ state: "loading" });
     try {
-      const next = await rpc().noticeList({}, options());
-      if (request === noticeRequest) setBoard(next);
+      const board = await rpc().noticeList({}, options());
+      if (request === noticeRequest) setNotices({ state: "ready", board });
     } catch (error) {
-      if (request === noticeRequest) showError(error);
+      if (request !== noticeRequest) return;
+      setNotices({ state: "failed", message: sanitizeDisplayText(rpcErrorMessage(error)) });
     }
   }
 
@@ -592,7 +594,7 @@ export function createQuotaWindow(
           marginTop={1}
         >
           <Show when={tab() === "system"}>
-            <NoticesView theme={theme()} board={board()} />
+            <NoticesView theme={theme()} report={notices()} />
           </Show>
           {tabOptions().map((option) => (
             <OptionRow

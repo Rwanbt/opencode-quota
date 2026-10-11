@@ -105,8 +105,12 @@ function fakeHost() {
     values: {} as Record<string, unknown>,
   };
   const saveCalls: QuotaRpcSaveSettingsInput[] = [];
-  const noticeCalls: Array<{ input: QuotaRpcNoticeListInput; answered: boolean; answer(): void }> =
-    [];
+  const noticeCalls: Array<{
+    input: QuotaRpcNoticeListInput;
+    answered: boolean;
+    answer(): void;
+    fail(message: string): void;
+  }> = [];
   const statusCalls: Array<{ answered: boolean; answer(text: string): void }> = [];
   const layers: Layer[] = [];
   const copied: string[] = [];
@@ -121,13 +125,18 @@ function fakeHost() {
           const board: QuotaRpcNoticeListOutput = {
             notices: server.notices.map((notice) => ({ ...notice })),
           };
-          return new Promise<QuotaRpcNoticeListOutput>((resolve) => {
+          return new Promise<QuotaRpcNoticeListOutput>((resolve, reject) => {
             const call = {
               input,
               answered: false,
               answer: () => {
                 call.answered = true;
                 resolve(board);
+              },
+              // RPC calls reject with a plain { type, message } object.
+              fail: (message: string) => {
+                call.answered = true;
+                reject({ type: "UnknownError", message });
               },
             };
             noticeCalls.push(call);
@@ -337,6 +346,24 @@ describe("quota window shell", () => {
     host.noticeCalls[0]?.answer();
     await flush();
     expect(textLines(draw(host.quotaWindow).tree)).toContain("A new notice.");
+  });
+
+  it("says why the notices could not load, and asks again the next time System shows", async () => {
+    const host = fakeHost();
+    host.quotaWindow.open("system");
+    host.noticeCalls[0]?.fail("the server is gone");
+    await flush();
+    expect(textLines(draw(host.quotaWindow).tree)).toContain(
+      "   Couldn't load the notices: the server is gone",
+    );
+
+    host.quotaWindow.open("limits");
+    host.quotaWindow.open("system");
+    host.noticeCalls[1]?.answer();
+    await flush();
+    const lines = textLines(draw(host.quotaWindow).tree);
+    expect(lines).toContain("Copilot moves to AI Credits.");
+    expect(lines.join("\n")).not.toContain("Couldn't load the notices");
   });
 
   it.each([

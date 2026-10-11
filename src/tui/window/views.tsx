@@ -16,6 +16,11 @@ import type { WindowTheme } from "./shell.js";
 /** The active maintainer notices. */
 export type NoticeBoard = QuotaRpcNoticeListOutput;
 
+export type NoticeReport =
+  | { state: "loading" }
+  | { state: "ready"; board: NoticeBoard }
+  | { state: "failed"; message: string };
+
 /** The notices, or the one line that says there is none. */
 export function noticeItems(board: NoticeBoard): { items: Notice[]; empty?: string } {
   return board.notices.length === 0
@@ -93,12 +98,16 @@ export function LimitsView(props: {
 }
 
 /** System's notices under their title: a bullet, the message, and its link under it. */
-export function NoticesView(props: {
-  theme: WindowTheme;
-  board: NoticeBoard | undefined;
-}): JSX.Element {
+export function NoticesView(props: { theme: WindowTheme; report: NoticeReport }): JSX.Element {
   const theme = () => props.theme;
-  const body = () => (props.board ? noticeItems(props.board) : { items: [], empty: "Loading…" });
+  const body = () => {
+    const report = props.report;
+    if (report.state === "loading") return { items: [], empty: "Loading…" };
+    if (report.state === "failed") {
+      return { items: [], empty: `Couldn't load the notices: ${report.message}` };
+    }
+    return noticeItems(report.board);
+  };
   return (
     <box flexDirection="column">
       <text
