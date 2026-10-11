@@ -678,7 +678,7 @@ export function createQuotaWindow(
                 changeOnce(`notice ${id}`, read ? { unread: [id] } : { read: [id] })
               }
             />
-            <StatusView theme={theme()} report={status()} />
+            <StatusView theme={theme()} report={status()} width={bodyWidth()} />
           </Show>
           <Show when={settingsTab()}>
             {(shown: () => SettingsTab) => (

@@ -233,6 +233,16 @@ describe("quota window: Status", () => {
         .map((line) => line.text),
     ).toEqual(["# Quota Status (opencode-quota)", "providers:"]);
   });
+
+  it("breaks a long id list between ids, lined up after its key", () => {
+    const text = "- providers.off: anthropic | kilo | google-gemini-cli | kimi-code-plan-global";
+    expect(statusLines(text, 44).map((line) => line.text)).toEqual([
+      "- providers.off: anthropic | kilo |",
+      "                 google-gemini-cli |",
+      "                 kimi-code-plan-global",
+    ]);
+    expect(statusLines(text, 200).map((line) => line.text)).toEqual([text]);
+  });
 });
 
 describe("quota window: tab bar", () => {

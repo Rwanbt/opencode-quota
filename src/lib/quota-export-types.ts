@@ -4,7 +4,7 @@ import type { RowAuthority, RowMethod, RowType } from "../core/types.js";
  * Export types for external tool consumption.
  *
  * These types define the schema for the periodic JSON export file
- * written when the `export.enabled` setting is on, and for the
+ * written when the `system.exportFile` setting is on, and for the
  * `show --json` CLI output.
  */
 
