@@ -481,9 +481,9 @@ export async function convertV5(): Promise<V5Conversion | undefined> {
   const malformed = "an old settings file does not parse; converted in memory until it is fixed";
   if (conversion.malformed) return { ...conversion, notWrittenReason: malformed };
   try {
-    return await withSettingsLock(async (target, _text, fence) => {
-      // Another OpenCode process converted first.
-      if (target.terminalExisted) return undefined;
+    return await withSettingsLock(async (target, current, fence) => {
+      // Another OpenCode process converted first, or the file was made while this one waited.
+      if (target.terminalExisted || current !== undefined) return undefined;
       await writeResolvedConfigText(target, convertedFileText(conversion), fence);
       await chmod(target.writePath, NEW_CONFIG_FILE_MODE);
       return { ...conversion, written: true };
@@ -502,8 +502,8 @@ async function writeOldCommandsFile(): Promise<void> {
     "system.oldCommands": true,
   });
   try {
-    await withSettingsLock(async (target, _text, fence) => {
-      if (target.terminalExisted) return;
+    await withSettingsLock(async (target, current, fence) => {
+      if (target.terminalExisted || current !== undefined) return;
       await writeResolvedConfigText(target, text, fence);
       await chmod(target.writePath, NEW_CONFIG_FILE_MODE);
     });
