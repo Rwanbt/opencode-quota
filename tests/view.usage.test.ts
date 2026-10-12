@@ -474,6 +474,46 @@ describe("usageView", () => {
     ]);
   });
 
+  it("colors a shared cell's upper part with the provider that has the most of it", () => {
+    const report = buildReport({
+      sessions: 1,
+      providers: [
+        ["anthropic", 1, 63, 630],
+        ["openai", 1, 4, 40],
+        ["google", 1, 3, 30],
+      ],
+      models: [
+        ["anthropic", "claude-test", 63, 630],
+        ["openai", "gpt-test", 4, 40],
+        ["google", "gemini-test", 3, 30],
+      ],
+      days: [
+        [60, 600],
+        [10, 100],
+      ],
+      tokens: { cachedInput: 0, uncachedInput: 700, output: 0 },
+      costByType: { input: 70, cacheRead: 0, cacheWrite: 0, output: 0 },
+      cacheSavingsUsd: 0,
+    });
+    const [first, second] = report.days.map((day) => day.date);
+    report.models[0].days = [
+      { date: first, costUsd: 60, tokens: 600 },
+      { date: second, costUsd: 3, tokens: 30 },
+    ];
+    report.models[1].days = [{ date: second, costUsd: 4, tokens: 40 }];
+    report.models[2].days = [{ date: second, costUsd: 3, tokens: 30 }];
+    // The second day is one cell: Anthropic 2 eighths, OpenAI 4, Google 2.
+    const lines = from(usageView(report, { mode: "cost", breakdown: "model", width: 40 }), "Daily");
+    const bottom = lines[6]
+      .slice(1)
+      .filter((part) => part.text.trim())
+      .map((part) => ({ ...part, text: part.text.trim() }));
+    expect(bottom).toEqual([
+      { text: "█".repeat(15), role: "provider:0" },
+      { text: "▂".repeat(15), role: "provider:0", back: "provider:1" },
+    ]);
+  });
+
   it("puts the chart beside the list as tall as the list, at least 6 rows", () => {
     const lines = usageView(t3Report(), { mode: "cost", breakdown: "model", width: 110 });
     const rows = lines.filter((line) => line.some((part) => part.role === "bar"));

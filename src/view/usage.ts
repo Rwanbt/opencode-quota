@@ -391,8 +391,9 @@ function chartStack(column: ChartColumn, height: number): ChartStack {
 
 /**
  * The cell of `stack` that starts `bottom` eighths up. A cell has two colors: a block where one
- * part ends inside a full cell is that part's color with the next part's above it. Where the
- * column ends inside the cell, the part with the most of the cell colors its block.
+ * part ends inside a full cell is that part's color, and above it is the color of the part with
+ * the most of the rest of the cell. Where the column ends inside the cell, the part with the
+ * most of the cell colors its block.
  */
 function chartCell(stack: ChartStack, bottom: number): UsageSpan {
   const fill = Math.min(8, Math.max(0, stack.height - bottom));
@@ -409,7 +410,10 @@ function chartCell(stack: ChartStack, bottom: number): UsageSpan {
     const most = inCell.reduce((largest, part) => (part.size > largest.size ? part : largest));
     return span(BLOCKS[fill - 1], most.role);
   }
-  return { text: BLOCKS[lower.size - 1], role: lower.role, back: inCell[inCell.length - 1].role };
+  const upper = inCell
+    .slice(1)
+    .reduce((largest, part) => (part.size > largest.size ? part : largest));
+  return { text: BLOCKS[lower.size - 1], role: lower.role, back: upper.role };
 }
 
 /** Adds `part` to `line`, joined with the last span when both color the same way. */
