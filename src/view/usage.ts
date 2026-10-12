@@ -100,6 +100,8 @@ const THIN_MARK = "━━";
 const ROW_BAR_MIN_WIDTH = 8;
 /** The breakdown's names get at most this wide when the rows have bars. */
 const ROW_NAME_MAX_WIDTH = 40;
+/** At the end of each model row in the TUI: enter or a click opens the model's details. */
+const OPEN_MARK = " ▸";
 
 /** Shade marks, one per part, so the "by type" bar also reads without colors. */
 const PART_MARKS: Record<UsagePart, string> = {
@@ -129,9 +131,10 @@ type View = {
 
 /**
  * What the output includes: the TUI view has the chart, every row and colors (`colored`: thin
- * bars told apart by color, bars in the breakdown); text has none of them.
+ * bars told apart by color, bars in the breakdown, ▸ on the model rows) and two blank lines
+ * between sections; text has none of them and one blank line.
  */
-type Contents = { chart: boolean; breakdownRows: number; colored: boolean };
+type Contents = { chart: boolean; breakdownRows: number; colored: boolean; sectionGap: number };
 
 function span(text: string, role: UsageRole): UsageSpan {
   return { text, role };
@@ -641,9 +644,16 @@ export function breakdownModels(report: UsageReport, mode: UsageMode): UsageMode
 /**
  * The breakdown table: #, Model or Day, then the mode's amount, Share and the other amount.
  * `colored` (the TUI) puts a bar of each row's amount between the names and the numbers, the
- * biggest row's bar full, when there is room for it.
+ * biggest row's bar full, when there is room for it, and ends each model row with ▸.
  */
-function breakdownLines(view: View, width: number, maxRows: number, colored: boolean): UsageLine[] {
+function breakdownLines(
+  view: View,
+  fullWidth: number,
+  maxRows: number,
+  colored: boolean,
+): UsageLine[] {
+  const mark = colored && view.breakdown === "model" ? OPEN_MARK : "";
+  const width = fullWidth - columnsOf(mark);
   const entries = breakdownEntries(view);
   const shown = entries.slice(0, maxRows);
   const metrics = metricsOf(view.mode);
@@ -685,6 +695,7 @@ function breakdownLines(view: View, width: number, maxRows: number, colored: boo
         "muted",
       ),
       ...metricSpans(view, metrics, widths, undefined),
+      ...(mark ? [span(" ".repeat(columnsOf(mark)), "muted")] : []),
     ],
   ];
   shown.forEach((entry, position) => {
@@ -694,6 +705,7 @@ function breakdownLines(view: View, width: number, maxRows: number, colored: boo
       span(padEndColumns(truncateColumns(entry.name, nameWidth), nameWidth), "text"),
       ...barSpans(entry),
       ...metricSpans(view, metrics, widths, entry.row),
+      ...(mark ? [span(mark, "muted")] : []),
     ]);
   });
   if (entries.length > shown.length) {
@@ -782,8 +794,9 @@ function buildView(
     ),
     breakdownLines(view, layoutWidth, contents.breakdownRows, contents.colored),
   ].filter((lines) => lines.length > 0);
+  const gap: UsageLine[] = Array.from({ length: contents.sectionGap }, () => []);
   return sections
-    .flatMap((lines, index) => (index === 0 ? lines : [[], ...lines]))
+    .flatMap((lines, index) => (index === 0 ? lines : [...gap, ...lines]))
     .map((line) => clip(line, width));
 }
 
@@ -793,6 +806,7 @@ export function usageView(report: UsageReport, options: UsageViewOptions): Usage
     chart: true,
     breakdownRows: Number.POSITIVE_INFINITY,
     colored: true,
+    sectionGap: 2,
   });
 }
 
@@ -882,7 +896,7 @@ export function usageText(report: UsageReport, options: UsageTextOptions): strin
   const lines = buildView(
     report,
     { mode: options.mode, breakdown: options.breakdown, width },
-    { chart: false, breakdownRows: TEXT_BREAKDOWN_ROWS, colored: false },
+    { chart: false, breakdownRows: TEXT_BREAKDOWN_ROWS, colored: false, sectionGap: 1 },
   );
   const title = truncateColumns(`Usage · ${rangeTitle(report)}`, width);
   const texts = lines.map((line) =>

@@ -144,7 +144,10 @@ export function NoticesView(props: { theme: WindowTheme; report: NoticeReport })
   );
 }
 
-/** The /quota_status report as text you can select. */
+/**
+ * The /quota_status report as text you can select, all in the muted color (its section titles
+ * bold): it is for pasting into an issue, and reads apart from the tab's own lines.
+ */
 export function StatusView(props: {
   theme: WindowTheme;
   report: StatusReport;
@@ -163,7 +166,7 @@ export function StatusView(props: {
     <box flexDirection="column" marginTop={1} paddingLeft={3}>
       {lines().map((line) => (
         <text
-          fg={line.heading ? theme().text.action.primary.selected : theme().text.base}
+          fg={theme().text.muted}
           attributes={line.heading ? TextAttributes.BOLD : TextAttributes.NONE}
           wrapMode="word"
         >

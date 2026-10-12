@@ -3,7 +3,7 @@ import type { ProviderSnapshot, QuotaRow, QuotaSnapshot } from "../src/core/type
 import { defaultDisplaySettings } from "../src/tui/display.js";
 import { limitsLines } from "../src/tui/window/limits.js";
 import { hintLines, tabStrip } from "../src/tui/window/shell.tsx";
-import { usageControls } from "../src/tui/window/usage.tsx";
+import { allRangesFit } from "../src/tui/window/usage.tsx";
 import { noticeItems, statusLines } from "../src/tui/window/views.tsx";
 import { lineText } from "../src/view/text.js";
 
@@ -255,17 +255,13 @@ describe("quota window: tab bar", () => {
   });
 });
 
-describe("quota window: Usage top line", () => {
-  // Every range: 118 columns. The ‹ range › stepper: 38. "Updating prices…" and its gaps: 18.
+describe("quota window: Usage range line", () => {
+  // "Range" and its gap take 8 columns; every range 103 more.
   it.each([
-    { width: 136, expected: { allRanges: true, prices: true } },
-    { width: 135, expected: { allRanges: true, prices: false } },
-    { width: 118, expected: { allRanges: true, prices: false } },
-    { width: 117, expected: { allRanges: false, prices: true } },
-    { width: 56, expected: { allRanges: false, prices: true } },
-    { width: 55, expected: { allRanges: false, prices: false } },
-  ])("at $width columns: $expected", ({ width, expected }) => {
-    expect(usageControls(width)).toEqual(expected);
+    { width: 111, fits: true },
+    { width: 110, fits: false },
+  ])("at $width columns every range fits: $fits", ({ width, fits }) => {
+    expect(allRangesFit(width)).toBe(fits);
   });
 });
 

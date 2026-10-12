@@ -649,18 +649,18 @@ describe("usageView", () => {
     {
       name: "cost by model",
       options: { mode: "cost" as const, breakdown: "model" as const },
-      header: /^# {2}Model +Cost {2}Share {2}Tokens$/,
+      header: /^# {2}Model +Cost {2}Share {2}Tokens {2}$/,
       rows: [
-        /^1 {2}● claude-opus-5-5 {3}━+ {2}\$4,410\.41 {2}81\.4% {3}12\.5B$/u,
-        /^2 {2}● composer-2 {8}━+ +\$353\.05 {3}6\.5% {4}368M$/u,
+        /^1 {2}● claude-opus-5-5 {3}━+ {2}\$4,410\.41 {2}81\.4% {3}12\.5B ▸$/u,
+        /^2 {2}● composer-2 {8}━+ +\$353\.05 {3}6\.5% {4}368M ▸$/u,
       ],
     },
     {
       name: "tokens by model",
       options: { mode: "tokens" as const, breakdown: "model" as const },
-      header: /^# {2}Model +Tokens {2}Share {7}Cost$/,
+      header: /^# {2}Model +Tokens {2}Share {7}Cost {2}$/,
       rows: [
-        /^1 {2}● claude-opus-5-5 {3}━+ {3}12\.5B {2}93\.3% {2}\$4,410\.41$/u,
+        /^1 {2}● claude-opus-5-5 {3}━+ {3}12\.5B {2}93\.3% {2}\$4,410\.41 ▸$/u,
         /^2 {2}● composer-2 {8}━+ +368M/u,
       ],
     },

@@ -159,6 +159,17 @@ function activeLabels(node: unknown): string[] {
   );
 }
 
+/** The ids of the Usage tab's lit lines: a control line's box, or a model row's spans. */
+function litUsageLines(node: unknown): string[] {
+  return findAll(node, (item) => String(item.props?.id ?? "").startsWith("quota-usage-"))
+    .filter(
+      (item) =>
+        item.props.backgroundColor === "action-bg" ||
+        findAll(item.props.children, (child) => child.props?.style?.bg === "action-bg").length > 0,
+    )
+    .map((item) => String(item.props.id));
+}
+
 /** The `text` node that reads exactly `label`. */
 function textNode(node: unknown, label: string): Node | undefined {
   return findAll(node, (item) => item.type === "text" && textLines(item)[0] === label)[0];
@@ -1047,8 +1058,8 @@ describe("v6 surfaces on the quota snapshot", () => {
         "Totals",
         "Cost by type",
         "# Model Cost Share Tokens",
-        expect.stringMatching(/^1 ● claude-sonnet-4-5 ━+ \$\d+\.\d\d 100\.0% 4\.10M$/u),
-        "2 ● mystery-1 no price 0% 500K",
+        expect.stringMatching(/^1 ● claude-sonnet-4-5 ━+ \$\d+\.\d\d 100\.0% 4\.10M ▸$/u),
+        "2 ● mystery-1 no price 0% 500K ▸",
       ]),
     );
 
@@ -1217,7 +1228,42 @@ describe("v6 surfaces on the quota snapshot", () => {
       expect(words(usageTab())).toContainEqual(expect.stringMatching(/^1 ● mystery-old /u)),
     );
     expect(words(usageTab())).not.toContainEqual(expect.stringContaining("claude-sonnet-4-5"));
-    expect(words(usageTab())).toContain("click a date to change it");
+    expect(words(usageTab())).toContain("enter or click a date to change it");
+    await tui.dispose();
+  });
+
+  it("walks the Usage tab's lines with ↑↓ like a Settings tab, one lit at a time, and changes them with ←/→", async () => {
+    writeUsageHistory();
+    const tui = await startHosts();
+    const usageTab = () => tui.render("session.composer.top", { sessionID: "ses_1" });
+    tui.typed("/quota_usage 30d");
+    await vi.waitFor(() => expect(words(usageTab())).toContain("Breakdown"));
+
+    // Opened on a range: the Range line is lit; ↑ goes to Show, and → shows tokens.
+    expect(litUsageLines(usageTab())).toEqual(["quota-usage-range"]);
+    tui.press(11, "up");
+    expect(litUsageLines(usageTab())).toEqual(["quota-usage-show"]);
+    tui.press(11, "right");
+    expect(activeLabels(usageTab())).toContain("Tokens");
+
+    // Down past Range and Prices to Breakdown: ←/→ pick Day, then Model again.
+    tui.press(11, "down");
+    tui.press(11, "down");
+    tui.press(11, "down");
+    expect(litUsageLines(usageTab())).toEqual(["quota-usage-breakdown"]);
+    tui.press(11, "right");
+    expect(activeLabels(usageTab())).toContain("Day");
+    tui.press(11, "left");
+    expect(activeLabels(usageTab())).toContain("Model");
+
+    // Then the model rows, each lit alone; enter opens the lit one's details.
+    tui.press(11, "down");
+    tui.press(11, "down");
+    expect(litUsageLines(usageTab())).toEqual(["quota-usage-model-1"]);
+    expect(tui.press(11, "down")).toBe(false);
+    tui.press(11, "return");
+    expect(tui.dialog.show).toHaveBeenCalledOnce();
+    expect(words(tui.dialog.show.mock.calls[0]?.[0]())).toContain("● mystery-old");
     await tui.dispose();
   });
 
@@ -1262,12 +1308,7 @@ describe("v6 surfaces on the quota snapshot", () => {
       state: { version: 1, updatedAt: 1 },
     });
 
-    // Every range fits in the 120 columns the window starts with, "Update prices" doesn't: p.
-    expect(textNode(usageTab(), "Update prices")).toBeUndefined();
-    tui
-      .layer(11)
-      .commands.find((command) => command.bind === "p")
-      ?.run();
+    clickable(usageTab(), "Update ▸").props.onMouseUp();
 
     await vi.waitFor(() =>
       expect(tui.toast).toHaveBeenCalledWith({
