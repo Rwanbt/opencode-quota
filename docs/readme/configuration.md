@@ -15,7 +15,7 @@ There are no project settings. Comments and trailing commas are allowed. Every k
 
 Every quota setting lives here, with one section per Settings tab: `sidebar`, `collapsed`, `statusLine`, `toast`, `colors`, `layout`, `words`, `providers`, and `system`. In the TUI, `/quota_settings` edits the settings through the server. Save, or ctrl+s, writes them to this file and keeps its comments. While you edit, the sidebar, status line, toasts and quota window show saved values with your unsaved changes on top. Discard drops those changes. File edits and a Save from any TUI reach all open TUIs within a few seconds.
 
-Only the sidebar panel's open or collapsed state lives in OpenCode's plugin storage. Custom definitions, the Claude CLI path and the export path are file-only settings. The System tab (`/quota_status`) has the quota file and OpenTelemetry switches; they save as soon as you change them.
+Only the sidebar panel's open or collapsed state lives in OpenCode's plugin storage. Custom definitions, the Claude CLI path and the export path are file-only settings. The System tab (`/quota_status`) has the old command names, quota file and OpenTelemetry switches; they save as soon as you change them.
 
 Without the file, OpenCode Quota uses its defaults and writes nothing. Saving creates the file with the default sections. After 4.x or 5.x, the first start writes it: it converts their global settings into it, or with none to convert, writes it with `system.oldCommands` on. See [Updating](updating.md#moving-from-5x).
 

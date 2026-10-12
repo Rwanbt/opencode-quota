@@ -1110,6 +1110,47 @@ describe("v6 surfaces on the quota snapshot", () => {
     await tui.dispose();
   });
 
+  it("runs the 4.x and 5.x /tokens_* names while the System switch is on, and names the new command while off", async () => {
+    writeUsageHistory();
+    const tui = await startHosts();
+    const windowTree = () => tui.render("session.composer.top", { sessionID: "ses_1" });
+
+    // While off (an open TUI's "/" list can still name them until OpenCode restarts), an old name
+    // says what to type now, and nothing reaches the chat.
+    expect(tui.typed("/tokens_monthly")).toBeUndefined();
+    expect(tui.toast).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        message: "Use /quota_usage 30d. The old /tokens_* names turn on in /quota_status.",
+      }),
+    );
+    tui.typed("/tokens_between 2026-01-01 2026-01-31");
+    expect(tui.toast).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        message:
+          "Use /quota_usage between YYYY-MM-DD YYYY-MM-DD. The old /tokens_* names turn on in /quota_status.",
+      }),
+    );
+    expect(windowTree()).toBe("");
+    expect(tui.posted).not.toHaveBeenCalled();
+
+    // System's switch saves it at once; then /tokens_monthly opens Usage on the last 30 days.
+    tui.typed("/quota_status");
+    const oldCommands = () => settingLine(windowTree(), "system.oldCommands");
+    await vi.waitFor(() =>
+      expect(words(oldCommands())).toEqual(expect.arrayContaining(["Old command names", "off"])),
+    );
+    clickable(oldCommands(), "›").props.onMouseUp();
+    await vi.waitFor(() => expect(words(oldCommands())).toContain("on"), { timeout: 5_000 });
+    tui.typed("/tokens_monthly");
+    await vi.waitFor(() => expect(activeLabels(windowTree())).toContain("Last 30 days"));
+    tui.typed(`/tokens_between ${localDate(-12)} ${localDate(-8)}`);
+    await vi.waitFor(() => expect(activeLabels(windowTree())).toContain("Between"));
+    expect(
+      findAll(windowTree(), (node) => node.type === "input").map((node) => node.props.value),
+    ).toEqual([localDate(-12), localDate(-8)]);
+    await tui.dispose();
+  });
+
   it("keeps the newest range when an older answer arrives last", async () => {
     writeUsageHistory();
     const tui = await startHosts();

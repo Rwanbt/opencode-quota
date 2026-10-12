@@ -21,7 +21,7 @@ Update as above; you don't need to edit your settings. On the first start, OpenC
 - The TUI shows a conversion toast once. `/quota_status` lists what was converted, what was dropped, and why in the server session that performs the conversion.
 - Settings you never set use the 6.x defaults: the status line shows only when the sidebar is not on screen, a toast follows a reply only once a limit is getting low, no toast follows a question, and the sidebar and toasts show "runs out in" when a limit, used at your pace, runs out before it resets.
 
-Your `/tokens_*` commands keep working. The first start turns `system.oldCommands` on when it converts your settings, or when it finds `opencode/quota-provider-state` in the cache folder (`~/.cache` or `$XDG_CACHE_HOME`), which 4.x and 5.x left there. To hide them, set `"system": { "oldCommands": false }` in `settings.jsonc`. The "/" list in an open TUI shows the change after OpenCode restarts.
+Your `/tokens_*` commands keep working. The first start turns `system.oldCommands` on when it converts your settings, or when it finds `opencode/quota-provider-state` in the cache folder (`~/.cache` or `$XDG_CACHE_HOME`), which 4.x and 5.x left there. Turn them off or on with **Old command names** on the System tab (`/quota_status`), or with `"system": { "oldCommands": false }` in `settings.jsonc`. The "/" list in an open TUI shows the change after OpenCode restarts.
 
 | 4.x and 5.x | Same as |
 | --- | --- |
@@ -34,7 +34,7 @@ Your `/tokens_*` commands keep working. The first start turns `system.oldCommand
 | `/tokens_session_all` | `/quota_usage session_tree` |
 | `/tokens_between <from> <to>` | `/quota_usage between <from> <to>` |
 | `/quota_announcements` | The notices on the System tab (`/quota_status`) |
-| `/pricing_refresh` | **Download new prices** on the Usage tab (`/quota_usage`); prices also download every 7 days |
+| `/pricing_refresh` | **Update prices** on the Usage tab (`/quota_usage`); prices also download every 7 days |
 
 Project settings files (`<your-repo>/opencode-quota/quota-toast.jsonc`) are not read; `/quota_status` lists any it finds. Put what you still need in `settings.jsonc`.
 

@@ -253,7 +253,7 @@ describe("quota window shell", () => {
     });
   });
 
-  it("saves a switch for other tools straight away and shows the saved value", async () => {
+  it("saves a System switch straight away and shows the saved value", async () => {
     const host = fakeHost();
     host.quotaWindow.open("system");
     await flush();
@@ -262,6 +262,8 @@ describe("quota window shell", () => {
     let view = draw(host.quotaWindow);
     expect(textLines(view.tree)).toEqual(
       expect.arrayContaining([
+        " Commands",
+        expect.stringContaining("Old command names"),
         " For other tools",
         expect.stringContaining("Quota file (JSON)"),
         "off",
@@ -283,14 +285,16 @@ describe("quota window shell", () => {
     ).at(-1);
     expect(textLines(fileLine).map((text) => text.trim())).toContain("on");
 
-    // The next click turns it off again; telemetry saves its own key.
+    // The next click turns it off again; telemetry and the old command names save their own key.
     clickLine(view.tree, "Quota file (JSON)");
     clickLine(view.tree, "OpenTelemetry metrics");
+    clickLine(view.tree, "Old command names");
     view.dispose();
     await flush();
     expect(host.saveCalls.slice(1)).toEqual([
       { patch: { system: { exportFile: false } } },
       { patch: { system: { telemetry: true } } },
+      { patch: { system: { oldCommands: true } } },
     ]);
   });
 
@@ -325,7 +329,8 @@ describe("quota window shell", () => {
       expect.arrayContaining([" Notices", "   • ", "Copilot moves to AI Credits."]),
     );
     expect(at(" Notices")).toBeLessThan(at("Copilot moves to AI Credits."));
-    expect(at("v6 is out.")).toBeLessThan(at(" For other tools"));
+    expect(at("v6 is out.")).toBeLessThan(at(" Commands"));
+    expect(at(" Commands")).toBeLessThan(at(" For other tools"));
     expect(at(" For other tools")).toBeLessThan(at(" Status report"));
     expect(at(" Status report")).toBeLessThan(at("Copy the report"));
     expect(at("Copy the report")).toBeLessThan(at("# Quota Status"));

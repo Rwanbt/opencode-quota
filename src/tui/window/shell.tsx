@@ -39,14 +39,23 @@ import {
   StatusView,
 } from "./views.js";
 
-/** System's switches for other tools; each saves to settings.jsonc straight away. */
-const TOOL_SWITCHES: ReadonlyArray<{ key: string; title: string; note?: string }> = [
+type SystemSwitch = { key: string; group: string; title: string; note?: string };
+
+/** System's switches, under their group's title; each saves to settings.jsonc straight away. */
+const SYSTEM_SWITCHES: ReadonlyArray<SystemSwitch> = [
+  {
+    key: "system.oldCommands",
+    group: "Commands",
+    title: "Old command names",
+    note: "the 4.x and 5.x /tokens_* names; the / list changes after a restart",
+  },
   {
     key: "system.exportFile",
+    group: "For other tools",
     title: "Quota file (JSON)",
     note: "for status bars and scripts; the opencode-quota CLI works either way",
   },
-  { key: "system.telemetry", title: "OpenTelemetry metrics" },
+  { key: "system.telemetry", group: "For other tools", title: "OpenTelemetry metrics" },
 ];
 /** Columns inside the window until it knows its real width. */
 const DEFAULT_WIDTH = 120;
@@ -284,7 +293,7 @@ export function createQuotaWindow(
   }
 
   /**
-   * The lines that ↑↓ can select, under the notices: System's switches for other tools (‹ on ›)
+   * The lines that ↑↓ can select, under the notices: System's switches (‹ on ›)
    * once the saved settings arrived, then Copy (▸) above the status report.
    */
   function tabOptions(): OptionLine[] {
@@ -297,13 +306,13 @@ export function createQuotaWindow(
       run: copyReport,
       note: () => "then paste it into a GitHub issue",
     };
-    const tools = TOOL_SWITCHES.flatMap(({ key, title, note }, index): OptionLine[] => {
+    const switches = SYSTEM_SWITCHES.flatMap(({ key, group, title, note }, index): OptionLine[] => {
       const on = settings.savedSwitch(key);
       if (on === undefined) return [];
       return [
         {
           id: key,
-          ...(index === 0 ? { group: "For other tools" } : {}),
+          ...(group !== SYSTEM_SWITCHES[index - 1]?.group ? { group } : {}),
           title,
           value: () => (on ? "on" : "off"),
           cycle: () => void flipSwitch(key, !on),
@@ -311,7 +320,7 @@ export function createQuotaWindow(
         },
       ];
     });
-    return [...tools, copy];
+    return [...switches, copy];
   }
 
   function open(next: WindowTab | "settings"): void {

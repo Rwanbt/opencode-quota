@@ -11,11 +11,14 @@
  * cleared and runs its TUI action with the rest of the prompt as its arguments. So no report
  * shows in the chat, and on Home no session is created for one. The "/" list names each once:
  * the server lists /quota, /quota_usage and /quota_status, the TUI /quota_settings.
+ * The 4.x and 5.x names run here too: each /tokens_* opens the Usage tab on its range while
+ * `system.oldCommands` is on (the server lists them then), and names its /quota_usage range while
+ * it is off (an open TUI's "/" list keeps them until OpenCode restarts).
  */
 import { Plugin } from "@opencode/plugin/tui";
 import type { JSX } from "@opentui/solid";
 import { onCleanup, Show } from "solid-js";
-import { parseUsageArguments } from "../core/usage-ranges.js";
+import { OLD_USAGE_COMMANDS, parseUsageArguments, type UsageRange } from "../core/usage-ranges.js";
 import { QuotaRpc } from "../rpc.js";
 import { type ClientHost, createQuotaClient, quotaCallOptions, reportFailure } from "./client.js";
 import { createFileDisplay } from "./display.js";
@@ -138,12 +141,31 @@ const plugin = Plugin.define({
       if (parsed.ok) quotaWindow.openUsage(parsed);
       else api.ui.toast.show({ variant: "warning", title: TOAST_TITLE, message: parsed.error });
     };
+    /** A 4.x or 5.x `/tokens_*` command: `/quota_usage` on its range, or a hint while off. */
+    const oldUsage = (range: UsageRange, argumentsText: string) => {
+      if (server.value("system.oldCommands") === true) {
+        openUsage(`${range} ${argumentsText}`.trim());
+        return;
+      }
+      const now = range === "between" ? "between YYYY-MM-DD YYYY-MM-DD" : range;
+      api.ui.toast.show({
+        variant: "info",
+        title: TOAST_TITLE,
+        message: `Use /quota_usage ${now}. The old /tokens_* names turn on in /quota_status.`,
+      });
+    };
     /** The quota slash commands, by name, with what follows the name. */
     const quotaCommands: Record<string, (argumentsText: string) => void> = {
       quota: () => quotaWindow.open("limits"),
       quota_usage: openUsage,
       quota_status: () => quotaWindow.open("system"),
       quota_settings: () => quotaWindow.open("settings"),
+      ...Object.fromEntries(
+        Object.entries(OLD_USAGE_COMMANDS).map(([name, range]) => [
+          name,
+          (argumentsText: string) => oldUsage(range, argumentsText),
+        ]),
+      ),
     };
 
     let disposeMount: (() => void) | undefined;
