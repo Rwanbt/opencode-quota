@@ -262,9 +262,9 @@ export function oldSettingsFolders(
   return [...new Set([configDir, ...older])];
 }
 
-/** True when a folder has old settings to convert, or a file that should be and does not parse. */
-function hasOldSettings(files: V5Files): boolean {
-  return files.sources.length > 0 || files.sidecarSeen || files.malformed;
+/** True when a folder has quota settings: a quotaToast block, or a sidecar (even a broken one). */
+function hasQuotaSettings(files: V5Files): boolean {
+  return files.sources.length > 0 || files.sidecarSeen;
 }
 
 /** A v5 object as dotted keys; v5's nested groups are opened one level deep. */
@@ -472,7 +472,9 @@ function firstPerKey(list: readonly SkippedKey[]): SkippedKey[] {
 
 /**
  * The old global settings converted in memory (nothing is written), or undefined when none: those
- * of the first of `folders` that has any. Old settings in a later folder are named in a note.
+ * of the first of `folders` that has quota settings. Old settings in a later folder are named in a
+ * note. An OpenCode config that does not parse is named too; with no quota settings anywhere, its
+ * folder is the one converted, so nothing is written until it is fixed.
  */
 export async function planV5Conversion(
   configDir: string,
@@ -480,13 +482,20 @@ export async function planV5Conversion(
 ): Promise<V5Conversion | undefined> {
   let files: V5Files | undefined;
   let from = "";
+  /** The first folder whose OpenCode config does not parse and has no other quota settings. */
+  let unparsed: V5Files | undefined;
   const skipped: string[] = [];
   for (const folder of folders) {
     const found = await readV5GlobalFiles(folder);
-    if (!hasOldSettings(found)) continue;
+    if (!hasQuotaSettings(found)) {
+      if (found.malformed) unparsed ??= found;
+      continue;
+    }
     if (files) skipped.push(folder);
     else [files, from] = [found, folder];
   }
+  if (!files) files = unparsed;
+  else if (unparsed) files.notes.push(...unparsed.notes);
   if (!files) return undefined;
   for (const folder of skipped) {
     files.notes.push(`the old settings in ${folder} were not converted: ${from} has some too`);

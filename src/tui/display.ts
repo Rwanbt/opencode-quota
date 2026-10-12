@@ -441,7 +441,7 @@ export const FIELDS: readonly Field[] = [
   serverField("words.sessionTokens", "Session tokens count", SHOW.tokens),
   serverField("providers.cursor.plan", "Plan", cursorPlan, {
     ...CURSOR,
-    note: "for a % of the API use it includes",
+    note: "API use the plan includes; shown as a %",
   }),
   serverField("providers.cursor.includedApiUsd", "Included API budget", usd("from the plan"), {
     ...CURSOR,

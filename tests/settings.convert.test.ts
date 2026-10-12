@@ -544,6 +544,20 @@ describe("convertV5, the older folders v4 read", () => {
     expect(loaded.notRead).toEqual([]);
   });
 
+  it("converts an older folder's settings when the global folder's OpenCode config does not parse", async () => {
+    const broken = writeFile(join(folders[0] as string, "opencode.json"), "{ broken");
+    const sidecar = writeV5({ showOnIdle: true }, "quota-toast.jsonc", folders[1]);
+
+    const conversion = await convertV5();
+
+    expect(conversion).toMatchObject({
+      written: true,
+      sources: [sidecar],
+      notes: [`${broken} does not parse, so its experimental.quotaToast was not converted`],
+    });
+    expect((await loadSettings()).settings.toast.afterReply).toBe("always");
+  });
+
   it("converts the global folder first and names an older folder with settings too", async () => {
     const older = folders[1] as string;
     writeV5({ showOnIdle: false }, "quota-toast.jsonc", folders[0]);

@@ -518,7 +518,7 @@ describe("turn events of the TUI plugin", () => {
       expect(tui.toast).toHaveBeenCalledWith({
         variant: "info",
         title: "OpenCode Quota",
-        message: "Settings converted from v5 to settings.jsonc, details in /quota_status",
+        message: "Your 4.x or 5.x settings are now in settings.jsonc, details in /quota_status",
         duration: 15_000,
       }),
     );

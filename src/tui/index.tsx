@@ -105,7 +105,7 @@ const plugin = Plugin.define({
         api.ui.toast.show({
           variant: "info",
           title: TOAST_TITLE,
-          message: "Settings converted from v5 to settings.jsonc, details in /quota_status",
+          message: "Your 4.x or 5.x settings are now in settings.jsonc, details in /quota_status",
           duration: 15_000,
         });
       }
