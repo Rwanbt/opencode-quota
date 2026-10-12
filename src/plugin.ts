@@ -358,7 +358,9 @@ export const QuotaToastPlugin = Plugin.define({
         store.settingsChanged({ recheck });
       }
       if (next.settings.system.oldCommands !== previous.settings.system.oldCommands) {
-        // The command list is built again from the settings now in use.
+        // The command list is built again from the settings now in use. An open TUI keeps its
+        // "/" list until OpenCode restarts: OpenCode 2 sends this reload without the folder
+        // (location) that the TUI refreshes its list for.
         await ctx.command.reload().catch((error: unknown) => {
           console.warn(`[opencode-quota] command reload failed: ${logReason(error)}`);
         });
