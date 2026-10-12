@@ -533,6 +533,17 @@ describe("convertV5, the older folders v4 read", () => {
     });
   });
 
+  it("does not list an older folder's OpenCode config as a project file when OpenCode runs there", async () => {
+    const older = folders[1] as string;
+    writeHost({ showOnIdle: true }, "opencode.json", older);
+    writeHost({ showOnQuestion: false }, "opencode.jsonc", older);
+
+    const loaded = await loadSettings({ projectDir: older });
+
+    expect(loaded.settings.toast.afterReply).toBe("always");
+    expect(loaded.notRead).toEqual([]);
+  });
+
   it("converts the global folder first and names an older folder with settings too", async () => {
     const older = folders[1] as string;
     writeV5({ showOnIdle: false }, "quota-toast.jsonc", folders[0]);

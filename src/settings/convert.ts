@@ -532,12 +532,14 @@ export function isV5SettingKey(key: string): boolean {
 /**
  * v5 settings files that exist but v6 does not read: the global sidecars (also in the older
  * folders) once settings.jsonc exists, and every project-scope file (v6 has no project settings).
+ * A project in the global folder or an older one has no project files of its own.
  */
 export async function findUnreadV5Files(
   configDir: string,
   options: { includeGlobal: boolean; projectDir?: string },
 ): Promise<string[]> {
-  const globalSidecars = oldSettingsFolders(configDir).flatMap((folder) =>
+  const globalFolders = oldSettingsFolders(configDir);
+  const globalSidecars = globalFolders.flatMap((folder) =>
     SIDECAR_NAMES.map((name) => join(folder, "opencode-quota", name)),
   );
   const unread = options.includeGlobal ? globalSidecars.filter((path) => existsSync(path)) : [];
@@ -550,7 +552,7 @@ export async function findUnreadV5Files(
   }
   for (const name of HOST_FILE_NAMES) {
     const path = join(projectDir, name);
-    if (path === join(configDir, name)) continue;
+    if (globalFolders.some((folder) => path === join(folder, name))) continue;
     const file = await readJsonFile(path);
     if (file.state === "parsed" && quotaToastBlock(file.value)) {
       unread.push(`${path} (experimental.quotaToast)`);
