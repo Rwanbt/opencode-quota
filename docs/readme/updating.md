@@ -48,7 +48,7 @@ The `init`, `update`, and `provider add` terminal commands are gone; `show` and 
 
 ## Moving to OpenCode 2
 
-`5.0.0` and newer run only on OpenCode `2.0.16` or newer.
+`5.0.0` and newer run only on OpenCode 2; this version needs OpenCode `2.0.26` or newer.
 
 1. Install OpenCode 2 ([OpenCode docs](https://opencode.ai/docs/)) and start it once. On first start it copies your old `auth.json` logins into its database, `opencode.db`. It does this only once.
 2. In your OpenCode config, change the OpenCode Quota entry to `@slkiser/opencode-quota` (drop any `@4` pin), then restart OpenCode.

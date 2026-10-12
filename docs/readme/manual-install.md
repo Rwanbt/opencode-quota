@@ -12,7 +12,7 @@ Use this page only if you want to edit OpenCode files yourself.
 
 ## Requirements
 
-- OpenCode `2.0.16` or newer. On OpenCode 1, use `npx @slkiser/opencode-quota@4 init`.
+- OpenCode `2.0.26` or newer. On OpenCode 1, use `npx @slkiser/opencode-quota@4 init`.
 - Node.js `22.13+` is required for `npx @slkiser/opencode-quota ...` (on Node 23, `23.4+`).
 
 ## Choose where to install

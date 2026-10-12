@@ -36,13 +36,17 @@ export type CredentialRow = {
   /**
    * Why OpenCode could not return this login (for example a failed token
    * refresh), as `<category>: <scrubbed detail>`. A failed row keeps its id,
-   * label and position, but its `value` is only `{ type: "api" | "oauth" }`;
+   * label and position, but its `value` is only `{ type: "api" | "oauth" | "external" }`;
    * consumers show `resolveError` as a per-account error.
    */
   resolveError?: string;
 };
 
-/** OpenCode 2 connection methods: a stored API key or an OAuth sign-in. */
+/**
+ * The OpenCode 2 connection methods a read can ask for: a stored API key or an OAuth
+ * sign-in. OpenCode's third method, `external` (an AWS profile, Azure CLI or gcloud
+ * login), keeps its secrets outside OpenCode, so no read asks for it.
+ */
 export type CredentialMethod = "key" | "oauth";
 
 type ReadCredentialRowsOptions = {
@@ -411,7 +415,7 @@ async function credentialRowForSlot(
     ? { ...row, value: credentialRowValue(outcome.value) }
     : {
         ...row,
-        value: { type: connection.method === "key" ? "api" : "oauth" },
+        value: { type: connection.method === "key" ? "api" : connection.method },
         resolveError: `${outcome.failure.category}: ${outcome.failure.detail}`,
       };
 }
@@ -430,7 +434,10 @@ async function credentialRowsForSlots(
   activeConnections?: ReadonlyMap<string, CredentialConnection>,
 ): Promise<CredentialRow[]> {
   const wanted = slots.filter(
-    (slot) => !methods || !("connection" in slot) || methods.includes(slot.connection.method),
+    (slot) =>
+      !methods ||
+      !("connection" in slot) ||
+      (slot.connection.method !== "external" && methods.includes(slot.connection.method)),
   );
   return Promise.all(
     wanted.map(async (slot, index) => {

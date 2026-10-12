@@ -29,7 +29,7 @@ opencode plugin add @slkiser/opencode-quota
 Then restart OpenCode and type `/quota`.
 
 > [!IMPORTANT]
-> You need OpenCode `2.0.16+`; the terminal commands also need Node.js `22.13+` or `23.4+`. Still on OpenCode 1? Run `npx @slkiser/opencode-quota@4 init` instead.
+> You need OpenCode `2.0.26+`; the terminal commands also need Node.js `22.13+` or `23.4+`. Still on OpenCode 1? Run `npx @slkiser/opencode-quota@4 init` instead.
 
 Upgrading from 4.x? Read [what changed in 5.0](#breaking-changes-in-500).
 

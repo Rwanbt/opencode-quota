@@ -333,6 +333,23 @@ describe("integration credential source", () => {
     expect(await readIds(["opencode"], { methods: ["oauth"] })).toEqual(["cred_console"]);
   });
 
+  it("never returns an external login (secrets kept outside OpenCode) to a key or OAuth read", async () => {
+    const integration = bindFakeIntegration([
+      {
+        integrationId: "amazon-bedrock",
+        id: "cred_profile",
+        label: "default",
+        registered: true,
+        method: "external",
+        value: { type: "external", methodID: "aws-profile", metadata: { profile: "work" } },
+      },
+      keyCredential("amazon-bedrock", "cred_key"),
+    ]);
+
+    expect(await readIds(["amazon-bedrock"], { methods: ["key", "oauth"] })).toEqual(["cred_key"]);
+    expect(resolvedIds(integration)).toEqual(["cred_key"]);
+  });
+
   it("reads one active connection per id with firstOnly and never lists", async () => {
     const integration = bindFakeIntegration([
       oauthCredential("openai", "cred_active"),
