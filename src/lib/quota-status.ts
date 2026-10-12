@@ -112,6 +112,11 @@ export const KNOWN_PATH_PARTS: ReadonlySet<string> = new Set([
   "bin",
   ".cursor",
   "cursor",
+  "Library",
+  "Application Support",
+  "AppData",
+  "Roaming",
+  "Local",
 ]);
 /** File names this plugin and OpenCode read or write. */
 export const KNOWN_FILE_NAMES: ReadonlySet<string> = new Set([
@@ -129,7 +134,6 @@ export const KNOWN_FILE_NAMES: ReadonlySet<string> = new Set([
   "modelsdev-pricing.refresh-state.json",
   "snapshot-v6.json",
   "quota-export.json",
-  "display-import.json",
   "google-access-tokens.json",
   "maintainer-announcements-home.json",
   "quota-toast.json",
@@ -374,6 +378,7 @@ const CONVERSION_NOTE_CODES: ReadonlyArray<readonly [RegExp, string]> = [
   [/ was not converted: v5 used .+ when both exist$/su, "jsonc_used_over_json"],
   [/^experimental\.quotaToast in .+ v5 ignored it while /su, "quota_toast_block_ignored"],
   [/ does not parse, so its experimental\.quotaToast was not converted$/u, "config_not_parsed"],
+  [/^the old settings in .+ were not converted: .+ has some too$/su, "older_folder_not_converted"],
 ];
 
 /** A settings key from the schema, a group, a file-level key, or the custom providers. */

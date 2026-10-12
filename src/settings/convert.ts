@@ -1,10 +1,12 @@
 /**
  * The one-time move from v5 settings. A frozen copy of how v5 read its GLOBAL settings (which
  * files, the authoritative-sidecar rule, each key's check), and where each v5 key goes in settings.jsonc.
- * This file only reads; `convertV5` in file.ts writes the result.
+ * The same files in the older folders v4 also read are converted when OpenCode's global folder
+ * has none. This file only reads; `convertV5` in file.ts writes the result.
  */
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { type ParseError, parse } from "jsonc-parser";
 import { isRecord } from "../lib/json-guards.js";
@@ -232,6 +234,39 @@ async function readV5GlobalFiles(configDir: string): Promise<V5Files> {
   return { sources, notes, malformed, sidecarSeen };
 }
 
+/**
+ * The folders that can hold old global settings, in the order v4 read them: OpenCode's global
+ * folder, then macOS's ~/.config and ~/Library/Application Support, Windows's %APPDATA% and
+ * %LOCALAPPDATA%, or ~/.config elsewhere. OPENCODE_CONFIG_DIR replaces them all, as in OpenCode 2.
+ */
+export function oldSettingsFolders(
+  configDir: string,
+  params: { platform?: NodeJS.Platform; env?: NodeJS.ProcessEnv; homeDir?: string } = {},
+): string[] {
+  const env = params.env ?? process.env;
+  if (env.OPENCODE_CONFIG_DIR?.trim()) return [configDir];
+  const home = params.homeDir ?? homedir();
+  const platform = params.platform ?? process.platform;
+  const older =
+    platform === "win32"
+      ? [
+          join(env.APPDATA?.trim() || join(home, "AppData", "Roaming"), "opencode"),
+          join(env.LOCALAPPDATA?.trim() || join(home, "AppData", "Local"), "opencode"),
+        ]
+      : platform === "darwin"
+        ? [
+            join(home, ".config", "opencode"),
+            join(home, "Library", "Application Support", "opencode"),
+          ]
+        : [join(home, ".config", "opencode")];
+  return [...new Set([configDir, ...older])];
+}
+
+/** True when a folder has old settings to convert, or a file that should be and does not parse. */
+function hasOldSettings(files: V5Files): boolean {
+  return files.sources.length > 0 || files.sidecarSeen || files.malformed;
+}
+
 /** A v5 object as dotted keys; v5's nested groups are opened one level deep. */
 function flattenV5(raw: Record<string, unknown>): Array<[string, unknown]> {
   return Object.entries(raw).flatMap(
@@ -435,10 +470,27 @@ function firstPerKey(list: readonly SkippedKey[]): SkippedKey[] {
   return list.filter((item) => !seen.has(item.key) && seen.add(item.key));
 }
 
-/** The v5 global settings converted in memory (nothing is written), or undefined when none. */
-export async function planV5Conversion(configDir: string): Promise<V5Conversion | undefined> {
-  const files = await readV5GlobalFiles(configDir);
-  if (files.sources.length === 0 && !files.sidecarSeen && !files.malformed) return undefined;
+/**
+ * The old global settings converted in memory (nothing is written), or undefined when none: those
+ * of the first of `folders` that has any. Old settings in a later folder are named in a note.
+ */
+export async function planV5Conversion(
+  configDir: string,
+  folders: readonly string[] = oldSettingsFolders(configDir),
+): Promise<V5Conversion | undefined> {
+  let files: V5Files | undefined;
+  let from = "";
+  const skipped: string[] = [];
+  for (const folder of folders) {
+    const found = await readV5GlobalFiles(folder);
+    if (!hasOldSettings(found)) continue;
+    if (files) skipped.push(folder);
+    else [files, from] = [found, folder];
+  }
+  if (!files) return undefined;
+  for (const folder of skipped) {
+    files.notes.push(`the old settings in ${folder} were not converted: ${from} has some too`);
+  }
 
   const read = readV5Values(files.sources);
   const mapped = mapV5Values(read.values);
@@ -468,14 +520,16 @@ export function isV5SettingKey(key: string): boolean {
 }
 
 /**
- * v5 settings files that exist but v6 does not read: the global sidecars once settings.jsonc
- * exists, and every project-scope file (v6 has no project settings).
+ * v5 settings files that exist but v6 does not read: the global sidecars (also in the older
+ * folders) once settings.jsonc exists, and every project-scope file (v6 has no project settings).
  */
 export async function findUnreadV5Files(
   configDir: string,
   options: { includeGlobal: boolean; projectDir?: string },
 ): Promise<string[]> {
-  const globalSidecars = SIDECAR_NAMES.map((name) => join(configDir, "opencode-quota", name));
+  const globalSidecars = oldSettingsFolders(configDir).flatMap((folder) =>
+    SIDECAR_NAMES.map((name) => join(folder, "opencode-quota", name)),
+  );
   const unread = options.includeGlobal ? globalSidecars.filter((path) => existsSync(path)) : [];
   const projectDir = options.projectDir;
   if (!projectDir) return unread;

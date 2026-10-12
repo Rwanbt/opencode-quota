@@ -15,6 +15,7 @@ Then restart OpenCode and run `/quota_status` in a session (or `npx @slkiser/ope
 Update as above; you don't need to edit your settings. On the first start, OpenCode Quota converts your old global settings automatically:
 
 - It reads `opencode-quota/quota-toast.jsonc` or `.json` in the global OpenCode folder, or `experimental.quotaToast` in the global `opencode.json` or `opencode.jsonc` when there is no such file.
+- When the global OpenCode folder has neither, it reads them in the first older folder 4.x also read that has them: `~/.config/opencode`, on macOS `~/Library/Application Support/opencode`, on Windows `%APPDATA%\opencode` and `%LOCALAPPDATA%\opencode`. With `OPENCODE_CONFIG_DIR` set, it reads only that folder.
 - It writes the result to `opencode-quota/settings.jsonc` (see [Configuration](configuration.md)) and leaves the old file in place. From then on, only `settings.jsonc` is read.
 - Display choices, words, provider checks and system switches share that file, with one section per Settings tab.
 - The TUI shows a conversion toast once. `/quota_status` lists what was converted, what was dropped, and why in the server session that performs the conversion.
@@ -36,6 +37,8 @@ The `init`, `update`, and `provider add` terminal commands are gone; `show` and 
 1. Install OpenCode 2 ([OpenCode docs](https://opencode.ai/docs/)) and start it once. On first start it copies your old `auth.json` logins into its database, `opencode.db`. It does this only once.
 2. In your OpenCode config, change the OpenCode Quota entry to `@slkiser/opencode-quota` (drop any `@4` pin), then restart OpenCode.
 3. Run `/quota_status`. If a provider is missing, log in to it again in OpenCode 2 (`/connect`, or `opencode auth login <provider>`).
+
+Your 4.x global settings convert on the first start, as in [Moving from 5.x](#moving-from-5x).
 
 What changed in `5.0.0`:
 

@@ -11,6 +11,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { getOpencodeRuntimeDirs } from "../src/lib/opencode-runtime-paths.js";
+import { oldSettingsFolders } from "../src/settings/convert.js";
 import {
   convertV5,
   defaultSettings,
@@ -445,5 +447,78 @@ describe("convertV5, which v5 files", () => {
 
     expect(loaded.settings).toEqual(defaultSettings());
     expect(loaded.notRead).toEqual([sidecar, `${host} (experimental.quotaToast)`]);
+  });
+});
+
+describe("convertV5, the older folders v4 read", () => {
+  /** OpenCode's global folder, then the older ones, for this platform. */
+  let folders: string[];
+
+  beforeEach(() => {
+    const home = join(root, "home");
+    vi.stubEnv("OPENCODE_CONFIG_DIR", "");
+    vi.stubEnv("XDG_CONFIG_HOME", join(root, "xdg"));
+    vi.stubEnv("HOME", home);
+    vi.stubEnv("USERPROFILE", home);
+    vi.stubEnv("APPDATA", join(home, "AppData", "Roaming"));
+    vi.stubEnv("LOCALAPPDATA", join(home, "AppData", "Local"));
+    folders = oldSettingsFolders(getOpencodeRuntimeDirs().configDir);
+  });
+
+  it("lists them per platform after the global folder; OPENCODE_CONFIG_DIR replaces them", () => {
+    const home = "/h";
+    const dotConfig = join(home, ".config", "opencode");
+    const at = (platform: NodeJS.Platform, env: NodeJS.ProcessEnv = {}, configDir = "/cfg") =>
+      oldSettingsFolders(configDir, { platform, env, homeDir: home });
+    expect(at("darwin")).toEqual([
+      "/cfg",
+      dotConfig,
+      join(home, "Library", "Application Support", "opencode"),
+    ]);
+    expect(at("linux")).toEqual(["/cfg", dotConfig]);
+    expect(at("linux", {}, dotConfig)).toEqual([dotConfig]);
+    expect(at("win32", { APPDATA: "/roaming", LOCALAPPDATA: "/local" })).toEqual([
+      "/cfg",
+      join("/roaming", "opencode"),
+      join("/local", "opencode"),
+    ]);
+    expect(at("win32")).toEqual([
+      "/cfg",
+      join(home, "AppData", "Roaming", "opencode"),
+      join(home, "AppData", "Local", "opencode"),
+    ]);
+    expect(at("darwin", { OPENCODE_CONFIG_DIR: "/cfg" })).toEqual(["/cfg"]);
+  });
+
+  it("converts the first older folder with old settings when the global folder has none", async () => {
+    const older = folders[1] as string;
+    const host = writeHost({ showOnIdle: true, showOnQuestion: false }, "opencode.json", older);
+
+    const conversion = await convertV5();
+
+    expect(conversion).toMatchObject({
+      written: true,
+      sources: [`${host} (experimental.quotaToast)`],
+      notes: [],
+    });
+    expect((await loadSettings()).settings.toast).toMatchObject({
+      afterReply: "always",
+      afterQuestion: false,
+    });
+  });
+
+  it("converts the global folder first and names an older folder with settings too", async () => {
+    const older = folders[1] as string;
+    writeV5({ showOnIdle: false }, "quota-toast.jsonc", folders[0]);
+    const olderSidecar = writeV5({ showOnIdle: true }, "quota-toast.jsonc", older);
+
+    const conversion = await convertV5();
+
+    expect(conversion?.notes).toEqual([
+      `the old settings in ${older} were not converted: ${folders[0]} has some too`,
+    ]);
+    const loaded = await loadSettings();
+    expect(loaded.settings.toast.afterReply).toBe("off");
+    expect(loaded.notRead).toContain(olderSidecar);
   });
 });
