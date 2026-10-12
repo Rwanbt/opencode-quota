@@ -3,6 +3,11 @@
  * row selectors the existing renderers consume; these are derived from the tab sections.
  */
 import type { Words } from "../core/types.js";
+import {
+  type CursorQuotaPlan,
+  getCursorPlanDisplayName,
+  getEffectiveCursorIncludedApiUsd,
+} from "../lib/cursor-pricing.js";
 import { isRecord } from "../lib/json-guards.js";
 import {
   checkSetting,
@@ -299,6 +304,14 @@ const named = (names: Record<string, string>) => (value: FieldValue) =>
 const usd = (unset: string) => (value: FieldValue) =>
   typeof value === "number" ? `$${value} a month` : unset;
 const CURSOR = { provider: "cursor" } as const;
+/** A Cursor plan with the API use it includes, e.g. "Pro: $20 a month". */
+const cursorPlan = (value: FieldValue) => {
+  const plan = value as CursorQuotaPlan;
+  const includedUsd = getEffectiveCursorIncludedApiUsd({ plan });
+  return includedUsd === undefined
+    ? "not set"
+    : `${getCursorPlanDisplayName(plan)}: $${includedUsd} a month`;
+};
 const SHOW = {
   detail: (value) => STATUS_DETAILS[value as StatusDetail],
   width: (value) => (value ? `up to ${value} columns` : "all the free room"),
@@ -426,17 +439,23 @@ export const FIELDS: readonly Field[] = [
   serverField("words.detail", "Extra rows", SHOW.rows, { group: "What shows" }),
   serverField("words.onlyCurrentModel", "Providers shown", SHOW.models),
   serverField("words.sessionTokens", "Session tokens count", SHOW.tokens),
-  serverField("providers.cursor.plan", "Plan", named({}), CURSOR),
+  serverField("providers.cursor.plan", "Plan", cursorPlan, {
+    ...CURSOR,
+    note: "for a % of the API use it includes",
+  }),
   serverField("providers.cursor.includedApiUsd", "Included API budget", usd("from the plan"), {
     ...CURSOR,
+    note: "a dollar amount to use instead of the plan's",
     placeholder: "a dollar amount",
   }),
   serverField("providers.cursor.billingCycleStartDay", "Billing day", SHOW.day, {
     ...CURSOR,
+    note: "the day of the month your Cursor bill renews",
     placeholder: "a day 1-28",
   }),
-  serverField("providers.opencode.monthlyLimitUsd", "Monthly budget", usd("not set"), {
+  serverField("providers.opencode.monthlyLimitUsd", "Monthly budget", usd("from the Console"), {
     provider: "opencode",
+    note: "a dollar amount to use instead",
     placeholder: "a dollar amount",
   }),
   serverField("providers.checking.minIntervalMs", "Check for new numbers", SHOW.minutes, {

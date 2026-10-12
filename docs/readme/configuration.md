@@ -63,7 +63,7 @@ The `words` settings apply to the sidebar, status line, toasts, `/quota`, and te
 
 `/quota`, `/quota_usage`, `/quota_status` and `/quota_settings` open the quota window on Limits, Usage, System and the first Settings tab. With `system.oldCommands` on, the 4.x and 5.x `/tokens_*` commands are other names for `/quota_usage` ranges; see [Updating](updating.md#moving-from-5x).
 
-On Providers, every provider is ticked unless its id is in `providers.off`. A ticked provider that quota can't use yet, for example without a login, shows "not set up". Space or a click ticks or unticks a provider. A provider found later is checked automatically unless it is unticked.
+On Providers, every provider is ticked unless its id is in `providers.off`. A ticked provider that quota can't use yet, for example without a login, shows "not set up". Space or a click ticks or unticks a provider. A provider found later is checked automatically unless it is unticked. Ticked Cursor and OpenCode Zen show their own lines under them: Cursor's plan (Pro includes $20 of API use a month, Pro Plus $70, Ultra $400), an included API budget to use instead of the plan's, and the day its bill renews; Zen's monthly budget, to use instead of the Console's.
 
 ## Custom providers
 
@@ -202,10 +202,10 @@ Roles are `good`, `warning`, `low`, `empty`, `title`, `provider`, `account`, `la
 | `providers.off` | `[]` | Provider ids switched off. `custom` means every custom definition. |
 | `providers.custom` | `[]` | Custom provider definitions, file only. |
 | `providers.anthropic.binaryPath` | `"claude"` | CLI command or absolute or `~/` path without `..`, file only. |
-| `providers.cursor.plan` | `"none"` | `none`, `pro`, `pro-plus`, `ultra`. |
-| `providers.cursor.includedApiUsd` | `null` | Positive monthly USD amount. Unset uses the plan. |
-| `providers.cursor.billingCycleStartDay` | `null` | Whole number 1–28. Unset uses the calendar month. |
-| `providers.opencode.monthlyLimitUsd` | `null` | Positive monthly USD amount. |
+| `providers.cursor.plan` | `"none"` | `none`, `pro` ($20 of API use a month), `pro-plus` ($70), `ultra` ($400). With one, Cursor can show a %. |
+| `providers.cursor.includedApiUsd` | `null` | Positive monthly USD amount, used instead of the plan's. |
+| `providers.cursor.billingCycleStartDay` | `null` | The day of the month your Cursor bill renews, 1–28. Unset uses the calendar month. |
+| `providers.opencode.monthlyLimitUsd` | `null` | Positive monthly USD amount, used instead of the Console's budget or credit limit. |
 | `providers.checking.minIntervalMs` | `300000` | Positive milliseconds between provider checks. |
 | `providers.checking.requestTimeoutMs` | `5000` | Positive request timeout in milliseconds. |
 | `providers.checking.waitForQuotaReset` | `true` | On a model limit error, wait until 1 minute after the earliest exhausted window resets, at most 5 hours. `false` keeps normal retry timing. |

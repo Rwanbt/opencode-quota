@@ -408,6 +408,8 @@ Use companion plugin [`cursor-opencode-provider`](https://github.com/oakimov/cur
 
 Restart OpenCode, run `/connect`, choose **Cursor**, then sign in with **Cursor account (browser login)** or paste an **API key** from [cursor.com/settings](https://cursor.com/settings). A `CURSOR_API_KEY` environment variable also works. OpenCode 1 plugins such as `@playwo/opencode-cursor-oauth` and `@rama_nigg/open-cursor` do not run on OpenCode 2; replace them with this entry.
 
+Cursor's three settings sit under Cursor on the Providers tab (`/quota_settings`): **Plan** (Pro includes $20 of API use a month, Pro Plus $70, Ultra $400), **Included API budget** (your own amount instead of the plan's), and **Billing day** (the day your Cursor bill renews).
+
 Cursor estimates the current billing cycle from your local OpenCode history:
 
 - With all models known and an allowance (`providers.cursor.plan` or `providers.cursor.includedApiUsd`), it shows an **API budget** percentage with used, limit, and remaining USD.

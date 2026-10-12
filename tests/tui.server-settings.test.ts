@@ -57,6 +57,14 @@ describe("the Settings tabs' lines", () => {
     expect(field("words.reset").show("compact")).toBe("2h14m · 5d3h20m");
     expect(field("providers.checking.minIntervalMs").show(300_000)).toBe("every 5 min");
     expect(field("providers.cursor.includedApiUsd").show(null)).toBe("from the plan");
+    // Each Cursor plan says the API use it includes, as the Cursor provider counts it.
+    expect(field("providers.cursor.plan").values.map(field("providers.cursor.plan").show)).toEqual([
+      "not set",
+      "Pro: $20 a month",
+      "Pro Plus: $70 a month",
+      "Ultra: $400 a month",
+    ]);
+    expect(field("providers.opencode.monthlyLimitUsd").show(null)).toBe("from the Console");
   });
 
   it.each([
