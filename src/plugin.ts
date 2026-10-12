@@ -24,6 +24,7 @@ import {
   type UsageReport,
   usageReport,
 } from "./core/usage.js";
+import { OLD_USAGE_COMMANDS } from "./core/usage-ranges.js";
 import { resolveOpenCodeLocationRoots } from "./lib/config-file-utils.js";
 import { sanitizeDisplayText } from "./lib/display-sanitize.js";
 import { homeNoticeLine, listNotices } from "./lib/maintainer-home-notice.js";
@@ -356,6 +357,12 @@ export const QuotaToastPlugin = Plugin.define({
           settingsWithSources(next, "pricing") !== settingsWithSources(previous, "pricing");
         store.settingsChanged({ recheck });
       }
+      if (next.settings.system.oldCommands !== previous.settings.system.oldCommands) {
+        // The command list is built again from the settings now in use.
+        await ctx.command.reload().catch((error: unknown) => {
+          console.warn(`[opencode-quota] command reload failed: ${logReason(error)}`);
+        });
+      }
     }
     // settings.jsonc edited by hand, by an agent or by another OpenCode process. A change made
     // while this setup ran is read once more right after the watch starts.
@@ -404,6 +411,25 @@ export const QuotaToastPlugin = Plugin.define({
         resume: false,
       });
     };
+    /** Posts the usage report `argumentsText` asks for, like "30d" or "between <date> <date>". */
+    const postUsage = async (sessionID: string, command: string, argumentsText: string) => {
+      const parsed = parseUsageArguments(argumentsText);
+      if (!parsed.ok) {
+        await postReport(sessionID, command, parsed.error);
+        return;
+      }
+      const { range, from, to } = parsed;
+      let text: string;
+      try {
+        text = usageText(await loadUsageReport({ range, from, to, sessionID }), {
+          mode: "cost",
+          breakdown: "model",
+        });
+      } catch (error) {
+        text = `Couldn't read the usage: ${error instanceof Error ? error.message : String(error)}`;
+      }
+      await postReport(sessionID, command, text);
+    };
     await ctx.command.transform((editor) => {
       editor.add({
         name: "quota",
@@ -438,23 +464,22 @@ export const QuotaToastPlugin = Plugin.define({
         name: "quota_usage",
         description:
           "Tokens and API cost: today, 24h, 7d (default), 30d, all, session, session_tree, or between YYYY-MM-DD YYYY-MM-DD.",
-        async execute(invocation) {
-          const parsed = parseUsageArguments(invocation.prompt.text);
-          if (!parsed.ok) {
-            await postReport(invocation.sessionID, "quota_usage", parsed.error);
-            return;
-          }
-          const { range, from, to } = parsed;
-          let text: string;
-          try {
-            const query = { range, from, to, sessionID: invocation.sessionID };
-            text = usageText(await loadUsageReport(query), { mode: "cost", breakdown: "model" });
-          } catch (error) {
-            text = `Couldn't read the usage: ${error instanceof Error ? error.message : String(error)}`;
-          }
-          await postReport(invocation.sessionID, "quota_usage", text);
-        },
+        execute: (invocation) =>
+          postUsage(invocation.sessionID, "quota_usage", invocation.prompt.text),
       });
+      // Read each time OpenCode builds the list, so `system.oldCommands` adds or removes them.
+      if (!loaded.settings.system.oldCommands) return;
+      for (const [name, range] of Object.entries(OLD_USAGE_COMMANDS)) {
+        editor.add({
+          name,
+          description:
+            range === "between"
+              ? "Same as /quota_usage between YYYY-MM-DD YYYY-MM-DD."
+              : `Same as /quota_usage ${range}.`,
+          execute: (invocation) =>
+            postUsage(invocation.sessionID, name, `${range} ${invocation.prompt.text}`),
+        });
+      }
     });
 
     // Keep quota reports out of every model request built from session history:

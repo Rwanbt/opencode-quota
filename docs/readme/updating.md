@@ -19,6 +19,22 @@ Update as above; you don't need to edit your settings. On the first start, OpenC
 - It writes the result to `opencode-quota/settings.jsonc` (see [Configuration](configuration.md)) and leaves the old file in place. From then on, only `settings.jsonc` is read.
 - Display choices, words, provider checks and system switches share that file, with one section per Settings tab.
 - The TUI shows a conversion toast once. `/quota_status` lists what was converted, what was dropped, and why in the server session that performs the conversion.
+- Settings you never set use the 6.x defaults: the status line shows only when the sidebar is not on screen, a toast follows a reply only once a limit is getting low, no toast follows a question, and the sidebar and toasts show "runs out in" when a limit, used at your pace, runs out before it resets.
+
+Your `/tokens_*` commands keep working. The first start turns `system.oldCommands` on when it converts your settings, or when it finds `opencode/quota-provider-state` in the cache folder (`~/.cache` or `$XDG_CACHE_HOME`), which 4.x and 5.x left there. To hide them, set `"system": { "oldCommands": false }` in `settings.jsonc`.
+
+| 4.x and 5.x | Same as |
+| --- | --- |
+| `/tokens_today` | `/quota_usage today` |
+| `/tokens_daily` | `/quota_usage 24h` |
+| `/tokens_weekly` | `/quota_usage 7d` |
+| `/tokens_monthly` | `/quota_usage 30d` |
+| `/tokens_all` | `/quota_usage all` |
+| `/tokens_session` | `/quota_usage session` |
+| `/tokens_session_all` | `/quota_usage session_tree` |
+| `/tokens_between <from> <to>` | `/quota_usage between <from> <to>` |
+| `/quota_announcements` | The notices on the System tab (`/quota_status`) |
+| `/pricing_refresh` | **Download new prices** on the Usage tab (`/quota_usage`); prices also download every 7 days |
 
 Project settings files (`<your-repo>/opencode-quota/quota-toast.jsonc`) are not read; `/quota_status` lists any it finds. Put what you still need in `settings.jsonc`.
 

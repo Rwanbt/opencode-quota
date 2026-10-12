@@ -494,10 +494,12 @@ export async function planV5Conversion(
 
   const read = readV5Values(files.sources);
   const mapped = mapV5Values(read.values);
+  // Someone moving from 4.x or 5.x keeps the /tokens_* commands they know.
+  const server: Record<string, unknown> = { ...mapped.server, "system.oldCommands": true };
   const values = Object.fromEntries(
     Object.keys(SETTINGS_SCHEMA)
-      .filter((key) => Object.hasOwn(mapped.server, key))
-      .map((key) => [key, mapped.server[key]]),
+      .filter((key) => Object.hasOwn(server, key))
+      .map((key) => [key, server[key]]),
   );
   const checked = settingsFrom(Object.entries(values).map(([key, value]) => ({ key, value })));
   return {
@@ -512,6 +514,14 @@ export async function planV5Conversion(
     invalid: firstPerKey(read.invalid),
     notes: files.notes,
   };
+}
+
+/**
+ * True when 4.x or 5.x ran here: the folder in OpenCode's cache where they kept each provider's
+ * last answer exists. v6 does not use it.
+ */
+export function oldVersionRan(cacheDir: string): boolean {
+  return existsSync(join(cacheDir, "quota-provider-state"));
 }
 
 /** True for a key v5 had: one v6 converts, drops, ignores, or a v5 group ("tuiSidebarPanel"). */

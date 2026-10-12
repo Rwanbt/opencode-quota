@@ -135,6 +135,7 @@ export function createServerContext({
 } = {}) {
   const tools: ServerTool[] = [];
   const commands: ServerCommand[] = [];
+  const commandBuilds: Array<(editor: { add: (command: ServerCommand) => void }) => void> = [];
   const hooks = new Map<string, unknown>();
   const emit = vi.fn(async (_name: string, _data: unknown) => {});
   const ctx = {
@@ -155,9 +156,17 @@ export function createServerContext({
       ),
     },
     command: {
-      transform: vi.fn(async (build: (editor: { add: (command: ServerCommand) => void }) => void) =>
-        build({ add: (command) => commands.push(command) }),
+      transform: vi.fn(
+        async (build: (editor: { add: (command: ServerCommand) => void }) => void) => {
+          commandBuilds.push(build);
+          build({ add: (command) => commands.push(command) });
+        },
       ),
+      // As OpenCode does: the list is built again from every transform.
+      reload: vi.fn(async () => {
+        commands.length = 0;
+        for (const build of commandBuilds) build({ add: (command) => commands.push(command) });
+      }),
     },
     rpc: { register: vi.fn(async () => ({ dispose: async () => {}, events: { emit } })) },
     integration: createFakeIntegration([]),

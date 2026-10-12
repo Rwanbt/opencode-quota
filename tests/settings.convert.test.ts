@@ -236,7 +236,7 @@ describe("convertV5, key by key", () => {
       { key: "maintainerAnnouncements.homeFrequency", reason: "notices have no settings in v6" },
     ]);
     expect(conversion?.converted).toEqual([]);
-    expect(conversion?.values).toEqual({});
+    expect(conversion?.values).toEqual({ "system.oldCommands": true });
   });
 
   it("lists values v5 rejected too and converts the rest", async () => {
@@ -270,6 +270,32 @@ describe("convertV5, which v5 files", () => {
     expect(
       existsSync(join(root, "state", "opencode", "opencode-quota", "display-import.json")),
     ).toBe(false);
+  });
+
+  it("turns the old /tokens_* commands on, and says so at the top of settings.jsonc", async () => {
+    writeV5({ showOnIdle: false });
+    await convertV5();
+    expect((await loadSettings()).settings.system.oldCommands).toBe(true);
+    expect(readFileSync(settingsPath(), "utf8")).toContain(
+      "// system.oldCommands is on, so the /tokens_* commands of 4.x and 5.x still work.",
+    );
+  });
+
+  it("without old settings, writes settings.jsonc with the old commands on only after 4.x or 5.x ran", async () => {
+    const cacheDir = join(root, "cache");
+    vi.stubEnv("XDG_CACHE_HOME", cacheDir);
+    expect(await convertV5()).toBeUndefined();
+    expect(existsSync(settingsPath())).toBe(false);
+
+    mkdirSync(join(cacheDir, "opencode", "quota-provider-state"), { recursive: true });
+    expect(await convertV5()).toBeUndefined();
+    const loaded = await loadSettings();
+    expect([loaded.exists, loaded.issues]).toEqual([true, []]);
+    expect(loaded.settings).toEqual({
+      ...defaultSettings(),
+      system: { ...defaultSettings().system, oldCommands: true },
+    });
+    expect(readFileSync(settingsPath(), "utf8")).toContain("// system.oldCommands is on");
   });
 
   it.each([

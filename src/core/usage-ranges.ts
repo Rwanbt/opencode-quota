@@ -24,6 +24,18 @@ export type UsageRange = (typeof USAGE_RANGES)[number]["range"];
 
 export const DEFAULT_USAGE_RANGE: UsageRange = "7d";
 
+/** The 4.x and 5.x token commands (`system.oldCommands`), each `/quota_usage` on its range. */
+export const OLD_USAGE_COMMANDS: Readonly<Record<string, UsageRange>> = {
+  tokens_today: "today",
+  tokens_daily: "24h",
+  tokens_weekly: "7d",
+  tokens_monthly: "30d",
+  tokens_all: "all",
+  tokens_session: "session",
+  tokens_session_all: "session_tree",
+  tokens_between: "between",
+};
+
 export function usageRangeLabel(range: UsageRange): string {
   return USAGE_RANGES.find((item) => item.range === range)?.label ?? range;
 }

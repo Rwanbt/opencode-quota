@@ -1,3 +1,5 @@
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const buildOutput = vi.hoisted(() => vi.fn());
@@ -18,6 +20,7 @@ import {
 } from "../src/lib/opencode-auth.js";
 import { formatQuotaReportMessage } from "../src/lib/quota-report-message.js";
 import plugin from "../src/plugin.js";
+import { settingsPath } from "../src/settings/file.js";
 import { createFakeIntegration } from "./helpers/fake-integration.js";
 import { createServerContext, type ServerCommand } from "./helpers/plugin-test-harness.js";
 
@@ -105,6 +108,44 @@ describe("V2 server plugin", () => {
     await plugin.setup(ctx as never);
     expect(commands.map((item) => item.name)).toEqual(["quota", "quota_status", "quota_usage"]);
     expect(commands.every((item) => item.description)).toBe(true);
+  });
+
+  it("lists the 4.x and 5.x /tokens_* commands while system.oldCommands is on", async () => {
+    const path = settingsPath();
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, JSON.stringify({ system: { oldCommands: true } }));
+    const { ctx, commands } = createContext();
+    const dispose = await plugin.setup(ctx as never);
+    try {
+      expect(commands.map((item) => item.name)).toEqual([
+        "quota",
+        "quota_status",
+        "quota_usage",
+        "tokens_today",
+        "tokens_daily",
+        "tokens_weekly",
+        "tokens_monthly",
+        "tokens_all",
+        "tokens_session",
+        "tokens_session_all",
+        "tokens_between",
+      ]);
+      // Each is /quota_usage on its range, so the range's rules apply.
+      await runCommand(commands, "tokens_between", "2026-10-02 2026-10-01");
+      expect(ctx.session.prompt.mock.calls[0][0]).toMatchObject({
+        text: expect.stringContaining("2026-10-01 is before 2026-10-02."),
+        metadata: { opencodeQuota: { command: "tokens_between" } },
+      });
+
+      writeFileSync(path, JSON.stringify({ system: { oldCommands: false } }));
+      await vi.waitFor(() => expect(ctx.command.reload).toHaveBeenCalledOnce(), {
+        timeout: 10_000,
+      });
+      expect(commands.map((item) => item.name)).toEqual(["quota", "quota_status", "quota_usage"]);
+    } finally {
+      await dispose?.();
+      rmSync(path, { force: true });
+    }
   });
 
   it("posts the report as a user message that never starts a model turn", async () => {

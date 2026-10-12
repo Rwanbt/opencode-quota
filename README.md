@@ -90,6 +90,8 @@ Type these in OpenCode. Add a range after `/quota_usage`, like `/quota_usage 30d
 
 In the terminal, `/quota_usage` opens the window's Usage tab on that range: change it there, and click a model for its details. **Download new prices** there refreshes pricing from `models.dev`.
 
+Moving from 4.x or 5.x? Your `/tokens_*` commands still work. See [Updating](docs/readme/updating.md#moving-from-5x).
+
 ### CLI commands
 
 | Command                                     | What it does                      |

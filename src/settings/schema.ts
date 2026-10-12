@@ -148,6 +148,8 @@ export const SETTINGS_SCHEMA = {
   /** "" = `$XDG_CACHE_HOME/opencode/quota-export.json`. */
   "system.exportPath": { kind: "path", allowEmpty: true, default: "", fileOnly: true },
   "system.telemetry": bool(false),
+  /** The 4.x and 5.x /tokens_* commands, each `/quota_usage` on its range. */
+  "system.oldCommands": bool(false),
 } as const satisfies Record<string, SettingRule>;
 
 const RULES: Readonly<Record<string, SettingRule>> = SETTINGS_SCHEMA;

@@ -359,6 +359,7 @@ export async function buildStatusReportData(params: {
         : PROVIDER_IDS.filter((id) => !settings.providers.off.includes(id)),
     offProviders: settings.providers.off,
     onlyCurrentModel: settings.words.onlyCurrentModel,
+    oldCommands: settings.system.oldCommands,
     quotaProviders: settings.providers.custom,
     pricingSnapshotSource: settings.providers.pricing.source,
     currentModel,

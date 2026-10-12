@@ -179,6 +179,8 @@ export type QuotaStatusReportParams = {
   /** The provider ids switched off in settings.jsonc. */
   offProviders: readonly string[];
   onlyCurrentModel: boolean;
+  /** `system.oldCommands`: the /tokens_* commands are listed. */
+  oldCommands: boolean;
   quotaProviders?: readonly QuotaProviderDefinition[];
   pricingSnapshotSource: PricingSnapshotSource;
   currentModel?: string;
@@ -470,6 +472,7 @@ function settingsSection(params: QuotaStatusReportParams, homeDir: string): Repo
   rows.push(
     { key: "providers.off", value: providerIdsText(params.offProviders) },
     { key: "words.onlyCurrentModel", value: params.onlyCurrentModel === true ? "true" : "false" },
+    { key: "system.oldCommands", value: params.oldCommands ? "true" : "false" },
     { key: "currentModel", value: currentModelText(params) },
     { key: "workspace_root", value: pathText(params.workspaceRoot, homeDir) },
   );

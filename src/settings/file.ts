@@ -25,7 +25,12 @@ import {
 } from "../lib/config-write-target.js";
 import { type LockFence, LockLostError, withFileLock } from "../lib/file-lock.js";
 import { getOpencodeRuntimeDirs } from "../lib/opencode-runtime-paths.js";
-import { findUnreadV5Files, planV5Conversion, type V5Conversion } from "./convert.js";
+import {
+  findUnreadV5Files,
+  oldVersionRan,
+  planV5Conversion,
+  type V5Conversion,
+} from "./convert.js";
 import {
   CHANGED_SINCE_REVIEW,
   checkSetting,
@@ -72,6 +77,8 @@ const NEW_FILE_HEADER = [
   "OpenCode Quota settings, one section per Settings tab. Every key is optional; a missing one uses its default.",
   "Edit it by hand or ask your agent; OpenCode Quota keeps your comments when it saves.",
 ];
+const OLD_COMMANDS_LINE =
+  "system.oldCommands is on, so the /tokens_* commands of 4.x and 5.x still work.";
 
 const errorCode = (error: unknown) =>
   error && typeof error === "object" && "code" in error ? String(error.code) : "";
@@ -199,6 +206,7 @@ function convertedFileText(conversion: V5Conversion): string {
       ...conversion.notes,
       "The old file was left in place; OpenCode Quota no longer reads it.",
       "All quota settings are in this file, one section per Settings tab.",
+      OLD_COMMANDS_LINE,
     ],
     conversion.values,
   );
@@ -464,8 +472,12 @@ async function editLocked(
 export async function convertV5(): Promise<V5Conversion | undefined> {
   const path = settingsPath();
   if (await lstat(path).catch(() => undefined)) return undefined;
-  const conversion = await planV5Conversion(getOpencodeRuntimeDirs().configDir);
-  if (!conversion) return undefined;
+  const { configDir, cacheDir } = getOpencodeRuntimeDirs();
+  const conversion = await planV5Conversion(configDir);
+  if (!conversion) {
+    if (oldVersionRan(cacheDir)) await writeOldCommandsFile();
+    return undefined;
+  }
   const malformed = "an old settings file does not parse; converted in memory until it is fixed";
   if (conversion.malformed) return { ...conversion, notWrittenReason: malformed };
   try {
@@ -478,6 +490,25 @@ export async function convertV5(): Promise<V5Conversion | undefined> {
     });
   } catch (error) {
     return { ...conversion, notWrittenReason: `could not write ${path}: ${errorMessage(error)}` };
+  }
+}
+
+/**
+ * 4.x or 5.x ran here without settings to convert: a new settings.jsonc with the old commands
+ * on. Best effort; without it the defaults apply.
+ */
+async function writeOldCommandsFile(): Promise<void> {
+  const text = newFileText([...NEW_FILE_HEADER, OLD_COMMANDS_LINE], {
+    "system.oldCommands": true,
+  });
+  try {
+    await withSettingsLock(async (target, _text, fence) => {
+      if (target.terminalExisted) return;
+      await writeResolvedConfigText(target, text, fence);
+      await chmod(target.writePath, NEW_CONFIG_FILE_MODE);
+    });
+  } catch (error) {
+    console.warn(`[opencode-quota] could not write ${settingsPath()}: ${errorMessage(error)}`);
   }
 }
 
