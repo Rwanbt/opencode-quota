@@ -47,6 +47,7 @@ describe("the Settings tabs' field table", () => {
     { path: "layout.separator", delta: -1, expected: "  " },
     { path: "statusLine.detail", delta: 1, expected: "one" },
     { path: "statusLine.runsOut", delta: 1, expected: true },
+    { path: "sidebar.runsOut", delta: 1, expected: false },
     { path: "colors.reset", delta: 1, expected: "text" },
     { path: "colors.reset", delta: -1, expected: "bar" },
     { path: "colors.good", delta: -1, expected: "blue" },
@@ -92,7 +93,9 @@ describe("the Settings tabs' field table", () => {
       "roomy",
       { ...defaults.layout, barWidth: 10, indent: 2, providerGap: 1 },
     ]);
-    expect(withPreset(defaults, "toast", -1).toast.afterCompaction).toBe(false);
+    const quiet = withPreset(defaults, "toast", -1);
+    expect([choiceOf(quiet, "toast"), quiet.toast.afterReply]).toEqual(["quiet", "off"]);
+    expect(withPreset(quiet, "toast", -1).toast.afterCompaction).toBe(false);
   });
 
   it("renames a row whose id holds a dot, and its own name or nothing puts it back", () => {
@@ -113,12 +116,12 @@ describe("the Settings tabs' field table", () => {
     changed = setIn(changed, ["collapsed", "runsOut"], true);
     changed = setIn(changed, ["collapsed", "providerOrder"], ["openai", "anthropic"]);
     changed = setIn(changed, ["collapsed", "window", "anthropic"], "week");
-    changed = setIn(changed, ["sidebar", "runsOut"], true);
+    changed = setIn(changed, ["sidebar", "runsOut"], false);
     changed = setIn(changed, ["sidebar", "names", "anthropic.five_hour"], "Session");
     const reset = resetTab(changed, "collapsed");
     expect(reset).toEqual(
       setIn(
-        setIn(defaultDisplaySettings(), ["sidebar", "runsOut"], true),
+        setIn(defaultDisplaySettings(), ["sidebar", "runsOut"], false),
         ["sidebar", "names", "anthropic.five_hour"],
         "Session",
       ),

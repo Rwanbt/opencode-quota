@@ -43,7 +43,7 @@ Nest the keys in the file:
   "sidebar": { "sessionTokens": false },
   "collapsed": { "window": { "anthropic": "five_hour" } },
   "statusLine": { "window": { "anthropic": "week" } },
-  "toast": { "afterReply": "low" },
+  "toast": { "afterReply": "off" },
   "colors": { "good": "green" },
   "layout": { "barWidth": 10 },
   "words": { "percent": "used", "reset": "compact" },
@@ -52,14 +52,14 @@ Nest the keys in the file:
 }
 ```
 
-The `words` settings apply to the sidebar, status line, toasts, `/quota`, and terminal `show`. Web and Desktop `/quota` text and terminal `show` always include "runs out in" when the limit's pace runs out before its reset. Each TUI surface has its own `runsOut` switch, off by default. The Limits tab always shows pace.
+The `words` settings apply to the sidebar, status line, toasts, `/quota`, and terminal `show`. Web and Desktop `/quota` text and terminal `show` always include "runs out in" when the limit's pace runs out before its reset. Each TUI surface has its own `runsOut` switch: on for the sidebar and toasts, off for the one-line collapsed sidebar and status line. The Limits tab always shows pace.
 
 ## TUI surfaces
 
 - Sidebar shows a bar per row and session tokens. Click its title to collapse it. `sidebar.names` holds row names by row id. The collapsed sidebar, status line and quota window's Limits tab use those names too.
 - Collapsed shows one line per provider. `collapsed.window` picks a window per provider id.
 - Status line uses the room OpenCode's footer leaves free. `statusLine.window` picks its own window per provider. The `‹ ›` window picker on each tab changes only that tab's setting. Scroll with the mouse wheel or click `‹` and `+N ›` when providers do not fit.
-- Toasts appear after compaction and when every provider fails, for 9 seconds by default. `toast.names` holds their row names. Renaming a row on Sidebar or Toast changes that tab's names only. Toasts appear only in the TUI.
+- Toasts appear after compaction, when every provider fails, and after a reply once a limit is getting low (below `colors.warningBelow`, 50% left by default), for 9 seconds by default. `toast.names` holds their row names. Renaming a row on Sidebar or Toast changes that tab's names only. Toasts appear only in the TUI.
 
 `/quota`, `/quota_usage`, `/quota_status` and `/quota_settings` open the quota window on Limits, Usage, System and the first Settings tab.
 
@@ -145,7 +145,7 @@ Credentials belong in OpenCode or environment variables, never in this file. See
 
 ### Sidebar, Collapsed, Status line and Toast
 
-Each section has `show: true`, `runsOut: false`, `hidden: []`, `providerOrder: []`, and `rowOrder: {}`. `hidden` lists provider or row ids. `providerOrder` lists provider ids; `rowOrder` maps a provider id to a list of row ids. Unlisted ids follow their normal order.
+Each section has `show: true`, `runsOut` (`true` for `sidebar` and `toast`, `false` for `collapsed` and `statusLine`), `hidden: []`, `providerOrder: []`, and `rowOrder: {}`. `hidden` lists provider or row ids. `providerOrder` lists provider ids; `rowOrder` maps a provider id to a list of row ids. Unlisted ids follow their normal order.
 
 | Setting | Default | Values |
 | --- | --- | --- |
@@ -156,7 +156,7 @@ Each section has `show: true`, `runsOut: false`, `hidden: []`, `providerOrder: [
 | `statusLine.width` | `0` | Whole number 0–1000. 0 uses all free room. |
 | `statusLine.autoScrollSeconds` | `0` | Whole number 0–600. 0 switches scrolling off. |
 | `statusLine.home` | `false` | Show the status line at the bottom of Home. |
-| `toast.afterReply` | `"off"` | `off`, `always`, or `low`. |
+| `toast.afterReply` | `"low"` | `off`, `always`, or `low` (only while a shown limit is getting low). |
 | `toast.afterQuestion` | `false` | Show quota after a question. |
 | `toast.afterCompaction` | `true` | Show quota after compaction. |
 | `toast.whenAllFail` | `true` | Show quota when every provider fails. |

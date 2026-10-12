@@ -49,7 +49,7 @@ Restart OpenCode, open a session, then run `/quota` and `/quota_status` in the T
 
 ## What appears in the TUI
 
-The TUI shows the `Quota` panel in the session sidebar, a status line under the message box, and a toast after compaction. Change their look in the Settings tabs of `/quota_settings`; see [TUI surfaces](configuration.md#tui-surfaces). Web and Desktop show none of these. See [Configuration](configuration.md) for every setting.
+The TUI shows the `Quota` panel in the session sidebar, a status line under the message box, and toasts after compaction and after a reply once a limit is getting low. Change their look in the Settings tabs of `/quota_settings`; see [TUI surfaces](configuration.md#tui-surfaces). Web and Desktop show none of these. See [Configuration](configuration.md) for every setting.
 
 ## Web and Desktop notes
 

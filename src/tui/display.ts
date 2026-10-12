@@ -249,8 +249,9 @@ function serverField(
 /** One switch per place: the Limits tab always shows the pace. */
 function runsOutField(surface: Surface, where: string): Field {
   const note = "when a limit, used at your pace so far, runs out before its reset";
+  const initial = SETTINGS_SCHEMA[`${surface}.runsOut`].default;
   return {
-    ...switchField(`${surface}.runsOut`, "Runs out in …", false, { note }),
+    ...switchField(`${surface}.runsOut`, "Runs out in …", initial, { note }),
     show: onOff("off", where),
   };
 }
@@ -354,7 +355,7 @@ export const FIELDS: readonly Field[] = [
   switchField("statusLine.home", "At the bottom of Home", false, {
     note: "even when the line under the message box is off",
   }),
-  listField("toast.afterReply", "After each reply", "off", REPLY_TOASTS, SHOW.afterReply, {
+  listField("toast.afterReply", "After each reply", "low", REPLY_TOASTS, SHOW.afterReply, {
     group: "Fine-tune",
     ...TOAST,
   }),
@@ -502,8 +503,8 @@ export const PRESETS: Record<PresetName, Preset> = {
     drives: "the 5 lines under it",
     choices: {
       "only failures": toastChoice("off", false, false, "off"),
-      normal: toastChoice("off", false, true, "off"),
-      "when getting low": toastChoice("low", false, true, "weekly"),
+      quiet: toastChoice("off", false, true, "off"),
+      normal: toastChoice("low", false, true, "off"),
       "every reply": toastChoice("always", true, true, "all"),
     },
   },

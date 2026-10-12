@@ -33,7 +33,7 @@ const EXPECTED = {
   sidebar: {
     show: true,
     sessionTokens: true,
-    runsOut: false,
+    runsOut: true,
     hidden: [],
     providerOrder: [],
     rowOrder: {},
@@ -61,12 +61,12 @@ const EXPECTED = {
   },
   toast: {
     show: true,
-    runsOut: false,
+    runsOut: true,
     hidden: [],
     providerOrder: [],
     rowOrder: {},
     names: {},
-    afterReply: "off",
+    afterReply: "low",
     afterQuestion: false,
     afterCompaction: true,
     whenAllFail: true,
@@ -379,7 +379,7 @@ it.each([
   },
   {
     input: { toast: { afterReply: "sometimes", seconds: 0, afterQuestion: true } },
-    expected: { toast: { afterReply: "off", seconds: 9, afterQuestion: true } },
+    expected: { toast: { afterReply: "low", seconds: 9, afterQuestion: true } },
   },
 ])("keeps valid entries and defaults invalid moved values: $input", async ({ input, expected }) => {
   await file(JSON.stringify(input));
