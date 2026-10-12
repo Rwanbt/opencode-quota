@@ -170,11 +170,6 @@ function litUsageLines(node: unknown): string[] {
     .map((item) => String(item.props.id));
 }
 
-/** The `text` node that reads exactly `label`. */
-function textNode(node: unknown, label: string): Node | undefined {
-  return findAll(node, (item) => item.type === "text" && textLines(item)[0] === label)[0];
-}
-
 /** The local date `days` calendar days from today, like "2026-10-01". */
 function localDate(days: number): string {
   const date = new Date();
