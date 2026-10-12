@@ -123,7 +123,7 @@ const EXPECTED = {
     exportFile: false,
     exportPath: "",
     telemetry: false,
-    oldCommands: false,
+    oldCommands: true,
   },
 };
 

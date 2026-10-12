@@ -294,7 +294,7 @@ describe("quota window shell", () => {
     expect(host.saveCalls.slice(1)).toEqual([
       { patch: { system: { exportFile: false } } },
       { patch: { system: { telemetry: true } } },
-      { patch: { system: { oldCommands: true } } },
+      { patch: { system: { oldCommands: false } } },
     ]);
   });
 

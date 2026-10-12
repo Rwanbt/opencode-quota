@@ -17,7 +17,7 @@ Every quota setting lives here, with one section per Settings tab: `sidebar`, `c
 
 Only the sidebar panel's open or collapsed state lives in OpenCode's plugin storage. Custom definitions, the Claude CLI path and the export path are file-only settings. The System tab (`/quota_status`) has the old command names, quota file and OpenTelemetry switches; they save as soon as you change them.
 
-Without the file, OpenCode Quota uses its defaults and writes nothing. Saving creates the file with the default sections. After 4.x or 5.x, the first start writes it: it converts their global settings into it, or with none to convert, writes it with `system.oldCommands` on. See [Updating](updating.md#moving-from-5x).
+Without the file, OpenCode Quota uses its defaults and writes nothing. Saving creates the file with the default sections. After 4.x or 5.x, the first start converts their global settings into it. See [Updating](updating.md#moving-from-5x).
 
 ## Common changes
 
@@ -61,7 +61,7 @@ The `words` settings apply to the sidebar, status line, toasts, `/quota`, and te
 - Status line shows under the message box when no sidebar panel with quota is on screen: the window is too narrow for the sidebar, the sidebar is closed, or `sidebar.show` is off. `statusLine.withSidebar: true` shows it next to the sidebar too. While its Settings tab is open, it shows whenever `statusLine.show` is on. It uses the room OpenCode's footer leaves free. `statusLine.window` picks its own window per provider. The `‹ ›` window picker on each tab changes only that tab's setting. Scroll with the mouse wheel or click `‹` and `+N ›` when providers do not fit.
 - Toasts appear after compaction, when every provider fails, and after a reply once a limit is getting low (below `colors.warningBelow`, 50% left by default), for 9 seconds by default. `toast.names` holds their row names. Renaming a row on Sidebar or Toast changes that tab's names only. Toasts appear only in the TUI.
 
-`/quota`, `/quota_usage`, `/quota_status` and `/quota_settings` open the quota window on Limits, Usage, System and the first Settings tab. With `system.oldCommands` on, the 4.x and 5.x `/tokens_*` commands are other names for `/quota_usage` ranges; see [Updating](updating.md#moving-from-5x).
+`/quota`, `/quota_usage`, `/quota_status` and `/quota_settings` open the quota window on Limits, Usage, System and the first Settings tab. The 4.x and 5.x `/tokens_*` commands are other names for `/quota_usage` ranges until `system.oldCommands` is off; see [Updating](updating.md#moving-from-5x).
 
 On Providers, every provider is ticked unless its id is in `providers.off`. A ticked provider that quota can't use yet, for example without a login, shows "not set up". Space or a click ticks or unticks a provider. A provider found later is checked automatically unless it is unticked. Ticked Cursor and OpenCode Zen show their own lines under them: Cursor's plan (Pro includes $20 of API use a month, Pro Plus $70, Ultra $400), an included API budget to use instead of the plan's, and the day its bill renews; Zen's monthly budget, to use instead of the Console's.
 
@@ -221,7 +221,7 @@ Maintainer notices are written into the plugin with an end date. Active notices 
 | `system.exportFile` | `false` | Write quota JSON when the snapshot changes. |
 | `system.exportPath` | `""` | Empty uses `$XDG_CACHE_HOME/opencode/quota-export.json`; otherwise an absolute or `~/` path without `..`. File only. |
 | `system.telemetry` | `false` | Publish quota and cache-age metrics through OpenCode's global OpenTelemetry MeterProvider. |
-| `system.oldCommands` | `false` | List the 4.x and 5.x `/tokens_*` commands, each `/quota_usage` on its range. On after a move from 4.x or 5.x. |
+| `system.oldCommands` | `true` | List the 4.x and 5.x `/tokens_*` commands, each `/quota_usage` on its range. |
 
 See [External integration](external-integration.md) for JSON and telemetry details.
 

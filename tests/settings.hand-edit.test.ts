@@ -81,9 +81,9 @@ it("keeps a hand edit made while a save writes, and saves on top of it", async (
 });
 
 it("keeps a settings.jsonc made while the first start after 4.x or 5.x writes one", async () => {
-  const cacheDir = join(root, "cache");
-  vi.stubEnv("XDG_CACHE_HOME", cacheDir);
-  mkdirSync(join(cacheDir, "opencode", "quota-provider-state"), { recursive: true });
+  const old = join(root, "config", "opencode-quota", "quota-toast.jsonc");
+  mkdirSync(dirname(old), { recursive: true });
+  writeFileSync(old, JSON.stringify({ percentDisplayMode: "used" }));
   const path = settingsPath();
   const mine = '{ "system": { "oldCommands": false } }';
   during.lookup = {

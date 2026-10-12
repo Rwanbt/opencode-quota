@@ -236,7 +236,7 @@ describe("convertV5, key by key", () => {
       { key: "maintainerAnnouncements.homeFrequency", reason: "notices have no settings in v6" },
     ]);
     expect(conversion?.converted).toEqual([]);
-    expect(conversion?.values).toEqual({ "system.oldCommands": true });
+    expect(conversion?.values).toEqual({});
   });
 
   it("lists values v5 rejected too and converts the rest", async () => {
@@ -272,30 +272,19 @@ describe("convertV5, which v5 files", () => {
     ).toBe(false);
   });
 
-  it("turns the old /tokens_* commands on, and says so at the top of settings.jsonc", async () => {
+  it("leaves the /tokens_* commands on, as for everyone, and writes nothing without old settings", async () => {
     writeV5({ showOnIdle: false });
     await convertV5();
     expect((await loadSettings()).settings.system.oldCommands).toBe(true);
-    expect(readFileSync(settingsPath(), "utf8")).toContain(
-      "// system.oldCommands is on, so the /tokens_* commands of 4.x and 5.x still work.",
-    );
-  });
+    expect(readFileSync(settingsPath(), "utf8")).not.toContain("oldCommands is on");
 
-  it("without old settings, writes settings.jsonc with the old commands on only after 4.x or 5.x ran", async () => {
+    rmSync(settingsPath());
+    rmSync(join(configDir, "opencode-quota", "quota-toast.jsonc"));
     const cacheDir = join(root, "cache");
     vi.stubEnv("XDG_CACHE_HOME", cacheDir);
-    expect(await convertV5()).toBeUndefined();
-    expect(existsSync(settingsPath())).toBe(false);
-
     mkdirSync(join(cacheDir, "opencode", "quota-provider-state"), { recursive: true });
     expect(await convertV5()).toBeUndefined();
-    const loaded = await loadSettings();
-    expect([loaded.exists, loaded.issues]).toEqual([true, []]);
-    expect(loaded.settings).toEqual({
-      ...defaultSettings(),
-      system: { ...defaultSettings().system, oldCommands: true },
-    });
-    expect(readFileSync(settingsPath(), "utf8")).toContain("// system.oldCommands is on");
+    expect(existsSync(settingsPath())).toBe(false);
   });
 
   it.each([

@@ -102,18 +102,23 @@ describe("V2 server plugin", () => {
     expect((plugin as Record<string, unknown>)["command.execute.before"]).toBeUndefined();
   });
 
-  it("registers /quota, /quota_status and /quota_usage for Web and Desktop", async () => {
+  it("registers /quota, /quota_status, /quota_usage and the /tokens_* names for Web and Desktop", async () => {
     const { ctx, commands } = createContext();
 
     await plugin.setup(ctx as never);
-    expect(commands.map((item) => item.name)).toEqual(["quota", "quota_status", "quota_usage"]);
+    expect(commands.map((item) => item.name).slice(0, 4)).toEqual([
+      "quota",
+      "quota_status",
+      "quota_usage",
+      "tokens_today",
+    ]);
     expect(commands.every((item) => item.description)).toBe(true);
   });
 
-  it("lists the 4.x and 5.x /tokens_* commands while system.oldCommands is on", async () => {
+  it("lists the 4.x and 5.x /tokens_* commands until system.oldCommands is off", async () => {
     const path = settingsPath();
     mkdirSync(dirname(path), { recursive: true });
-    writeFileSync(path, JSON.stringify({ system: { oldCommands: true } }));
+    writeFileSync(path, JSON.stringify({}));
     const { ctx, commands } = createContext();
     const dispose = await plugin.setup(ctx as never);
     try {
