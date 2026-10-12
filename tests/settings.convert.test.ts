@@ -418,7 +418,7 @@ describe("convertV5, which v5 files", () => {
       },
     ]);
     expect(readFileSync(settingsPath(), "utf8")).toMatch(
-      /^\/\/ OpenCode Quota settings, one section per Settings tab\./,
+      /^\/\/ OpenCode Quota settings, by section\./,
     );
   });
 

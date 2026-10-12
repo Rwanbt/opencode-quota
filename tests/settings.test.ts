@@ -263,7 +263,7 @@ describe("saveSettings", () => {
 
     expect(result.ok).toBe(true);
     const text = readFileSync(settingsPath(), "utf8");
-    expect(text).toMatch(/^\/\/ OpenCode Quota settings, one section per Settings tab\./);
+    expect(text).toMatch(/^\/\/ OpenCode Quota settings, by section\./);
     expect(text).toContain('"version": 6');
     expect((await loadSettings()).settings.words.percent).toBe("bare");
     if (process.platform !== "win32") {

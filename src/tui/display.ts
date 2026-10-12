@@ -140,9 +140,12 @@ export function defaultDisplaySettings(): DisplaySettings {
 }
 
 // ---------------------------------------------------------------------------------------------
-// The Settings tabs: one line per setting, every tab from this table.
+// The Settings pages: one line per setting, every page from this table.
 
-/** The quota window's Settings tabs, matching their file sections. */
+/**
+ * The quota window's Settings pages, one per file section. The tab bar shows Layout (the pages
+ * sidebar, collapsed, statusLine, toast, and layout as "All places"), Colors, Words, Providers.
+ */
 export type SettingsTab =
   | "sidebar"
   | "collapsed"
@@ -194,9 +197,9 @@ type Show = (value: FieldValue) => string;
 type FieldOptions = Pick<
   Field,
   "valid" | "choices" | "group" | "note" | "preset" | "placeholder" | "provider"
->;
+> & { tab?: SettingsTab };
 
-/** A setting's tab is its first key, for example "toast" in "toast.seconds". */
+/** A setting's page is its first key, for example "toast" in "toast.seconds", unless it names one. */
 function tabOf(path: string): SettingsTab {
   return path.split(".")[0] as SettingsTab;
 }
@@ -233,9 +236,9 @@ function numberField(
 }
 
 /**
- * A line of the server's settings.jsonc, on Words or Providers. Its default and its values (a
- * choice, or off and on) come from SETTINGS_SCHEMA; a number line names the `values` it steps
- * through, or none when you type it.
+ * A line of the server's settings.jsonc, on Words, All places or Providers. Its default and its
+ * values (a choice, or off and on) come from SETTINGS_SCHEMA; a number line names the `values`
+ * it steps through, or none when you type it.
  */
 function serverField(
   path: keyof typeof SETTINGS_SCHEMA,
@@ -436,9 +439,10 @@ export const FIELDS: readonly Field[] = [
     note: "for the decimal reset times",
     values: [0, 1, 2],
   }),
-  serverField("words.detail", "Extra rows", SHOW.rows, { group: "What shows" }),
-  serverField("words.onlyCurrentModel", "Providers shown", SHOW.models),
-  serverField("words.sessionTokens", "Session tokens count", SHOW.tokens),
+  // Words' choices of what shows, which every place follows: on All places.
+  serverField("words.detail", "Extra rows", SHOW.rows, { tab: "layout", group: "What shows" }),
+  serverField("words.onlyCurrentModel", "Providers shown", SHOW.models, { tab: "layout" }),
+  serverField("words.sessionTokens", "Session tokens count", SHOW.tokens, { tab: "layout" }),
   serverField("providers.cursor.plan", "Plan", cursorPlan, {
     ...CURSOR,
     note: "API use the plan includes; shown as a %",

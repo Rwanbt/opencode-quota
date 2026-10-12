@@ -2,8 +2,9 @@
 /**
  * The quota window. `/quota`, `/quota_usage`, `/quota_status` and `/quota_settings` open it
  * above the message box of a session, where it covers the chat
- * with the same size on every tab: Usage, Limits, System and the Settings tabs
- * (`settings.tsx`). The tab bar is one line, with "esc" at its right end to close the window:
+ * with the same size on every tab: Usage, Limits, System and the Settings tabs Layout, Colors,
+ * Words and Providers (`settings.tsx`); Layout has a line of pages under the tab bar, one per
+ * place and All places. The tab bar is one line, with "esc" at its right end to close the window:
  * when its tabs don't fit, it drops the "Settings" label, then shows the tabs around the
  * current one between ‹ and ›. The bottom line lists the
  * tab's keys; the Settings tabs have Save and Discard above it. While the window is focused (it
@@ -27,7 +28,7 @@ import {
   isSettingsTab,
   type OptionLine,
   OptionRow,
-  SETTINGS_TABS,
+  SETTINGS_GROUPS,
   type SettingsEditor,
 } from "./settings.js";
 import { Choice, createUsageTab, type UsageChoice } from "./usage.js";
@@ -62,14 +63,17 @@ const DEFAULT_WIDTH = 120;
 
 export type WindowTab = "limits" | "usage" | "system" | SettingsTab;
 
-/** The view tabs; the Settings tabs (`SETTINGS_TABS`) follow them under their own label. */
-const TABS: ReadonlyArray<{ tab: WindowTab; title: string }> = [
-  { tab: "usage", title: "Usage" },
-  { tab: "limits", title: "Limits" },
-  { tab: "system", title: "System" },
+/** A tab of the tab bar and the window tabs it shows: Layout shows one of its pages. */
+type BarTab = { title: string; pages: readonly WindowTab[] };
+
+/** The view tabs; the Settings tabs (`SETTINGS_GROUPS`) follow them under their own label. */
+const TABS: ReadonlyArray<BarTab> = [
+  { title: "Usage", pages: ["usage"] },
+  { title: "Limits", pages: ["limits"] },
+  { title: "System", pages: ["system"] },
 ];
 /** Every tab in the order the tab bar shows them and tab and shift+tab go through them. */
-const ALL_TABS: ReadonlyArray<{ tab: WindowTab; title: string }> = [...TABS, ...SETTINGS_TABS];
+const BAR_TABS: ReadonlyArray<BarTab> = [...TABS, ...SETTINGS_GROUPS];
 
 const WINDOW_TITLE = "OpenCode Quota";
 const SETTINGS_LABEL = "Settings";
@@ -190,6 +194,8 @@ export function createQuotaWindow(
 ): QuotaWindow {
   const [tab, setTab] = createSignal<WindowTab>();
   const [selected, setSelected] = createSignal("");
+  /** The page each tab of the tab bar showed last, by its title: Layout goes back to it. */
+  const lastPages = new Map<string, WindowTab>();
   const [notices, setNotices] = createSignal<NoticeReport>({ state: "loading" });
   const [status, setStatus] = createSignal<StatusReport>({ state: "loading" });
   let windowBox: BoxRenderable | undefined;
@@ -258,8 +264,20 @@ export function createQuotaWindow(
     }
   }
 
+  /** The tab bar's tab that shows `shown`. */
+  function barTabOf(shown: WindowTab | undefined): BarTab | undefined {
+    return BAR_TABS.find((item) => shown !== undefined && item.pages.includes(shown));
+  }
+
+  /** The page a tab of the tab bar opens on: the one it showed last, else its first. */
+  function pageOf(item: BarTab): WindowTab {
+    return lastPages.get(item.title) ?? item.pages[0];
+  }
+
   /** Each tab asks the server again when it shows: Limits a refresh, the others their data. */
   function showTab(next: WindowTab): void {
+    const item = barTabOf(next);
+    if (item) lastPages.set(item.title, next);
     settings.setTab(next);
     setTab(next);
     // A Settings line may have had the keyboard; it is gone with its tab.
@@ -333,7 +351,7 @@ export function createQuotaWindow(
       return;
     }
     if (tab() === undefined) focusBefore = api.renderer.currentFocusedRenderable;
-    showTab(next === "settings" ? "sidebar" : next);
+    showTab(next === "settings" ? pageOf(BAR_TABS[TABS.length]) : next);
     // The command leaves the message box focused; take the keyboard once it has settled.
     setTimeout(() => windowBox?.focus(), 50);
   }
@@ -352,8 +370,8 @@ export function createQuotaWindow(
   }
 
   function switchTab(delta: number): void {
-    const index = ALL_TABS.findIndex((item) => item.tab === (tab() ?? "usage"));
-    showTab(ALL_TABS[(index + delta + ALL_TABS.length) % ALL_TABS.length].tab);
+    const index = Math.max(0, BAR_TABS.indexOf(barTabOf(tab()) ?? BAR_TABS[0]));
+    showTab(pageOf(BAR_TABS[(index + delta + BAR_TABS.length) % BAR_TABS.length]));
   }
 
   /** ↑↓ select the next line; past the first or last one (or with none) they scroll. */
@@ -479,12 +497,9 @@ export function createQuotaWindow(
     const bodyWidth = () => width() - 2;
     const strip = () =>
       tabStrip(
-        ALL_TABS.map((item) => item.title),
+        BAR_TABS.map((item) => item.title),
         TABS.length,
-        Math.max(
-          0,
-          ALL_TABS.findIndex((item) => item.tab === tab()),
-        ),
+        Math.max(0, BAR_TABS.indexOf(barTabOf(tab()) ?? BAR_TABS[0])),
         width() - WINDOW_TITLE.length - TAB_GAP - CLOSE_WIDTH,
       );
     const label = (text: string) => (
@@ -507,7 +522,7 @@ export function createQuotaWindow(
       const { first, last, settingsLabel } = strip();
       const items: JSX.Element[] = [];
       for (let index = first; index <= last; index += 1) {
-        const item = ALL_TABS[index];
+        const item = BAR_TABS[index];
         if (index === TABS.length && index > first) {
           items.push(
             settingsLabel ? (
@@ -522,9 +537,9 @@ export function createQuotaWindow(
         items.push(
           <Choice
             label={item.title}
-            active={item.tab === tab()}
+            active={barTabOf(tab()) === item}
             theme={theme()}
-            run={settings.click(() => showTab(item.tab))}
+            run={settings.click(() => showTab(pageOf(item)))}
           />,
         );
       }
@@ -580,7 +595,7 @@ export function createQuotaWindow(
             {label(WINDOW_TITLE)}
             <Show when={strip().first > 0}>{arrow("‹", -1)}</Show>
             {stripItems()}
-            <Show when={strip().last < ALL_TABS.length - 1}>{arrow("›", 1)}</Show>
+            <Show when={strip().last < BAR_TABS.length - 1}>{arrow("›", 1)}</Show>
           </box>
           <text fg={theme().text.muted} selectable={false} onMouseUp={settings.click(close)}>
             esc
@@ -588,7 +603,7 @@ export function createQuotaWindow(
         </box>
         <Show when={settingsTab()}>
           {(shown: () => SettingsTab) => (
-            <settings.Header tab={shown()} refocus={() => windowBox?.focus()} />
+            <settings.Header tab={shown()} refocus={() => windowBox?.focus()} showPage={showTab} />
           )}
         </Show>
         <scrollbox
@@ -635,6 +650,7 @@ export function createQuotaWindow(
             {(shown: () => SettingsTab) => (
               <settings.Body
                 tab={shown()}
+                showPage={showTab}
                 host={host}
                 sessionID={props.sessionID}
                 box={() => windowBox}

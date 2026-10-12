@@ -13,7 +13,7 @@ One global file, `settings.jsonc`:
 
 There are no project settings. Comments and trailing commas are allowed. Every key is optional. A missing or invalid value uses its default. `/quota_status` shows the file it reads and any problems in it.
 
-Every quota setting lives here, with one section per Settings tab: `sidebar`, `collapsed`, `statusLine`, `toast`, `colors`, `layout`, `words`, `providers`, and `system`. In the TUI, `/quota_settings` edits the settings through the server. Save, or ctrl+s, writes them to this file and keeps its comments. While you edit, the sidebar, status line, toasts and quota window show saved values with your unsaved changes on top. Discard drops those changes. File edits and a Save from any TUI reach all open TUIs within a few seconds.
+Every quota setting lives here, in the sections `sidebar`, `collapsed`, `statusLine`, `toast`, `colors`, `layout`, `words`, `providers`, and `system`. In the TUI, `/quota_settings` edits them through the server. Its **Layout** tab has a page per place (Sidebar, Collapsed, Status line, Toast) and **All places** (`layout` and the What shows lines of `words`); **Colors**, **Words** and **Providers** edit their own sections, and the window's System tab the `system` switches. Save, or ctrl+s, writes them to this file and keeps its comments. While you edit, the sidebar, status line, toasts and quota window show saved values with your unsaved changes on top. Discard drops those changes. File edits and a Save from any TUI reach all open TUIs within a few seconds.
 
 Only the sidebar panel's open or collapsed state lives in OpenCode's plugin storage. Custom definitions, the Claude CLI path and the export path are file-only settings. The System tab (`/quota_status`) has the old command names, quota file and OpenTelemetry switches; they save as soon as you change them.
 
@@ -58,8 +58,8 @@ The `words` settings apply to the sidebar, status line, toasts, `/quota`, and te
 
 - Sidebar shows a bar per row and session tokens. Click its title to collapse it. `sidebar.names` holds row names by row id. The collapsed sidebar, status line and quota window's Limits tab use those names too.
 - Collapsed shows one line per provider. `collapsed.window` picks a window per provider id.
-- Status line shows under the message box when no sidebar panel with quota is on screen: the window is too narrow for the sidebar, the sidebar is closed, or `sidebar.show` is off. `statusLine.withSidebar: true` shows it next to the sidebar too. While its Settings tab is open, it shows whenever `statusLine.show` is on. It uses the room OpenCode's footer leaves free. `statusLine.window` picks its own window per provider. The `‹ ›` window picker on each tab changes only that tab's setting. Scroll with the mouse wheel or click `‹` and `+N ›` when providers do not fit.
-- Toasts appear after compaction, when every provider fails, and after a reply once a limit is getting low (below `colors.warningBelow`, 50% left by default), for 9 seconds by default. `toast.names` holds their row names. Renaming a row on Sidebar or Toast changes that tab's names only. Toasts appear only in the TUI.
+- Status line shows under the message box when no sidebar panel with quota is on screen: the window is too narrow for the sidebar, the sidebar is closed, or `sidebar.show` is off. `statusLine.withSidebar: true` shows it next to the sidebar too. While its Layout page is open, it shows whenever `statusLine.show` is on. It uses the room OpenCode's footer leaves free. `statusLine.window` picks its own window per provider. The `‹ ›` window picker on each page changes only that page's setting. Scroll with the mouse wheel or click `‹` and `+N ›` when providers do not fit.
+- Toasts appear after compaction, when every provider fails, and after a reply once a limit is getting low (below `colors.warningBelow`, 50% left by default), for 9 seconds by default. `toast.names` holds their row names. Renaming a row on Sidebar or Toast changes that page's names only. Toasts appear only in the TUI.
 
 `/quota`, `/quota_usage`, `/quota_status` and `/quota_settings` open the quota window on Limits, Usage, System and the first Settings tab. The 4.x and 5.x `/tokens_*` commands are other names for `/quota_usage` ranges until `system.oldCommands` is off; see [Updating](updating.md#moving-from-5x).
 
@@ -141,7 +141,7 @@ The global `opencode.json` keeps the normal OpenCode `provider` block:
 Credentials belong in OpenCode or environment variables, never in this file. See [API keys](providers.md#api-keys).
 
 <details>
-<summary>Settings by tab</summary>
+<summary>Settings by section</summary>
 
 ### Sidebar, Collapsed, Status line and Toast
 
@@ -194,6 +194,8 @@ Roles are `good`, `warning`, `low`, `empty`, `title`, `provider`, `account`, `la
 | `words.detail` | `"summary"` | `detailed` includes supplementary rows. |
 | `words.onlyCurrentModel` | `false` | Show providers serving the current model. |
 | `words.sessionTokens` | `"current"` | `tree` includes subagent sessions, each counted once. |
+
+In the TUI, the last three are on **Layout → All places**, since every place follows them.
 
 ### Providers
 

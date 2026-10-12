@@ -607,10 +607,11 @@ describe("v6 surfaces on the quota snapshot", () => {
         "Usage",
         "Limits",
         "System",
-        "│",
-        "Sidebar",
+        // Every tab and the Settings label fit in the 120 columns the window starts with.
+        "Settings",
+        "Layout",
+        "Colors",
         "Words",
-        // Every tab fits in the 120 columns the window starts with.
         "Providers",
         "esc",
         "Copilot  pro",
@@ -722,7 +723,8 @@ describe("v6 surfaces on the quota snapshot", () => {
   });
 
   describe("the quota window's Settings tabs", () => {
-    async function openSettings(tab: string) {
+    /** Opens Settings on `tab`, and on Layout on one of its pages ("Sidebar", "All places"). */
+    async function openSettings(tab: string, page?: string) {
       const tui = await startHosts();
       await tui.command("settings").run();
       const windowTree = () => tui.render("session.composer.top", { sessionID: "ses_1" });
@@ -734,6 +736,7 @@ describe("v6 surfaces on the quota snapshot", () => {
           ?.run();
       }
       clickable(windowTree(), tab).props.onMouseUp();
+      if (page) clickable(windowTree(), page).props.onMouseUp();
       await vi.waitFor(() => expect(words(windowTree())).not.toContain("Loading settings…"));
       return { tui, windowTree };
     }
@@ -812,7 +815,7 @@ describe("v6 surfaces on the quota snapshot", () => {
     });
 
     it("a hand edit updates the real sidebar, footer, toast and Limits tab over a draft", async () => {
-      const { tui, windowTree } = await openSettings("Sidebar");
+      const { tui, windowTree } = await openSettings("Layout", "Sidebar");
       try {
         const sidebar = () => words(tui.render("sidebar.content", { sessionID: "ses_1" }));
         await vi.waitFor(() => expect(sidebar()).toContain("Plan ██████░░ 81% left"));
@@ -882,7 +885,7 @@ describe("v6 surfaces on the quota snapshot", () => {
     });
 
     it("closes with unsaved changes only after Save or Discard", async () => {
-      const { tui, windowTree } = await openSettings("Layout");
+      const { tui, windowTree } = await openSettings("Layout", "All places");
       clickable(settingLine(windowTree(), "layout.barWidth"), "›").props.onMouseUp();
       clickable(windowTree(), "esc").props.onMouseUp();
       clickable(windowTree(), "esc").props.onMouseUp();
@@ -911,8 +914,39 @@ describe("v6 surfaces on the quota snapshot", () => {
       await tui.dispose();
     });
 
-    it("has no /quota form setting on the Layout tab", async () => {
+    it("walks Layout's pages with ←/→ on its first line, and goes back to the last page", async () => {
       const { tui, windowTree } = await openSettings("Layout");
+      // /quota_settings opens Layout on Sidebar, its page line lit.
+      expect(activeLabels(windowTree())).toEqual(expect.arrayContaining(["Layout", "Sidebar"]));
+      expect(findAll(windowTree(), (node) => node.props?.id === "quota-settings.pages")).toEqual([
+        expect.objectContaining({
+          props: expect.objectContaining({ backgroundColor: "action-bg" }),
+        }),
+      ]);
+      tui.press(11, "right");
+      expect(activeLabels(windowTree())).toContain("Collapsed");
+      tui.press(11, "left");
+      expect(activeLabels(windowTree())).toContain("Sidebar");
+      // From the first page, ← goes round to the last.
+      tui.press(11, "left");
+      expect(activeLabels(windowTree())).toContain("All places");
+
+      // All places has the What shows lines; Words keeps only numbers and reset times.
+      await vi.waitFor(() => expect(settingLine(windowTree(), "words.detail")).not.toEqual([]));
+      expect(settingLine(windowTree(), "layout.barWidth")).not.toEqual([]);
+      clickable(windowTree(), "Words").props.onMouseUp();
+      await vi.waitFor(() => expect(settingLine(windowTree(), "words.percent")).not.toEqual([]));
+      expect(settingLine(windowTree(), "words.detail")).toEqual([]);
+
+      // Back on Layout: the page shown last.
+      clickable(windowTree(), "Layout").props.onMouseUp();
+      expect(activeLabels(windowTree())).toContain("All places");
+      expect(words(windowTree())).toContain("Reset page");
+      await tui.dispose();
+    });
+
+    it("has no /quota form setting on the Layout tab", async () => {
+      const { tui, windowTree } = await openSettings("Layout", "All places");
       expect(words(windowTree())).not.toContain("/quota shows");
       expect(tui.stored.has("settings")).toBe(false);
       await tui.dispose();

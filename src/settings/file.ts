@@ -69,7 +69,7 @@ export type SaveResult = { ok: boolean; issues: SettingsIssue[]; diff: SettingsC
 export type SettingsWatch = { close(): void };
 
 const NEW_FILE_HEADER = [
-  "OpenCode Quota settings, one section per Settings tab. Every key is optional; a missing one uses its default.",
+  "OpenCode Quota settings, by section. Every key is optional; a missing one uses its default.",
   "Edit it by hand or ask your agent; OpenCode Quota keeps your comments when it saves.",
 ];
 
@@ -198,7 +198,7 @@ function convertedFileText(conversion: V5Conversion): string {
       ...conversion.sources.map((source) => `  ${source}`),
       ...conversion.notes,
       "The old file was left in place; OpenCode Quota no longer reads it.",
-      "All quota settings are in this file, one section per Settings tab.",
+      "All quota settings are in this file, by section.",
     ],
     conversion.values,
   );

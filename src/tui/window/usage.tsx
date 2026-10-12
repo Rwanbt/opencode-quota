@@ -202,7 +202,7 @@ export function Choice(props: {
  * a raised background, so a row of options reads apart from the tab bar's underlined tabs. On
  * the highlighted line (`lit`) the other options take its text color.
  */
-function Option(props: {
+export function Option(props: {
   label: string;
   active: boolean;
   lit?: boolean;

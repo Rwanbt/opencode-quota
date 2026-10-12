@@ -23,9 +23,11 @@ describe("the Settings tabs' lines", () => {
     }
   });
 
-  it("derives each field's tab from its first key and excludes System lines", () => {
+  it("derives each field's page from its first key, Words' What shows on All places, and excludes System lines", () => {
+    const allPlaces = ["words.detail", "words.onlyCurrentModel", "words.sessionTokens"];
     for (const item of FIELDS) {
-      expect(item.tab).toBe(item.path.split(".")[0]);
+      const page = allPlaces.includes(item.path) ? "layout" : item.path.split(".")[0];
+      expect([item.path, item.tab]).toEqual([item.path, page]);
       expect(item.path).not.toMatch(/^system\./);
     }
     expect(FIELDS.map((item) => item.path)).not.toContain("words.runsOut");

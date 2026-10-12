@@ -45,6 +45,7 @@ import { namedColor, roleColor } from "../theme.js";
 import { TOAST_TITLE, toastText } from "../toasts.js";
 import { draggedTo, movedBy, surfaceTree, type TreeProvider } from "./drag.js";
 import type { WindowHost, WindowTheme } from "./shell.js";
+import { Option } from "./usage.js";
 
 export const SETTINGS_TABS: ReadonlyArray<{
   tab: SettingsTab;
@@ -85,7 +86,7 @@ export const SETTINGS_TABS: ReadonlyArray<{
   },
   {
     tab: "layout",
-    title: "Layout",
+    title: "All places",
     watchesSidebar: true,
   },
   {
@@ -100,8 +101,34 @@ export const SETTINGS_TABS: ReadonlyArray<{
   },
 ];
 
+/**
+ * The Settings tabs of the window's tab bar, each with its pages: Layout has one per place and
+ * All places; the others are one page each.
+ */
+export const SETTINGS_GROUPS: ReadonlyArray<{ title: string; pages: readonly SettingsTab[] }> = [
+  { title: "Layout", pages: ["sidebar", "collapsed", "statusLine", "toast", "layout"] },
+  { title: "Colors", pages: ["colors"] },
+  { title: "Words", pages: ["words"] },
+  { title: "Providers", pages: ["providers"] },
+];
+
 export function isSettingsTab(tab: string | undefined): tab is SettingsTab {
   return SETTINGS_TABS.some((item) => item.tab === tab);
+}
+
+/** The pages of `tab`'s Settings tab when it has more than one, for the line under the tab bar. */
+function pagesOf(tab: SettingsTab): readonly SettingsTab[] | undefined {
+  const pages = SETTINGS_GROUPS.find((group) => group.pages.includes(tab))?.pages ?? [];
+  return pages.length > 1 ? pages : undefined;
+}
+
+function pageTitle(tab: SettingsTab): string {
+  return SETTINGS_TABS.find((item) => item.tab === tab)?.title ?? tab;
+}
+
+/** "Reset page" on Layout's pages, which reset only their own lines; "Reset tab" elsewhere. */
+function resetLabel(tab: SettingsTab): string {
+  return pagesOf(tab) ? "Reset page" : "Reset tab";
 }
 
 /** A line ↑↓ select: ‹ value › steps through values, value ▸ runs a button; some take typing. */
@@ -140,6 +167,8 @@ const KEYS = "Quota window";
 const TRANSPARENT = RGBA.fromInts(0, 0, 0, 0);
 /** The id of a surface tab's switch line. */
 const SWITCH_ID = "surface";
+/** The id of Layout's line of pages. */
+const PAGES_ID = "pages";
 const DOUBLE_CLICK_MS = 400;
 /** Where a line's value starts: past the 3 spaces, the 26-column title, its space and the "‹ ". */
 const VALUE_COLUMN = 32;
@@ -508,6 +537,7 @@ export function createSettingsEditor(api: WindowHost, display: DisplayStore) {
 
   function firstLine(settingsTab: SettingsTab | undefined): string {
     if (settingsTab === undefined) return "";
+    if (pagesOf(settingsTab)) return PAGES_ID;
     return isSurfaceTab(settingsTab) ? SWITCH_ID : (optionLines(settingsTab)[0]?.id ?? "");
   }
 
@@ -552,9 +582,17 @@ export function createSettingsEditor(api: WindowHost, display: DisplayStore) {
     api.ui.toast.show({ variant: "info", title: TOAST_TITLE, message, duration });
   }
 
-  /** The surface switch above a Settings tab's body, and a warning when the sidebar is hidden. */
-  function Header(props: { tab: SettingsTab; refocus: () => void }): JSX.Element {
+  /**
+   * Above a Settings tab's body: Layout's line of pages, the surface switch, and a warning when
+   * the sidebar is hidden. `showPage` shows another page.
+   */
+  function Header(props: {
+    tab: SettingsTab;
+    refocus: () => void;
+    showPage: (tab: SettingsTab) => void;
+  }): JSX.Element {
     const info = () => SETTINGS_TABS.find((item) => item.tab === props.tab) ?? SETTINGS_TABS[0];
+    const pagesLit = () => selected() === PAGES_ID;
     const surface = () => (isSurfaceTab(props.tab) ? props.tab : undefined);
     const surfaceOn = () => {
       const current = surface();
@@ -564,6 +602,31 @@ export function createSettingsEditor(api: WindowHost, display: DisplayStore) {
     const active = () => selected() === SWITCH_ID;
     return (
       <>
+        <Show when={pagesOf(props.tab)}>
+          {(pages: () => readonly SettingsTab[]) => (
+            <box
+              id={boxId(PAGES_ID)}
+              marginTop={1}
+              flexDirection="row"
+              flexShrink={0}
+              backgroundColor={pagesLit() ? theme().background.action.primary.focused : TRANSPARENT}
+              onMouseDown={() => setSelected(PAGES_ID)}
+            >
+              <Cell>{"  "}</Cell>
+              <For each={pages()}>
+                {(page: SettingsTab) => (
+                  <Option
+                    label={pageTitle(page)}
+                    active={page === props.tab}
+                    lit={pagesLit()}
+                    theme={theme()}
+                    run={click(() => props.showPage(page))}
+                  />
+                )}
+              </For>
+            </box>
+          )}
+        </Show>
         <Show when={surface()}>
           {(current: () => Surface) => (
             <box
@@ -608,9 +671,13 @@ export function createSettingsEditor(api: WindowHost, display: DisplayStore) {
     );
   }
 
-  /** A Settings tab's lines: its options, then the surface's providers (and rows) as a tree. */
+  /**
+   * A Settings tab's lines: its options, then the surface's providers (and rows) as a tree.
+   * `showPage` shows another of Layout's pages.
+   */
   function Body(props: {
     tab: SettingsTab;
+    showPage: (tab: SettingsTab) => void;
     host: SurfaceHost;
     sessionID: string;
     box: () => BoxRenderable | undefined;
@@ -650,6 +717,7 @@ export function createSettingsEditor(api: WindowHost, display: DisplayStore) {
     /** ↑↓ select the next line; past the first or last one they scroll. */
     function select(delta: number): void {
       const ids = [
+        ...(pagesOf(props.tab) ? [PAGES_ID] : []),
         ...(surface() ? [SWITCH_ID] : []),
         ...options().map((line) => line.id),
         ...lines().map((line) => lineKey(line.id)),
@@ -744,12 +812,19 @@ export function createSettingsEditor(api: WindowHost, display: DisplayStore) {
       stopTyping();
     }
 
-    /** Space or enter: flip a switch, run a button, next value, or show/hide a tree line. */
+    /** ←/→ on Layout's line of pages: the page before or after this one. */
+    function stepPage(delta: number): void {
+      const pages = pagesOf(props.tab);
+      if (pages) props.showPage(stepIn(pages, props.tab, delta));
+    }
+
+    /** Space or enter: next page, flip a switch, run a button, next value, or show/hide a line. */
     function activate(): void {
       const current = surface();
       const option = selectedOption();
       const line = selectedLine();
-      if (selected() === SWITCH_ID && current) toggleSurface(current);
+      if (selected() === PAGES_ID) stepPage(1);
+      else if (selected() === SWITCH_ID && current) toggleSurface(current);
       else if (option) useOption(option);
       else if (line) toggleHidden(line.id);
     }
@@ -764,7 +839,8 @@ export function createSettingsEditor(api: WindowHost, display: DisplayStore) {
     function sideways(delta: number): void {
       const option = selectedOption();
       const line = selectedLine();
-      if (option) option.cycle?.(delta);
+      if (selected() === PAGES_ID) stepPage(delta);
+      else if (option) option.cycle?.(delta);
       else if (line && !line.row) cycleWindow(line.providerId, delta);
     }
 
@@ -821,7 +897,7 @@ export function createSettingsEditor(api: WindowHost, display: DisplayStore) {
         { bind: "right", title: "Next value", group: KEYS, run: () => sideways(1) },
         {
           bind: "ctrl+r",
-          title: "Reset this tab",
+          title: "Reset this tab or page",
           group: KEYS,
           run: () => resetTabLines(props.tab),
         },
@@ -1098,7 +1174,7 @@ export function createSettingsEditor(api: WindowHost, display: DisplayStore) {
           </Show>
           <Show when={settingsTab()}>
             {(current: () => SettingsTab) => (
-              <Button label="Reset tab" run={() => resetTabLines(current())} />
+              <Button label={resetLabel(current())} run={() => resetTabLines(current())} />
             )}
           </Show>
           <Show when={settingsTab() === "toast" && shown().surfaces.toast.enabled}>
@@ -1183,8 +1259,10 @@ export function createSettingsEditor(api: WindowHost, display: DisplayStore) {
       if (!hasKeyboard) return undefined;
       if (confirming()) return "ctrl+s save · d discard the changes · esc keep editing";
       if (!isSettingsTab(windowTab)) return undefined;
-      const end = "↑↓ select · tab next tab · ctrl+s save · ctrl+r reset tab · esc close";
-      if (windowTab === "words") return `‹ › or ←/→ change · ${end}`;
+      const reset = `ctrl+r ${resetLabel(windowTab).toLowerCase()}`;
+      const end = `↑↓ select · tab next tab · ctrl+s save · ${reset} · esc close`;
+      if (selected() === PAGES_ID) return `←/→ or click another page · ${end}`;
+      if (windowTab === "words" || windowTab === "layout") return `‹ › or ←/→ change · ${end}`;
       if (windowTab === "providers") {
         return `‹ › or ←/→ change · space ticks a provider or flips a switch · double-click a number (or e) to type it · ${end}`;
       }
