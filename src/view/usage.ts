@@ -7,7 +7,8 @@
  * Sections, top to bottom: the total, the providers as a small table, a daily chart (beside
  * the total and the providers when it gets 32 columns there, as tall as they are), totals by
  * token kind, cost (or tokens) by type, and the breakdown by model or by day. In the TUI the
- * chart fills its width, the "by type" bar is a thin line across the view and each breakdown row
+ * chart fills its width with each day split by provider in the providers' colors, the "by type"
+ * bar is a thin line across the view and each breakdown row
  * has a bar of its amount. `modelDetailView` lays out one model of the breakdown. Every line
  * fits in `width` terminal columns.
  */
@@ -38,9 +39,10 @@ type UsagePart = "input" | "cacheRead" | "cacheWrite" | "output";
  * - `title` the big total, `heading` a section name, `text` names, `value` the numbers that
  *   matter, `muted` labels, notes, padding and the chart's baseline, `warning` the share of
  *   tokens without a price;
- * - `bar` the daily chart's columns;
+ * - `bar` the part of a daily chart column that no provider's models account for;
  * - `provider:<n>` the provider's place in `report.providers` (most cost first), on its list
- *   line and on its models, so a provider keeps one color across the view;
+ *   line, on its models and on its part of each chart column, so a provider keeps one color
+ *   across the view;
  * - `part:<kind>` one part of the "by type" bar and its legend mark.
  */
 export type UsageRole =
@@ -54,7 +56,11 @@ export type UsageRole =
   | `provider:${number}`
   | `part:${UsagePart}`;
 
-type UsageSpan = { text: string; role: UsageRole };
+/**
+ * `back` colors the rest of a chart cell above its block: where one provider's part of a column
+ * ends inside a cell, the block is that provider's and the space above it the next one's.
+ */
+type UsageSpan = { text: string; role: UsageRole; back?: UsageRole };
 export type UsageLine = UsageSpan[];
 
 /**
@@ -141,7 +147,7 @@ function clip(line: UsageLine, width: number): UsageLine {
   let room = width;
   for (const part of line) {
     const text = sliceColumns(part.text, Math.max(0, room));
-    if (text) clipped.push(span(text, part.role));
+    if (text) clipped.push({ ...part, text });
     room -= columnsOf(text);
   }
   return clipped;
@@ -312,14 +318,15 @@ function dateAxis(
   return padEndColumns(axis, lastAt) + last;
 }
 
-/** One day of a chart: its cost or its tokens. */
-type ChartDay = { date: string; amount: number };
+/**
+ * One day of a chart: its cost or its tokens, and each provider's part of it by its place in
+ * `report.providers`.
+ */
+type ChartDay = { date: string; amount: number; parts: number[] };
 
-type ChartColumns = {
-  columns: { first: string; last: string; amount: number }[];
-  daysPerColumn: number;
-  max: number;
-};
+type ChartColumn = { first: string; last: string; amount: number; parts: number[] };
+
+type ChartColumns = { columns: ChartColumn[]; daysPerColumn: number; max: number };
 
 /**
  * `days` in at most `plotWidth` columns: one day per column, or the same number of days per
@@ -327,31 +334,96 @@ type ChartColumns = {
  */
 function chartColumns(days: ChartDay[], plotWidth: number): ChartColumns {
   const daysPerColumn = Math.ceil(days.length / Math.max(1, plotWidth));
-  const columns: ChartColumns["columns"] = [];
+  const columns: ChartColumn[] = [];
   for (let index = 0; index < days.length; index += daysPerColumn) {
     const group = days.slice(index, index + daysPerColumn);
     columns.push({
       first: group[0].date,
       last: group[group.length - 1].date,
       amount: group.reduce((sum, day) => sum + day.amount, 0),
+      parts: group[0].parts.map((_, part) => group.reduce((sum, day) => sum + day.parts[part], 0)),
     });
   }
   return { columns, daysPerColumn, max: Math.max(...columns.map((column) => column.amount)) };
 }
 
-/** The report's days with the mode's amount: all of them, or one model's (0 on its other days). */
+/**
+ * The report's days with the mode's amount: all of them, or one model's (0 on its other days),
+ * each split by provider from the models' days.
+ */
 function chartDays(report: UsageReport, mode: UsageMode, model?: UsageModelRow): ChartDay[] {
   const amountOf = (row: { costUsd: number; tokens: number }) =>
     mode === "cost" ? row.costUsd : row.tokens;
-  if (!model) return report.days.map((day) => ({ date: day.date, amount: amountOf(day) }));
-  const modelDays = new Map(model.days.map((day) => [day.date, amountOf(day)]));
-  return report.days.map((day) => ({ date: day.date, amount: modelDays.get(day.date) ?? 0 }));
+  const parts = new Map(report.days.map((day) => [day.date, report.providers.map(() => 0)]));
+  for (const row of model ? [model] : report.models) {
+    const provider = report.providers.findIndex((item) => item.providerID === row.providerID);
+    if (provider < 0) continue;
+    for (const day of row.days) {
+      const dayParts = parts.get(day.date);
+      if (dayParts) dayParts[provider] += amountOf(day);
+    }
+  }
+  const modelDays = new Map(model?.days.map((day) => [day.date, amountOf(day)]));
+  return report.days.map((day) => ({
+    date: day.date,
+    amount: model ? (modelDays.get(day.date) ?? 0) : amountOf(day),
+    parts: parts.get(day.date) ?? [],
+  }));
+}
+
+/** A chart column from the bottom: each provider's part, then the rest, in eighths of a row. */
+type ChartStack = { height: number; segments: { role: UsageRole; top: number }[] };
+
+/** `column` as a stack `height` eighths tall, its parts in proportion to their amounts. */
+function chartStack(column: ChartColumn, height: number): ChartStack {
+  const known = column.parts.reduce((sum, part) => sum + part, 0);
+  const amounts = [...column.parts, Math.max(0, column.amount - known)];
+  const total = known + amounts[amounts.length - 1];
+  let below = 0;
+  const segments = amounts.map((amount, index) => {
+    below += amount;
+    const role: UsageRole = index < column.parts.length ? `provider:${index}` : "bar";
+    const top = index === amounts.length - 1 ? height : Math.round((below / total) * height);
+    return { role, top: Math.min(height, top) };
+  });
+  return { height, segments };
+}
+
+/**
+ * The cell of `stack` that starts `bottom` eighths up. A cell has two colors: a block where one
+ * part ends inside a full cell is that part's color with the next part's above it. Where the
+ * column ends inside the cell, the part with the most of the cell colors its block.
+ */
+function chartCell(stack: ChartStack, bottom: number): UsageSpan {
+  const fill = Math.min(8, Math.max(0, stack.height - bottom));
+  if (fill === 0) return span(" ", "muted");
+  const inCell: { role: UsageRole; size: number }[] = [];
+  stack.segments.forEach((segment, index) => {
+    const start = Math.max(index === 0 ? 0 : stack.segments[index - 1].top, bottom);
+    const size = Math.min(segment.top, bottom + fill) - start;
+    if (size > 0) inCell.push({ role: segment.role, size });
+  });
+  const lower = inCell[0];
+  if (inCell.length === 1) return span(BLOCKS[fill - 1], lower.role);
+  if (fill < 8) {
+    const most = inCell.reduce((largest, part) => (part.size > largest.size ? part : largest));
+    return span(BLOCKS[fill - 1], most.role);
+  }
+  return { text: BLOCKS[lower.size - 1], role: lower.role, back: inCell[inCell.length - 1].role };
+}
+
+/** Adds `part` to `line`, joined with the last span when both color the same way. */
+function pushSpan(line: UsageLine, part: UsageSpan): void {
+  const last = line[line.length - 1];
+  if (last && last.role === part.role && last.back === part.back) last.text += part.text;
+  else line.push(part);
 }
 
 /**
  * The daily chart: a title, `rows` rows of block characters (one column per day, or per few
  * days when the days do not fit) with the top value on the left, a baseline with 0, and a date
- * axis. Columns of 3 cells or more keep their last cell empty, so the days stand apart.
+ * axis. Each column stacks its providers, the first (most cost) at the bottom, in their colors.
+ * Columns of 3 cells or more keep their last cell empty, so the days stand apart.
  * Nothing when the range has fewer than two days or nothing to draw.
  */
 function chartLines(
@@ -379,9 +451,12 @@ function chartLines(
   // Column `index` covers [columnStart(index), columnStart(index + 1)): widths differ by one at most.
   const columnStart = (index: number) => Math.floor((index * chartWidth) / columns.length);
   const gap = Math.floor(chartWidth / columns.length) >= CHART_GAP_FROM;
-  // Each column's height in eighths of a row; a day above 0 always shows.
-  const eighths = columns.map((column) =>
-    column.amount <= 0 ? 0 : Math.max(1, Math.round((column.amount / max) * rows * 8)),
+  // Each column's height in eighths of a row (a day above 0 always shows), split by provider.
+  const stacks = columns.map((column) =>
+    chartStack(
+      column,
+      column.amount <= 0 ? 0 : Math.max(1, Math.round((column.amount / max) * rows * 8)),
+    ),
   );
 
   const [daily, amount] = mode === "cost" ? ["Daily cost", "Cost"] : ["Daily tokens", "Tokens"];
@@ -389,17 +464,15 @@ function chartLines(
   const lines: UsageLine[] = [[span(title, "heading")]];
   for (let row = 0; row < rows; row += 1) {
     const below = (rows - 1 - row) * 8;
-    const cells = columns.map((_, index) => {
-      const fill = Math.min(8, Math.max(0, eighths[index] - below));
-      const cell = fill === 0 ? " " : BLOCKS[fill - 1];
-      const width = columnStart(index + 1) - columnStart(index);
-      return gap ? `${cell.repeat(width - 1)} ` : cell.repeat(width);
-    });
     const label = row === 0 ? formatAmount(max) : "";
-    lines.push([
-      span(`${padStartColumns(label, labelWidth)} `, "muted"),
-      span(cells.join(""), "bar"),
-    ]);
+    const cells: UsageLine = [];
+    stacks.forEach((stack, index) => {
+      const cell = chartCell(stack, below);
+      const width = columnStart(index + 1) - columnStart(index);
+      pushSpan(cells, { ...cell, text: cell.text.repeat(gap ? width - 1 : width) });
+      if (gap) pushSpan(cells, span(" ", "muted"));
+    });
+    lines.push([span(`${padStartColumns(label, labelWidth)} `, "muted"), ...cells]);
   }
   lines.push([
     span(`${padStartColumns("0", labelWidth)} `, "muted"),

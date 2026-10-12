@@ -256,14 +256,14 @@ describe("quota window: tab bar", () => {
 });
 
 describe("quota window: Usage top line", () => {
-  // Every range: 118 columns. The ‹ range › stepper: 42. "Updating prices…" and its gaps: 20.
+  // Every range: 118 columns. The ‹ range › stepper: 38. "Updating prices…" and its gaps: 18.
   it.each([
-    { width: 138, expected: { allRanges: true, prices: true } },
-    { width: 137, expected: { allRanges: true, prices: false } },
+    { width: 136, expected: { allRanges: true, prices: true } },
+    { width: 135, expected: { allRanges: true, prices: false } },
     { width: 118, expected: { allRanges: true, prices: false } },
     { width: 117, expected: { allRanges: false, prices: true } },
-    { width: 62, expected: { allRanges: false, prices: true } },
-    { width: 61, expected: { allRanges: false, prices: false } },
+    { width: 56, expected: { allRanges: false, prices: true } },
+    { width: 55, expected: { allRanges: false, prices: false } },
   ])("at $width columns: $expected", ({ width, expected }) => {
     expect(usageControls(width)).toEqual(expected);
   });

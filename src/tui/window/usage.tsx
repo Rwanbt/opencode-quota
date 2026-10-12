@@ -58,21 +58,22 @@ const DIALOG_WIDTH = 88;
 const CLOSE_LABEL_ROOM = " esc".length;
 const KEYS = "Usage";
 const MODEL_ROW_ID = "quota-usage-model-";
-/** Between the choices of the top line, as the tab bar. */
-const CHOICE_GAP = 2;
-const MODES_WIDTH = "Cost".length + CHOICE_GAP + "Tokens".length;
-/** "│" and the gaps around it. */
-const SEPARATOR_WIDTH = 1 + 2 * CHOICE_GAP;
-const RANGES_WIDTH =
-  USAGE_RANGES.reduce((sum, item) => sum + item.label.length, 0) +
-  CHOICE_GAP * (USAGE_RANGES.length - 1);
+/** An option's two spaces around its label, inside its raised background. */
+const OPTION_PAD = 2;
+const TRANSPARENT = RGBA.fromInts(0, 0, 0, 0);
+const MODES_WIDTH = "Cost".length + "Tokens".length + 2 * OPTION_PAD;
+/** "│" between the modes and the ranges; the options' spaces keep it apart from them. */
+const SEPARATOR_WIDTH = "│".length;
+const RANGES_WIDTH = USAGE_RANGES.reduce((sum, item) => sum + item.label.length + OPTION_PAD, 0);
 /** "‹ Session + subagents ›", the longest label: the stepper fits with any range. */
 const RANGE_LABEL_WIDTH = Math.max(...USAGE_RANGES.map((item) => item.label.length));
-const STEPPER_WIDTH = 2 * (1 + CHOICE_GAP) + RANGE_LABEL_WIDTH;
+const STEPPER_WIDTH = "‹›".length + OPTION_PAD + RANGE_LABEL_WIDTH;
 const PRICES_LABEL = "Update prices";
 const PRICES_BUSY_LABEL = "Updating prices…";
+/** On each side of the spacer that pushes "Update prices" to the right. */
+const PRICES_GAP = 1;
 /** The gaps around the spacer before the label, and its longer text. */
-const PRICES_WIDTH = 2 * CHOICE_GAP + PRICES_BUSY_LABEL.length;
+const PRICES_WIDTH = 2 * PRICES_GAP + PRICES_BUSY_LABEL.length;
 
 /** How each "by type" part is shaded, from the muted color (0) to the text color (1). */
 const PART_SHADES: Record<string, number> = {
@@ -136,7 +137,10 @@ function roleColor(theme: UsageTheme, role: UsageRole): RGBA {
   }
 }
 
-/** One view line as one text, each span in its role's color; title and headings bold. */
+/**
+ * One view line as one text, each span in its role's color on its `back` role's color (a chart
+ * cell shared by two providers); title and headings bold.
+ */
 function UsageLineText(props: {
   line: UsageLine;
   theme: UsageTheme;
@@ -154,7 +158,9 @@ function UsageLineText(props: {
             fg: props.selected
               ? theme().text.action.primary.focused
               : roleColor(theme(), part.role),
-            bg: props.selected ? theme().background.action.primary.focused : undefined,
+            bg: props.selected
+              ? theme().background.action.primary.focused
+              : part.back && roleColor(theme(), part.back),
             attributes:
               part.role === "title" || part.role === "heading" ? TextAttributes.BOLD : undefined,
           }}
@@ -166,7 +172,7 @@ function UsageLineText(props: {
   );
 }
 
-/** A choice in a row of choices (a tab, a range): bold and underlined when it is the current one. */
+/** A tab of the window's tab bar: bold and underlined when it is the current one. */
 export function Choice(props: {
   label: string;
   active: boolean;
@@ -185,6 +191,36 @@ export function Choice(props: {
     >
       {props.label}
     </text>
+  );
+}
+
+/**
+ * An option inside the Usage tab (cost or tokens, a range, model or day): the current one bold on
+ * a raised background, so a row of options reads apart from the tab bar's underlined tabs.
+ */
+function Option(props: {
+  label: string;
+  active: boolean;
+  theme: UsageTheme;
+  run: () => void;
+}): JSX.Element {
+  return (
+    <box
+      paddingLeft={OPTION_PAD / 2}
+      paddingRight={OPTION_PAD / 2}
+      flexShrink={0}
+      backgroundColor={props.active ? props.theme.background.raised.high : TRANSPARENT}
+      onMouseUp={props.run}
+    >
+      <text
+        fg={props.active ? props.theme.text.action.primary.selected : props.theme.text.muted}
+        attributes={props.active ? TextAttributes.BOLD : TextAttributes.NONE}
+        wrapMode="none"
+        selectable={false}
+      >
+        {props.label}
+      </text>
+    </box>
   );
 }
 
@@ -497,58 +533,60 @@ export function createUsageTab(
 
     return (
       <box flexDirection="column" flexShrink={0} width={props.width}>
-        <box flexDirection="row" columnGap={CHOICE_GAP}>
-          <Choice
-            label="Cost"
-            active={mode() === "cost"}
-            theme={theme()}
-            run={() => chooseMode("cost")}
-          />
-          <Choice
-            label="Tokens"
-            active={mode() === "tokens"}
-            theme={theme()}
-            run={() => chooseMode("tokens")}
-          />
-          <text fg={theme().text.muted} selectable={false}>
-            │
-          </text>
-          <Show
-            when={controls().allRanges}
-            fallback={
-              <>
-                <text
-                  fg={theme().text.action.primary.selected}
-                  selectable={false}
-                  onMouseUp={() => stepRange(-1)}
-                >
-                  ‹
-                </text>
-                <Choice
-                  label={usageRangeLabel(range())}
-                  active
+        <box flexDirection="row" columnGap={PRICES_GAP}>
+          <box flexDirection="row" flexShrink={0}>
+            <Option
+              label="Cost"
+              active={mode() === "cost"}
+              theme={theme()}
+              run={() => chooseMode("cost")}
+            />
+            <Option
+              label="Tokens"
+              active={mode() === "tokens"}
+              theme={theme()}
+              run={() => chooseMode("tokens")}
+            />
+            <text fg={theme().text.muted} selectable={false}>
+              │
+            </text>
+            <Show
+              when={controls().allRanges}
+              fallback={
+                <>
+                  <text
+                    fg={theme().text.action.primary.selected}
+                    selectable={false}
+                    onMouseUp={() => stepRange(-1)}
+                  >
+                    ‹
+                  </text>
+                  <Option
+                    label={usageRangeLabel(range())}
+                    active
+                    theme={theme()}
+                    run={() => stepRange(1)}
+                  />
+                  <text
+                    fg={theme().text.action.primary.selected}
+                    selectable={false}
+                    onMouseUp={() => stepRange(1)}
+                  >
+                    ›
+                  </text>
+                </>
+              }
+            >
+              {USAGE_RANGES.map((item) => (
+                <Option
+                  label={item.label}
+                  active={item.range === range()}
                   theme={theme()}
-                  run={() => stepRange(1)}
+                  run={() => chooseRange(item.range)}
                 />
-                <text
-                  fg={theme().text.action.primary.selected}
-                  selectable={false}
-                  onMouseUp={() => stepRange(1)}
-                >
-                  ›
-                </text>
-              </>
-            }
-          >
-            {USAGE_RANGES.map((item) => (
-              <Choice
-                label={item.label}
-                active={item.range === range()}
-                theme={theme()}
-                run={() => chooseRange(item.range)}
-              />
-            ))}
-          </Show>
+              ))}
+            </Show>
+          </box>
           <Show when={controls().prices}>
             <box flexGrow={1} />
             <text
@@ -592,20 +630,22 @@ export function createUsageTab(
             const model = index - firstModelLine();
             if (line.length === 1 && line[0].role === "heading" && line[0].text === "Breakdown") {
               return (
-                <box flexDirection="row" columnGap={2}>
+                <box flexDirection="row" columnGap={1}>
                   <UsageLineText line={line} theme={theme()} />
-                  <Choice
-                    label="Model"
-                    active={breakdown() === "model"}
-                    theme={theme()}
-                    run={() => setBreakdown("model")}
-                  />
-                  <Choice
-                    label="Day"
-                    active={breakdown() === "day"}
-                    theme={theme()}
-                    run={() => setBreakdown("day")}
-                  />
+                  <box flexDirection="row" flexShrink={0}>
+                    <Option
+                      label="Model"
+                      active={breakdown() === "model"}
+                      theme={theme()}
+                      run={() => setBreakdown("model")}
+                    />
+                    <Option
+                      label="Day"
+                      active={breakdown() === "day"}
+                      theme={theme()}
+                      run={() => setBreakdown("day")}
+                    />
+                  </box>
                 </box>
               );
             }

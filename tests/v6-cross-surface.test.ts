@@ -1169,7 +1169,7 @@ describe("v6 surfaces on the quota snapshot", () => {
     };
 
     await tui.command("usage").run();
-    textNode(usageTab(), "Last 30 days")?.props.onMouseUp();
+    clickable(usageTab(), "Last 30 days").props.onMouseUp();
     await vi.waitFor(() =>
       expect(words(usageTab())).toContainEqual(expect.stringMatching(/ 2 sessions · /u)),
     );
@@ -1189,7 +1189,7 @@ describe("v6 surfaces on the quota snapshot", () => {
     await tui.command("usage").run();
     await vi.waitFor(() => expect(words(usageTab())).toContain("Breakdown"));
 
-    textNode(usageTab(), "Between")?.props.onMouseUp();
+    clickable(usageTab(), "Between").props.onMouseUp();
     const [from, to] = fakeInputs([localDate(-12), localDate(-14)]);
     for (const [index, node] of findAll(usageTab(), (item) => item.type === "input").entries()) {
       node.props.ref([from, to][index]);

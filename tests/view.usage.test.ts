@@ -392,18 +392,20 @@ describe("usageView", () => {
   it("draws a daily chart: top value, 0, one column per day, first/middle/last dates", () => {
     const lines = t3From("Daily cost", { width: 64 });
     const rows = lines.slice(1, 7);
-    expect(rows.map((row) => row.map((part) => part.role))).toEqual(
-      Array.from({ length: 6 }, () => ["muted", "bar"]),
-    );
-    expect(rows[0][0].text).toBe("$1,232.63 ");
+    const bars = (row: UsageLine) => textOf(row.slice(1));
+    // The report's models have no days, so no provider claims a part: the blocks are plain bar.
+    for (const part of rows.flatMap((row) => row.slice(1))) {
+      expect(part.role === "bar" || (part.role === "muted" && !part.text.trim())).toBe(true);
+    }
+    expect(rows[0][0]).toEqual({ text: "$1,232.63 ", role: "muted" });
     expect(rows.slice(1).map((row) => row[0].text.trim())).toEqual(["", "", "", "", ""]);
     // Only the Sep 26 spike reaches the top row; Sep 11 and Sep 15 cost nothing, so no block.
-    expect(rows[0][1].text.trim()).toMatch(/^█+$/);
-    expect(rows[5][1].text).toMatch(/^ +▁+ +▁/);
+    expect(bars(rows[0]).trim()).toMatch(/^█+$/);
+    expect(bars(rows[5])).toMatch(/^ +▁+ +▁/);
     // 0 sits on its own baseline under the bars, as wide as the bars.
     expect(lines[7]).toEqual([
       { text: "        0 ", role: "muted" },
-      { text: "─".repeat(rows[5][1].text.length), role: "muted" },
+      { text: "─".repeat(bars(rows[5]).length), role: "muted" },
     ]);
     expect(textOf(lines[8]).trim()).toMatch(/^Sep 11 +Sep 26 +Oct 10$/);
   });
@@ -416,9 +418,60 @@ describe("usageView", () => {
       [1, 100],
     ]);
     const lines = from(usageView(report, { mode: "cost", breakdown: "model", width: 40 }), "Daily");
-    const top = lines[1][1].text;
+    const top = textOf(lines[1].slice(1));
     expect(top).toMatch(/^(█+ )+$/u);
     expect(top.split(" ").filter(Boolean)).toHaveLength(4);
+  });
+
+  it("stacks each day by provider in the providers' colors, the first at the bottom", () => {
+    const report = buildReport({
+      sessions: 1,
+      providers: [
+        ["anthropic", 1, 4, 400],
+        ["openai", 1, 2, 200],
+      ],
+      models: [
+        ["anthropic", "claude-test", 4, 400],
+        ["openai", "gpt-test", 2, 200],
+      ],
+      days: [
+        [4, 400],
+        [2, 200],
+      ],
+      tokens: { cachedInput: 0, uncachedInput: 600, output: 0 },
+      costByType: { input: 6, cacheRead: 0, cacheWrite: 0, output: 0 },
+      cacheSavingsUsd: 0,
+    });
+    const [first, second] = report.days.map((day) => day.date);
+    report.models[0].days = [
+      { date: first, costUsd: 3, tokens: 300 },
+      { date: second, costUsd: 1, tokens: 100 },
+    ];
+    report.models[1].days = [
+      { date: first, costUsd: 1, tokens: 100 },
+      { date: second, costUsd: 1, tokens: 100 },
+    ];
+    // 6 rows of 8 eighths: Anthropic fills 36 of the first day's 48 and 12 of the second's 24.
+    const lines = from(usageView(report, { mode: "cost", breakdown: "model", width: 40 }), "Daily");
+    const blocks = (line: UsageLine) =>
+      line
+        .slice(1)
+        .filter((part) => part.text.trim())
+        .map((part) => ({ ...part, text: part.text.trim() }));
+    const full = "█".repeat(15);
+    expect(blocks(lines[1])).toEqual([{ text: full, role: "provider:1" }]);
+    // A cell that both share: Anthropic's block, OpenAI's color above it.
+    expect(blocks(lines[2])).toEqual([
+      { text: "▄".repeat(15), role: "provider:0", back: "provider:1" },
+    ]);
+    expect(blocks(lines[5])).toEqual([
+      { text: full, role: "provider:0" },
+      { text: "▄".repeat(15), role: "provider:0", back: "provider:1" },
+    ]);
+    expect(blocks(lines[6])).toEqual([
+      { text: full, role: "provider:0" },
+      { text: full, role: "provider:0" },
+    ]);
   });
 
   it("puts the chart beside the list as tall as the list, at least 6 rows", () => {
@@ -740,7 +793,11 @@ describe("modelDetailView", () => {
     // Cache hit: cache reads ÷ all input tokens (input, cache reads and cache writes).
     expect(cells(lines[4])).toEqual(["$4,410.41", "12.5B", "$0.35", "97.7%"]);
     const chart = from(lines, "Daily cost");
-    expect(chart.slice(1, 6).map((row) => row[1].role)).toEqual(Array(5).fill("bar"));
+    // The model's days are its provider's part, so its chart is in its provider's color.
+    const blocks = chart
+      .slice(1, 6)
+      .flatMap((row) => row.slice(1).filter((part) => part.text.trim()));
+    expect(new Set(blocks.map((part) => part.role))).toEqual(new Set(["provider:0"]));
     expect(textOf(chart[7]).trim()).toMatch(/^Sep 11 +Sep 26 +Oct 10$/);
     const byType = from(lines, "Cost by type");
     expect(textOf(byType[0])).toMatch(/^Cost by type +Tokens by type$/);
