@@ -30,6 +30,11 @@ export type SurfaceEditing = {
   panelOpen(): boolean | undefined;
   /** A sidebar panel is on screen until the returned function runs. */
   sidebarShown(): () => void;
+  /**
+   * The status line shows: it is on, and its tab is open, it shows next to the sidebar, or no
+   * sidebar panel with quota is on screen.
+   */
+  statusLineShown(): boolean;
 };
 
 /** What every always-on surface reads. */

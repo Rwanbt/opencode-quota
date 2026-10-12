@@ -49,6 +49,7 @@ const EXPECTED = {
   },
   statusLine: {
     show: true,
+    withSidebar: false,
     runsOut: false,
     hidden: [],
     providerOrder: [],

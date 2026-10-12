@@ -282,7 +282,7 @@ const plugin = Plugin.define({
       append: "prompt.footer",
       // Home has a message box too; Home's status line sits in its own footer instead.
       render: (props) => (
-        <Show when={props.sessionID && display.shown().surfaces.statusLine.enabled}>
+        <Show when={props.sessionID && settings.statusLineShown()}>
           <StatusLine host={host} sessionID={props.sessionID} />
         </Show>
       ),

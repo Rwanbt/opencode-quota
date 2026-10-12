@@ -68,6 +68,8 @@ export const SETTINGS_SCHEMA = {
   "collapsed.rowOrder": { kind: "rowOrder", default: {} },
   "collapsed.window": { kind: "window", default: {} },
   "statusLine.show": bool(true),
+  /** Also while a sidebar panel shows quota; else only when none is on screen. */
+  "statusLine.withSidebar": bool(false),
   "statusLine.runsOut": bool(false),
   "statusLine.hidden": { kind: "strings", default: [] },
   "statusLine.providerOrder": { kind: "strings", default: [] },

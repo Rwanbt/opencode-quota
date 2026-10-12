@@ -400,11 +400,14 @@ function mapV5Values(values: ReadonlyMap<string, unknown>): {
     const promptBar = chosen("tuiPromptBar.enabled", false);
     const sessionPrompt = chosen("tuiCompactStatus.sessionPrompt", true);
     server["statusLine.show"] = promptBar || (compact && sessionPrompt);
+    // v5 showed its status line next to the sidebar panel.
+    if (server["statusLine.show"]) server["statusLine.withSidebar"] = true;
     server["statusLine.home"] = compact && chosen("tuiCompactStatus.homeBottom", true);
     if (promptBar) server["statusLine.detail"] = "one";
     for (const key of statusKeys) {
       for (const to of [
         "statusLine.show",
+        ...(server["statusLine.show"] ? ["statusLine.withSidebar"] : []),
         "statusLine.home",
         ...(promptBar ? ["statusLine.detail"] : []),
       ]) {

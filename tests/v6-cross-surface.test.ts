@@ -484,7 +484,7 @@ describe("v6 surfaces on the quota snapshot", () => {
     seedDefaultPluginBootstrapMocks(mocks, { resetPluginState: true });
     writePluginTestSettings(mocks.root, {
       toast: { afterReply: "always" },
-      statusLine: { detail: "one" },
+      statusLine: { detail: "one", withSidebar: true },
       words: { sessionTokens: "current" },
       providers: {
         off: CONFIG_PROVIDER_IDS.filter(
@@ -810,7 +810,7 @@ describe("v6 surfaces on the quota snapshot", () => {
         const file = parseJsonc(await readFile(path, "utf8"));
         file.sidebar = { names: { "copilot.allowance": "Sidebar quota" } };
         file.toast = { afterReply: "always", names: { "copilot.allowance": "Reply" } };
-        file.statusLine = { detail: "one", window: { copilot: "month" } };
+        file.statusLine = { detail: "one", withSidebar: true, window: { copilot: "month" } };
         file.words = { percent: "used" };
         await writeFile(path, JSON.stringify(file));
         await vi.waitFor(() => expect(sidebar().join(" ")).toContain("Sidebar… ██████░░ 19% used"));
@@ -825,6 +825,46 @@ describe("v6 surfaces on the quota snapshot", () => {
         );
         clickable(windowTree(), "Limits").props.onMouseUp();
         expect(words(windowTree()).join(" ")).toContain("Sidebar quota");
+      } finally {
+        await tui.dispose();
+      }
+    });
+
+    it("hides the status line while a sidebar panel shows quota, except on its own tab", async () => {
+      const path = join(mocks.root, "config", "opencode-quota", "settings.jsonc");
+      const file = parseJsonc(await readFile(path, "utf8"));
+      file.statusLine = { detail: "one" };
+      await writeFile(path, JSON.stringify(file));
+      const tui = await startHosts();
+      try {
+        const footer = () => words(tui.render("prompt.footer", { sessionID: "ses_1" })).join(" ");
+        // No sidebar on screen yet: the status line shows.
+        await vi.waitFor(() => expect(footer()).toContain("81% left"));
+        tui.render("sidebar.content", { sessionID: "ses_1" });
+        expect(footer()).toBe("");
+
+        // On the Status line tab it shows, so its changes can be seen.
+        await tui.command("settings").run();
+        const windowTree = () => tui.render("session.composer.top", { sessionID: "ses_1" });
+        for (let step = 0; step < 12 && !clickable(windowTree(), "Status line"); step += 1) {
+          tui
+            .layer(10)
+            .commands.find((command) => command.bind === "tab")
+            ?.run();
+        }
+        clickable(windowTree(), "Status line").props.onMouseUp();
+        await vi.waitFor(() => expect(words(windowTree())).not.toContain("Loading settings…"));
+        expect(words(settingLine(windowTree(), "statusLine.withSidebar")).join(" ")).toContain(
+          "Next to the sidebar ‹ hide the line ›",
+        );
+        expect(footer()).toContain("81% left");
+        clickable(windowTree(), "esc").props.onMouseUp();
+        expect(footer()).toBe("");
+
+        // With the sidebar panel off, the sidebar shows no quota, so the status line does.
+        file.sidebar = { show: false };
+        await writeFile(path, JSON.stringify(file));
+        await vi.waitFor(() => expect(footer()).toContain("81% left"));
       } finally {
         await tui.dispose();
       }

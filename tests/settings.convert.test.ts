@@ -165,12 +165,16 @@ const ROWS: Array<{
   },
   {
     v5: { tuiCompactStatus: { enabled: true, homeBottom: false } },
-    sections: { statusLine: { show: true, home: false } },
+    sections: { statusLine: { show: true, withSidebar: true, home: false } },
+  },
+  {
+    v5: { tuiCompactStatus: { enabled: false } },
+    sections: { statusLine: { show: false, withSidebar: false, home: false } },
   },
   {
     v5: { tuiPromptBar: { enabled: true } },
     sections: {
-      statusLine: { show: true, home: false, detail: "one" },
+      statusLine: { show: true, withSidebar: true, home: false, detail: "one" },
     },
   },
   { v5: { tuiCompactStatus: { maxWidth: 80 } }, dropped: ["tuiCompactStatus.maxWidth"] },

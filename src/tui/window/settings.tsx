@@ -1126,6 +1126,12 @@ export function createSettingsEditor(api: WindowHost, display: DisplayStore) {
       setSidebars((count) => count + 1);
       return () => setSidebars((count) => count - 1);
     },
+    statusLineShown(): boolean {
+      const settings = shown();
+      if (!settings.surfaces.statusLine.enabled) return false;
+      const sidebarQuota = sidebars() > 0 && settings.surfaces.sidebar.enabled;
+      return tab() === "statusLine" || settings.statusLine.withSidebar || !sidebarQuota;
+    },
     /** A line takes typing, so the window's own keys rest. */
     typing: () => typing() !== undefined,
     /** A System switch's saved value (`system.exportFile`); undefined until the server answers. */

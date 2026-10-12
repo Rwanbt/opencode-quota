@@ -337,6 +337,12 @@ export const FIELDS: readonly Field[] = [
   tokensField("sidebar.sessionTokens"),
   runsOutField("sidebar", "under the row"),
   runsOutField("collapsed", "under the provider"),
+  {
+    ...switchField("statusLine.withSidebar", "Next to the sidebar", false, {
+      group: "When it shows",
+    }),
+    show: onOff("hide the line", "show it too"),
+  },
   listField("statusLine.detail", "Show", "auto", Object.keys(STATUS_DETAILS), SHOW.detail, {
     group: "What it shows",
   }),
