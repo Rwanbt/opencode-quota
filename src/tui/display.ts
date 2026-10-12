@@ -321,7 +321,7 @@ const SHOW = {
   bar: (value) =>
     value === "none" ? "no bars" : `${barParts(value as BarShape, 60, 5).join("")} ${value}`,
   indent: (value) => (value === 1 ? "1 space" : `${value} spaces`),
-  gap: (value) => (value ? "1 empty line" : "nothing"),
+  gap: (value) => (value === 1 ? "1 empty line" : value ? `${value} empty lines` : "nothing"),
   separator: (value) => (String(value).trim() ? `"${String(value).trim()}"` : "spaces"),
   percent: (value) =>
     percentText({ ...DEFAULT_WORDS, percent: value as Words["percent"] }, 58, true),
@@ -425,7 +425,7 @@ export const FIELDS: readonly Field[] = [
     unit("letters"),
     LAYOUT,
   ),
-  numberField("layout.providerGap", "Between providers", 0, [0, 2], [0, 1], SHOW.gap, LAYOUT),
+  numberField("layout.providerGap", "Between providers", 1, [0, 2], [0, 1], SHOW.gap, LAYOUT),
   listField("layout.separator", "Separator", " · ", [" · ", " | ", " / ", "  "], SHOW.separator, {
     group: "Status line",
     valid: isSeparator,
@@ -518,7 +518,7 @@ export const PRESETS: Record<PresetName, Preset> = {
     drives: "bar width and the 3 spacing lines",
     choices: {
       compact: layoutChoice(6, 1, 6, 0),
-      comfortable: layoutChoice(8, 1, 8, 0),
+      comfortable: layoutChoice(8, 1, 8, 1),
       roomy: layoutChoice(10, 2, 8, 1),
     },
   },

@@ -338,13 +338,17 @@ describe("view text", () => {
       width: 40,
       sessionTokens: { input: 12_300, cachedInput: 0, output: 2_100 },
     });
+    // One empty line between providers, and before the session tokens, by default.
     expect(lines.map(lineText)).toEqual([
       "Claude",
       " 5h       █████░░░  58% left 2h 14m",
       " Weekly   █░░░░░░░  12% left  3d 4h",
+      "",
       "OpenCode Zen",
       " Balance  $1,240.50 left",
+      "",
       "OpenRouter  Sign in again",
+      "",
       "Session  12.3K in · 2.10K out",
     ]);
     // The bar of the row with 12% left is drawn in the "low" level color.

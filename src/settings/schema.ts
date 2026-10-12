@@ -113,7 +113,7 @@ export const SETTINGS_SCHEMA = {
   "layout.barWidth": { ...whole(1, 30), default: 8 },
   "layout.indent": { ...whole(0, 4), default: 1 },
   "layout.labelWidth": { ...whole(3, 20), default: 8 },
-  "layout.providerGap": { ...whole(0, 2), default: 0 },
+  "layout.providerGap": { ...whole(0, 2), default: 1 },
   "layout.separator": { kind: "separator", default: " · " },
   /** The words every client uses: "58% left", "58% remaining", "58%", or "42% used". */
   "words.percent": choice(["left", "remaining", "bare", "used"], "left"),

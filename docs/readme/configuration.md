@@ -181,7 +181,7 @@ Roles are `good`, `warning`, `low`, `empty`, `title`, `provider`, `account`, `la
 | `layout.barWidth` | `8` | Whole number 1–30. |
 | `layout.indent` | `1` | Whole number 0–4. |
 | `layout.labelWidth` | `8` | Whole number 3–20. |
-| `layout.providerGap` | `0` | Whole number 0–2. |
+| `layout.providerGap` | `1` | Whole number 0–2. |
 | `layout.separator` | `" · "` | Up to 5 characters. |
 
 ### Words

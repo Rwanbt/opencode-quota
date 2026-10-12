@@ -99,7 +99,7 @@ const EXPECTED = {
     barWidth: 8,
     indent: 1,
     labelWidth: 8,
-    providerGap: 0,
+    providerGap: 1,
     separator: " · ",
   },
   words: {
