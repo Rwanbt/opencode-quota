@@ -290,8 +290,13 @@ it("a hand edit reaches two TUI settings clients and leaves a draft on top", asy
       providers: { off: ["copilot"] },
     }),
   );
-  await vi.waitFor(() => expect(second.display.shown().sidebar.show).toBe(false));
-  await vi.waitFor(() => expect(first.display.shown().statusLine.home).toBe(true));
+  // The folder watch can miss a change; the stat poll that catches it runs every 2 s.
+  await vi.waitFor(() => expect(second.display.shown().sidebar.show).toBe(false), {
+    timeout: 5_000,
+  });
+  await vi.waitFor(() => expect(first.display.shown().statusLine.home).toBe(true), {
+    timeout: 5_000,
+  });
   expect(first.display.shown()).toMatchObject({
     sidebar: { names: { "anthropic.five_hour": "Session" } },
     collapsed: { window: { anthropic: "week" } },
@@ -318,12 +323,16 @@ it("Save writes file settings with comments kept and reaches another TUI", async
     renameRow(settings, "sidebar", "anthropic.weekly", "Weekly", "Long window"),
   );
   await second.server.save();
-  await vi.waitFor(() =>
-    expect(first.display.shown().sidebar.names["anthropic.weekly"]).toBe("Long window"),
+  // The folder watch can miss a change; the stat poll that catches it runs every 2 s.
+  await vi.waitFor(
+    () => expect(first.display.shown().sidebar.names["anthropic.weekly"]).toBe("Long window"),
+    { timeout: 5_000 },
   );
   first.display.edit((settings) => setIn(settings, ["layout", "barWidth"], 12));
   await first.server.save();
-  await vi.waitFor(() => expect(second.display.shown().layout.barWidth).toBe(12));
+  await vi.waitFor(() => expect(second.display.shown().layout.barWidth).toBe(12), {
+    timeout: 5_000,
+  });
   expect((await loadSettings()).settings.sidebar.names).toEqual({
     "anthropic.weekly": "Long window",
     "anthropic.five_hour": "Session",
