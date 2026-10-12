@@ -1,8 +1,8 @@
 /**
  * The Quota Status report (`/quota_status`, the `quota_status` tool, `opencode-quota status`):
- * where the settings come from, what each known provider returned, logins, local files and
- * prices. Every provider section is built the same way from the store's snapshot (state, rows,
- * error, debug details).
+ * the OpenCode version and computer, where the settings come from and which differ from the
+ * defaults, what each known provider returned, logins, local files and prices. Every provider
+ * section is built the same way from the store's snapshot (state, rows, error, debug details).
  *
  * Users paste this report into public issues, so it is built from a closed vocabulary. Every
  * value it prints is a member of a set this plugin defines (provider ids, row keys, windows,
@@ -21,9 +21,13 @@ import { isQuotaWindow } from "../core/windows.js";
 import { isV5SettingKey } from "../settings/convert.js";
 import type { LoadedSettings, V5Conversion } from "../settings/index.js";
 import {
+  defaultSettings,
+  diffSettings,
   isSettingsGroup,
   PROVIDER_IDS as SETTINGS_PROVIDER_IDS,
   SETTINGS_SCHEMA,
+  type SettingRule,
+  THEME_COLOR_NAMES,
 } from "../settings/schema.js";
 import { formatShare, formatTokens } from "../view/format.js";
 import { COUNT_LABELS } from "./accounting-format.js";
@@ -32,7 +36,6 @@ import { API_KEY_LOGIN_VENDORS, API_KEY_VENDORS } from "./api-key-resolver.js";
 import { COPILOT_AUTH_KEYS } from "./copilot.js";
 import { CURSOR_CANONICAL_PLUGIN_PACKAGE } from "./cursor-detection.js";
 import { sanitizeSingleLineDisplayText } from "./display-sanitize.js";
-import { formatLocalCallTimestamp } from "./format-utils.js";
 import { AGY_AUTH_KEYS } from "./google-agy.js";
 import { GEMINI_CLI_AUTH_KEYS } from "./google-gemini-cli.js";
 import { replaceHomeDirWithTildeInDocument } from "./home-dir-display.js";
@@ -44,9 +47,11 @@ import {
   getPricingSnapshotSource,
   getRuntimePricingRefreshStatePath,
   getRuntimePricingSnapshotPath,
+  hasProvider,
   isBundledPricingModelId,
   isBundledPricingProviderId,
   listProviders,
+  listProvidersForModelId,
   type PricingSnapshotSource,
   readPricingRefreshState,
 } from "./modelsdev-pricing.js";
@@ -168,9 +173,22 @@ type ProviderAvailability = {
   matchesCurrentModel?: boolean;
 };
 
+/** Where the report was asked for. */
+export type StatusOrigin = "slash_command" | "tool" | "tui" | "cli";
+
+const ORIGINS: Readonly<Record<StatusOrigin, string>> = {
+  slash_command: "/quota_status",
+  tool: "quota_status tool",
+  tui: "TUI System tab",
+  cli: "opencode-quota status (CLI)",
+};
+
 export type QuotaStatusReportParams = {
+  origin: StatusOrigin;
+  /** OpenCode's version and release channel; the CLI runs without OpenCode. */
+  opencode?: { version: string; channel: string };
   /** The server settings as read now. */
-  settings: Pick<LoadedSettings, "path" | "exists" | "issues" | "notRead">;
+  settings: Pick<LoadedSettings, "path" | "exists" | "issues" | "notRead" | "settings">;
   /** The v5 settings conversion: written when this server started, or done in memory. */
   conversion?: V5Conversion;
   /** The project folder quota is computed for. */
@@ -178,12 +196,10 @@ export type QuotaStatusReportParams = {
   enabledProviders: string[] | "auto";
   /** The provider ids switched off in settings.jsonc. */
   offProviders: readonly string[];
-  onlyCurrentModel: boolean;
-  /** `system.oldCommands`: the /tokens_* commands are listed. */
-  oldCommands: boolean;
   quotaProviders?: readonly QuotaProviderDefinition[];
   pricingSnapshotSource: PricingSnapshotSource;
   currentModel?: string;
+  currentProviderID?: string;
   /** Whether a session was available for model lookup */
   sessionModelLookup?: "ok" | "not_found" | "no_session";
   /** Every known provider, enabled or not: one section each, in this order. */
@@ -235,6 +251,14 @@ function dateText(text: string): string {
 /** A whole number from `min` to `max`, else "(out of range)": a long number is no count. */
 function inRange(value: number, min: number, max: number): string {
   return Number.isInteger(value) && value >= min && value <= max ? String(value) : "(out of range)";
+}
+
+/** "2.1.3": the first three numbers of a version, each up to 999; undefined for no version. */
+function versionText(value: string): string | undefined {
+  const match = /^(\d+)\.(\d+)\.(\d+)/u.exec(value);
+  if (!match) return undefined;
+  const parts = match.slice(1, 4).map(Number);
+  return parts.every((part) => part <= 999) ? parts.join(".") : "(out of range)";
 }
 
 function joinOrNone(values: readonly string[]): string {
@@ -303,16 +327,29 @@ function sourceFileText(source: string, homeDir: string): string {
     : pathText(source, homeDir);
 }
 
-/** A model id the shipped price list has, else undefined. */
+/** A model id the shipped or the downloaded price list has (public names), else undefined. */
 function knownModelId(modelId: string): string | undefined {
-  return isBundledPricingModelId(modelId) ? modelId : undefined;
+  return isBundledPricingModelId(modelId) || listProvidersForModelId(modelId).length > 0
+    ? modelId
+    : undefined;
 }
 
+/** The session's model as "openai/gpt-5"; an id neither OpenCode nor a price list knows is a placeholder. */
 function currentModelText(params: QuotaStatusReportParams): string {
-  if (params.currentModel)
-    return knownModelId(params.currentModel) ?? "(a model not in the price list)";
-  if (params.sessionModelLookup === "not_found") return "(error: session.get returned no modelID)";
-  if (params.sessionModelLookup === "no_session") return "(no session available)";
+  const { currentModel, currentProviderID } = params;
+  if (currentModel) {
+    const provider =
+      currentProviderID === undefined
+        ? "(unknown provider)"
+        : OPENCODE_PROVIDER_IDS.has(currentProviderID) ||
+            isBundledPricingProviderId(currentProviderID) ||
+            hasProvider(currentProviderID)
+          ? currentProviderID
+          : "(other provider)";
+    return `${provider}/${knownModelId(currentModel) ?? "(model not in the price lists)"}`;
+  }
+  if (params.sessionModelLookup === "not_found") return "(the session has no model yet)";
+  if (params.sessionModelLookup === "no_session") return "(no session)";
   return "(unknown)";
 }
 
@@ -454,6 +491,103 @@ function conversionRows(conversion: V5Conversion, homeDir: string): ReportKvRow[
   return rows;
 }
 
+/** Settings with rows of their own (the off list, custom definitions) or no setting (version). */
+const OWN_ROW_KEYS: ReadonlySet<string> = new Set(["version", "providers.off", "providers.custom"]);
+/** The separators the Settings tab steps through. */
+const SEPARATORS: ReadonlySet<string> = new Set([" · ", " | ", " / ", "  "]);
+
+/**
+ * A changed setting's value in this report's words: a switch, choice, number or color as it is,
+ * a list or map as its count, a path as a known path; never a name or text the user typed.
+ */
+function settingValueText(rule: SettingRule, value: unknown, homeDir: string): string {
+  if (value === null) return "null";
+  switch (rule.kind) {
+    case "boolean":
+      return value === true ? "true" : "false";
+    case "choice":
+      return rule.values.includes(String(value)) ? String(value) : "(other)";
+    case "number":
+      return typeof value === "number" && Number.isFinite(value) && Math.abs(value) < 1e6
+        ? String(Number(value.toFixed(2)))
+        : "(out of range)";
+    case "path":
+      return typeof value === "string" ? pathText(value, homeDir) : CUSTOM_PATH;
+    case "color":
+      return typeof value === "string" &&
+        (THEME_COLOR_NAMES.includes(value) || /^#[0-9a-f]{6}$/iu.test(value))
+        ? value
+        : "(color)";
+    case "separator":
+      return typeof value === "string" && SEPARATORS.has(value)
+        ? JSON.stringify(value)
+        : "(custom separator)";
+    default: {
+      const count = Array.isArray(value)
+        ? value.length
+        : typeof value === "object"
+          ? Object.keys(value ?? {}).length
+          : 1;
+      return countText(count, "entry", "entries");
+    }
+  }
+}
+
+/** Every setting that differs from its default, by its settings.jsonc key, under a count. */
+function changedSettingRows(settings: LoadedSettings["settings"], homeDir: string): ReportKvRow[] {
+  const changes = diffSettings(defaultSettings(), settings).filter(
+    (change) => !OWN_ROW_KEYS.has(change.key),
+  );
+  const rules: Readonly<Record<string, SettingRule>> = SETTINGS_SCHEMA;
+  return [
+    {
+      key: "changed_from_defaults",
+      value: changes.length > 0 ? countText(changes.length, "setting", "settings") : "(none)",
+    },
+    ...changes.flatMap((change): ReportKvRow[] => {
+      const rule = rules[change.key];
+      if (!rule) return [];
+      return [{ key: change.key, value: settingValueText(rule, change.after, homeDir), indent: 1 }];
+    }),
+  ];
+}
+
+/** OpenCode release channels this report names; a build's own channel name is not shown. */
+const OPENCODE_CHANNELS: ReadonlySet<string> = new Set([
+  "latest",
+  "beta",
+  "next",
+  "nightly",
+  "preview",
+  "canary",
+  "dev",
+  "local",
+  "snapshot",
+]);
+
+/**
+ * When and where the report was made, and what it ran on: OpenCode's version and release
+ * channel, the system and CPU, and the JavaScript runtime.
+ */
+function environmentSection(params: QuotaStatusReportParams, nowMs: number): ReportSection {
+  const opencode = params.opencode
+    ? `${versionText(params.opencode.version) ?? "(unknown version)"} (${
+        OPENCODE_CHANNELS.has(params.opencode.channel) ? params.opencode.channel : "other channel"
+      })`
+    : "(unknown)";
+  const bun = process.versions.bun;
+  const runtime = bun
+    ? `bun ${versionText(bun) ?? "(unknown version)"}`
+    : `node ${versionText(process.versions.node) ?? "(unknown version)"}`;
+  return kvSection("environment", [
+    { key: "generated_at", value: isoText(nowMs) },
+    { key: "origin", value: ORIGINS[params.origin] },
+    { key: "opencode", value: opencode },
+    { key: "os", value: `${process.platform} ${process.arch}` },
+    { key: "runtime", value: runtime },
+  ]);
+}
+
 /** The settings file, what is wrong in it, the v5 conversion, and what quota is set to do. */
 function settingsSection(params: QuotaStatusReportParams, homeDir: string): ReportSection {
   const rows: ReportKvRow[] = [
@@ -461,19 +595,14 @@ function settingsSection(params: QuotaStatusReportParams, homeDir: string): Repo
     ...settingsIssueRows(params.settings.issues),
   ];
   if (params.conversion) rows.push(...conversionRows(params.conversion, homeDir));
-  rows.push({
-    key: "project_settings",
-    value: "none: the settings are global; v5 project-scope files are not read",
-  });
   if (params.settings.notRead.length > 0) {
     const paths = params.settings.notRead.map((path) => sourceFileText(path, homeDir));
     rows.push({ key: "not_read", value: joinOrNone(paths) });
   }
   rows.push(
     { key: "providers.off", value: providerIdsText(params.offProviders) },
-    { key: "words.onlyCurrentModel", value: params.onlyCurrentModel === true ? "true" : "false" },
-    { key: "system.oldCommands", value: params.oldCommands ? "true" : "false" },
-    { key: "currentModel", value: currentModelText(params) },
+    ...changedSettingRows(params.settings.settings, homeDir),
+    { key: "current_model", value: currentModelText(params) },
     { key: "workspace_root", value: pathText(params.workspaceRoot, homeDir) },
   );
   (params.quotaProviders ?? []).forEach((definition, index) => {
@@ -502,11 +631,11 @@ function providerListSection(availability: readonly ProviderAvailability[]): Rep
   );
 }
 
-function announcementsSection(
+function noticesSection(
   announcements: NonNullable<QuotaStatusReportParams["maintainerAnnouncements"]>,
 ): ReportSection {
   const { summary } = announcements;
-  return kvSection("maintainer_announcements", [
+  return kvSection("notices", [
     { key: "source", value: summary.source === "bundled_only" ? "bundled_only" : "(other)" },
     { key: "network", value: summary.network ? "true" : "false" },
     { key: "active", value: fmtInt(summary.activeCount) },
@@ -722,6 +851,41 @@ const bool: DebugRule = oneOf("true", "false");
 /** An error or message key: that it is set, never its words. */
 const present: DebugRule = () => "(text not shown)";
 
+/** An error's text as our code and HTTP status ("provider_error, http 503"), never its words. */
+const errorKindOf: DebugRule = (value) => errorKind(classifyError(value));
+
+/** Why a row was dropped ("no value", "invalid window"), never the row's own id. */
+/** Why a row was dropped (`validateRows`, `addRow`), never the row's own id. */
+const DROPPED_ROW_REASONS: ReadonlySet<string> = new Set([
+  "not an object",
+  "wrong provider",
+  "no value",
+  "repeated row",
+  ...[
+    "id",
+    "label",
+    "type",
+    "method",
+    "authority",
+    "prominence",
+    "account",
+    "window",
+    "percentRemaining",
+    "used",
+    "limit",
+    "remaining",
+    "amount",
+    "flag",
+    "text",
+    "resetsAt",
+    "windowStartedAt",
+  ].map((field) => `invalid ${field}`),
+]);
+const droppedRow: DebugRule = (value) => {
+  const reason = value.slice(value.lastIndexOf(": ") + 2);
+  return DROPPED_ROW_REASONS.has(reason) ? reason : undefined;
+};
+
 /** A name the user chose (an organization, an enterprise): that it is set, never the name. */
 const setOrNot: DebugRule = (value) => (value.trim() ? "set" : "not set");
 
@@ -744,13 +908,7 @@ const month: DebugRule = (value) => {
   return dateText(`${value}-01`) === "(invalid date)" ? "(invalid date)" : value;
 };
 
-/** "2.1.3": the first three numbers of a version, each up to 999. */
-const version: DebugRule = (value) => {
-  const match = /^(\d+)\.(\d+)\.(\d+)/u.exec(value);
-  if (!match) return undefined;
-  const parts = match.slice(1, 4).map(Number);
-  return parts.every((part) => part <= 999) ? parts.join(".") : "(out of range)";
-};
+const version: DebugRule = versionText;
 
 const status: DebugRule = (value) => {
   const shown = httpStatus(Number(value));
@@ -837,7 +995,7 @@ const API_KEY_DETAILS: DebugRules = {
   api_key_source: keySource,
   ...each(pathList, "api_key_checked_paths", "api_key_credential_database_paths"),
   auth_state: oneOf("none", "configured", "invalid"),
-  ...each(present, "auth_error", "live_fetch_error"),
+  auth_error: present,
 };
 /** Synthetic and Chutes write their key lookup as one value. */
 const KEY_SUMMARY: DebugRule = fields({ configured: bool, source: keySource, checked: pathList });
@@ -959,7 +1117,7 @@ const DEBUG_DETAILS: Readonly<Partial<Record<CanonicalQuotaProviderId, DebugRule
     ...each(bool, "subscription_active", "enforce_daily_limit"),
     subscription_state: oneOf("active", "grace", "inactive"),
     ...each(time, "billing_period_end", "grace_until"),
-    ...each(present, "live_error_usage", "live_error_balance"),
+    ...each(errorKindOf, "live_error_usage", "live_error_balance"),
   },
   "minimax-coding-plan": { api_endpoint: oneOf("international", "china") },
   "minimax-china-coding-plan": { api_endpoint: oneOf("international", "china") },
@@ -983,17 +1141,23 @@ const DEBUG_DETAILS: Readonly<Partial<Record<CanonicalQuotaProviderId, DebugRule
     console_auth_state: oneOf(...CONSOLE_AUTH_STATES),
     budget_source: oneOf("org_budget", "credit_limit"),
     auto_reload: bool,
-    live_fetch_error: present,
   },
 };
 
-/** Every section may show whether OpenCode lists the provider ("yes found=openai"). */
+/**
+ * Every section may show whether OpenCode lists the provider ("yes found=openai"), the kind of
+ * an error a check noted, and why a row was dropped.
+ */
 const SETUP_DETAILS: DebugRules = {
   opencode_provider: fields(
     { found: listOf(OPENCODE_PROVIDER_IDS), looked_for: listOf(OPENCODE_PROVIDER_IDS) },
     oneOf("yes", "no", "unreadable"),
   ),
+  ...each(errorKindOf, "error", "live_fetch_error"),
+  dropped_row: droppedRow,
 };
+/** A numbered live error ("live_error_1"), shown as its kind like `live_fetch_error`. */
+const LIVE_ERROR_KEY = /^live_error_\d{1,2}$/u;
 
 /** A custom definition's check: outcome, login source, files read, local counter state. */
 const CUSTOM_CHECK: DebugRule = fields({
@@ -1052,7 +1216,9 @@ function debugRows(
       ? CUSTOM_CHECK
       : Object.hasOwn(rules, item.key)
         ? rules[item.key]
-        : undefined;
+        : LIVE_ERROR_KEY.test(item.key)
+          ? errorKindOf
+          : undefined;
     const value = ruleValue(rule, item.value, context);
     if (value === undefined) hidden += 1;
     else rows.push({ key: customKey ?? item.key, value });
@@ -1196,14 +1362,12 @@ async function pricingSection(
   if (configured === "bundled") {
     rows.push({
       key: "selection_note",
-      value:
-        "bundled config pins the packaged snapshot and ignores runtime refresh for active pricing",
+      value: "bundled: the built-in price list is used and downloaded prices are ignored",
     });
   } else if (configured === "runtime" && activeSource !== "runtime") {
     rows.push({
       key: "selection_note",
-      value:
-        "runtime config requested the local runtime snapshot, but bundled fallback is active because no valid runtime snapshot is available",
+      value: "runtime: no valid downloaded price list, so the built-in one is used",
     });
   }
   rows.push(
@@ -1234,7 +1398,7 @@ async function pricingSection(
     rows.push({ key: "refresh", value: "(no runtime refresh state yet)" });
   }
   rows.push(
-    { key: "providers", value: fmtInt(listProviders().length) },
+    { key: "price_list_providers", value: fmtInt(listProviders().length) },
     ...unpricedRows(params.usage),
   );
   return kvSection("pricing_snapshot", rows);
@@ -1258,14 +1422,13 @@ export async function buildQuotaStatusReportDocument(
   params: QuotaStatusReportParams,
 ): Promise<ReportDocument> {
   const homeDir = params.homeDir ?? homedir();
-  const version = (await getPackageVersion()) ?? "unknown";
+  const pluginVersion = (await getPackageVersion()) ?? "unknown";
   const snapshots = new Map(params.providers.map((provider) => [provider.providerId, provider]));
   const sections: ReportSection[] = [
+    environmentSection(params, params.generatedAtMs ?? Date.now()),
     settingsSection(params, homeDir),
     providerListSection(params.providerAvailability),
-    ...(params.maintainerAnnouncements
-      ? [announcementsSection(params.maintainerAnnouncements)]
-      : []),
+    ...(params.maintainerAnnouncements ? [noticesSection(params.maintainerAnnouncements)] : []),
     await pathsSection(homeDir),
     credentialSourceSection(params.credentialSource),
     ...params.providerAvailability.map((availability) =>
@@ -1276,7 +1439,7 @@ export async function buildQuotaStatusReportDocument(
 
   return replaceHomeDirWithTildeInDocument(
     {
-      heading: `# Quota Status (opencode-quota v${version}) (/quota_status) ${formatLocalCallTimestamp(params.generatedAtMs)}`,
+      heading: `# Quota Status (opencode-quota v${pluginVersion})`,
       sections,
     },
     homeDir,

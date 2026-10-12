@@ -9,7 +9,6 @@ import { API_KEY_LOGIN_VENDORS, API_KEY_VENDORS } from "../src/lib/api-key-resol
 import { COPILOT_AUTH_KEYS } from "../src/lib/copilot.js";
 import { CURSOR_CANONICAL_PLUGIN_PACKAGE } from "../src/lib/cursor-detection.js";
 import type { QuotaProviderContext } from "../src/lib/entries.js";
-import { formatLocalCallTimestamp } from "../src/lib/format-utils.js";
 import { AGY_AUTH_KEYS } from "../src/lib/google-agy.js";
 import { GEMINI_CLI_AUTH_KEYS } from "../src/lib/google-gemini-cli.js";
 import { __resetPricingSnapshotForTests } from "../src/lib/modelsdev-pricing.js";
@@ -38,7 +37,7 @@ import {
   SETTINGS_SCHEMA,
   type V5Conversion,
 } from "../src/settings/index.js";
-import { PROVIDER_IDS } from "../src/settings/schema.js";
+import { PROVIDER_IDS, setPath, THEME_COLOR_NAMES } from "../src/settings/schema.js";
 import { answer, percentRow } from "./helpers/fake-answers.js";
 import { PROVIDER_ROW_KEYS } from "./helpers/provider-assertions.js";
 
@@ -85,15 +84,19 @@ afterEach(() => {
   rmSync(root, { recursive: true, force: true });
 });
 
+type ParamsOverrides = Partial<Omit<QuotaStatusReportParams, "settings">> & {
+  settings?: Partial<QuotaStatusReportParams["settings"]>;
+};
+
 /** Each snapshot given is an enabled and available provider, unless the test lists them. */
-function params(overrides: Partial<QuotaStatusReportParams> = {}): QuotaStatusReportParams {
+function params(overrides: ParamsOverrides = {}): QuotaStatusReportParams {
+  const { settings, ...rest } = overrides;
   const providers = overrides.providers ?? [];
   return {
-    settings: { path: "/cfg/opencode-quota/settings.jsonc", exists: true, issues: [], notRead: [] },
+    origin: "slash_command",
     workspaceRoot: "/ws",
     enabledProviders: "auto",
     offProviders: [],
-    onlyCurrentModel: false,
     pricingSnapshotSource: "auto",
     providerAvailability: providers.map(({ providerId }) => ({
       id: providerId,
@@ -104,7 +107,15 @@ function params(overrides: Partial<QuotaStatusReportParams> = {}): QuotaStatusRe
     credentialSource: { state: "unbound", failures: [] },
     generatedAtMs: NOW,
     homeDir: root,
-    ...overrides,
+    ...rest,
+    settings: {
+      path: "/cfg/opencode-quota/settings.jsonc",
+      exists: true,
+      issues: [],
+      notRead: [],
+      settings: defaultSettings(),
+      ...settings,
+    },
   };
 }
 
@@ -125,7 +136,16 @@ function conversion(extra: Partial<V5Conversion>): V5Conversion {
   };
 }
 
-function report(overrides: Partial<QuotaStatusReportParams> = {}): Promise<string> {
+/** The default settings with these dotted keys set, checked or not. */
+function changedSettings(
+  values: Record<string, unknown>,
+): QuotaStatusReportParams["settings"]["settings"] {
+  const settings = defaultSettings();
+  for (const [key, value] of Object.entries(values)) setPath(settings, key, value);
+  return settings;
+}
+
+function report(overrides: ParamsOverrides = {}): Promise<string> {
   return buildQuotaStatusReport(params(overrides));
 }
 
@@ -207,21 +227,27 @@ const REPORT_WORDS: readonly string[] = `
   auth_source auth_state auto auto_refresh_days billing_cycle_start_day binary_path bundled
   bundled_only check checked_at checked_commands checked_paths cli_version code config_source
   configured conversion conversion_converted conversion_dropped conversion_invalid
-  conversion_notes converted credential_source currency currentModel custom_provider
+  conversion_notes converted credential_source currency current_model custom_provider
   cycle_reset_at data date debug details downloaded dropped enabledProviders enterprise env
   error exists experimental expired failures false file files found from future generated_at
   github global history home_frequency host http http_error http_status id in integration
   internal invalid jsonc_used_over_json left limited line list list_error live_error_usage
-  local_state_path local_tool maintainer_announcements matchesCurrentModel max_age_ms memory
+  local_state_path local_tool matchesCurrentModel max_age_ms memory
   missing models more network no none not not_read number oauth_configured of ok on
   opencode-integration-api opencode_db opencode_dirs opencode_provider other out outcome part
   partial pat_enterprise pat_organization pat_path paths per present price pricing_snapshot
-  project-scope project_settings provider provider_error quotaProviders quotaToast range
+  provider provider_error quotaProviders quotaToast range
   rate_limited read refresh refresh_failed refresh_policy refresh_state remote-api resets
   retry row rows runtime_paths selected_windows selection set settings_file settings_issue
   shown snapshot stale staleness success syntax t text the token token_expires_at tokens tool
   true unbound unit units unknown unpriced unpriced_30d usage v5 value window workspace_root
   written yes yet ~
+  environment origin os runtime bun node opencode-quota quota_status status TUI System tab CLI
+  channel version changed_from_defaults setting settings entry entries color separator null
+  notices price_list_providers selection_note built-in is used prices ignored valid so one lists
+  session has model dropped_row timeout login_expired not_configured bad_response no_data no_plan
+  repeated object wrong value id label type method authority prominence account window
+  percentRemaining used limit remaining amount flag resetsAt windowStartedAt
 `.split(/\s+/u);
 
 /**
@@ -253,12 +279,24 @@ function reportVocabulary(): Set<string> {
     ...Object.keys(WINDOWS),
     ...Intl.supportedValuesOf("currency"),
     KNOWN_MODEL,
+    ...THEME_COLOR_NAMES,
+    ...Object.values(SETTINGS_SCHEMA).flatMap((rule) => ("values" in rule ? rule.values : [])),
+    "latest",
+    process.platform,
+    process.arch,
     ...REPORT_WORDS,
   ];
   return new Set(members.flatMap((text) => text.split(WORD_SPLIT)));
 }
 
 const DATE = String.raw`20\d\d-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z`;
+const escapeKey = (key: string) => key.replaceAll(".", String.raw`\.`);
+const settingKeysOf = (kinds: readonly string[]) =>
+  Object.entries(SETTINGS_SCHEMA)
+    .filter(([, rule]) => kinds.includes(rule.kind))
+    .map(([key]) => escapeKey(key))
+    .join("|");
+const NUMBER_SETTING_KEYS = settingKeysOf(["number"]);
 const TIME = String.raw`(?:${DATE}|\(none\)|\(invalid date\))`;
 /** A whole number this report counts: rows, accounts, parts, details, keys. */
 const SMALL = String.raw`\d{1,3}`;
@@ -297,7 +335,13 @@ const NUMBER_LINES: readonly RegExp[] = [
   String.raw`- staleness: age_ms=[\d,]+ max_age_ms=[\d,]+ stale=(?:true|false)`,
   String.raw`- providers\.pricing\.autoRefreshDays: \d{1,4}`,
   String.raw`- refresh: last_attempt_at=${TIME} last_success_at=${TIME} last_failure_at=${TIME} last_result=\S+`,
-  String.raw`- providers: \d{1,4}`,
+  String.raw`- price_list_providers: \d{1,4}`,
+  String.raw`- opencode: (?:${SMALL}\.${SMALL}\.${SMALL}|\((?:out of range|unknown version)\)) \([a-z ]+\)`,
+  String.raw`- runtime: (?:bun|node) (?:${SMALL}\.${SMALL}\.${SMALL}|\(unknown version\))`,
+  String.raw`- os: \w+ \w+`,
+  String.raw`- changed_from_defaults: ${SMALL} settings?`,
+  String.raw`  - (?:${NUMBER_SETTING_KEYS}): (?:-?\d{1,6}(?:\.\d{1,2})?|\(out of range\))`,
+  String.raw`  - [\w.]+: ${SMALL} entr(?:y|ies)`,
   String.raw`- unpriced_30d: \d{1,3}\.\d% of ${AMOUNT} tokens`,
   String.raw`  - [\w.-]+/[\w.-]+: ${AMOUNT} tokens`,
   String.raw`  - … \(${SMALL} more unpriced models?\)`,
@@ -305,6 +349,17 @@ const NUMBER_LINES: readonly RegExp[] = [
 
 const NO_VALUE = String.raw`\(none\)|\(unknown\)|unknown`;
 const PATH = String.raw`(?:~(?:/[^\s/|]+)*|\(custom path\)(?:/[^\s/|]+)?)`;
+const OPENCODE_CHANNEL = "latest|beta|next|nightly|preview|canary|dev|local|snapshot";
+/** A changed setting by its key: its value in the report's words for that kind of setting. */
+const CHANGED_SETTING = [
+  String.raw`  - (?:${settingKeysOf(["boolean"])}): (?:true|false)`,
+  String.raw`  - (?:${settingKeysOf(["choice"])}): (?:[\w-]+|\(other\))`,
+  String.raw`  - (?:${NUMBER_SETTING_KEYS}): (?:-?\d{1,6}(?:\.\d{1,2})?|\(out of range\)|null)`,
+  String.raw`  - (?:${settingKeysOf(["path"])}): (?:${PATH}|null)`,
+  String.raw`  - (?:${settingKeysOf(["color"])}): (?:${THEME_COLOR_NAMES.join("|")}|#[0-9a-fA-F]{6}|\(color\))`,
+  String.raw`  - (?:${settingKeysOf(["separator"])}): (?:" · "|" \| "|" / "|"  "|\(custom separator\))`,
+  String.raw`  - (?:${settingKeysOf(["providers", "strings", "names", "rowOrder", "window"])}): ${SMALL} entr(?:y|ies)`,
+].join("|");
 
 /**
  * Lines whose whole form is fixed, number or not: which lines, and the form. A secret that is
@@ -314,15 +369,23 @@ const FIELD_FORMS: ReadonlyArray<readonly [RegExp, RegExp]> = (
   [
     [
       /^ {2}- /u,
-      String.raw`  - ${ROW_ID}(?: \(account ${SMALL}\))?: ${ROW_FACT}(?:, ${ROW_FACT})*|  - … \(${SMALL} more\)|  - [\w.-]+/[\w.-]+: ${AMOUNT} tokens|  - … \(${SMALL} more unpriced models?\)`,
+      String.raw`  - ${ROW_ID}(?: \(account ${SMALL}\))?: ${ROW_FACT}(?:, ${ROW_FACT})*|  - … \(${SMALL} more\)|  - [\w.-]+/[\w.-]+: ${AMOUNT} tokens|  - … \(${SMALL} more unpriced models?\)|${CHANGED_SETTING}`,
     ],
     [
       /^- providers\.custom: /u,
       String.raw`- providers\.custom: custom ${SMALL} (?:off \(switch on in /quota_settings → Providers\)|\((?:remote-api|local-estimate), (?:${SMALL} models?|all models)(?:, tunes [\w-]+)?\))`,
     ],
     [
-      /^- currentModel: /u,
-      String.raw`- currentModel: (?:gpt-4\.1|\((?:a model not in the price list|error: session\.get returned no modelID|no session available|unknown)\))`,
+      /^- current_model: /u,
+      String.raw`- current_model: (?:(?:[\w-]+|\((?:other|unknown) provider\))/(?:gpt-4\.1|\(model not in the price lists\))|\((?:the session has no model yet|no session|unknown)\))`,
+    ],
+    [
+      /^- origin: /u,
+      String.raw`- origin: (?:/quota_status|quota_status tool|TUI System tab|opencode-quota status \(CLI\))`,
+    ],
+    [
+      /^- opencode: /u,
+      String.raw`- opencode: (?:(?:${SMALL}\.${SMALL}\.${SMALL}|\((?:out of range|unknown version)\)) \((?:${OPENCODE_CHANNEL}|other channel)\)|\(unknown\)|(?:enabled|disabled) (?:available|unavailable)(?: matchesCurrentModel=(?:yes|no))?)`,
     ],
     [/^- settings_file: /u, String.raw`- settings_file: ${PATH} \((?:exists|missing; .+)\)`],
     [/^- workspace_root: /u, String.raw`- workspace_root: ${PATH}`],
@@ -361,7 +424,10 @@ function vocabularyProblems(
     for (const time of line.match(ANY_ISO_TIME) ?? []) {
       if (!new RegExp(`^${DATE}$`, "u").test(time)) problems.push(`time ${time} in: ${line}`);
     }
-    const words = line.replace(ANY_ISO_TIME, " ").split(WORD_SPLIT);
+    const words = line
+      .replace(ANY_ISO_TIME, " ")
+      .replace(/^( {2}- colors\.\w+: )#[0-9a-f]{6}$/iu, "$1")
+      .split(WORD_SPLIT);
     const unknown = words.filter((word) => word !== "" && !vocabulary.has(word));
     const numbers = unknown.filter((word) => /\d/u.test(word));
     for (const word of unknown) {
@@ -461,12 +527,26 @@ function garbageSource(seed: number) {
 }
 
 describe("buildQuotaStatusReport", () => {
-  it("starts with the command, version and time", async () => {
+  it("starts with its version, then when, where and on what it was made", async () => {
     const version = await getPackageVersion();
-    const time = formatLocalCallTimestamp(NOW);
+    const text = await report({ opencode: { version: "2.0.27", channel: "latest" } });
+    const runtime = process.versions.bun
+      ? `bun ${process.versions.bun}`
+      : `node ${process.versions.node}`;
 
-    expect((await report()).split("\n")[0]).toBe(
-      `# Quota Status (opencode-quota v${version}) (/quota_status) ${time}`,
+    expect(text.split("\n")[0]).toBe(`# Quota Status (opencode-quota v${version})`);
+    expect(section(text, "environment")).toBe(
+      [
+        "environment:",
+        `- generated_at: ${new Date(NOW).toISOString()}`,
+        "- origin: /quota_status",
+        "- opencode: 2.0.27 (latest)",
+        `- os: ${process.platform} ${process.arch}`,
+        `- runtime: ${runtime.replace(/^(\w+ \d+\.\d+\.\d+).*$/u, "$1")}`,
+      ].join("\n"),
+    );
+    expect(section(await report({ origin: "cli" }), "environment")).toContain(
+      "- origin: opencode-quota status (CLI)\n- opencode: (unknown)\n",
     );
   });
 
@@ -501,9 +581,10 @@ describe("buildQuotaStatusReport", () => {
     });
 
     expect(titles(text).slice(1)).toEqual([
+      "environment:",
       "settings:",
       "providers:",
-      "maintainer_announcements:",
+      "notices:",
       "paths:",
       "credential_source:",
       "anthropic:",
@@ -524,9 +605,9 @@ describe("buildQuotaStatusReport", () => {
     expect(section(text, "openai")).toContain("- state: unavailable\n");
     expect(section(text, "openai")).toContain("- opencode_provider: no looked_for=openai,codex");
     expect(section(text, "xai")).toBe("xai:\n- state: disabled");
-    expect(section(text, "maintainer_announcements")).toBe(
+    expect(section(text, "notices")).toBe(
       [
-        "maintainer_announcements:",
+        "notices:",
         "- source: bundled_only",
         "- network: false",
         "- active: 2",
@@ -651,7 +732,7 @@ describe("buildQuotaStatusReport", () => {
       absent: ["Unauthorized", "error_detail"],
     },
     {
-      name: "older rows kept after an error; the provider's message only counted",
+      name: "older rows kept after an error; the provider's message as its kind only",
       provider: snapshot("copilot", {
         checkedAtMs: NOW,
         okAtMs: NOW - 60_000,
@@ -666,9 +747,31 @@ describe("buildQuotaStatusReport", () => {
         "- state: partial: Provider error 503 (provider_error, http 503)",
         `- checked_at: ${NOW_ISO} (rows from ${new Date(NOW - 60_000).toISOString()})`,
         "- rows: 1\n  - copilot.allowance: 50% left\n- deployment: github.com",
+        "- error: provider_error, http 503",
+      ],
+      absent: ["Billing", "not shown"],
+    },
+    {
+      name: "live errors as their kind, and why rows were dropped, never their own words or ids",
+      provider: snapshot("nanogpt", {
+        checkedAtMs: NOW,
+        debug: [
+          { key: "live_error_usage", value: "NanoGPT usage HTTP 429 for me@example.com" },
+          { key: "live_fetch_error", value: "fetch failed: getaddrinfo ENOTFOUND" },
+          { key: "live_error_1", value: "timed out after 8000ms" },
+          { key: "dropped_row", value: "nanogpt.secret-org: no value" },
+          { key: "dropped_row", value: "nanogpt.daily: invalid window" },
+          { key: "dropped_row", value: "nanogpt.daily: something we never write" },
+        ],
+      }),
+      lines: [
+        "- live_error_usage: rate_limited, http 429",
+        "- live_fetch_error: network",
+        "- live_error_1: timeout",
+        "- dropped_row: no value\n- dropped_row: invalid window",
         "- 1 other detail not shown",
       ],
-      absent: ["Billing"],
+      absent: ["example.com", "secret-org", "ENOTFOUND", "never write"],
     },
     {
       name: "a provider not checked yet",
@@ -819,10 +922,22 @@ describe("buildQuotaStatusReport", () => {
       },
     },
     {
+      name: "a short secret as the session's provider",
+      canary: "lowercasecanary",
+      shows: `- current_model: (other provider)/${KNOWN_MODEL}`,
+      overrides: { currentModel: KNOWN_MODEL, currentProviderID: "lowercasecanary" },
+    },
+    {
+      name: "a short secret as the OpenCode release channel",
+      canary: "lowercasecanary",
+      shows: "- opencode: 2.0.20 (other channel)",
+      overrides: { opencode: { version: "2.0.20", channel: "lowercasecanary" } },
+    },
+    {
       name: "a short secret as the session's model",
       canary: "lowercasecanary",
-      shows: "- currentModel: (a model not in the price list)",
-      overrides: { currentModel: "lowercasecanary" },
+      shows: "- current_model: openai/(model not in the price lists)",
+      overrides: { currentModel: "lowercasecanary", currentProviderID: "openai" },
     },
     {
       name: "a short secret as a model of the usage history",
@@ -1078,7 +1193,7 @@ describe("buildQuotaStatusReport", () => {
     expect(text).toContain(
       `- pricing: source=downloaded generated_at=${NOW_ISO} units=(other units)`,
     );
-    expect(text).toMatch(/- providers: \d+\n/u);
+    expect(text).toMatch(/- price_list_providers: \d+\n/u);
     expect(text).not.toContain("secretcanary");
   });
 
@@ -1211,7 +1326,24 @@ describe("buildQuotaStatusReport", () => {
             { key: "$file", message: `syntax error on line ${pick(["3", DIGITS])}: ${garbage()}` },
           ],
           notRead: [garbage(), garbage()],
+          settings: changedSettings({
+            "sidebar.names": { [garbage()]: garbage() },
+            "sidebar.hidden": [garbage()],
+            "statusLine.detail": pick([garbage(), "bar"]),
+            "toast.seconds": pick([huge, -huge, 15, 2.555, Number.NaN]),
+            "colors.good": pick([garbage(), word(), "#a1b2c3", "green"]),
+            "layout.separator": pick([garbage(), " | "]),
+            "providers.anthropic.binaryPath": pick([garbage(), join(root, garbage())]),
+            "providers.cursor.includedApiUsd": pick([huge, 20.5]),
+            "system.exportPath": garbage(),
+            [`words.${word()}`]: garbage(),
+          }),
         },
+        opencode: {
+          version: pick([garbage(), "2.0.20", `${DIGITS}.1.2`, "1000.0.0"]),
+          channel: pick([garbage(), word(), "latest"]),
+        },
+        currentProviderID: pick([garbage(), "openai"]),
         conversion: conversion({
           sources: [garbage(), `${garbage()} (experimental.quotaToast)`],
           converted: [{ key: garbage(), to: garbage(), where: "server", note: garbage() }],
@@ -1265,10 +1397,10 @@ describe("buildQuotaStatusReport", () => {
     };
   }
 
-  /** The exact first line: the report's title, this version and the generation time. */
+  /** The exact first line: the report's title and this version. */
   async function headingLine(): Promise<string> {
     const version = await getPackageVersion();
-    return `# Quota Status (opencode-quota v${version}) (/quota_status) ${formatLocalCallTimestamp(NOW)}`;
+    return `# Quota Status (opencode-quota v${version})`;
   }
 
   it.each([
@@ -1293,7 +1425,7 @@ describe("buildQuotaStatusReport", () => {
     expect(output.replaceAll(",", "")).not.toContain(DIGITS.slice(0, 8));
     for (const token of hex) expect(output).not.toContain(token);
     // The report still has its facts: known model, row ids, custom numbers.
-    expect(output).toContain(`- currentModel: `);
+    expect(output).toContain(`- current_model: `);
     expect(output).toContain(`  - openai/${KNOWN_MODEL}: 3.00K tokens`);
     expect(output).toContain("- providers.custom: custom 3 (remote-api, 2 models)");
   });
@@ -1327,6 +1459,7 @@ describe("buildQuotaStatusReport", () => {
       name: "model ids the shipped price list has",
       overrides: {
         currentModel: KNOWN_MODEL,
+        currentProviderID: "github-copilot",
         usage: {
           totals: { tokens: { processed: 2_000 }, unpricedShare: 0.5 },
           models: [
@@ -1347,7 +1480,7 @@ describe("buildQuotaStatusReport", () => {
       },
       title: "",
       lines: [
-        `- currentModel: ${KNOWN_MODEL}`,
+        `- current_model: github-copilot/${KNOWN_MODEL}`,
         `  - github-copilot/${KNOWN_MODEL}: 1.00K tokens\n  - … (1 more unpriced model)`,
       ],
     },
@@ -1544,7 +1677,7 @@ describe("buildQuotaStatusReport", () => {
       lines: [
         "- pat_organization: set\n- pat_enterprise: set\n- api_host: github enterprise (custom host)",
         "- billing_period: 2026-10",
-        "- subscription_state: grace\n- live_error_usage: (text not shown)\n- live_error_balance: (text not shown)",
+        "- subscription_state: grace\n- live_error_usage: provider_error, http 500\n- live_error_balance: timeout",
       ],
       absent: ["acme", "alice"],
     },
@@ -1616,18 +1749,18 @@ describe("buildQuotaStatusReport", () => {
       overrides: {
         enabledProviders: ["copilot", "openai"],
         offProviders: ["anthropic", "custom"],
-        onlyCurrentModel: true,
+        settings: { settings: changedSettings({ "words.onlyCurrentModel": true }) },
         currentModel: KNOWN_MODEL,
+        currentProviderID: "openai",
       },
       lines: [
         "- settings_file: (custom path)/settings.jsonc (exists)",
-        "- project_settings: none: the settings are global; v5 project-scope files are not read",
         "- providers.off: anthropic | custom",
-        "- words.onlyCurrentModel: true",
-        `- currentModel: ${KNOWN_MODEL}`,
+        "- changed_from_defaults: 1 setting\n  - words.onlyCurrentModel: true",
+        `- current_model: openai/${KNOWN_MODEL}`,
         "- workspace_root: (custom path)",
       ],
-      absent: ["settings_issue", "conversion", "not_read"],
+      absent: ["settings_issue", "conversion", "not_read", "project"],
     },
     {
       name: "defaults and no session",
@@ -1644,7 +1777,8 @@ describe("buildQuotaStatusReport", () => {
       lines: [
         "- settings_file: (custom path)/settings.jsonc (missing; using the defaults)",
         "- providers.off: (none)",
-        "- currentModel: (no session available)",
+        "- changed_from_defaults: (none)",
+        "- current_model: (no session)",
       ],
     },
     {
@@ -1666,7 +1800,7 @@ describe("buildQuotaStatusReport", () => {
       },
       lines: [
         "- providers.off: (none)",
-        "- currentModel: (error: session.get returned no modelID)",
+        "- current_model: (the session has no model yet)",
         [
           "- settings_issue: $file: syntax error on line 2",
           "- settings_issue: providers.checking.minIntervalMs: invalid value",
@@ -1822,6 +1956,51 @@ describe("buildQuotaStatusReport", () => {
     for (const line of absent) expect(text).not.toContain(line);
   });
 
+  it("shows each changed setting by its key, and never a name, path or text the user typed", async () => {
+    const text = section(
+      await report({
+        homeDir: HOME_CANARY,
+        settings: {
+          settings: changedSettings({
+            "sidebar.names": { anthropic: "CANARY team", openai: "Work" },
+            "sidebar.hidden": ["anthropic.CANARY"],
+            "layout.separator": " CANARY ",
+            "providers.anthropic.binaryPath": `${HOME_CANARY}/CANARY/claude`,
+            "system.exportPath": "/srv/CANARY/quota.json",
+            "colors.good": "CANARYred",
+            "colors.low": "#ff0000",
+            "colors.title": "accent",
+            "toast.seconds": 15,
+            "words.percent": "remaining",
+            "statusLine.detail": "CANARY",
+            "providers.cursor.includedApiUsd": 20.5,
+          }),
+        },
+      }),
+      "settings",
+    );
+
+    expect(text).toContain(
+      [
+        "- changed_from_defaults: 12 settings",
+        "  - sidebar.hidden: 1 entry",
+        "  - sidebar.names: 2 entries",
+        "  - statusLine.detail: (other)",
+        "  - toast.seconds: 15",
+        "  - colors.good: (color)",
+        "  - colors.low: #ff0000",
+        "  - colors.title: accent",
+        "  - layout.separator: (custom separator)",
+        "  - words.percent: remaining",
+        "  - providers.anthropic.binaryPath: (custom path)/claude",
+        "  - providers.cursor.includedApiUsd: 20.5",
+        "  - system.exportPath: (custom path)",
+      ].join("\n"),
+    );
+    expect(text).not.toContain("CANARY");
+    expect(text).not.toContain("Work");
+  });
+
   it.each([
     {
       name: "the login source, its last list error, and each failed login",
@@ -1877,8 +2056,14 @@ describe("buildQuotaStatusReport", () => {
 
   it.each([
     { configured: "auto", note: undefined },
-    { configured: "bundled", note: "bundled config pins the packaged snapshot" },
-    { configured: "runtime", note: "runtime config requested the local runtime snapshot" },
+    {
+      configured: "bundled",
+      note: "bundled: the built-in price list is used and downloaded prices are ignored",
+    },
+    {
+      configured: "runtime",
+      note: "runtime: no valid downloaded price list, so the built-in one is used",
+    },
   ] as const)("explains the $configured price list choice", async ({ configured, note }) => {
     const text = section(await report({ pricingSnapshotSource: configured }), "pricing_snapshot");
 
@@ -1886,7 +2071,7 @@ describe("buildQuotaStatusReport", () => {
     expect(text).toContain(`- providers.pricing.source: configured=${configured} active=bundled`);
     expect(text).toMatch(/- providers\.pricing\.autoRefreshDays: \d+\n/u);
     expect(text).toContain("- refresh: (no runtime refresh state yet)");
-    expect(text).toMatch(/- providers: \d+\n/u);
+    expect(text).toMatch(/- price_list_providers: \d+\n/u);
     if (note) expect(text).toContain(`- selection_note: ${note}`);
     else expect(text).not.toContain("selection_note");
   });
@@ -2093,8 +2278,10 @@ describe("buildStatusReportData", () => {
       `- rows: 1\n  - synthetic.five_hour: window=five_hour, 84% left, resets ${RESET}`,
     );
     expect(syntheticSection).toContain("- api_key_source: env:SYNTHETIC_API_KEY");
-    // The access token and the error message.
-    expect(syntheticSection).toContain("- 2 other details not shown");
+    // The error message as its kind and status; the access token not at all.
+    expect(syntheticSection).toContain(
+      "- error: provider_error, http 503\n- 1 other detail not shown",
+    );
     expect(text).not.toContain(SECRET);
     expect(section(text, "providers")).toContain("- openai: enabled unavailable");
     // An unavailable provider shows local setup details: it is never fetched.

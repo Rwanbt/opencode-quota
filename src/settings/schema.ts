@@ -43,6 +43,18 @@ export type SettingRule = (
   fileOnly?: boolean;
 };
 
+/** The names a color setting takes besides "#rrggbb": theme colors, and the row's bar color. */
+export const THEME_COLOR_NAMES: readonly string[] = [
+  "text",
+  "muted",
+  "accent",
+  "green",
+  "yellow",
+  "red",
+  "blue",
+  "bar",
+];
+
 const bool = (value: boolean) => ({ kind: "boolean", default: value }) as const;
 const choice = <const V extends readonly string[]>(values: V, value: V[number]) =>
   ({ kind: "choice", values, default: value }) as const;
@@ -389,9 +401,7 @@ export function checkSetting(key: string, value: unknown): CheckedSetting {
       return typeof value === "string" && value.length <= 5 ? { value, issues: [] } : invalid;
     case "color":
       return value === undefined ||
-        ["text", "muted", "accent", "green", "yellow", "red", "blue", "bar"].includes(
-          String(value),
-        ) ||
+        THEME_COLOR_NAMES.includes(String(value)) ||
         (typeof value === "string" && /^#[0-9a-f]{6}$/iu.test(value))
         ? { value, issues: [] }
         : invalid;

@@ -952,7 +952,10 @@ describe("server quota RPC", () => {
     await call("refresh", { reason: "manual" });
     const status = (await call("status", { sessionID: "session-1" })) as { text: string };
     expect(status.text).toContain("- providers.off: (none)");
-    expect(status.text).toContain("- words.onlyCurrentModel: false");
+    // The test settings check providers again after 1 ms.
+    expect(status.text).toContain(
+      "- changed_from_defaults: 1 setting\n  - providers.checking.minIntervalMs: 1\n",
+    );
     expect(status.text).not.toContain("- enabledProviders:");
 
     expect(workspaceRoots).toHaveLength(2);

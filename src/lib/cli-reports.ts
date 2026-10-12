@@ -109,6 +109,7 @@ export async function buildCliStatus(params: {
 }): Promise<CliReport> {
   const data = await buildStatusReportData({
     host: params.host,
+    origin: "cli",
     generatedAtMs: Date.now(),
     providerFilterId: params.providerId,
   });

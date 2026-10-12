@@ -50,6 +50,7 @@ import {
   removeQuotaReports,
 } from "./lib/quota-report-message.js";
 import { resolveQuotaResetRetryDelayMs } from "./lib/quota-retry-wait.js";
+import type { StatusOrigin } from "./lib/quota-status.js";
 import { fetchSessionTokensForDisplay } from "./lib/session-tokens.js";
 import { QuotaRpc } from "./rpc.js";
 import {
@@ -163,10 +164,12 @@ export const QuotaToastPlugin = Plugin.define({
     // the tool add them to the global OpenCode config; the TUI palette (via RPC) never writes it.
     const buildStatusOutput = (
       sessionID: string | undefined,
-      options: { reconcileDetectedProviders: boolean },
+      options: { origin: StatusOrigin; reconcileDetectedProviders: boolean },
     ) =>
       buildQuotaDialogCommandOutput({
         host: sourceHost,
+        origin: options.origin,
+        opencode: ctx.app ? { version: ctx.app.version, channel: ctx.app.channel } : undefined,
         sessionID,
         resolveSessionModel: sessionModel,
         conversion,
@@ -292,6 +295,7 @@ export const QuotaToastPlugin = Plugin.define({
       status: (input) =>
         logRpcFailure("status", async () => {
           const result = await buildStatusOutput(input.sessionID, {
+            origin: "tui",
             reconcileDetectedProviders: false,
           });
           return { text: sanitizeDisplayText(result.output) };
@@ -387,6 +391,7 @@ export const QuotaToastPlugin = Plugin.define({
         },
         async execute(_input, context) {
           const result = await buildStatusOutput(context.sessionID, {
+            origin: "tool",
             reconcileDetectedProviders: true,
           });
           return { content: sanitizeDisplayText(result.output) };
@@ -457,6 +462,7 @@ export const QuotaToastPlugin = Plugin.define({
         description: "Diagnostics for quota, TUI, pricing, and local storage.",
         async execute(invocation) {
           const result = await buildStatusOutput(invocation.sessionID, {
+            origin: "slash_command",
             reconcileDetectedProviders: true,
           });
           await postReport(invocation.sessionID, "quota_status", result.output);

@@ -46,6 +46,7 @@ import {
   buildQuotaStatusReportDocument,
   knownProviderIds,
   publicPricingMeta,
+  type StatusOrigin,
   statusPathText,
 } from "./quota-status.js";
 import { renderPlainTextReport } from "./report-document.js";
@@ -279,6 +280,9 @@ async function readRecentUsage(nowMs: number): Promise<UsageReport | null> {
 
 export async function buildStatusReportData(params: {
   host: ProviderSourceHost;
+  origin: StatusOrigin;
+  /** OpenCode's version and release channel; the CLI runs without OpenCode. */
+  opencode?: { version: string; channel: string };
   sessionID?: string;
   /** The session's model; undefined without a session. */
   sessionModel?: SessionModel;
@@ -350,6 +354,8 @@ export async function buildStatusReportData(params: {
   });
 
   const document = await buildQuotaStatusReportDocument({
+    origin: params.origin,
+    opencode: params.opencode,
     settings: loaded,
     conversion: loaded.conversion ?? params.conversion,
     workspaceRoot: host.workspaceRoot,
@@ -358,11 +364,10 @@ export async function buildStatusReportData(params: {
         ? "auto"
         : PROVIDER_IDS.filter((id) => !settings.providers.off.includes(id)),
     offProviders: settings.providers.off,
-    onlyCurrentModel: settings.words.onlyCurrentModel,
-    oldCommands: settings.system.oldCommands,
     quotaProviders: settings.providers.custom,
     pricingSnapshotSource: settings.providers.pricing.source,
     currentModel,
+    currentProviderID,
     sessionModelLookup,
     providerAvailability: availability,
     providers: snapshots,
@@ -419,6 +424,8 @@ export async function buildStatusReportData(params: {
 /** The /quota_status report as text. */
 export async function buildQuotaDialogCommandOutput(params: {
   host: ProviderSourceHost;
+  origin: StatusOrigin;
+  opencode?: { version: string; channel: string };
   sessionID?: string;
   /** The session's model, for /quota_status. */
   resolveSessionModel?: (sessionID: string) => Promise<SessionModel>;
@@ -435,6 +442,8 @@ export async function buildQuotaDialogCommandOutput(params: {
       : undefined;
   const data = await buildStatusReportData({
     host: params.host,
+    origin: params.origin,
+    opencode: params.opencode,
     sessionID: params.sessionID,
     sessionModel,
     conversion: params.conversion,

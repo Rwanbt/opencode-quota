@@ -1,7 +1,4 @@
-/**
- * Small text helpers for the reports and the providers: percents, amounts, times and model
- * names.
- */
+/** Small text helpers for the providers: percents and dollar amounts. */
 
 /**
  * Clamp a value to a percentage [0..100], rounding to the nearest integer.
@@ -16,14 +13,4 @@ export function clampPercent(n: number): number {
 export function fmtUsdAmount(n: number): string {
   if (!Number.isFinite(n)) return "$0.00";
   return `$${n.toFixed(2)}`;
-}
-
-function pad2(n: number): string {
-  return String(Math.trunc(n)).padStart(2, "0");
-}
-
-export function formatLocalCallTimestamp(atMs?: number): string {
-  const safeMs = typeof atMs === "number" && Number.isFinite(atMs) ? atMs : Date.now();
-  const d = new Date(safeMs);
-  return `${pad2(d.getHours())}:${pad2(d.getMinutes())} ${pad2(d.getDate())}/${pad2(d.getMonth() + 1)}/${d.getFullYear()}`;
 }
