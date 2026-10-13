@@ -472,7 +472,8 @@ export type PlainBar = { shape: BarShape; width: number; room: number };
 /**
  * §4.4: plain text, one line per visible row, then a line per provider error. Toasts and
  * the CLI print these. With `bar` (toasts) a row's percent has a bar before it, shorter when
- * the line would not fit, and "runs out in" goes on a line of its own under the bar.
+ * the line would not fit, and "runs out in" goes on a line of its own under the bar (further
+ * left when the toast is too narrow for that).
  */
 export function plainLines(params: {
   groups: Group[];
@@ -503,8 +504,11 @@ export function plainLines(params: {
     const percentWords = (word ? `${number} ${word}` : number).padEnd(percentWidth);
     const line = `${name} ${filled}${empty} ${percentWords}  ${resetText(row, nowMs, words)}`;
     const runsOut = runsOutText(params.runsOut, row, nowMs, words);
-    const under = " ".repeat(PLAIN_NAME_WIDTH + 1);
-    return runsOut ? [line.trimEnd(), `${under}${runsOut}`] : [line.trimEnd()];
+    if (!runsOut) return [line.trimEnd()];
+    // Under the bar, or further left when the toast is too narrow for that.
+    const room = bar?.room ?? 0;
+    const indent = Math.max(0, Math.min(PLAIN_NAME_WIDTH + 1, room - columnsOf(runsOut)));
+    return [line.trimEnd(), fit(`${" ".repeat(indent)}${runsOut}`, room).trimEnd()];
   };
   const lines = params.groups.flatMap((group) => {
     const rows = group.rows.flatMap(({ row, label }) => {

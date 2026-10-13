@@ -548,6 +548,12 @@ describe("view text", () => {
       remaining: plainLines({ ...remaining, bar: { ...toast.bar, room: 48 } }),
       narrow: plainLines({ ...remaining, bar: { ...toast.bar, room: 44 } }),
       none: plainLines({ ...toast, bar: { ...toast.bar, shape: "none" } }),
+      // A 46-column terminal: "runs out in" moves left of the bar so it stays inside the toast.
+      tight: plainLines({
+        ...toast,
+        words: { ...DEFAULT_WORDS, percent: "bare", reset: "decimal" },
+        bar: { ...toast.bar, room: 34 },
+      }),
     };
     expect(lines).toEqual({
       left: [
@@ -565,10 +571,16 @@ describe("view text", () => {
         "Claude Weekly       12% remaining 3d 4h  runs out in 12h 33m",
       ],
       none: plainLines({ ...base, runsOut: true }),
+      tight: [
+        "Claude 5h           ██░  58%  2.2h",
+        "Claude Weekly       ░░░  12%  3.2d",
+        "                 runs out in 12.6h",
+      ],
     });
     for (const line of [...lines.left, ...lines.remaining]) {
       expect(line.length).toBeLessThanOrEqual(48);
     }
+    for (const line of lines.tight) expect(line.length).toBeLessThanOrEqual(34);
   });
 
   it("writes plain lines for toasts and the CLI, errors and session tokens last", () => {
