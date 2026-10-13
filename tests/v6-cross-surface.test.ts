@@ -547,17 +547,19 @@ describe("v6 surfaces on the quota snapshot", () => {
     const sidebar = () => tui.render("sidebar.content", { sessionID: "ses_1" });
     // The first look asks the server; the providers answer in the background and the
     // `changed` event brings their rows, the last of them the custom source's.
-    await vi.waitFor(() => expect(words(sidebar())).toContain("Monthly █████░░░ 64% left 2h 14m"), {
+    await vi.waitFor(() => expect(words(sidebar())).toContain("Monthly █████░░░ 64% 2h 14m"), {
       timeout: 10_000,
     });
 
-    // Sidebar: every provider and its rows; an over-quota row shows 0% left. Each bar takes its
-    // level's theme color: plenty, getting low, almost out.
+    // Sidebar: every provider and its rows, under a title that says the percents are what is
+    // left; an over-quota row shows 0%. Each bar takes its level's theme color: plenty, getting
+    // low, almost out.
     const expanded = sidebar();
     expect(words(expanded)).toEqual(
       expect.arrayContaining([
-        "Plan ██████░░ 81% left",
-        "5h ░░░░░░░░ 0% left 2h 14m",
+        "▼ Quota left",
+        "Plan ██████░░ 81%",
+        "5h ░░░░░░░░ 0% 2h 14m",
         "Custom providers (Team) Provider e…",
         "Session 1.20K in · 45 out",
       ]),
@@ -814,7 +816,7 @@ describe("v6 surfaces on the quota snapshot", () => {
       const { tui, windowTree } = await openSettings("Layout", "Sidebar");
       try {
         const sidebar = () => words(tui.render("sidebar.content", { sessionID: "ses_1" }));
-        await vi.waitFor(() => expect(sidebar()).toContain("Plan ██████░░ 81% left"));
+        await vi.waitFor(() => expect(sidebar()).toContain("Plan ██████░░ 81%"));
         clickable(settingLine(windowTree(), "sidebar.sessionTokens"), "›").props.onMouseUp();
         const path = join(mocks.root, "config", "opencode-quota", "settings.jsonc");
         const file = parseJsonc(await readFile(path, "utf8"));
@@ -823,7 +825,8 @@ describe("v6 surfaces on the quota snapshot", () => {
         file.statusLine = { detail: "one", withSidebar: true, window: { copilot: "month" } };
         file.words = { percent: "used" };
         await writeFile(path, JSON.stringify(file));
-        await vi.waitFor(() => expect(sidebar().join(" ")).toContain("Sidebar… ██████░░ 19% used"));
+        await vi.waitFor(() => expect(sidebar().join(" ")).toContain("Sidebar… ██████░░ 19%"));
+        expect(sidebar()).toContain("▼ Quota used");
         expect(sidebar().join(" ")).not.toContain("Session 1.20K");
         const footer = () => words(tui.render("prompt.footer", { sessionID: "ses_1" })).join(" ");
         await vi.waitFor(() => expect(footer()).toContain("19%"));
@@ -1006,12 +1009,12 @@ describe("v6 surfaces on the quota snapshot", () => {
       const fetchedTeam = () => vi.mocked(fetch).mock.calls.some(([url]) => url === teamUrl);
       const { tui, windowTree } = await openSettings("Layout", "All places");
       const sidebar = () => words(tui.render("sidebar.content", { sessionID: "ses_1" }));
-      await vi.waitFor(() => expect(sidebar()).toContain("Plan ██████░░ 81% left"));
+      await vi.waitFor(() => expect(sidebar()).toContain("Plan ██████░░ 81%"));
       await vi.waitFor(() => expect(settingLine(windowTree(), "words.percent")).toHaveLength(1));
 
       // The sidebar shows the new words before they are saved.
       clickable(settingLine(windowTree(), "words.percent"), "‹").props.onMouseUp();
-      expect(sidebar()).toContain("Plan ██████░░ 19% used");
+      expect(sidebar()).toEqual(expect.arrayContaining(["▼ Quota used", "Plan ██████░░ 19%"]));
 
       clickable(windowTree(), "Providers").props.onMouseUp();
       const team = () => settingLine(windowTree(), "custom.team-accounting");

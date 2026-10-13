@@ -20,6 +20,7 @@ import {
   plainLines,
   type StatusInput,
   sidebarLines,
+  sidebarTitle,
   statusLayout,
 } from "../src/view/text.js";
 import { providerSnapshot, quotaRow as row } from "./helpers/fake-answers.js";
@@ -341,8 +342,8 @@ describe("view text", () => {
     // One empty line between providers, and before the session tokens, by default.
     expect(lines.map(lineText)).toEqual([
       "Claude",
-      " 5h       █████░░░  58% left 2h 14m",
-      " Weekly   █░░░░░░░  12% left  3d 4h",
+      " 5h       █████░░░  58% 2h 14m",
+      " Weekly   █░░░░░░░  12%  3d 4h",
       "",
       "OpenCode Zen",
       " Balance  $1,240.50 left",
@@ -358,14 +359,26 @@ describe("view text", () => {
     });
   });
 
-  it("shortens the bar, then drops it and the percent word, when the sidebar is narrow", () => {
+  it("shortens the bar, then drops it, when the sidebar is narrow", () => {
     const line = (width: number) =>
       lineText(sidebarLines({ groups: groups("sidebar", [CLAUDE]), ...drawn, width })[1]!);
-    expect([line(40), line(30), line(22)]).toEqual([
-      " 5h       █████░░░  58% left 2h 14m",
-      " 5h       ██░  58% left 2h 14m",
+    expect([line(40), line(26), line(22)]).toEqual([
+      " 5h       █████░░░  58% 2h 14m",
+      " 5h       ██░░  58% 2h 14m",
       " 5h         58% 2h 14m",
     ]);
+  });
+
+  it.each([
+    { percent: "left", title: "▼ Quota left" },
+    { percent: "remaining", title: "▼ Quota remaining" },
+    { percent: "used", title: "▼ Quota used" },
+    { percent: "bare", title: "▼ Quota" },
+  ] as const)("titles the expanded panel $title, so its rows show only the number", ({
+    percent,
+    title,
+  }) => {
+    expect(sidebarTitle({ ...DEFAULT_WORDS, percent })).toBe(title);
   });
 
   it.each([
@@ -510,8 +523,8 @@ describe("view text", () => {
     }).toEqual({
       sidebar: [
         "Claude",
-        " 5h       █████░░░  58% left 2h 14m",
-        " Weekly   █░░░░░░░  12% left  3d 4h",
+        " 5h       █████░░░  58% 2h 14m",
+        " Weekly   █░░░░░░░  12%  3d 4h",
         "          runs out in 12h 33m",
       ],
       off: 3,

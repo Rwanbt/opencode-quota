@@ -140,7 +140,13 @@ type SidebarInput = {
   runsOut?: boolean;
 };
 
-/** §4.1: the expanded Quota panel, below its title line. */
+/** §4.1: the expanded panel's title, with the percent's word its rows leave out: "▼ Quota left". */
+export function sidebarTitle(words: Words): string {
+  const word = percentWord(words);
+  return word ? `▼ Quota ${word}` : "▼ Quota";
+}
+
+/** §4.1: the expanded Quota panel, below its title line (`sidebarTitle`). */
 export function sidebarLines(input: SidebarInput): Line[] {
   const { layout, words, nowMs, width } = input;
   const percentRows = input.groups.flatMap((group) =>
@@ -148,14 +154,9 @@ export function sidebarLines(input: SidebarInput): Line[] {
   );
   const resetWidth =
     1 + Math.max(0, ...percentRows.map((item) => resetText(item.row, nowMs, words).length));
-  // A long word ("remaining") makes the bar shorter; when even that doesn't fit, the word goes.
-  const word = percentWord(words);
   const fixed = layout.indent + layout.labelWidth + 1 + 5 + resetWidth;
-  const barRoom = (withWord: boolean) => width - fixed - (withWord && word ? word.length + 1 : 0);
-  const keepWord = layout.bar === "none" ? barRoom(true) >= 0 : barRoom(true) >= 3;
   const barWidth =
-    layout.bar === "none" ? 0 : Math.max(0, Math.min(layout.barWidth, barRoom(keepWord)));
-  const wordText = keepWord && word ? ` ${word}` : "";
+    layout.bar === "none" ? 0 : Math.max(0, Math.min(layout.barWidth, width - fixed));
 
   const rowLine = ({ row, label }: VisibleRow): Line => {
     const percent = row.percentRemaining;
@@ -172,11 +173,7 @@ export function sidebarLines(input: SidebarInput): Line[] {
       segments: [
         labelSegment,
         ...barSegments(layout.bar, percent, barWidth),
-        {
-          text: `${percentText(words, percent, false).padStart(5)}${wordText}`,
-          role: "percent",
-          percent,
-        },
+        { text: percentText(words, percent, false).padStart(5), role: "percent", percent },
         { text: resetText(row, nowMs, words).padStart(resetWidth), role: "reset", percent },
       ],
     };

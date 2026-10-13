@@ -17,6 +17,7 @@ import {
   type Line,
   type Segment,
   sidebarLines,
+  sidebarTitle,
 } from "../view/text.js";
 import type { QuotaClient } from "./client.js";
 import type { DisplaySettings } from "./display.js";
@@ -136,7 +137,7 @@ export function SidebarPanel(props: {
         : {}),
     });
   };
-  const title = () => (open() ? "▼ Quota" : collapsedTitle(groups("collapsed")));
+  const title = () => (open() ? sidebarTitle(words()) : collapsedTitle(groups("collapsed")));
   const marked = () => host.editing.marked(open() ? "sidebar" : "collapsed");
 
   return (
