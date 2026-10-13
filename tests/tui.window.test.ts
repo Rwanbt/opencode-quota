@@ -82,9 +82,9 @@ describe("quota window: Limits", () => {
     const lines = limits([CLAUDE], WIDE, ["anthropic.five_hour"]);
     expect(lines[0]).toBe("Claude");
     expect(lines[1]).toMatch(
-      /^ {2}5h +[━─┃]+ {2}30% left {3}resets in 2h 30m {3}runs out in 1h 5m$/u,
+      /^ {2}5h +[█░┃]+ {2}30% left {3}resets in 2h 30m {3}runs out in 1h 5m$/u,
     );
-    expect(lines[2]).toMatch(/^ {2}Fable +[━─]+ {2}90% left$/u);
+    expect(lines[2]).toMatch(/^ {2}Fable +[█░]+ {2}90% left$/u);
   });
 
   it("lines every provider up in one grid that fills the window, under name-only provider lines", () => {
@@ -92,8 +92,8 @@ describe("quota window: Limits", () => {
     const [claude, fiveHour, fable, gap, zen, balance] = lines;
     expect(gap).toBe("");
     // The bars start in one column, the percents and the balance end in one column.
-    expect(fiveHour.indexOf("━")).toBe(BAR_COLUMN);
-    expect(fable.indexOf("━")).toBe(BAR_COLUMN);
+    expect(fiveHour.indexOf("█")).toBe(BAR_COLUMN);
+    expect(fable.indexOf("█")).toBe(BAR_COLUMN);
     const percentEnd = fiveHour.indexOf("30% left") + "30% left".length;
     expect(fable.length).toBe(percentEnd);
     expect(balance).toBe(
@@ -105,14 +105,32 @@ describe("quota window: Limits", () => {
     expect(zen).toBe("OpenCode Zen");
   });
 
-  it("draws a thin bar in the level color with the even-use marker where even use would be", () => {
+  it("draws the bar in the level color with the even-use marker where even use would be", () => {
     const fiveHour = limitLines([CLAUDE])[1];
-    const bar = fiveHour.segments.filter((segment) => /^[━─┃]+$/u.test(segment.text));
+    const bar = fiveHour.segments.filter((segment) => /^[█░┃]+$/u.test(segment.text));
     expect(bar.map((segment) => segment.role)).toEqual(["bar", "empty", "label", "empty"]);
     const cells = bar.map((segment) => segment.text).join("");
     // 30% left; half of the 5-hour window has passed, so even use would leave 50%.
     expect(cells.indexOf("┃")).toBe(Math.round(cells.length / 2));
     expect(bar[0].text).toHaveLength(Math.round(cells.length * 0.3));
+  });
+
+  it.each([
+    { bar: "dots", cells: /^[●○]+┃[○]+$/u },
+    { bar: "line", cells: /^[━─]+┃─+$/u },
+    // With bars off elsewhere, Limits keeps the thin line: the even-use marker needs a bar.
+    { bar: "none", cells: /^[━─]+┃─+$/u },
+  ] as const)("draws the sidebar's bar shape: $bar", ({ bar, cells }) => {
+    const display = defaultDisplaySettings();
+    display.layout.bar = bar;
+    const snapshot: QuotaSnapshot = {
+      version: 6,
+      providers: [CLAUDE],
+      resetNotices: [],
+      generatedAtMs: NOW,
+    };
+    const fiveHour = lineText(limitsLines({ snapshot, display, nowMs: NOW, width: WIDE })[1]);
+    expect(fiveHour.match(/^ {2}5h +(\S+) {2}30% left/u)?.[1]).toMatch(cells);
   });
 
   it.each([
@@ -124,23 +142,23 @@ describe("quota window: Limits", () => {
     cells,
   }) => {
     const fable = limits([CLAUDE], width).find((line) => line.includes("Fable"));
-    expect(fable?.match(/[━─]+/u)?.[0]).toHaveLength(cells);
+    expect(fable?.match(/[█░]+/u)?.[0]).toHaveLength(cells);
   });
 
   it("shortens the reset to its first unit before the bar gets too short (80 columns)", () => {
     // 80 columns leave 72 inside the window: the session's padding, the border and the padding.
     const lines = limits([CLAUDE], 72);
     for (const line of lines) expect(line.length).toBeLessThanOrEqual(72);
-    expect(lines[1]).toMatch(/^ {2}5h +[━─┃]+ {2}30% left {3}2h {3}runs out in 1h 5m$/u);
+    expect(lines[1]).toMatch(/^ {2}5h +[█░┃]+ {2}30% left {3}2h {3}runs out in 1h 5m$/u);
   });
 
   it("puts the reset and the pace under the bar when they leave it no room", () => {
     const lines = limits([CLAUDE], 50);
     for (const line of lines) expect(line.length).toBeLessThanOrEqual(50);
     expect(lines.slice(1, 4)).toEqual([
-      expect.stringMatching(/^ {2}5h +[━─┃]+ {2}30% left$/u),
+      expect.stringMatching(/^ {2}5h +[█░┃]+ {2}30% left$/u),
       `${" ".repeat(2 + "Fable".length + 2)}resets in 2h 30m · runs out in 1h 5m`,
-      expect.stringMatching(/^ {2}Fable +[━─]+ {2}90% left$/u),
+      expect.stringMatching(/^ {2}Fable +[█░]+ {2}90% left$/u),
     ]);
   });
 

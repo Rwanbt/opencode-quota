@@ -3,9 +3,9 @@
  * sidebar's order and under your row names. Pure.
  *
  * All rows share one grid: label │ bar │ percent │ reset │ pace, each column as wide as its
- * widest entry, the percent right-aligned. The bar is thin (━ filled, ─ used) with the even-use
- * marker ┃ (`core/pace.ts`) and takes the room the other columns leave, so the grid always
- * spans the window. A provider's line has its name and plan; an error gets its own line under it.
+ * widest entry, the percent right-aligned. The bar has your bar shape (the thin ━─ line when bars
+ * are off) with the even-use marker ┃ (`core/pace.ts`) and takes the room the other columns
+ * leave, so the grid always spans the window. A provider's line has its name and plan; an error gets its own line under it.
  *
  * A narrower window first shortens "resets in 2h 30m" to "2h", then the labels, and then puts
  * the reset and the pace on a line under the bar (on two lines when they don't fit together).
@@ -15,6 +15,7 @@ import { paceOf, paceText } from "../../core/pace.js";
 import type { QuotaSnapshot, Words } from "../../core/types.js";
 import { columnsOf, padEndColumns, padStartColumns, sliceColumns } from "../../view/columns.js";
 import {
+  type BarShape,
   barParts,
   DEFAULT_WORDS,
   evenUseCell,
@@ -24,7 +25,7 @@ import {
   rowValueText,
 } from "../../view/format.js";
 import { type Group, type RowSettings, type VisibleRow, visibleGroups } from "../../view/select.js";
-import type { Line, Segment } from "../../view/text.js";
+import type { Layout, Line, Segment } from "../../view/text.js";
 
 const INDENT = "  ";
 /** Between the label, the bar and the percent. */
@@ -67,16 +68,21 @@ type Grid = {
 
 export type LimitsInput = {
   snapshot: QuotaSnapshot;
-  /** The display settings: row names and the sidebar's order. */
-  display: RowSettings;
+  /** The display settings: row names, the sidebar's order and the bar shape. */
+  display: RowSettings & { layout: Pick<Layout, "bar"> };
   nowMs: number;
   /** Columns inside the window. */
   width: number;
 };
 
-/** A thin bar with the even-use marker ┃ in place of one of its cells. */
-function markedBar(percent: number, width: number, evenLeft: number | undefined): Segment[] {
-  const [filled, empty] = barParts("line", percent, width);
+/** A bar with the even-use marker ┃ in place of one of its cells. */
+function markedBar(
+  shape: BarShape,
+  percent: number,
+  width: number,
+  evenLeft: number | undefined,
+): Segment[] {
+  const [filled, empty] = barParts(shape, percent, width);
   const cells: Segment[] = [
     ...[...filled].map((text): Segment => ({ text, role: "bar", percent })),
     ...[...empty].map((text): Segment => ({ text, role: "empty", percent })),
@@ -176,7 +182,7 @@ function trimmed(segments: Segment[]): Segment[] {
   return out;
 }
 
-function rowLines(texts: RowTexts, grid: Grid, width: number): Line[] {
+function rowLines(texts: RowTexts, grid: Grid, width: number, shape: BarShape): Line[] {
   const { item, percent, percentWords } = texts;
   const id = item.row.id;
   const label: Segment = {
@@ -191,7 +197,7 @@ function rowLines(texts: RowTexts, grid: Grid, width: number): Line[] {
     const value = padStartColumns(fit(percentWords, room).trimEnd(), room);
     return [{ id, segments: [label, { text: value, role: "value" }] }];
   }
-  const bar = markedBar(percent, grid.bar, texts.evenLeft);
+  const bar = markedBar(shape, percent, grid.bar, texts.evenLeft);
   const percentSegment: Segment = {
     text: `${GAP}${padStartColumns(percentWords, grid.percent)}`,
     role: "percent",
@@ -262,6 +268,8 @@ export function limitsLines(input: LimitsInput): Line[] {
     groups.map((group) => [group.id, group.rows.map((item) => rowTexts(item, words, nowMs))]),
   );
   const grid = gridFor([...texts.values()].flat(), width);
+  // With bars off elsewhere, Limits keeps a thin line: the even-use marker needs a bar.
+  const shape = display.layout.bar === "none" ? "line" : display.layout.bar;
   return groups.flatMap((group, index) => {
     const lines: Line[] = index > 0 ? [{ id: "", segments: [] }] : [];
     lines.push(providerLine(group));
@@ -272,7 +280,7 @@ export function limitsLines(input: LimitsInput): Line[] {
         segments: [{ text: fit(`${INDENT}${error}`, width).trimEnd(), role: "error" }],
       });
     }
-    for (const row of texts.get(group.id) ?? []) lines.push(...rowLines(row, grid, width));
+    for (const row of texts.get(group.id) ?? []) lines.push(...rowLines(row, grid, width, shape));
     return lines.map((line) => clipped(line, width));
   });
 }
