@@ -403,6 +403,10 @@ async function startHosts() {
     /** The last layer registered with this priority. */
     layer: (priority: number) => layers.filter((layer) => layer.priority === priority).at(-1)!,
     focused: () => focused,
+    /** OpenCode gives the keyboard to the message box. */
+    focusMessageBox: () => {
+      focused = "message box";
+    },
     /** The open dialog, drawn again. */
     renderDialog: () => (dialog.show.mock.calls.at(-1)?.[0] as () => unknown)(),
     /** Presses a key of the open dialog (its newest modal layer). */
@@ -951,6 +955,20 @@ describe("v6 surfaces on the quota snapshot", () => {
       const { tui, windowTree } = await openSettings("Colors");
       clickable(settingLine(windowTree(), "theme"), "▸").props.onMouseUp();
       expect(tui.dispatch).toHaveBeenCalledWith("theme.switch");
+      await tui.dispose();
+    });
+
+    it("takes the keyboard back after Light or dark gives it to the message box", async () => {
+      const { tui, windowTree } = await openSettings("Colors");
+      const windowBox = { type: "box", props: { focusable: true } };
+      await vi.waitFor(() => expect(tui.focused()).toMatchObject(windowBox));
+      // OpenCode's switch closes its dialogs, which focuses the message box a moment later.
+      tui.dispatch.mockImplementationOnce(() => setTimeout(tui.focusMessageBox, 1));
+      clickable(settingLine(windowTree(), "themeMode"), "›").props.onMouseUp();
+      expect(tui.dispatch).toHaveBeenCalledWith("theme.switch_mode");
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(tui.focused()).toBe("message box");
+      await vi.waitFor(() => expect(tui.focused()).toMatchObject(windowBox));
       await tui.dispose();
     });
 

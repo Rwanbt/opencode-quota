@@ -437,25 +437,35 @@ export function createSettingsEditor(api: WindowHost, display: DisplayStore) {
     };
   }
 
-  /** OpenCode's own theme list and light/dark switch; quota's colors follow them. */
-  const themeLines: OptionLine[] = [
-    {
-      id: "theme",
-      group: "OpenCode theme",
-      title: "Theme",
-      value: () => "open the theme list",
-      run: () => api.keymap.dispatch("theme.switch"),
-      swatches: () => COLOR_NAMES.map((name) => namedColor(theme(), name)),
-      note: () => "↑↓ shows each theme live · enter keeps it · esc puts it back",
-    },
-    {
-      id: "themeMode",
-      title: "Light or dark",
-      value: () => api.themeMode ?? "dark",
-      cycle: () => api.keymap.dispatch("theme.switch_mode"),
-      note: () => "some themes have only one",
-    },
-  ];
+  /**
+   * OpenCode's own theme list and light/dark switch; quota's colors follow them. `refocus` gives
+   * the window the keyboard again.
+   */
+  function themeLines(refocus: () => void): OptionLine[] {
+    return [
+      {
+        id: "theme",
+        group: "OpenCode theme",
+        title: "Theme",
+        value: () => "open the theme list",
+        run: () => api.keymap.dispatch("theme.switch"),
+        swatches: () => COLOR_NAMES.map((name) => namedColor(theme(), name)),
+        note: () => "↑↓ shows each theme live · enter keeps it · esc puts it back",
+      },
+      {
+        id: "themeMode",
+        title: "Light or dark",
+        value: () => api.themeMode ?? "dark",
+        cycle: () => {
+          api.keymap.dispatch("theme.switch_mode");
+          // OpenCode's switch also closes its dialogs, which gives the keyboard to whatever had
+          // it before the last dialog opened (the message box); take it back after that.
+          setTimeout(refocus, 50);
+        },
+        note: () => "some themes have only one",
+      },
+    ];
+  }
 
   /**
    * A custom provider's switch, its web address and the key it would send; marked when the server
@@ -522,7 +532,12 @@ export function createSettingsEditor(api: WindowHost, display: DisplayStore) {
     ];
   }
 
-  function optionLines(settingsTab: SettingsTab, snapshot?: QuotaSnapshot): OptionLine[] {
+  /** A Settings page's lines; `refocus` gives the window the keyboard again. */
+  function optionLines(
+    settingsTab: SettingsTab,
+    snapshot?: QuotaSnapshot,
+    refocus: () => void = () => {},
+  ): OptionLine[] {
     if (settingsTab === "providers") return providerLines(snapshot);
     if (!server.saved()) return [];
     const presets = (Object.keys(PRESETS) as PresetName[]).filter(
@@ -530,7 +545,7 @@ export function createSettingsEditor(api: WindowHost, display: DisplayStore) {
     );
     return [
       ...presets.map(presetLine),
-      ...(settingsTab === "colors" ? themeLines : []),
+      ...(settingsTab === "colors" ? themeLines(refocus) : []),
       ...FIELDS.filter((field) => field.tab === settingsTab).map(fieldLine),
     ];
   }
@@ -697,7 +712,9 @@ export function createSettingsEditor(api: WindowHost, display: DisplayStore) {
       const loaded = snapshot();
       return current && loaded ? surfaceTree(loaded, shown().surfaces[current]) : [];
     };
-    const options = createMemo(() => optionLines(props.tab, snapshot()));
+    const options = createMemo(() =>
+      optionLines(props.tab, snapshot(), () => props.box()?.focus()),
+    );
     const lines = createMemo(() =>
       tree().flatMap(({ provider, rowIds }) => [
         treeLine(provider.providerId, provider.providerId, false),
