@@ -407,9 +407,40 @@ describe("init installer planning and merge behavior", () => {
     await applyInitInstallerPlan(plan);
 
     const tui = readJson(join(projectDir, "tui.json"));
-    expect(tui).toEqual({ plugin: ["@slkiser/opencode-quota"] });
+    expect(tui).toEqual({ plugin: ["@slkiser/opencode-quota@4"] });
     const quotaConfig = readJson(join(projectDir, "opencode-quota", "quota-toast.json"));
     expect(quotaConfig.tuiSidebarPanel).toEqual({ enabled: false });
+  });
+
+  it("pins entries that follow npm latest to @4, since OpenCode Quota 5 needs OpenCode 2", async () => {
+    const projectDir = join(tempDir, "project");
+    mkdirSync(projectDir, { recursive: true });
+    writeFileSync(
+      join(projectDir, "opencode.json"),
+      JSON.stringify({ plugin: ["other-plugin@1.0.0", "@slkiser/opencode-quota@latest"] }),
+      "utf8",
+    );
+    writeFileSync(
+      join(projectDir, "tui.json"),
+      JSON.stringify({ plugin: [["@slkiser/opencode-quota", { keep: true }]] }),
+      "utf8",
+    );
+
+    const plan = await planSelections({}, projectDir);
+    expect(plan.edits.find((edit) => edit.kind === "opencode")?.valueChanges).toEqual([
+      'plugin: "@slkiser/opencode-quota@latest" -> "@slkiser/opencode-quota@4" (OpenCode Quota 5 needs OpenCode 2)',
+    ]);
+    await applyInitInstallerPlan(plan);
+
+    expect(readJson(join(projectDir, "opencode.json")).plugin).toEqual([
+      "other-plugin@1.0.0",
+      "@slkiser/opencode-quota@4",
+    ]);
+    expect(readJson(join(projectDir, "tui.json")).plugin).toEqual([
+      ["@slkiser/opencode-quota@4", { keep: true }],
+    ]);
+    const secondPlan = await planSelections({}, projectDir);
+    expect(secondPlan.edits.every((edit) => edit.valueChanges.length === 0)).toBe(true);
   });
 
   it("adds the tui plugin when tui config only references the server entrypoint", async () => {

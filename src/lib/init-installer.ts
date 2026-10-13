@@ -287,6 +287,37 @@ function ensureSchema(root: JsonObject, schemaUrl: string, edit: PlannedConfigEd
   pushSkippedIfChanged(edit, "$schema", root.$schema, schemaUrl);
 }
 
+/** Entries npm resolves to the newest version, which needs OpenCode 2. */
+const QUOTA_LATEST_SPECS = new Set(["@slkiser/opencode-quota", "@slkiser/opencode-quota@latest"]);
+
+/**
+ * Pins quota entries that follow npm `latest` to @4: OpenCode Quota 5 and newer need OpenCode 2,
+ * so on OpenCode 1 they fail to load. Other specs (exact versions, ranges, tags, local paths) stay.
+ */
+function pinLatestQuotaPluginsTo4(root: JsonObject, edit: PlannedConfigEdit): void {
+  const containers: Array<{ container: unknown[]; pathLabel: string }> = [];
+  if (Array.isArray(root.plugin)) containers.push({ container: root.plugin, pathLabel: "plugin" });
+  if (isPlainObject(root.tui) && Array.isArray((root.tui as JsonObject).plugin)) {
+    containers.push({
+      container: (root.tui as JsonObject).plugin as unknown[],
+      pathLabel: "tui.plugin",
+    });
+  }
+  for (const { container, pathLabel } of containers) {
+    container.forEach((entry, index) => {
+      const spec = getPluginSpecFromEntry(entry);
+      if (spec === null || !QUOTA_LATEST_SPECS.has(spec)) return;
+      if (Array.isArray(entry)) entry[0] = QUOTA_PLUGIN_SPEC;
+      else container[index] = QUOTA_PLUGIN_SPEC;
+      edit.changed = true;
+      edit.updatedKeys.push(pathLabel);
+      edit.valueChanges.push(
+        `${pathLabel}: ${JSON.stringify(spec)} -> ${JSON.stringify(QUOTA_PLUGIN_SPEC)} (OpenCode Quota 5 needs OpenCode 2)`,
+      );
+    });
+  }
+}
+
 function appendQuotaPluginIfMissing(params: {
   container: unknown[];
   pathLabel: string;
@@ -696,6 +727,7 @@ async function planOpencodeEdit(params: {
     ensureSchema(root, OPENCODE_SCHEMA_URL, edit);
   }
 
+  pinLatestQuotaPluginsTo4(root, edit);
   const plugin = ensureTopLevelPluginArray(root, edit);
   appendQuotaPluginIfMissing({
     container: plugin,
@@ -1025,6 +1057,7 @@ async function planTuiEdit(params: {
   if (params.selections.interfaces === "web") {
     removeQuotaPluginsFromTui(root, edit);
   } else {
+    pinLatestQuotaPluginsTo4(root, edit);
     const existingPluginSpecs = extractPluginSpecsFromParsedConfig(root);
     if (existingPluginSpecs.some((spec) => isQuotaPluginSpec(spec, "tui"))) {
       edit.skippedValues.push(`tui config already includes ${QUOTA_PLUGIN_SPEC}`);
