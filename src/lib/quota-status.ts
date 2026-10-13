@@ -47,11 +47,9 @@ import {
   getPricingSnapshotSource,
   getRuntimePricingRefreshStatePath,
   getRuntimePricingSnapshotPath,
-  hasProvider,
   isBundledPricingModelId,
   isBundledPricingProviderId,
   listProviders,
-  listProvidersForModelId,
   type PricingSnapshotSource,
   readPricingRefreshState,
 } from "./modelsdev-pricing.js";
@@ -327,14 +325,10 @@ function sourceFileText(source: string, homeDir: string): string {
     : pathText(source, homeDir);
 }
 
-/** A model id the shipped or the downloaded price list has (public names), else undefined. */
-function knownModelId(modelId: string): string | undefined {
-  return isBundledPricingModelId(modelId) || listProvidersForModelId(modelId).length > 0
-    ? modelId
-    : undefined;
-}
-
-/** The session's model as "openai/gpt-5"; an id neither OpenCode nor a price list knows is a placeholder. */
+/**
+ * The session's model as "openai/gpt-5": ids OpenCode or the shipped price list knows, else a
+ * placeholder. A downloaded price list is a file on this machine, so its ids are not trusted.
+ */
 function currentModelText(params: QuotaStatusReportParams): string {
   const { currentModel, currentProviderID } = params;
   if (currentModel) {
@@ -342,11 +336,13 @@ function currentModelText(params: QuotaStatusReportParams): string {
       currentProviderID === undefined
         ? "(unknown provider)"
         : OPENCODE_PROVIDER_IDS.has(currentProviderID) ||
-            isBundledPricingProviderId(currentProviderID) ||
-            hasProvider(currentProviderID)
+            isBundledPricingProviderId(currentProviderID)
           ? currentProviderID
           : "(other provider)";
-    return `${provider}/${knownModelId(currentModel) ?? "(model not in the price lists)"}`;
+    const model = isBundledPricingModelId(currentModel)
+      ? currentModel
+      : "(model not in the shipped price list)";
+    return `${provider}/${model}`;
   }
   if (params.sessionModelLookup === "not_found") return "(the session has no model yet)";
   if (params.sessionModelLookup === "no_session") return "(no session)";
@@ -507,16 +503,18 @@ function settingValueText(rule: SettingRule, value: unknown, homeDir: string): s
       return value === true ? "true" : "false";
     case "choice":
       return rule.values.includes(String(value)) ? String(value) : "(other)";
-    case "number":
-      return typeof value === "number" && Number.isFinite(value) && Math.abs(value) < 1e6
-        ? String(Number(value.toFixed(2)))
+    case "number": {
+      const rounded = typeof value === "number" ? Number(value.toFixed(2)) : Number.NaN;
+      return Number.isFinite(rounded) && Math.abs(rounded) < 1e6
+        ? String(rounded)
         : "(out of range)";
+    }
     case "path":
       return typeof value === "string" ? pathText(value, homeDir) : CUSTOM_PATH;
     case "color":
-      return typeof value === "string" &&
-        (THEME_COLOR_NAMES.includes(value) || /^#[0-9a-f]{6}$/iu.test(value))
-        ? value
+      if (typeof value === "string" && THEME_COLOR_NAMES.includes(value)) return value;
+      return typeof value === "string" && /^#[0-9a-f]{6}$/iu.test(value)
+        ? "(custom color)"
         : "(color)";
     case "separator":
       return typeof value === "string" && SEPARATORS.has(value)
@@ -854,7 +852,15 @@ const present: DebugRule = () => "(text not shown)";
 /** An error's text as our code and HTTP status ("provider_error, http 503"), never its words. */
 const errorKindOf: DebugRule = (value) => errorKind(classifyError(value));
 
-/** Why a row was dropped ("no value", "invalid window"), never the row's own id. */
+/**
+ * A failed login's error, written "account: message" when rows are made: the kind of the
+ * message after the account name, so a number or word in the name is never read as its kind.
+ */
+const accountErrorKindOf: DebugRule = (value) => {
+  const start = value.indexOf(": ");
+  return errorKind(classifyError(start === -1 ? value : value.slice(start + 2)));
+};
+
 /** Why a row was dropped (`validateRows`, `addRow`), never the row's own id. */
 const DROPPED_ROW_REASONS: ReadonlySet<string> = new Set([
   "not an object",
@@ -1153,7 +1159,8 @@ const SETUP_DETAILS: DebugRules = {
     { found: listOf(OPENCODE_PROVIDER_IDS), looked_for: listOf(OPENCODE_PROVIDER_IDS) },
     oneOf("yes", "no", "unreadable"),
   ),
-  ...each(errorKindOf, "error", "live_fetch_error"),
+  error: accountErrorKindOf,
+  live_fetch_error: errorKindOf,
   dropped_row: droppedRow,
 };
 /** A numbered live error ("live_error_1"), shown as its kind like `live_fetch_error`. */
@@ -1289,7 +1296,7 @@ function providerSection(
 function knownModelText(providerId: string, modelId: string): string | undefined {
   const knownProvider =
     OPENCODE_PROVIDER_IDS.has(providerId) || isBundledPricingProviderId(providerId);
-  return knownProvider && knownModelId(modelId) ? `${providerId}/${modelId}` : undefined;
+  return knownProvider && isBundledPricingModelId(modelId) ? `${providerId}/${modelId}` : undefined;
 }
 
 /**

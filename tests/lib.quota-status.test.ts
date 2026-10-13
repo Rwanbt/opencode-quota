@@ -243,7 +243,7 @@ const REPORT_WORDS: readonly string[] = `
   true unbound unit units unknown unpriced unpriced_30d usage v5 value window workspace_root
   written yes yet ~
   environment origin os runtime bun node opencode-quota quota_status status TUI System tab CLI
-  channel version changed_from_defaults setting settings entry entries color separator null
+  channel version changed_from_defaults setting settings entry entries color separator null shipped
   notices price_list_providers selection_note built-in is used prices ignored valid so one lists
   session has model dropped_row timeout login_expired not_configured bad_response no_data no_plan
   repeated object wrong value id label type method authority prominence account window
@@ -356,7 +356,7 @@ const CHANGED_SETTING = [
   String.raw`  - (?:${settingKeysOf(["choice"])}): (?:[\w-]+|\(other\))`,
   String.raw`  - (?:${NUMBER_SETTING_KEYS}): (?:-?\d{1,6}(?:\.\d{1,2})?|\(out of range\)|null)`,
   String.raw`  - (?:${settingKeysOf(["path"])}): (?:${PATH}|null)`,
-  String.raw`  - (?:${settingKeysOf(["color"])}): (?:${THEME_COLOR_NAMES.join("|")}|#[0-9a-fA-F]{6}|\(color\))`,
+  String.raw`  - (?:${settingKeysOf(["color"])}): (?:${THEME_COLOR_NAMES.join("|")}|\(custom color\)|\(color\))`,
   String.raw`  - (?:${settingKeysOf(["separator"])}): (?:" · "|" \| "|" / "|"  "|\(custom separator\))`,
   String.raw`  - (?:${settingKeysOf(["providers", "strings", "names", "rowOrder", "window"])}): ${SMALL} entr(?:y|ies)`,
 ].join("|");
@@ -377,7 +377,7 @@ const FIELD_FORMS: ReadonlyArray<readonly [RegExp, RegExp]> = (
     ],
     [
       /^- current_model: /u,
-      String.raw`- current_model: (?:(?:[\w-]+|\((?:other|unknown) provider\))/(?:gpt-4\.1|\(model not in the price lists\))|\((?:the session has no model yet|no session|unknown)\))`,
+      String.raw`- current_model: (?:(?:[\w-]+|\((?:other|unknown) provider\))/(?:gpt-4\.1|\(model not in the shipped price list\))|\((?:the session has no model yet|no session|unknown)\))`,
     ],
     [
       /^- origin: /u,
@@ -424,10 +424,7 @@ function vocabularyProblems(
     for (const time of line.match(ANY_ISO_TIME) ?? []) {
       if (!new RegExp(`^${DATE}$`, "u").test(time)) problems.push(`time ${time} in: ${line}`);
     }
-    const words = line
-      .replace(ANY_ISO_TIME, " ")
-      .replace(/^( {2}- colors\.\w+: )#[0-9a-f]{6}$/iu, "$1")
-      .split(WORD_SPLIT);
+    const words = line.replace(ANY_ISO_TIME, " ").split(WORD_SPLIT);
     const unknown = words.filter((word) => word !== "" && !vocabulary.has(word));
     const numbers = unknown.filter((word) => /\d/u.test(word));
     for (const word of unknown) {
@@ -936,8 +933,28 @@ describe("buildQuotaStatusReport", () => {
     {
       name: "a short secret as the session's model",
       canary: "lowercasecanary",
-      shows: "- current_model: openai/(model not in the price lists)",
+      shows: "- current_model: openai/(model not in the shipped price list)",
       overrides: { currentModel: "lowercasecanary", currentProviderID: "openai" },
+    },
+    {
+      name: "an inherited object name as the session's provider",
+      canary: "tostring",
+      shows: `- current_model: (other provider)/${KNOWN_MODEL}`,
+      overrides: { currentModel: KNOWN_MODEL, currentProviderID: "toString" },
+    },
+    {
+      name: "a number and a word in a failed login's account name",
+      canary: "lowercasecanary",
+      shows: "- error: provider_error, http 503",
+      overrides: {
+        providers: [
+          snapshot("copilot", {
+            debug: [
+              { key: "error", value: "[Team 429 lowercasecanary]: Billing endpoint HTTP 503" },
+            ],
+          }),
+        ],
+      },
     },
     {
       name: "a short secret as a model of the usage history",
@@ -1197,6 +1214,44 @@ describe("buildQuotaStatusReport", () => {
     expect(text).not.toContain("secretcanary");
   });
 
+  it("names models only from the shipped price list, never a downloaded one", async () => {
+    const dir = join(root, ".cache", "opencode", "opencode-quota");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, "modelsdev-pricing.runtime.min.json"),
+      JSON.stringify({
+        _meta: {
+          source: "https://models.dev/api.json",
+          generatedAt: NOW,
+          units: "USD per 1M tokens",
+        },
+        providers: { lowercasecanary: { "lowercasecanary-model": { input: 1, output: 2 } } },
+      }),
+    );
+    __resetPricingSnapshotForTests();
+
+    const output = await report({
+      currentModel: "lowercasecanary-model",
+      currentProviderID: "lowercasecanary",
+      usage: {
+        totals: { tokens: { processed: 1_000 }, unpricedShare: 1 },
+        models: [
+          {
+            providerID: "lowercasecanary",
+            modelID: "lowercasecanary-model",
+            priced: false,
+            unpricedTokens: 9,
+          },
+        ],
+      } as unknown as UsageReport,
+    });
+
+    expect(output).toContain(
+      "- current_model: (other provider)/(model not in the shipped price list)",
+    );
+    expect(output).not.toContain("lowercasecanary");
+  });
+
   /**
    * A big report where every free field holds random text, and every number and time field a
    * random, digit-only or out-of-range value: ids, labels, accounts, messages, paths, env names,
@@ -1330,7 +1385,7 @@ describe("buildQuotaStatusReport", () => {
             "sidebar.names": { [garbage()]: garbage() },
             "sidebar.hidden": [garbage()],
             "statusLine.detail": pick([garbage(), "bar"]),
-            "toast.seconds": pick([huge, -huge, 15, 2.555, Number.NaN]),
+            "toast.seconds": pick([huge, -huge, 15, 2.555, 999_999.999, Number.NaN]),
             "colors.good": pick([garbage(), word(), "#a1b2c3", "green"]),
             "layout.separator": pick([garbage(), " | "]),
             "providers.anthropic.binaryPath": pick([garbage(), join(root, garbage())]),
@@ -1988,7 +2043,7 @@ describe("buildQuotaStatusReport", () => {
         "  - statusLine.detail: (other)",
         "  - toast.seconds: 15",
         "  - colors.good: (color)",
-        "  - colors.low: #ff0000",
+        "  - colors.low: (custom color)",
         "  - colors.title: accent",
         "  - layout.separator: (custom separator)",
         "  - words.percent: remaining",
@@ -1999,6 +2054,19 @@ describe("buildQuotaStatusReport", () => {
     );
     expect(text).not.toContain("CANARY");
     expect(text).not.toContain("Work");
+  });
+
+  it("checks a number setting's range after rounding it", async () => {
+    const text = section(
+      await report({
+        settings: {
+          settings: changedSettings({ "providers.checking.requestTimeoutMs": 999_999.999 }),
+        },
+      }),
+      "settings",
+    );
+
+    expect(text).toContain("  - providers.checking.requestTimeoutMs: (out of range)");
   });
 
   it.each([

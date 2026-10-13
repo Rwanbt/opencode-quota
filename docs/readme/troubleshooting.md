@@ -11,8 +11,8 @@
 The report starts with `environment`: when it was made, where (`origin`: `/quota_status`, the `quota_status` tool, the TUI System tab, or the terminal command), the OpenCode version and channel, the system, and the runtime. The `settings` section uses `settings.jsonc` keys:
 
 - `providers.off`: switched-off provider ids, or `(none)` when every discovered provider is checked.
-- `changed_from_defaults`: each setting that differs from its default, with its value. A list or names show as a count, a separator or path you typed as `(custom separator)` or `(custom path)`.
-- `current_model`: the session's provider and model, for example `openai/gpt-5`.
+- `changed_from_defaults`: each setting that differs from its default, with its value. A list or names show as a count, and a color, separator or path you typed as `(custom color)`, `(custom separator)` or `(custom path)`.
+- `current_model`: the session's provider and model, for example `openai/gpt-5`. A model the shipped price list does not have shows as `(model not in the shipped price list)`.
 
 The `notices` section counts active, future and expired notices. Pricing settings appear as `providers.pricing.source` and `providers.pricing.autoRefreshDays`.
 
