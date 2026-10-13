@@ -11,7 +11,10 @@ import { CURSOR_CANONICAL_PLUGIN_PACKAGE } from "../src/lib/cursor-detection.js"
 import type { QuotaProviderContext } from "../src/lib/entries.js";
 import { AGY_AUTH_KEYS } from "../src/lib/google-agy.js";
 import { GEMINI_CLI_AUTH_KEYS } from "../src/lib/google-gemini-cli.js";
-import { __resetPricingSnapshotForTests } from "../src/lib/modelsdev-pricing.js";
+import {
+  __resetPricingSnapshotForTests,
+  setPricingSnapshotAutoRefresh,
+} from "../src/lib/modelsdev-pricing.js";
 import { OPENAI_AUTH_SOURCE_KEYS } from "../src/lib/openai.js";
 import {
   QUOTA_PROVIDER_CATALOG,
@@ -244,6 +247,7 @@ const REPORT_WORDS: readonly string[] = `
   written yes yet ~
   environment origin os runtime bun node opencode-quota quota_status status TUI System tab CLI
   channel version changed_from_defaults setting settings entry entries color separator null shipped
+  error_kind local_state_version subscription_state unknown_cursor_models
   notices price_list_providers selection_note built-in is used prices ignored valid so one lists
   session has model dropped_row timeout login_expired not_configured bad_response no_data no_plan
   repeated object wrong value id label type method authority prominence account window
@@ -332,8 +336,9 @@ const NUMBER_LINES: readonly RegExp[] = [
   String.raw`- billing_period: (?:20\d\d-\d\d|\(invalid date\))`,
   String.raw`- custom ${SMALL} check: .*`,
   String.raw`- pricing: source=\w+ generated_at=${TIME} units=(?:USD per 1M tokens|\(other units\))`,
-  String.raw`- staleness: age_ms=[\d,]+ max_age_ms=[\d,]+ stale=(?:true|false)`,
-  String.raw`- providers\.pricing\.autoRefreshDays: \d{1,4}`,
+  String.raw`- staleness: age_ms=(?:[\d,]+|\(out of range\)) max_age_ms=(?:[\d,]+|\(out of range\)) stale=(?:true|false)`,
+  String.raw`- providers\.pricing\.autoRefreshDays: (?:\d{1,4}|\(out of range\))`,
+  String.raw`- (?:error_kind|live_fetch_error|live_error_\w+|refresh_error): [a-z_]+(?:, http \d{3})?`,
   String.raw`- refresh: last_attempt_at=${TIME} last_success_at=${TIME} last_failure_at=${TIME} last_result=\S+`,
   String.raw`- price_list_providers: \d{1,4}`,
   String.raw`- opencode: (?:${SMALL}\.${SMALL}\.${SMALL}|\((?:out of range|unknown version)\)) \([a-z ]+\)`,
@@ -738,13 +743,14 @@ describe("buildQuotaStatusReport", () => {
         debug: [
           { key: "deployment", value: "github.com" },
           { key: "error", value: "Copilot: Billing endpoint HTTP 503" },
+          { key: "error_kind", value: "provider_error, http 503" },
         ],
       }),
       lines: [
         "- state: partial: Provider error 503 (provider_error, http 503)",
         `- checked_at: ${NOW_ISO} (rows from ${new Date(NOW - 60_000).toISOString()})`,
         "- rows: 1\n  - copilot.allowance: 50% left\n- deployment: github.com",
-        "- error: provider_error, http 503",
+        "- error_kind: provider_error, http 503",
       ],
       absent: ["Billing", "not shown"],
     },
@@ -943,14 +949,15 @@ describe("buildQuotaStatusReport", () => {
       overrides: { currentModel: KNOWN_MODEL, currentProviderID: "toString" },
     },
     {
-      name: "a number and a word in a failed login's account name",
+      name: "a failed login's own words, and an error kind that is no error code",
       canary: "lowercasecanary",
-      shows: "- error: provider_error, http 503",
+      shows: "- 1 other detail not shown",
       overrides: {
         providers: [
           snapshot("copilot", {
             debug: [
               { key: "error", value: "[Team 429 lowercasecanary]: Billing endpoint HTTP 503" },
+              { key: "error_kind", value: "lowercasecanary, http 503" },
             ],
           }),
         ],
@@ -1313,6 +1320,7 @@ describe("buildQuotaStatusReport", () => {
       "config_source",
       "auth_selected_path",
       "error",
+      "error_kind",
       "message",
     ];
     const providerIds = Object.keys(QUOTA_PROVIDER_CATALOG);
@@ -2144,6 +2152,19 @@ describe("buildQuotaStatusReport", () => {
     else expect(text).not.toContain("selection_note");
   });
 
+  it("shows a price refresh wait past 9999 days as out of range", async () => {
+    setPricingSnapshotAutoRefresh(987_654_321_098_765);
+    try {
+      const text = section(await report(), "pricing_snapshot");
+
+      expect(text).toContain("- providers.pricing.autoRefreshDays: (out of range)");
+      expect(text).toMatch(/- staleness: age_ms=[\d,]+ max_age_ms=\(out of range\) stale=false/u);
+      expect(text).not.toContain("987,654");
+    } finally {
+      setPricingSnapshotAutoRefresh(0);
+    }
+  });
+
   it.each([
     {
       name: "unreadable history",
@@ -2348,7 +2369,7 @@ describe("buildStatusReportData", () => {
     expect(syntheticSection).toContain("- api_key_source: env:SYNTHETIC_API_KEY");
     // The error message as its kind and status; the access token not at all.
     expect(syntheticSection).toContain(
-      "- error: provider_error, http 503\n- 1 other detail not shown",
+      "- error_kind: provider_error, http 503\n- 1 other detail not shown",
     );
     expect(text).not.toContain(SECRET);
     expect(section(text, "providers")).toContain("- openai: enabled unavailable");

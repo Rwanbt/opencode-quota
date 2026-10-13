@@ -97,6 +97,15 @@ function modelIndex(stop: Stop): number {
   return stop.startsWith("model:") ? Number(stop.slice("model:".length)) : -1;
 }
 
+/** The control lines, top to bottom; the model rows follow them. */
+const CONTROL_STOPS: readonly Stop[] = ["show", "range", "dates", "prices", "breakdown"];
+
+/** A stop's place in the window, top to bottom. */
+function stopPlace(stop: Stop): number {
+  const model = modelIndex(stop);
+  return model >= 0 ? CONTROL_STOPS.length + model : CONTROL_STOPS.indexOf(stop);
+}
+
 /** `from` moved `share` of the way to `to`. */
 function mix(from: RGBA, to: RGBA, share: number): RGBA {
   const step = (a: number, b: number) => a + (b - a) * share;
@@ -493,10 +502,21 @@ export function createUsageTab(
     return list;
   }
 
+  /**
+   * The lit line: the highlighted one, or the nearest line above it while its line is gone
+   * (a report that failed to load has no Breakdown line).
+   */
+  function current(): Stop {
+    const list = stops();
+    if (list.includes(focus())) return focus();
+    const place = stopPlace(focus());
+    return list.filter((stop) => stopPlace(stop) < place).at(-1) ?? "show";
+  }
+
   /** ↑↓: the next line, scrolled into view; past the first or last one the window scrolls. */
   function move(delta: number): ReturnType<WindowKey["run"]> {
     const list = stops();
-    const next = Math.max(0, list.indexOf(focus())) + delta;
+    const next = list.indexOf(current()) + delta;
     if (next < 0 || next >= list.length) return false;
     setFocus(list[next]);
     if (next === 0) scroll()?.scrollTo(0);
@@ -505,7 +525,7 @@ export function createUsageTab(
 
   /** ←/→ on a line with options: the other one, or the next range. */
   function change(delta: number): ReturnType<WindowKey["run"]> {
-    switch (focus()) {
+    switch (current()) {
       case "show":
         chooseMode(mode() === "cost" ? "tokens" : "cost");
         return;
@@ -522,7 +542,7 @@ export function createUsageTab(
 
   /** Space or enter: change the line, type the dates, download prices or open the model. */
   function use(): ReturnType<WindowKey["run"]> {
-    const stop = focus();
+    const stop = current();
     if (stop === "dates") return typeDates();
     if (stop === "prices") return void downloadPrices();
     const model = modelIndex(stop);
@@ -533,7 +553,7 @@ export function createUsageTab(
   function View(props: { width: number; keyTarget: () => Renderable | undefined }): JSX.Element {
     const theme = () => api.theme as UsageTheme;
     windowBox = props.keyTarget;
-    const lit = (stop: Stop) => focus() === stop && dateFocus() === undefined;
+    const lit = (stop: Stop) => current() === stop && dateFocus() === undefined;
     // A key's `window` action runs while the window has the keyboard, its `date` action while a
     // date input inside the window has it. A key without the action, or an action that returns
     // false, goes on to the window's own keys; letters and digits a date has no key for reach

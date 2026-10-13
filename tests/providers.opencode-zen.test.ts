@@ -132,6 +132,7 @@ describe("OpenCode Zen provider", () => {
     expect(fetched.debug).toEqual([
       { key: "console_auth_state", value: authState },
       { key: "error", value: `OpenCode Zen: ${message}` },
+      { key: "error_kind", value: code },
     ]);
     expect(http).not.toHaveBeenCalled();
   });

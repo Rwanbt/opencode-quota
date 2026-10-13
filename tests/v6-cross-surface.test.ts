@@ -1309,6 +1309,33 @@ describe("v6 surfaces on the quota snapshot", () => {
     await tui.dispose();
   });
 
+  it("lights the nearest line above when the lit model row is gone after a reload fails", async () => {
+    writeUsageHistory();
+    const tui = await startHosts();
+    const usageTab = () => tui.render("session.composer.top", { sessionID: "ses_1" });
+    tui.typed("/quota_usage 30d");
+    await vi.waitFor(() => expect(words(usageTab())).toContain("Breakdown"));
+    tui.press(11, "down");
+    tui.press(11, "down");
+    tui.press(11, "down");
+    expect(litUsageLines(usageTab())).toEqual(["quota-usage-model-0"]);
+
+    // Away to Limits and back: the reload fails, so there is no Breakdown line nor model rows.
+    tui.handlers.usage = async () => {
+      throw new Error("usage history unreadable");
+    };
+    tui.press(10, "tab");
+    usageTab();
+    tui.press(10, "shift+tab");
+    await vi.waitFor(() =>
+      expect(words(usageTab())).toContainEqual(expect.stringContaining("Couldn't load the usage")),
+    );
+    expect(litUsageLines(usageTab())).toEqual(["quota-usage-prices"]);
+    tui.press(11, "up");
+    expect(litUsageLines(usageTab())).toEqual(["quota-usage-range"]);
+    await tui.dispose();
+  });
+
   it("keeps the model popup's esc whole on a 32 × 16 terminal", async () => {
     mocks.terminal = { width: 32, height: 16 };
     writeUsageHistory("claude-sonnet-4-5-with-a-very-long-model-name");

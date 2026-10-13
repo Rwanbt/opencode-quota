@@ -113,6 +113,7 @@ describe("alibaba-token-plan provider", () => {
           value:
             "Alibaba Personal Token Plan: Alibaba Cloud CLI (bl) was not found on the trusted PATH.",
         },
+        { key: "error_kind", value: "local_tool" },
       ],
     ],
     [
@@ -136,6 +137,7 @@ describe("alibaba-token-plan provider", () => {
           value:
             "Alibaba Personal Token Plan: Alibaba Cloud console session is missing or expired. Run `bl auth login --console`.",
         },
+        { key: "error_kind", value: "login_expired" },
       ],
     ],
     [
@@ -157,6 +159,7 @@ describe("alibaba-token-plan provider", () => {
           key: "error",
           value: "Alibaba Personal Token Plan: Timed out while running the Alibaba Cloud CLI.",
         },
+        { key: "error_kind", value: "timeout" },
       ],
     ],
     [

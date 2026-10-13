@@ -105,6 +105,7 @@ describe("rowsFromProviderResult on the row contract", () => {
       { key: "dropped_row", value: "anthropic.five_hour: repeated row" },
       { key: "dropped_row", value: "anthropic.Bad Key: invalid id" },
       { key: "error", value: "[Claude Home]: HTTP 429 slow down" },
+      { key: "error_kind", value: "rate_limited, http 429" },
     ]);
   });
 

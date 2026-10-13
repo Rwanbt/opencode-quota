@@ -14,7 +14,14 @@
  */
 import { stat } from "node:fs/promises";
 import { homedir } from "node:os";
-import { classifyError, describeError, isQuotaErrorCode, LOCAL_TOOLS } from "../core/errors.js";
+import {
+  classifyError,
+  describeError,
+  errorKind,
+  httpStatus,
+  isQuotaErrorCode,
+  LOCAL_TOOLS,
+} from "../core/errors.js";
 import type { Amount, ProviderSnapshot, QuotaError, QuotaRow } from "../core/types.js";
 import type { UsageReport } from "../core/usage.js";
 import { isQuotaWindow } from "../core/windows.js";
@@ -249,6 +256,17 @@ function dateText(text: string): string {
 /** A whole number from `min` to `max`, else "(out of range)": a long number is no count. */
 function inRange(value: number, min: number, max: number): string {
   return Number.isInteger(value) && value >= min && value <= max ? String(value) : "(out of range)";
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+/** The most days `providers.pricing.autoRefreshDays` shows: a longer wait is no setting. */
+const MAX_REFRESH_DAYS = 9999;
+
+/** A time span in ms up to `MAX_REFRESH_DAYS` days, else "(out of range)". */
+function msText(ms: number): string {
+  return Number.isFinite(ms) && ms >= 0 && ms <= MAX_REFRESH_DAYS * DAY_MS
+    ? fmtInt(ms)
+    : "(out of range)";
 }
 
 /** "2.1.3": the first three numbers of a version, each up to 999; undefined for no version. */
@@ -661,20 +679,6 @@ async function pathsSection(homeDir: string): Promise<ReportSection> {
   ]);
 }
 
-/** An HTTP status this file shows: a whole number from 100 to 599. */
-function httpStatus(status: unknown): number | undefined {
-  return typeof status === "number" && Number.isInteger(status) && status >= 100 && status < 600
-    ? status
-    : undefined;
-}
-
-/** An error's code and HTTP status: "provider_error, http 503". */
-function errorKind(error: QuotaError): string {
-  if (!isQuotaErrorCode(error.code)) return "(unknown error code)";
-  const status = httpStatus(error.status);
-  return status === undefined ? error.code : `${error.code}, http ${status}`;
-}
-
 /**
  * The login source and its failures: each failed login's integration id (when OpenCode or this
  * plugin knows it), failure kind and time, never its label or the error's own words.
@@ -852,13 +856,10 @@ const present: DebugRule = () => "(text not shown)";
 /** An error's text as our code and HTTP status ("provider_error, http 503"), never its words. */
 const errorKindOf: DebugRule = (value) => errorKind(classifyError(value));
 
-/**
- * A failed login's error, written "account: message" when rows are made: the kind of the
- * message after the account name, so a number or word in the name is never read as its kind.
- */
-const accountErrorKindOf: DebugRule = (value) => {
-  const start = value.indexOf(": ");
-  return errorKind(classifyError(start === -1 ? value : value.slice(start + 2)));
+/** A failed login's kind as rows.ts wrote it ("provider_error, http 503"), checked again. */
+const writtenErrorKind: DebugRule = (value) => {
+  const match = /^([a-z_]+)(?:, http [1-5]\d{2})?$/u.exec(value);
+  return match && isQuotaErrorCode(match[1]) ? value : undefined;
 };
 
 /** Why a row was dropped (`validateRows`, `addRow`), never the row's own id. */
@@ -1159,7 +1160,7 @@ const SETUP_DETAILS: DebugRules = {
     { found: listOf(OPENCODE_PROVIDER_IDS), looked_for: listOf(OPENCODE_PROVIDER_IDS) },
     oneOf("yes", "no", "unreadable"),
   ),
-  error: accountErrorKindOf,
+  error_kind: writtenErrorKind,
   live_fetch_error: errorKindOf,
   dropped_row: droppedRow,
 };
@@ -1218,6 +1219,8 @@ function debugRows(
   const rows: ReportKvRow[] = [];
   let hidden = 0;
   for (const item of provider.debug) {
+    // A failed login's own words: its `error_kind` detail, made with it, shows its kind.
+    if (item.key === "error") continue;
     const customKey = customCheckKey(item.key, customs);
     const rule = customKey
       ? CUSTOM_CHECK
@@ -1384,11 +1387,11 @@ async function pricingSection(
     },
     {
       key: "staleness",
-      value: `age_ms=${fmtInt(health.ageMs)} max_age_ms=${fmtInt(health.maxAgeMs)} stale=${health.stale === true}`,
+      value: `age_ms=${msText(health.ageMs)} max_age_ms=${msText(health.maxAgeMs)} stale=${health.stale === true}`,
     },
     {
       key: "providers.pricing.autoRefreshDays",
-      value: fmtInt(Math.round(maxAgeMs / (24 * 60 * 60 * 1000))),
+      value: inRange(Math.round(maxAgeMs / DAY_MS), 1, MAX_REFRESH_DAYS),
     },
   );
   if (refreshState) {

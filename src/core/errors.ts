@@ -27,6 +27,20 @@ export function isQuotaErrorCode(code: unknown): code is QuotaErrorCode {
   return typeof code === "string" && Object.hasOwn(ERROR_CODES, code);
 }
 
+/** An HTTP status as shown: a whole number from 100 to 599. */
+export function httpStatus(status: unknown): number | undefined {
+  return typeof status === "number" && Number.isInteger(status) && status >= 100 && status < 600
+    ? status
+    : undefined;
+}
+
+/** An error's code and HTTP status, "provider_error, http 503": never its message's words. */
+export function errorKind(error: QuotaError): string {
+  if (!isQuotaErrorCode(error.code)) return "(unknown error code)";
+  const status = httpStatus(error.status);
+  return status === undefined ? error.code : `${error.code}, http ${status}`;
+}
+
 /** Local programs named in provider messages, longest names first. */
 export const LOCAL_TOOLS: readonly string[] = ["Alibaba Cloud CLI", "Claude CLI"];
 

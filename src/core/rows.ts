@@ -7,7 +7,7 @@
 import { sanitizeSingleLineDisplaySnippet } from "../lib/display-sanitize.js";
 import { QUOTA_PROVIDERS_AGGREGATE_ID } from "../lib/quota-providers.js";
 import type { ProviderFetchResult } from "../providers/contract.js";
-import { classifyError } from "./errors.js";
+import { classifyError, errorKind } from "./errors.js";
 import { publicDebugValue } from "./redact.js";
 import type { ProviderFetch } from "./store.js";
 import type { DebugDetail, QuotaRow } from "./types.js";
@@ -149,7 +149,11 @@ export function rowsFromProviderResult(
   const errors = result.accounts.flatMap((account) =>
     account.errors.map((error) => ({ account: account.name, message: error.message })),
   );
-  for (const error of errors) debug.push(detail("error", `${error.account}: ${error.message}`));
+  for (const error of errors) {
+    debug.push(detail("error", `${error.account}: ${error.message}`));
+    // Read from the message alone, so a number or word in the account name is never its kind.
+    debug.push(detail("error_kind", errorKind(classifyError(error.message, nowMs))));
+  }
   const [firstError] = errors;
   if (firstError) {
     return { rows, ...logins, error: classifyError(firstError.message, nowMs), debug };

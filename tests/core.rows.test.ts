@@ -176,7 +176,20 @@ describe("rowsFromProviderResult", () => {
     expect(fetched.debug).toEqual([
       { key: "auth_source", value: "opencode_db" },
       { key: "error", value: "[Claude Work]: Token expired" },
+      { key: "error_kind", value: "login_expired" },
       { key: "error", value: "[Claude Other]: HTTP 500" },
+      { key: "error_kind", value: "provider_error, http 500" },
+    ]);
+  });
+
+  it("reads each error's kind from its message, never from the account name before it", () => {
+    const fetched = contractRows("openai", {
+      ...answer({ name: "[OpenAI Work: 429 Ops]", errors: ["HTTP 503"] }),
+      debug: [],
+    });
+    expect(fetched.debug).toEqual([
+      { key: "error", value: "[OpenAI Work: 429 Ops]: HTTP 503" },
+      { key: "error_kind", value: "provider_error, http 503" },
     ]);
   });
 
@@ -286,6 +299,7 @@ describe("rowsFromProviderResult", () => {
       { key: "request", value: 'org_id=[id] "user_id":[id] accountId: [id]' },
       { key: "account_count", value: "2" },
       { key: "error", value: "[email]: HTTP 401" },
+      { key: "error_kind", value: "login_expired" },
     ]);
   });
 
@@ -534,6 +548,7 @@ describe("rowsFromProviderResult: the custom providers", () => {
           "outcome=http_error http_status=503 credential_source=explicit_env checked_paths=~/.config/opencode/opencode.json | ~/.local/share/opencode/opencode.db",
       },
       { key: "error", value: "Team: HTTP 503" },
+      { key: "error_kind", value: "provider_error, http 503" },
     ]);
   });
 
