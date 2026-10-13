@@ -598,7 +598,9 @@ export function createSettingsEditor(api: WindowHost, display: DisplayStore) {
     const settings = shown();
     const snapshot = host.quota.snapshot(sessionID);
     const message =
-      snapshot && settings.surfaces.toast.enabled && toastText(snapshot, settings, Date.now());
+      snapshot &&
+      settings.surfaces.toast.enabled &&
+      toastText(snapshot, settings, Date.now(), api.renderer.width);
     if (!message) return;
     const duration = settings.toast.seconds * 1000;
     api.ui.toast.show({ variant: "info", title: TOAST_TITLE, message, duration });

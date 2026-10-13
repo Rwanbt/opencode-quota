@@ -464,9 +464,18 @@ export function bigStatusLine(input: StatusInput, width?: number): Line | undefi
   return { id: group.providerId, segments: width === undefined ? segments : clip(segments, width) };
 }
 
+/** The name column of plain lines: the provider and the row's label. */
+const PLAIN_NAME_WIDTH = 19;
+/** A plain line's bar cells at the least; with less room the line has no bar. */
+const PLAIN_BAR_MIN = 3;
+
+/** A toast's bars: the shape, at most `width` cells, in lines of at most `room` columns. */
+export type PlainBar = { shape: BarShape; width: number; room: number };
+
 /**
  * §4.4: plain text, one line per visible row, then a line per provider error. Toasts and
- * the CLI print these.
+ * the CLI print these. With `bar` (toasts) a row's percent has a bar before it, shorter when
+ * the line would not fit, and "runs out in" goes on a line of its own under the bar.
  */
 export function plainLines(params: {
   groups: Group[];
@@ -475,19 +484,43 @@ export function plainLines(params: {
   sessionTokens?: SessionTokens;
   /** "runs out in 2h" after each row that runs out before its reset. */
   runsOut?: boolean;
+  bar?: PlainBar;
 }): string[] {
-  const { words, nowMs } = params;
+  const { words, nowMs, bar } = params;
+  const word = percentWord(words);
+  // "100% remaining": the number right-aligned, then its word.
+  const percentWidth = 4 + (word ? word.length + 1 : 0);
+  const resetWidth = Math.max(
+    0,
+    ...params.groups.flatMap((group) =>
+      group.rows.map(({ row }) =>
+        row.percentRemaining === undefined ? 0 : columnsOf(resetText(row, nowMs, words)),
+      ),
+    ),
+  );
+  const barRoom = bar ? bar.room - (PLAIN_NAME_WIDTH + 1 + 1 + percentWidth + 2 + resetWidth) : 0;
+  const barWidth = bar && bar.shape !== "none" ? Math.min(bar.width, barRoom) : 0;
+  const barLine = (row: QuotaRow, name: string, percent: number): string[] => {
+    const [filled, empty] = barParts(bar?.shape ?? "none", percent, barWidth);
+    const number = percentText(words, percent, false).padStart(4);
+    const percentWords = (word ? `${number} ${word}` : number).padEnd(percentWidth);
+    const line = `${name} ${filled}${empty} ${percentWords}  ${resetText(row, nowMs, words)}`;
+    const runsOut = runsOutText(params.runsOut, row, nowMs, words);
+    const under = " ".repeat(PLAIN_NAME_WIDTH + 1);
+    return runsOut ? [line.trimEnd(), `${under}${runsOut}`] : [line.trimEnd()];
+  };
   const lines = params.groups.flatMap((group) => {
-    const rows = group.rows.map(({ row, label }) => {
-      const name = fit(`${group.title} ${label}`, 19);
-      if (row.percentRemaining === undefined) return `${name} ${rowValueText(row)}`.trimEnd();
+    const rows = group.rows.flatMap(({ row, label }) => {
+      const name = fit(`${group.title} ${label}`, PLAIN_NAME_WIDTH);
+      if (row.percentRemaining === undefined) return [`${name} ${rowValueText(row)}`.trimEnd()];
+      if (barWidth >= PLAIN_BAR_MIN) return barLine(row, name, row.percentRemaining);
       const percent = percentText(words, row.percentRemaining, true).padEnd(13);
       const line = `${name} ${percent} ${resetText(row, nowMs, words)}`.trimEnd();
       const runsOut = runsOutText(params.runsOut, row, nowMs, words);
-      return runsOut ? `${line}  ${runsOut}` : line;
+      return [runsOut ? `${line}  ${runsOut}` : line];
     });
     const state = groupState(group, nowMs);
-    return state ? [...rows, `${fit(group.title, 19)} ${state.text}`] : rows;
+    return state ? [...rows, `${fit(group.title, PLAIN_NAME_WIDTH)} ${state.text}`] : rows;
   });
   return params.sessionTokens
     ? [...lines, `Session  ${sessionTokensText(params.sessionTokens)}`]

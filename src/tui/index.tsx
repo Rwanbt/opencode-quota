@@ -120,6 +120,7 @@ const plugin = Plugin.define({
     const toasts = createToasts({
       show: (toast) => api.ui.toast.show(toast),
       display: display.shown,
+      terminalWidth: () => api.renderer.width,
       quota: draftQuota,
       isChildSession,
     });

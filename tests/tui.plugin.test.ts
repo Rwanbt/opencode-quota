@@ -8,7 +8,7 @@ import type { ProviderSnapshot, QuotaSnapshot, ResetNotice } from "../src/core/t
 import type { QuotaClient } from "../src/tui/client.js";
 import { type DisplaySettings, defaultDisplaySettings } from "../src/tui/display.js";
 import plugin from "../src/tui/index.tsx";
-import { createToasts, type TurnEnd } from "../src/tui/toasts.js";
+import { createToasts, type TurnEnd, toastRoom } from "../src/tui/toasts.js";
 
 const NOW = Date.parse("2026-10-10T12:00:00.000Z");
 
@@ -69,6 +69,7 @@ function startToasts(answer: QuotaSnapshot | undefined, change: (d: DisplaySetti
   const toasts = createToasts({
     show,
     display: () => display,
+    terminalWidth: () => 120,
     quota: { refresh } as unknown as QuotaClient,
     isChildSession: (sessionID) => sessionID === "child",
     now: () => NOW,
@@ -131,8 +132,15 @@ describe("quota toasts", () => {
     await toasts.afterTurn(trigger, "ses_1");
     expect(refresh).toHaveBeenCalledWith("turn", "ses_1");
     expect(show.mock.calls.map(([toast]) => toast.message)).toEqual(
-      shown ? [`Claude Weekly       ${answer === LOW ? "10" : "80"}% left`] : [],
+      shown
+        ? [`Claude Weekly       ${answer === LOW ? "█░░░░░░░  10%" : "██████░░  80%"} left`]
+        : [],
     );
+  });
+
+  it("fits a toast's text in OpenCode's toast: 60 columns at most, 6 fewer than the terminal", () => {
+    // Inside the toast: a border and 2 columns of padding on each side.
+    expect([toastRoom(200), toastRoom(66), toastRoom(50)]).toEqual([54, 54, 38]);
   });
 
   it("never asks or shows anything for a subagent session", async () => {
@@ -151,6 +159,7 @@ describe("quota toasts", () => {
     const toasts = createToasts({
       show,
       display: defaultDisplaySettings,
+      terminalWidth: () => 120,
       quota: { refresh: async () => answer } as unknown as QuotaClient,
       isChildSession: () => false,
       now: () => NOW,
@@ -224,6 +233,7 @@ describe("quota toasts", () => {
         display.toast.resetNotice = "all";
         return display;
       },
+      terminalWidth: () => 120,
       quota: {
         refresh: () =>
           new Promise<QuotaSnapshot | undefined>((resolve) => {
@@ -306,7 +316,7 @@ function startTui(route: Route = { type: "home" }) {
   let renderApp: () => unknown = () => null;
   const context = {
     location: { directory: process.cwd() },
-    renderer: { currentFocusedEditor: editor as typeof editor | null },
+    renderer: { currentFocusedEditor: editor as typeof editor | null, width: 120 },
     client: { rpc: vi.fn(() => rpc) },
     storage: {
       store: vi.fn((_key: string, options: { initial: unknown }) => [options.initial, vi.fn()]),

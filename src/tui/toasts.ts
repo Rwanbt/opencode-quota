@@ -2,7 +2,7 @@
  * Quota toasts (§4.4). OpenCode shows one toast at a time, so quota takes a turn only when
  * the display settings say so: after compaction and when every provider fails by default;
  * after each reply, after a question, and on a limit reset only when turned on. Toasts are
- * plain text (OpenCode colors only their border).
+ * plain text (OpenCode colors only their border), with bars in the sidebar's bar shape.
  *
  * Reset notices that arrive together show as one toast. While a turn's toast is being made,
  * they wait and show after it, so the turn's toast does not replace them at once. When the TUI
@@ -30,6 +30,8 @@ export type TurnEnd = "reply" | "compaction" | "question";
 export type ToastHost = {
   show: (toast: ToastOptions) => void;
   display: () => DisplaySettings;
+  /** The terminal's columns, which a toast's width follows. */
+  terminalWidth: () => number;
   quota: QuotaClient;
   /** Subagent (child) sessions never show quota toasts. */
   isChildSession: (sessionID: string) => boolean;
@@ -48,11 +50,20 @@ export type Toasts = {
   cancel(): void;
 };
 
-/** The rows the Toast tab shows, one line each, then the session tokens. */
+/**
+ * The columns of a toast's text: OpenCode's toast is at most 60 columns and 6 fewer than the
+ * terminal, inside a border and 2 columns of padding on each side.
+ */
+export function toastRoom(terminalWidth: number): number {
+  return Math.min(60, terminalWidth - 6) - 6;
+}
+
+/** The rows the Toast tab shows, one line each with its bar, then the session tokens. */
 export function toastText(
   snapshot: QuotaSnapshot,
   display: DisplaySettings,
   nowMs: number,
+  terminalWidth: number,
 ): string {
   const words = snapshot.words ?? DEFAULT_WORDS;
   return plainLines({
@@ -60,6 +71,11 @@ export function toastText(
     words,
     nowMs,
     runsOut: display.runsOut.toast,
+    bar: {
+      shape: display.layout.bar,
+      width: display.layout.barWidth,
+      room: toastRoom(terminalWidth),
+    },
     ...(display.toast.sessionTokens && snapshot.sessionTokens
       ? { sessionTokens: snapshot.sessionTokens }
       : {}),
@@ -122,7 +138,7 @@ export function createToasts(host: ToastHost): Toasts {
     );
     const duration = display.toast.seconds * 1000;
     if (wantsTurnToast(display, trigger, anyLow)) {
-      const message = toastText(snapshot, display, nowMs);
+      const message = toastText(snapshot, display, nowMs, host.terminalWidth());
       if (message) host.show({ variant: "info", title: TOAST_TITLE, message, duration });
       return;
     }

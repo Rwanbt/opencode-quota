@@ -525,6 +525,39 @@ describe("view text", () => {
     });
   });
 
+  it("gives toast rows a bar that fits the toast, with runs out under the bar", () => {
+    const base = { groups: groups("toast", [CLAUDE]), words: DEFAULT_WORDS, nowMs: NOW };
+    const toast = { ...base, runsOut: true, bar: { shape: "blocks", width: 8, room: 54 } } as const;
+    const remaining = { ...toast, words: { ...DEFAULT_WORDS, percent: "remaining" as const } };
+    const lines = {
+      left: plainLines(toast),
+      // A longer word leaves the bar less room; with too little, or with bars off, there is none.
+      remaining: plainLines({ ...remaining, bar: { ...toast.bar, room: 48 } }),
+      narrow: plainLines({ ...remaining, bar: { ...toast.bar, room: 44 } }),
+      none: plainLines({ ...toast, bar: { ...toast.bar, shape: "none" } }),
+    };
+    expect(lines).toEqual({
+      left: [
+        "Claude 5h           █████░░░  58% left  2h 14m",
+        "Claude Weekly       █░░░░░░░  12% left  3d 4h",
+        "                    runs out in 12h 33m",
+      ],
+      remaining: [
+        "Claude 5h           ███░░  58% remaining  2h 14m",
+        "Claude Weekly       █░░░░  12% remaining  3d 4h",
+        "                    runs out in 12h 33m",
+      ],
+      narrow: [
+        "Claude 5h           58% remaining 2h 14m",
+        "Claude Weekly       12% remaining 3d 4h  runs out in 12h 33m",
+      ],
+      none: plainLines({ ...base, runsOut: true }),
+    });
+    for (const line of [...lines.left, ...lines.remaining]) {
+      expect(line.length).toBeLessThanOrEqual(48);
+    }
+  });
+
   it("writes plain lines for toasts and the CLI, errors and session tokens last", () => {
     expect(
       plainLines({

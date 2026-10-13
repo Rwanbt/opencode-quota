@@ -59,7 +59,7 @@ The `words` settings apply to the sidebar, status line, toasts, `/quota`, and te
 - Sidebar shows a bar per row and session tokens. Click its title to collapse it. `sidebar.names` holds row names by row id. The collapsed sidebar, status line and quota window's Limits tab use those names too.
 - Collapsed shows one line per provider. `collapsed.window` picks a window per provider id.
 - Status line shows under the message box when no sidebar panel with quota is on screen: the window is too narrow for the sidebar, the sidebar is closed, or `sidebar.show` is off. `statusLine.withSidebar: true` shows it next to the sidebar too. While its Layout page is open, it shows whenever `statusLine.show` is on. It uses the room OpenCode's footer leaves free. `statusLine.window` picks its own window per provider. The `‹ ›` window picker on each page changes only that page's setting. Scroll with the mouse wheel or click `‹` and `+N ›` when providers do not fit.
-- Toasts appear after compaction, when every provider fails, and after a reply once a limit is getting low (below `colors.warningBelow`, 50% left by default), for 9 seconds by default. `toast.names` holds their row names. Renaming a row on Sidebar or Toast changes that page's names only. Toasts appear only in the TUI.
+- Toasts appear after compaction, when every provider fails, and after a reply once a limit is getting low (below `colors.warningBelow`, 50% left by default), for 9 seconds by default. Each row has a bar, shorter when the toast is narrow. `toast.names` holds their row names. Renaming a row on Sidebar or Toast changes that page's names only. Toasts appear only in the TUI.
 
 `/quota`, `/quota_usage`, `/quota_status` and `/quota_settings` open the quota window on Limits, Usage, System and the first Settings tab. The 4.x and 5.x `/tokens_*` commands are other names for `/quota_usage` ranges until `system.oldCommands` is off; see [Updating](updating.md#moving-from-5x).
 
@@ -177,7 +177,7 @@ Roles are `good`, `warning`, `low`, `empty`, `title`, `provider`, `account`, `la
 
 | Setting | Default | Values |
 | --- | --- | --- |
-| `layout.bar` | `"blocks"` | `blocks`, `shades`, `line`, `squares`, `dots`, `none`. |
+| `layout.bar` | `"blocks"` | `blocks`, `shades`, `line`, `squares`, `dots`, `none`. Every place and the Limits tab use it; with `none`, Limits keeps a thin line for its pace mark. |
 | `layout.barWidth` | `8` | Whole number 1–30. |
 | `layout.indent` | `1` | Whole number 0–4. |
 | `layout.labelWidth` | `8` | Whole number 3–20. |

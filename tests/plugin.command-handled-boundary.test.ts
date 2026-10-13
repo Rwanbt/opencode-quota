@@ -67,6 +67,7 @@ function startTui() {
   const context = {
     location: { directory: process.cwd() },
     client: { rpc: vi.fn(() => rpc) },
+    renderer: { width: 120 },
     theme: { text: { base: "base", muted: "muted" } },
     storage: {
       store: (_key: string, options: { initial: unknown }) => [options.initial, async () => {}],
