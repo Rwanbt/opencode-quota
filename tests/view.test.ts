@@ -402,6 +402,17 @@ describe("view text", () => {
     ]);
   });
 
+  it("keeps a space before a long reset time on a collapsed line", () => {
+    const lines = collapsedLines({
+      groups: groups("collapsed", [CLAUDE]),
+      ...drawn,
+      nowMs: NOW + 7 * MINUTE,
+      width: 60,
+      window: {},
+    });
+    expect(lines.map(lineText)).toEqual(["Claude    7d   █░░░░░░░  12% 3d 3h 53m"]);
+  });
+
   it("shows the error next to the rows kept from before, collapsed and on the status line", () => {
     const expired = { ...CLAUDE, error: { code: "login_expired" } } as const;
     const collapsed = collapsedLines({

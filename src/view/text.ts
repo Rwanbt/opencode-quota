@@ -279,7 +279,11 @@ export function collapsedLines(input: CollapsedInput): Line[] {
           },
           error
             ? { ...error, text: `  ${error.text}` }
-            : { text: resetText(picked.row, nowMs, words).padStart(8), role: "reset", percent },
+            : {
+                text: ` ${resetText(picked.row, nowMs, words).padStart(7)}`,
+                role: "reset",
+                percent,
+              },
         ],
         input.width,
       ),
