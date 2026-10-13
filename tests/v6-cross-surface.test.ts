@@ -610,7 +610,6 @@ describe("v6 surfaces on the quota snapshot", () => {
         "Settings",
         "Layout",
         "Colors",
-        "Words",
         "Providers",
         "esc",
         "Copilot  pro",
@@ -624,16 +623,14 @@ describe("v6 surfaces on the quota snapshot", () => {
     expect(quotaWindow()).not.toContain("Close");
 
     // /quota_usage opens it on Usage (its ranges; the window starts without the keyboard, so no
-    // key hint), /quota_status on System, /quota_settings on the first Settings tab.
+    // key hint), /quota_status on System, /quota_settings on Layout's first page, All places.
     await tui.command("usage").run();
     const usageKeys = "Session + subagents";
     await vi.waitFor(() => expect(quotaWindow()).toContain(usageKeys));
     await tui.command("status").run();
     expect(quotaWindow()).toContainEqual(expect.stringContaining("Copy the report"));
     await tui.command("settings").run();
-    expect(quotaWindow()).toContainEqual(
-      expect.stringContaining("Show the Quota panel in the session sidebar"),
-    );
+    expect(quotaWindow()).toContainEqual(expect.stringContaining("Layout preset"));
 
     // The export file (version 3) and the gauges follow the snapshot without asking a provider
     // again.
@@ -915,31 +912,56 @@ describe("v6 surfaces on the quota snapshot", () => {
 
     it("walks Layout's pages with ←/→ on its first line, and goes back to the last page", async () => {
       const { tui, windowTree } = await openSettings("Layout");
-      // /quota_settings opens Layout on Sidebar, its page line lit.
-      expect(activeLabels(windowTree())).toEqual(expect.arrayContaining(["Layout", "Sidebar"]));
+      // /quota_settings opens Layout on All places, its page line lit.
+      expect(activeLabels(windowTree())).toEqual(expect.arrayContaining(["Layout", "All places"]));
       expect(findAll(windowTree(), (node) => node.props?.id === "quota-settings.pages")).toEqual([
         expect.objectContaining({
           props: expect.objectContaining({ backgroundColor: "action-bg" }),
         }),
       ]);
+
+      // All places: the layout lines, Wording above the words lines it sets, then What shows.
+      await vi.waitFor(() => expect(settingLine(windowTree(), "words.detail")).not.toEqual([]));
+      const lineIds = findAll(windowTree(), (node) =>
+        String(node.props?.id ?? "").startsWith("quota-settings."),
+      ).map((node) => String(node.props.id).slice("quota-settings.".length));
+      expect(lineIds).toEqual([
+        "pages",
+        "preset.layout",
+        "layout.bar",
+        "layout.barWidth",
+        "layout.indent",
+        "layout.labelWidth",
+        "layout.providerGap",
+        "layout.separator",
+        "preset.words",
+        "words.percent",
+        "words.reset",
+        "words.resetDecimals",
+        "words.detail",
+        "words.onlyCurrentModel",
+        "words.sessionTokens",
+      ]);
+      expect(words(windowTree())).toEqual(expect.arrayContaining(["Words", "What shows"]));
+      expect(words(settingLine(windowTree(), "preset.words"))).toContain(
+        "sets Percent and Reset times",
+      );
+      expect(words(settingLine(windowTree(), "preset.layout"))).toContain(
+        "sets Bar width and the 3 Spacing lines",
+      );
+
       tui.press(11, "right");
-      expect(activeLabels(windowTree())).toContain("Collapsed");
-      tui.press(11, "left");
       expect(activeLabels(windowTree())).toContain("Sidebar");
+      tui.press(11, "left");
+      expect(activeLabels(windowTree())).toContain("All places");
       // From the first page, ← goes round to the last.
       tui.press(11, "left");
-      expect(activeLabels(windowTree())).toContain("All places");
+      expect(activeLabels(windowTree())).toContain("Toast");
 
-      // All places has the What shows lines; Words keeps only numbers and reset times.
-      await vi.waitFor(() => expect(settingLine(windowTree(), "words.detail")).not.toEqual([]));
-      expect(settingLine(windowTree(), "layout.barWidth")).not.toEqual([]);
-      clickable(windowTree(), "Words").props.onMouseUp();
-      await vi.waitFor(() => expect(settingLine(windowTree(), "words.percent")).not.toEqual([]));
-      expect(settingLine(windowTree(), "words.detail")).toEqual([]);
-
-      // Back on Layout: the page shown last.
+      // Back on Layout from another tab: the page shown last.
+      clickable(windowTree(), "Colors").props.onMouseUp();
       clickable(windowTree(), "Layout").props.onMouseUp();
-      expect(activeLabels(windowTree())).toContain("All places");
+      expect(activeLabels(windowTree())).toContain("Toast");
       expect(words(windowTree())).toContain("Reset page");
       await tui.dispose();
     });
@@ -972,7 +994,7 @@ describe("v6 surfaces on the quota snapshot", () => {
       await tui.dispose();
     });
 
-    it("saves Words and a custom provider switched on in Providers to settings.jsonc, then fetches it", async () => {
+    it("saves the words on All places and a custom provider switched on in Providers to settings.jsonc, then fetches it", async () => {
       writePluginTestSettings(mocks.root, {
         providers: {
           off: CONFIG_PROVIDER_IDS.filter((id) => !["copilot", "custom"].includes(id)),
@@ -982,7 +1004,7 @@ describe("v6 surfaces on the quota snapshot", () => {
       });
       const teamUrl = CUSTOM_SOURCES[0]?.url;
       const fetchedTeam = () => vi.mocked(fetch).mock.calls.some(([url]) => url === teamUrl);
-      const { tui, windowTree } = await openSettings("Words");
+      const { tui, windowTree } = await openSettings("Layout", "All places");
       const sidebar = () => words(tui.render("sidebar.content", { sessionID: "ses_1" }));
       await vi.waitFor(() => expect(sidebar()).toContain("Plan ██████░░ 81% left"));
       await vi.waitFor(() => expect(settingLine(windowTree(), "words.percent")).toHaveLength(1));

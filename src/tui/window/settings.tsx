@@ -56,6 +56,11 @@ export const SETTINGS_TABS: ReadonlyArray<{
   watchesSidebar: boolean;
 }> = [
   {
+    tab: "layout",
+    title: "All places",
+    watchesSidebar: true,
+  },
+  {
     tab: "sidebar",
     title: "Sidebar",
     switchTitle: "Show the Quota panel in the session sidebar",
@@ -85,16 +90,6 @@ export const SETTINGS_TABS: ReadonlyArray<{
     watchesSidebar: true,
   },
   {
-    tab: "layout",
-    title: "All places",
-    watchesSidebar: true,
-  },
-  {
-    tab: "words",
-    title: "Words",
-    watchesSidebar: true,
-  },
-  {
     tab: "providers",
     title: "Providers",
     watchesSidebar: true,
@@ -102,13 +97,12 @@ export const SETTINGS_TABS: ReadonlyArray<{
 ];
 
 /**
- * The Settings tabs of the window's tab bar, each with its pages: Layout has one per place and
- * All places; the others are one page each.
+ * The Settings tabs of the window's tab bar, each with its pages: Layout has All places, then one
+ * per place; the others are one page each.
  */
 export const SETTINGS_GROUPS: ReadonlyArray<{ title: string; pages: readonly SettingsTab[] }> = [
-  { title: "Layout", pages: ["sidebar", "collapsed", "statusLine", "toast", "layout"] },
+  { title: "Layout", pages: ["layout", "sidebar", "collapsed", "statusLine", "toast"] },
   { title: "Colors", pages: ["colors"] },
-  { title: "Words", pages: ["words"] },
   { title: "Providers", pages: ["providers"] },
 ];
 
@@ -532,7 +526,10 @@ export function createSettingsEditor(api: WindowHost, display: DisplayStore) {
     ];
   }
 
-  /** A Settings page's lines; `refocus` gives the window the keyboard again. */
+  /**
+   * A Settings page's lines. A preset sits above the line it names, under that line's heading,
+   * or else first. `refocus` gives the window the keyboard again.
+   */
   function optionLines(
     settingsTab: SettingsTab,
     snapshot?: QuotaSnapshot,
@@ -543,10 +540,20 @@ export function createSettingsEditor(api: WindowHost, display: DisplayStore) {
     const presets = (Object.keys(PRESETS) as PresetName[]).filter(
       (name) => PRESETS[name].tab === settingsTab,
     );
+    const fields = FIELDS.filter((field) => field.tab === settingsTab).flatMap((field) => {
+      const line = fieldLine(field);
+      const preset = presets.find((name) => PRESETS[name].before === field.path);
+      return preset
+        ? [
+            { ...presetLine(preset), group: line.group },
+            { ...line, group: undefined },
+          ]
+        : [line];
+    });
     return [
-      ...presets.map(presetLine),
+      ...presets.filter((name) => PRESETS[name].before === undefined).map(presetLine),
       ...(settingsTab === "colors" ? themeLines(refocus) : []),
-      ...FIELDS.filter((field) => field.tab === settingsTab).map(fieldLine),
+      ...fields,
     ];
   }
 
@@ -1235,7 +1242,7 @@ export function createSettingsEditor(api: WindowHost, display: DisplayStore) {
     saveSwitch: (key: string, on: boolean): Promise<void> => server.saveNow(key, on),
     /** Reads the saved settings again, for System's switches. */
     loadSaved: (): Promise<void> => server.load(),
-    /** The snapshot with the Words tab's unsaved words, which every surface shows while you edit. */
+    /** The snapshot with All places' unsaved words, which every surface shows while you edit. */
     withDraftWords(snapshot: QuotaSnapshot | undefined): QuotaSnapshot | undefined {
       const words = server.draftWords();
       if (!snapshot || Object.keys(words).length === 0) return snapshot;
@@ -1279,7 +1286,7 @@ export function createSettingsEditor(api: WindowHost, display: DisplayStore) {
       const reset = `ctrl+r ${resetLabel(windowTab).toLowerCase()}`;
       const end = `↑↓ select · tab next tab · ctrl+s save · ${reset} · esc close`;
       if (selected() === PAGES_ID) return `←/→ or click another page · ${end}`;
-      if (windowTab === "words" || windowTab === "layout") return `‹ › or ←/→ change · ${end}`;
+      if (windowTab === "layout") return `‹ › or ←/→ change · ${end}`;
       if (windowTab === "providers") {
         return `‹ › or ←/→ change · space ticks a provider or flips a switch · double-click a number (or e) to type it · ${end}`;
       }

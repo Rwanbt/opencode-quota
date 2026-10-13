@@ -143,8 +143,9 @@ export function defaultDisplaySettings(): DisplaySettings {
 // The Settings pages: one line per setting, every page from this table.
 
 /**
- * The quota window's Settings pages, one per file section. The tab bar shows Layout (the pages
- * sidebar, collapsed, statusLine, toast, and layout as "All places"), Colors, Words, Providers.
+ * The quota window's Settings pages. The tab bar shows Layout (the pages layout as "All places",
+ * which also holds the `words` lines, then sidebar, collapsed, statusLine and toast), Colors and
+ * Providers.
  */
 export type SettingsTab =
   | "sidebar"
@@ -153,7 +154,6 @@ export type SettingsTab =
   | "toast"
   | "colors"
   | "layout"
-  | "words"
   | "providers";
 
 export function isSurfaceTab(tab: SettingsTab): tab is Surface {
@@ -236,7 +236,7 @@ function numberField(
 }
 
 /**
- * A line of the server's settings.jsonc, on Words, All places or Providers. Its default and its
+ * A line of the server's settings.jsonc, on All places or Providers. Its default and its
  * values (a choice, or off and on) come from SETTINGS_SCHEMA; a number line names the `values`
  * it steps through, or none when you type it.
  */
@@ -294,6 +294,8 @@ const STATUS_DETAILS: Record<StatusDetail, string> = {
 const BAR_SHAPES: readonly BarShape[] = ["blocks", "shades", "line", "squares", "dots", "none"];
 const TOAST = { preset: "toast" } as const;
 const LAYOUT = { preset: "layout" } as const;
+/** The `words` lines, which every place follows: on All places. */
+const ALL_PLACES = { tab: "layout" } as const;
 const unit = (word: string) => (value: FieldValue) => `${value} ${word}`;
 const percentLeft = unit("% left");
 const RESET_NOTICES: Record<string, string> = { weekly: "weekly limits", all: "every limit" };
@@ -433,16 +435,20 @@ export const FIELDS: readonly Field[] = [
     group: "Status line",
     valid: isSeparator,
   }),
-  serverField("words.percent", "Percent", SHOW.percent, { group: "Numbers", preset: "words" }),
-  serverField("words.reset", "Reset times", SHOW.reset, { preset: "words" }),
+  serverField("words.percent", "Percent", SHOW.percent, {
+    ...ALL_PLACES,
+    group: "Words",
+    preset: "words",
+  }),
+  serverField("words.reset", "Reset times", SHOW.reset, { ...ALL_PLACES, preset: "words" }),
   serverField("words.resetDecimals", "Decimals", SHOW.decimals, {
+    ...ALL_PLACES,
     note: "for the decimal reset times",
     values: [0, 1, 2],
   }),
-  // Words' choices of what shows, which every place follows: on All places.
-  serverField("words.detail", "Extra rows", SHOW.rows, { tab: "layout", group: "What shows" }),
-  serverField("words.onlyCurrentModel", "Providers shown", SHOW.models, { tab: "layout" }),
-  serverField("words.sessionTokens", "Session tokens count", SHOW.tokens, { tab: "layout" }),
+  serverField("words.detail", "Extra rows", SHOW.rows, { ...ALL_PLACES, group: "What shows" }),
+  serverField("words.onlyCurrentModel", "Providers shown", SHOW.models, ALL_PLACES),
+  serverField("words.sessionTokens", "Session tokens count", SHOW.tokens, ALL_PLACES),
   serverField("providers.cursor.plan", "Plan", cursorPlan, {
     ...CURSOR,
     note: "API use the plan includes; shown as a %",
@@ -481,12 +487,14 @@ export const FIELDS: readonly Field[] = [
   }),
 ];
 
-/** A line on top of a tab that sets the lines marked with its name in one step. */
+/** A line that sets the lines marked with its name in one step. */
 export type Preset = {
   tab: SettingsTab;
   title: string;
-  /** What it sets, after "sets". */
+  /** What it sets, after "sets": the lines by their titles or their group's heading. */
   drives: string;
+  /** The line it sits above, taking that line's heading; without one it is the page's first. */
+  before?: string;
   /** The values of each choice, by path. */
   choices: Record<string, Record<string, FieldValue>>;
 };
@@ -519,7 +527,7 @@ export const PRESETS: Record<PresetName, Preset> = {
   layout: {
     tab: "layout",
     title: "Layout preset",
-    drives: "bar width and the 3 spacing lines",
+    drives: "Bar width and the 3 Spacing lines",
     choices: {
       compact: layoutChoice(6, 1, 6, 0),
       comfortable: layoutChoice(8, 1, 8, 1),
@@ -529,7 +537,7 @@ export const PRESETS: Record<PresetName, Preset> = {
   toast: {
     tab: "toast",
     title: "When toasts show",
-    drives: "the 5 lines under it",
+    drives: "the 5 Fine-tune lines",
     choices: {
       "only failures": toastChoice("off", false, false, "off"),
       quiet: toastChoice("off", false, true, "off"),
@@ -538,9 +546,10 @@ export const PRESETS: Record<PresetName, Preset> = {
     },
   },
   words: {
-    tab: "words",
+    tab: "layout",
     title: "Wording",
-    drives: "the 2 lines under it",
+    drives: "Percent and Reset times",
+    before: "words.percent",
     choices: {
       normal: { "words.percent": "left", "words.reset": "exact" },
       short: { "words.percent": "bare", "words.reset": "compact" },

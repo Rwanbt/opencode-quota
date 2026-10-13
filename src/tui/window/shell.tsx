@@ -2,9 +2,9 @@
 /**
  * The quota window. `/quota`, `/quota_usage`, `/quota_status` and `/quota_settings` open it
  * above the message box of a session, where it covers the chat
- * with the same size on every tab: Usage, Limits, System and the Settings tabs Layout, Colors,
- * Words and Providers (`settings.tsx`); Layout has a line of pages under the tab bar, one per
- * place and All places. The tab bar is one line, with "esc" at its right end to close the window:
+ * with the same size on every tab: Usage, Limits, System and the Settings tabs Layout, Colors
+ * and Providers (`settings.tsx`); Layout has a line of pages under the tab bar, All places and
+ * one per place. The tab bar is one line, with "esc" at its right end to close the window:
  * when its tabs don't fit, it drops the "Settings" label, then shows the tabs around the
  * current one between ‹ and ›. The bottom line lists the
  * tab's keys; the Settings tabs have Save and Discard above it. While the window is focused (it

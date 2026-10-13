@@ -13,7 +13,7 @@ One global file, `settings.jsonc`:
 
 There are no project settings. Comments and trailing commas are allowed. Every key is optional. A missing or invalid value uses its default. `/quota_status` shows the file it reads and any problems in it.
 
-Every quota setting lives here, in the sections `sidebar`, `collapsed`, `statusLine`, `toast`, `colors`, `layout`, `words`, `providers`, and `system`. In the TUI, `/quota_settings` edits them through the server. Its **Layout** tab has a page per place (Sidebar, Collapsed, Status line, Toast) and **All places** (`layout` and the What shows lines of `words`); **Colors**, **Words** and **Providers** edit their own sections, and the window's System tab the `system` switches. Save, or ctrl+s, writes them to this file and keeps its comments. While you edit, the sidebar, status line, toasts and quota window show saved values with your unsaved changes on top. Discard drops those changes. File edits and a Save from any TUI reach all open TUIs within a few seconds.
+Every quota setting lives here, in the sections `sidebar`, `collapsed`, `statusLine`, `toast`, `colors`, `layout`, `words`, `providers`, and `system`. In the TUI, `/quota_settings` edits them through the server. Its **Layout** tab has **All places** (`layout` and `words`) and a page per place (Sidebar, Collapsed, Status line, Toast); **Colors** and **Providers** edit their own sections, and the window's System tab the `system` switches. Save, or ctrl+s, writes them to this file and keeps its comments. While you edit, the sidebar, status line, toasts and quota window show saved values with your unsaved changes on top. Discard drops those changes. File edits and a Save from any TUI reach all open TUIs within a few seconds.
 
 Only the sidebar panel's open or collapsed state lives in OpenCode's plugin storage. Custom definitions, the Claude CLI path and the export path are file-only settings. The System tab (`/quota_status`) has the old command names, quota file and OpenTelemetry switches; they save as soon as you change them.
 
@@ -195,7 +195,7 @@ Roles are `good`, `warning`, `low`, `empty`, `title`, `provider`, `account`, `la
 | `words.onlyCurrentModel` | `false` | Show providers serving the current model. |
 | `words.sessionTokens` | `"current"` | `tree` includes subagent sessions, each counted once. |
 
-In the TUI, the last three are on **Layout → All places**, since every place follows them.
+In the TUI, they are on **Layout → All places**, since every place follows them.
 
 ### Providers
 

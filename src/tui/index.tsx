@@ -126,7 +126,7 @@ const plugin = Plugin.define({
     const host: SurfaceHost = {
       theme: () => api.theme,
       display: display.shown,
-      // While the Words tab has unsaved changes, every surface shows its words.
+      // While All places has unsaved words, every surface shows them.
       quota: draftQuota,
       editing: settings,
     };
