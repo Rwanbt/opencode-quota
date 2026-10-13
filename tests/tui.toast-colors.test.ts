@@ -171,6 +171,23 @@ describe("colored quota toasts", () => {
     expect(messages).toEqual([message]);
   });
 
+  it("sends the plain message when reading OpenCode's version throws", () => {
+    const shown = vi.fn();
+    const showToast = createToastShow({
+      show: shown,
+      version: () => {
+        throw new Error("app is gone");
+      },
+      theme: () => THEME as unknown as Theme,
+      display: defaultDisplaySettings,
+      owner: () => ({}) as Owner,
+    });
+    const toast = lines();
+    const message = plainMessage(toast);
+    showToast({ variant: "info", title: "OpenCode Quota", message, duration: 9_000 }, toast);
+    expect(shown.mock.calls.map(([options]) => options.message)).toEqual([message]);
+  });
+
   it("sends a toast without lines as it is, on every version", () => {
     const shown = vi.fn();
     const showToast = createToastShow({

@@ -74,16 +74,15 @@ function spansOf(owner: Owner, lines: Line[], host: ColoredToastHost): JSX.Eleme
  */
 export function createToastShow(host: ColoredToastHost) {
   return (toast: ToastOptions, lines?: Line[]): void => {
-    const owner = host.owner();
-    const version = host.version();
-    const colored =
-      lines !== undefined &&
-      owner !== undefined &&
-      typeof version === "string" &&
-      COLORED_TOAST_VERSIONS.includes(version);
-    if (colored) {
+    if (lines !== undefined) {
       try {
-        const spans = spansOf(owner, lines, host);
+        const owner = host.owner();
+        const version = host.version();
+        const colored =
+          owner !== undefined &&
+          typeof version === "string" &&
+          COLORED_TOAST_VERSIONS.includes(version);
+        const spans = colored ? spansOf(owner, lines, host) : undefined;
         if (spans !== undefined) {
           // The API types the message as a string; these versions draw the spans as they are.
           host.show({ ...toast, message: spans as unknown as string });

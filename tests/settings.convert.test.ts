@@ -240,6 +240,19 @@ describe("convertV5, key by key", () => {
     expect(conversion?.values).toEqual({});
   });
 
+  it("names toast.layout when it drops the v5 toast style", async () => {
+    writeV5({ toastStyle: "classic" });
+
+    const conversion = await convertV5();
+
+    expect(conversion?.dropped).toEqual([
+      {
+        key: "toastStyle",
+        reason: 'toasts use the grouped layout; `toast.layout: "detailed"` is the 5.x look',
+      },
+    ]);
+  });
+
   it("lists values v5 rejected too and converts the rest", async () => {
     writeV5({ percentDisplayMode: "most", enabledProviders: ["copilot", "nope"] });
 

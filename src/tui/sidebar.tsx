@@ -5,7 +5,7 @@
  * come from `view/text.ts`; this file only colors them, and marks the line the quota window's
  * Settings tabs have selected.
  */
-import { type BoxRenderable, TextAttributes } from "@opentui/core";
+import type { BoxRenderable } from "@opentui/core";
 import type { JSX } from "@opentui/solid";
 import { createSignal, onCleanup, Show } from "solid-js";
 import { DEFAULT_WORDS } from "../view/format.js";
@@ -76,7 +76,7 @@ export function LineText(props: { line: Line; host: SurfaceHost; marked?: boolea
         <span
           style={{
             fg: color(segment),
-            attributes: segment.bold ? TextAttributes.BOLD : undefined,
+            bold: segment.bold === true,
           }}
         >
           {segment.text}

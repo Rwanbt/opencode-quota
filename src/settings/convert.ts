@@ -58,7 +58,7 @@ const DROPPED: ReadonlyMap<string, string> = new Map(
     enabled: "v6 has no switch of its own; turn the plugin off in OpenCode's plugin list",
     tuiCommandDisplay: "the TUI shows /quota, /quota_usage and /quota_status in its quota window",
     formatStyle: NO_FORMAT_STYLE,
-    toastStyle: NO_FORMAT_STYLE,
+    toastStyle: 'toasts use the grouped layout; `toast.layout: "detailed"` is the 5.x look',
     "tuiSidebarPanel.formatStyle": NO_FORMAT_STYLE,
     "tuiCompactStatus.formatStyle": NO_FORMAT_STYLE,
     debug: "/quota_status shows the diagnostics",

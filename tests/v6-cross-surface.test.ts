@@ -571,6 +571,12 @@ describe("v6 surfaces on the quota snapshot", () => {
       return findAll(text, (node) => node.type === "span")[1]?.props.style.fg;
     };
     expect(["Plan", "Weekly", "5h"].map(barColor)).toEqual(["green", "yellow", "red"]);
+    // Provider names are bold: a span takes `bold` from its style (it ignores `attributes`).
+    const nameStyles = findAll(
+      expanded,
+      (node) => node.type === "span" && node.props.children === "Copilot",
+    ).map((node) => node.props.style);
+    expect(nameStyles).toEqual([expect.objectContaining({ bold: true })]);
 
     // Collapsed: a click on the title collapses the panel; plugin storage remembers it. A
     // provider with an error keeps its rows and shows the error next to them.
