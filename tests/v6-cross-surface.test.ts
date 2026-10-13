@@ -596,7 +596,18 @@ describe("v6 surfaces on the quota snapshot", () => {
     await vi.waitFor(() => expect(tui.toast).toHaveBeenCalledOnce());
     const toast = tui.toast.mock.calls[0]?.[0];
     expect(toast).toMatchObject({ variant: "info", title: "OpenCode Quota" });
-    expect(toast.message).toContain("Custom providers (… Provider error 503\nSession  1.20K in");
+    expect(toast.message).toBe(
+      [
+        "Copilot (pro)",
+        "  Plan ████████████████░░░░  81% left",
+        "MiniMax Token Plan",
+        "  5h   ░░░░░░░░░░░░░░░░░░░░   0% left  2h 14m",
+        "  7d   ████████░░░░░░░░░░░░  40% left",
+        "Custom providers (Team)  Provider error 503",
+        "  30d  █████████████░░░░░░░  64% left  2h 14m",
+        "Session  1.20K in · 45 out",
+      ].join("\n"),
+    );
 
     // /quota opens the window on Limits: every row with its bar, percent, reset and pace.
     await tui.command("limits").run();

@@ -117,6 +117,8 @@ describe("loadSettings", () => {
     expect(loaded.settings.words).toMatchObject({ percent: "used", reset: "short" });
     expect(loaded.settings.providers.off).toEqual(["nanogpt", "custom"]);
     expect(loaded.settings.providers.cursor.includedApiUsd).toBe(20);
+    // A key the file does not set has its default.
+    expect(loaded.settings.toast.layout).toBe("grouped");
     // Providers with a longer own timeout use it unless the user set one.
     expect(loaded.fromFile).toContain("providers.checking.requestTimeoutMs");
     expect(loaded.fromFile).not.toContain("providers.checking.minIntervalMs");

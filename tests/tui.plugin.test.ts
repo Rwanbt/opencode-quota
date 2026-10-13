@@ -131,11 +131,39 @@ describe("quota toasts", () => {
     const { toasts, show, refresh } = startToasts(answer, change ?? (() => {}));
     await toasts.afterTurn(trigger, "ses_1");
     expect(refresh).toHaveBeenCalledWith("turn", "ses_1");
+    const bar =
+      answer === LOW ? `${"█".repeat(2)}${"░".repeat(18)}  10%` : `${"█".repeat(16)}░░░░  80%`;
     expect(show.mock.calls.map(([toast]) => toast.message)).toEqual(
-      shown
-        ? [`Claude Weekly       ${answer === LOW ? "█░░░░░░░  10%" : "██████░░  80%"} left`]
-        : [],
+      shown ? [`Claude\n  7d ${bar} left`] : [],
     );
+  });
+
+  it("lays the toast out as picked on the Toast page, as wide as the terminal lets it", async () => {
+    const message = async (layout: "grouped" | "detailed", terminalWidth: number) => {
+      const show = vi.fn();
+      const display = defaultDisplaySettings();
+      display.toast.layout = layout;
+      const toasts = createToasts({
+        show,
+        display: () => display,
+        terminalWidth: () => terminalWidth,
+        quota: { refresh: async () => OK } as unknown as QuotaClient,
+        isChildSession: () => false,
+        now: () => NOW,
+      });
+      await toasts.afterTurn("compaction", "ses_1");
+      return show.mock.calls[0]?.[0].message;
+    };
+    expect({
+      grouped: await message("grouped", 30),
+      detailed: await message("detailed", 120),
+      narrow: await message("detailed", 30),
+    }).toEqual({
+      // A 30-column terminal leaves the toast 18 columns of text.
+      grouped: "Claude\n  7d ██░  80% left",
+      detailed: `Claude\nWeekly\n${"█".repeat(35)}${"░".repeat(9)}  80% left`,
+      narrow: "Claude\nWeekly\n██████░░  80% left",
+    });
   });
 
   it("fits a toast's text in OpenCode's toast: 60 columns at most, 6 fewer than the terminal", () => {
@@ -169,8 +197,8 @@ describe("quota toasts", () => {
       await toasts.afterTurn("reply", "ses_1");
     }
     expect(show.mock.calls.map(([toast]) => [toast.variant, toast.message])).toEqual([
-      ["error", "Claude              Timed out\nCopilot             Timed out"],
-      ["error", "Claude              Timed out\nCopilot             Timed out"],
+      ["error", "Claude  Timed out\nCopilot  Timed out"],
+      ["error", "Claude  Timed out\nCopilot  Timed out"],
     ]);
   });
 

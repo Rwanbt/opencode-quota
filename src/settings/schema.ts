@@ -102,6 +102,8 @@ export const SETTINGS_SCHEMA = {
   "toast.afterCompaction": bool(true),
   "toast.whenAllFail": bool(true),
   "toast.resetNotice": choice(["off", "weekly", "all"], "off"),
+  /** "grouped": a line per row under its provider; "detailed": v5's two lines per row. */
+  "toast.layout": choice(["grouped", "detailed"], "grouped"),
   "toast.seconds": { ...whole(1, 120), default: 9 },
   "toast.sessionTokens": bool(true),
   "colors.good": { kind: "color", default: undefined },

@@ -2,17 +2,18 @@
  * Quota toasts (§4.4). OpenCode shows one toast at a time, so quota takes a turn only when
  * the display settings say so: after compaction and when every provider fails by default;
  * after each reply, after a question, and on a limit reset only when turned on. Toasts are
- * plain text (OpenCode colors only their border), with bars in the sidebar's bar shape.
+ * plain text (OpenCode colors only their border) in the grouped or detailed layout
+ * (`toast.layout`), with bars in the sidebar's bar shape.
  *
  * Reset notices that arrive together show as one toast. While a turn's toast is being made,
  * they wait and show after it, so the turn's toast does not replace them at once. When the TUI
  * leaves its server, waiting notices are dropped unshown, so a later snapshot can bring them.
  */
-import type { QuotaSnapshot, ResetNotice } from "../core/types.js";
+import type { QuotaSnapshot, ResetNotice, SessionTokens, Words } from "../core/types.js";
 import { WINDOWS } from "../core/windows.js";
 import { DEFAULT_WORDS, levelOf } from "../view/format.js";
-import { visibleGroups } from "../view/select.js";
-import { plainLines } from "../view/text.js";
+import { type Group, visibleGroups } from "../view/select.js";
+import { type Line, lineText, toastLines } from "../view/text.js";
 import type { QuotaClient } from "./client.js";
 import type { DisplaySettings } from "./display.js";
 
@@ -58,7 +59,32 @@ export function toastRoom(terminalWidth: number): number {
   return Math.min(60, terminalWidth - 6) - 6;
 }
 
-/** The rows the Toast tab shows, one line each with its bar, then the session tokens. */
+/** `groups` in the toast layout the settings pick, as wide as the toast's text. */
+function quotaLines(
+  groups: Group[],
+  words: Words,
+  display: DisplaySettings,
+  nowMs: number,
+  terminalWidth: number,
+  sessionTokens?: SessionTokens,
+): Line[] {
+  return toastLines({
+    groups,
+    words,
+    nowMs,
+    layout: display.toast.layout,
+    bar: display.layout.bar,
+    room: toastRoom(terminalWidth),
+    runsOut: display.runsOut.toast,
+    ...(sessionTokens ? { sessionTokens } : {}),
+  });
+}
+
+function joinLines(lines: Line[]): string {
+  return lines.map(lineText).join("\n");
+}
+
+/** The rows the Toast tab shows, in its layout, then the session tokens. */
 export function toastText(
   snapshot: QuotaSnapshot,
   display: DisplaySettings,
@@ -66,20 +92,9 @@ export function toastText(
   terminalWidth: number,
 ): string {
   const words = snapshot.words ?? DEFAULT_WORDS;
-  return plainLines({
-    groups: visibleGroups(snapshot, display, "toast", words),
-    words,
-    nowMs,
-    runsOut: display.runsOut.toast,
-    bar: {
-      shape: display.layout.bar,
-      width: display.layout.barWidth,
-      room: toastRoom(terminalWidth),
-    },
-    ...(display.toast.sessionTokens && snapshot.sessionTokens
-      ? { sessionTokens: snapshot.sessionTokens }
-      : {}),
-  }).join("\n");
+  const groups = visibleGroups(snapshot, display, "toast", words);
+  const tokens = display.toast.sessionTokens ? snapshot.sessionTokens : undefined;
+  return joinLines(quotaLines(groups, words, display, nowMs, terminalWidth, tokens));
 }
 
 function wantsTurnToast(display: DisplaySettings, trigger: TurnEnd, anyLow: boolean): boolean {
@@ -144,15 +159,9 @@ export function createToasts(host: ToastHost): Toasts {
     }
     if (allFail && display.toast.whenAllFail && !allFailShown) {
       allFailShown = true;
-      const message = plainLines({ groups: groups.filter((group) => group.error), words, nowMs });
-      if (message.length > 0) {
-        host.show({
-          variant: "error",
-          title: TOAST_TITLE,
-          message: message.join("\n"),
-          duration,
-        });
-      }
+      const failing = groups.filter((group) => group.error);
+      const message = joinLines(quotaLines(failing, words, display, nowMs, host.terminalWidth()));
+      if (message) host.show({ variant: "error", title: TOAST_TITLE, message, duration });
     }
   }
 

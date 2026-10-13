@@ -146,6 +146,39 @@ export function sidebarTitle(words: Words): string {
   return word ? `▼ Quota ${word}` : "▼ Quota";
 }
 
+/**
+ * A group's title line: the provider's name in bold and its account, then (`withState`) its
+ * error or "not checked yet" after two spaces. Cut to `width` columns.
+ */
+function groupLine(group: Group, nowMs: number, width: number, withState: boolean): Line {
+  const state = withState ? groupState(group, nowMs) : undefined;
+  return {
+    id: group.providerId,
+    segments: clip(
+      [
+        { text: group.name, role: "provider", bold: true },
+        ...(group.account ? [{ text: ` (${group.account})`, role: "account" as const }] : []),
+        ...(state ? [{ ...state, text: `  ${state.text}` }] : []),
+      ],
+      width,
+    ),
+  };
+}
+
+/** "Session  12.3K in · 2.10K out", cut to `width` columns. */
+function sessionLine(tokens: SessionTokens, width: number): Line {
+  return {
+    id: "session",
+    segments: clip(
+      [
+        { text: "Session", role: "label", bold: true },
+        { text: `  ${sessionTokensText(tokens)}`, role: "value" },
+      ],
+      width,
+    ),
+  };
+}
+
 /** §4.1: the expanded Quota panel, below its title line (`sidebarTitle`). */
 export function sidebarLines(input: SidebarInput): Line[] {
   const { layout, words, nowMs, width } = input;
@@ -184,18 +217,7 @@ export function sidebarLines(input: SidebarInput): Line[] {
     if (index > 0) {
       for (let gap = 0; gap < layout.providerGap; gap++) lines.push({ id: "", segments: [] });
     }
-    const state = groupState(group, nowMs);
-    lines.push({
-      id: group.providerId,
-      segments: clip(
-        [
-          { text: group.name, role: "provider", bold: true },
-          ...(group.account ? [{ text: ` (${group.account})`, role: "account" as const }] : []),
-          ...(state ? [{ ...state, text: `  ${state.text}` }] : []),
-        ],
-        width,
-      ),
-    });
+    lines.push(groupLine(group, nowMs, width, true));
     for (const item of group.rows) {
       lines.push(rowLine(item));
       const runsOut = runsOutText(input.runsOut, item.row, nowMs, words);
@@ -206,16 +228,7 @@ export function sidebarLines(input: SidebarInput): Line[] {
   });
   if (input.sessionTokens) {
     for (let gap = 0; gap < layout.providerGap; gap++) lines.push({ id: "", segments: [] });
-    lines.push({
-      id: "session",
-      segments: clip(
-        [
-          { text: "Session", role: "label", bold: true },
-          { text: `  ${sessionTokensText(input.sessionTokens)}`, role: "value" },
-        ],
-        width,
-      ),
-    });
+    lines.push(sessionLine(input.sessionTokens, width));
   }
   return lines;
 }
@@ -467,17 +480,10 @@ export function bigStatusLine(input: StatusInput, width?: number): Line | undefi
 
 /** The name column of plain lines: the provider and the row's label. */
 const PLAIN_NAME_WIDTH = 19;
-/** A plain line's bar cells at the least; with less room the line has no bar. */
-const PLAIN_BAR_MIN = 3;
-
-/** A toast's bars: the shape, at most `width` cells, in lines of at most `room` columns. */
-export type PlainBar = { shape: BarShape; width: number; room: number };
 
 /**
- * §4.4: plain text, one line per visible row, then a line per provider error. Toasts and
- * the CLI print these. With `bar` (toasts) a row's percent has a bar before it, shorter when
- * the line would not fit, and "runs out in" goes on a line of its own under the bar (further
- * left when the toast is too narrow for that).
+ * §4.4: plain text, one line per visible row, then a line per provider error. The Web and
+ * terminal `/quota` text print these.
  */
 export function plainLines(params: {
   groups: Group[];
@@ -486,43 +492,16 @@ export function plainLines(params: {
   sessionTokens?: SessionTokens;
   /** "runs out in 2h" after each row that runs out before its reset. */
   runsOut?: boolean;
-  bar?: PlainBar;
 }): string[] {
-  const { words, nowMs, bar } = params;
-  const word = percentWord(words);
-  // "100% remaining": the number right-aligned, then its word.
-  const percentWidth = 4 + (word ? word.length + 1 : 0);
-  const resetWidth = Math.max(
-    0,
-    ...params.groups.flatMap((group) =>
-      group.rows.map(({ row }) =>
-        row.percentRemaining === undefined ? 0 : columnsOf(resetText(row, nowMs, words)),
-      ),
-    ),
-  );
-  const barRoom = bar ? bar.room - (PLAIN_NAME_WIDTH + 1 + 1 + percentWidth + 2 + resetWidth) : 0;
-  const barWidth = bar && bar.shape !== "none" ? Math.min(bar.width, barRoom) : 0;
-  const barLine = (row: QuotaRow, name: string, percent: number): string[] => {
-    const [filled, empty] = barParts(bar?.shape ?? "none", percent, barWidth);
-    const number = percentText(words, percent, false).padStart(4);
-    const percentWords = (word ? `${number} ${word}` : number).padEnd(percentWidth);
-    const line = `${name} ${filled}${empty} ${percentWords}  ${resetText(row, nowMs, words)}`;
-    const runsOut = runsOutText(params.runsOut, row, nowMs, words);
-    if (!runsOut) return [line.trimEnd()];
-    // Under the bar, or further left when the toast is too narrow for that.
-    const room = bar?.room ?? 0;
-    const indent = Math.max(0, Math.min(PLAIN_NAME_WIDTH + 1, room - columnsOf(runsOut)));
-    return [line.trimEnd(), fit(`${" ".repeat(indent)}${runsOut}`, room).trimEnd()];
-  };
+  const { words, nowMs } = params;
   const lines = params.groups.flatMap((group) => {
-    const rows = group.rows.flatMap(({ row, label }) => {
+    const rows = group.rows.map(({ row, label }) => {
       const name = fit(`${group.title} ${label}`, PLAIN_NAME_WIDTH);
-      if (row.percentRemaining === undefined) return [`${name} ${rowValueText(row)}`.trimEnd()];
-      if (barWidth >= PLAIN_BAR_MIN) return barLine(row, name, row.percentRemaining);
+      if (row.percentRemaining === undefined) return `${name} ${rowValueText(row)}`.trimEnd();
       const percent = percentText(words, row.percentRemaining, true).padEnd(13);
       const line = `${name} ${percent} ${resetText(row, nowMs, words)}`.trimEnd();
       const runsOut = runsOutText(params.runsOut, row, nowMs, words);
-      return [runsOut ? `${line}  ${runsOut}` : line];
+      return runsOut ? `${line}  ${runsOut}` : line;
     });
     const state = groupState(group, nowMs);
     return state ? [...rows, `${fit(group.title, PLAIN_NAME_WIDTH)} ${state.text}`] : rows;
@@ -530,4 +509,213 @@ export function plainLines(params: {
   return params.sessionTokens
     ? [...lines, `Session  ${sessionTokensText(params.sessionTokens)}`]
     : lines;
+}
+
+/**
+ * How a toast lays out its rows: one line per row under its provider's name ("grouped"), or
+ * each row on two lines with a bar as wide as the toast ("detailed").
+ */
+export type ToastLayout = "grouped" | "detailed";
+
+export type ToastInput = {
+  groups: Group[];
+  words: Words;
+  nowMs: number;
+  layout: ToastLayout;
+  bar: BarShape;
+  /** Columns of text inside the toast (`toastRoom`); no line is wider. */
+  room: number;
+  /** A "runs out in 2h" line under each row that runs out before its reset. */
+  runsOut?: boolean;
+  sessionTokens?: SessionTokens;
+};
+
+/** A toast bar's cells at the least; with less room the row has no bar. */
+const TOAST_BAR_MIN = 3;
+/** A grouped toast's row indent, its name column and its bar at the most. */
+const GROUPED_INDENT = 2;
+const GROUPED_NAME_MAX = 9;
+const GROUPED_BAR_MAX = 20;
+
+/** The segments without the spaces at the end of their line. */
+function trimEnd(segments: Segment[]): Segment[] {
+  const trimmed = [...segments];
+  while (trimmed.length > 0) {
+    const last = trimmed[trimmed.length - 1] as Segment;
+    const text = last.text.trimEnd();
+    if (text) {
+      trimmed[trimmed.length - 1] = { ...last, text };
+      break;
+    }
+    trimmed.pop();
+  }
+  return trimmed;
+}
+
+/** "runs out in 2h" at `column`, or further left so it ends inside `room`. */
+function runsOutLine(id: string, runsOut: string, column: number, room: number): Line {
+  const indent = Math.max(0, Math.min(column, room - columnsOf(runsOut)));
+  return {
+    id,
+    segments: clip([{ text: `${" ".repeat(indent)}${runsOut}`, role: "warning" }], room),
+  };
+}
+
+/**
+ * A row's name in a grouped toast: your name for it; else its short window name ("5h", "7d")
+ * when no other row of its group has the same one; else its label.
+ */
+function groupedName(item: VisibleRow, group: Group): string {
+  if (item.label !== item.row.label || !item.row.window) return item.label;
+  const short = WINDOWS[item.row.window].short;
+  const shared = group.rows.some(
+    (other) => other !== item && other.row.window && WINDOWS[other.row.window].short === short,
+  );
+  return shared ? item.label : short;
+}
+
+/**
+ * The grouped toast: a line per provider account with its error, then its rows indented 2:
+ * the name, a bar in the room the other columns leave (at most 20 cells), the percent and the
+ * reset time. "runs out in" goes under the row at the bar's column.
+ */
+function groupedToastLines(input: ToastInput): Line[] {
+  const { words, nowMs, room } = input;
+  const word = percentWord(words);
+  // "100% left": the number right-aligned, then its word.
+  const percentWidth = 4 + (word ? word.length + 1 : 0);
+  const named = input.groups.map((group) => ({
+    group,
+    rows: group.rows.map((item) => ({ ...item, name: groupedName(item, group) })),
+  }));
+  const items = named.flatMap(({ rows }) => rows);
+  const resetWidth = Math.max(
+    0,
+    ...items.map(({ row }) =>
+      row.percentRemaining === undefined ? 0 : columnsOf(resetText(row, nowMs, words)),
+    ),
+  );
+  const nameWidth = Math.min(
+    GROUPED_NAME_MAX,
+    Math.max(0, ...items.map((item) => columnsOf(item.name))),
+  );
+  const barColumn = GROUPED_INDENT + nameWidth + 1;
+  const fixed = barColumn + 1 + percentWidth + (resetWidth > 0 ? 2 + resetWidth : 0);
+  const barWidth = input.bar === "none" ? 0 : Math.min(GROUPED_BAR_MAX, room - fixed);
+  const withBar = barWidth >= TOAST_BAR_MIN;
+
+  const rowLines = (item: (typeof items)[number]): Line[] => {
+    const { row } = item;
+    const percent = row.percentRemaining;
+    const name = `${" ".repeat(GROUPED_INDENT)}${fit(item.name, nameWidth)} `;
+    if (percent === undefined) {
+      const value: Segment = { text: rowValueText(row), role: "value" };
+      return [{ id: row.id, segments: clip([{ text: name, role: "label" }, value], room) }];
+    }
+    const number = percentText(words, percent, false).padStart(4);
+    const reset = resetText(row, nowMs, words);
+    const segments: Segment[] = [
+      { text: name, role: "label", percent },
+      ...(withBar ? barSegments(input.bar, percent, barWidth) : []),
+      {
+        text: `${withBar ? " " : ""}${word ? `${number} ${word}` : number}`,
+        role: "percent",
+        percent,
+      },
+      ...(reset ? [{ text: `  ${reset}`, role: "reset" as const, percent }] : []),
+    ];
+    const line: Line = { id: row.id, segments: clip(segments, room) };
+    const runsOut = runsOutText(input.runsOut, row, nowMs, words);
+    return runsOut ? [line, runsOutLine(row.id, runsOut, barColumn, room)] : [line];
+  };
+
+  const lines = named.flatMap(({ group, rows }) => [
+    groupLine(group, nowMs, room, true),
+    ...rows.flatMap(rowLines),
+  ]);
+  return input.sessionTokens ? [...lines, sessionLine(input.sessionTokens, room)] : lines;
+}
+
+/**
+ * `left` at the start of a line `room` columns wide and `right` at its end; `left` is cut with
+ * "…" when both don't fit.
+ */
+function spread(left: Segment, right: Segment, room: number): Segment[] {
+  const leftRoom = room - columnsOf(right.text) - 1;
+  if (leftRoom < 1) return clip([left, { ...right, text: ` ${right.text}` }], room);
+  const leftText = columnsOf(left.text) > leftRoom ? fit(left.text, leftRoom) : left.text;
+  const gap = " ".repeat(room - columnsOf(leftText) - columnsOf(right.text));
+  return [
+    { ...left, text: leftText },
+    { ...right, text: `${gap}${right.text}` },
+  ];
+}
+
+/**
+ * The detailed toast (v5's look): an empty line between providers, the provider's name, its
+ * error under it, then per row its label with the reset time at the right, and a bar as wide
+ * as the toast with the percent at the right. "runs out in" goes under the bar.
+ */
+function detailedToastLines(input: ToastInput): Line[] {
+  const { words, nowMs, room } = input;
+  const percents = input.groups.flatMap((group) =>
+    group.rows.flatMap(({ row }) =>
+      row.percentRemaining === undefined ? [] : [percentText(words, row.percentRemaining, true)],
+    ),
+  );
+  const percentWidth = Math.max(0, ...percents.map(columnsOf));
+  const barWidth = input.bar === "none" ? 0 : room - 2 - percentWidth;
+
+  const rowLines = ({ row, label }: VisibleRow): Line[] => {
+    const percent = row.percentRemaining;
+    const name: Segment = { text: label, role: "label", percent };
+    if (percent === undefined) {
+      const value: Segment = { text: rowValueText(row), role: "value" };
+      return [{ id: row.id, segments: spread(name, value, room) }];
+    }
+    const reset = resetText(row, nowMs, words);
+    const percentWords = percentText(words, percent, true).padStart(percentWidth);
+    const bar: Segment[] =
+      barWidth >= TOAST_BAR_MIN
+        ? [
+            ...barSegments(input.bar, percent, barWidth),
+            { text: `  ${percentWords}`, role: "percent", percent },
+          ]
+        : [{ text: percentWords.padStart(room), role: "percent", percent }];
+    const runsOut = runsOutText(input.runsOut, row, nowMs, words);
+    return [
+      {
+        id: row.id,
+        segments: reset
+          ? spread(name, { text: reset, role: "reset", percent }, room)
+          : clip([name], room),
+      },
+      { id: row.id, segments: clip(bar, room) },
+      ...(runsOut ? [runsOutLine(row.id, runsOut, 0, room)] : []),
+    ];
+  };
+
+  const blank: Line = { id: "", segments: [] };
+  const lines = input.groups.flatMap((group, index) => {
+    const state = groupState(group, nowMs);
+    return [
+      ...(index > 0 ? [blank] : []),
+      groupLine(group, nowMs, room, false),
+      ...(state ? [{ id: group.providerId, segments: clip([state], room) }] : []),
+      ...group.rows.flatMap(rowLines),
+    ];
+  });
+  if (!input.sessionTokens) return lines;
+  const session = spread(
+    { text: "Session", role: "label", bold: true },
+    { text: sessionTokensText(input.sessionTokens), role: "value" },
+    room,
+  );
+  return [...lines, ...(lines.length > 0 ? [blank] : []), { id: "session", segments: session }];
+}
+
+/** §4.4: a quota toast's lines in its layout, none wider than `room` columns. */
+export function toastLines(input: ToastInput): Line[] {
+  const lines = input.layout === "detailed" ? detailedToastLines(input) : groupedToastLines(input);
+  return lines.map((line) => ({ ...line, segments: trimEnd(line.segments) }));
 }

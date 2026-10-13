@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ProviderSnapshot, QuotaRow, QuotaSnapshot, Words } from "../src/core/types.js";
 import { defaultDisplaySettings } from "../src/tui/display.js";
+import { columnsOf } from "../src/view/columns.js";
 import {
   amountText,
   barParts,
@@ -22,6 +23,9 @@ import {
   sidebarLines,
   sidebarTitle,
   statusLayout,
+  type ToastInput,
+  type ToastLayout,
+  toastLines,
 } from "../src/view/text.js";
 import { providerSnapshot, quotaRow as row } from "./helpers/fake-answers.js";
 
@@ -549,52 +553,175 @@ describe("view text", () => {
     });
   });
 
-  it("gives toast rows a bar that fits the toast, with runs out under the bar", () => {
-    const base = { groups: groups("toast", [CLAUDE]), words: DEFAULT_WORDS, nowMs: NOW };
-    const toast = { ...base, runsOut: true, bar: { shape: "blocks", width: 8, room: 54 } } as const;
-    const remaining = { ...toast, words: { ...DEFAULT_WORDS, percent: "remaining" as const } };
-    const lines = {
-      left: plainLines(toast),
-      // A longer word leaves the bar less room; with too little, or with bars off, there is none.
-      remaining: plainLines({ ...remaining, bar: { ...toast.bar, room: 48 } }),
-      narrow: plainLines({ ...remaining, bar: { ...toast.bar, room: 44 } }),
-      none: plainLines({ ...toast, bar: { ...toast.bar, shape: "none" } }),
-      // A 46-column terminal: "runs out in" moves left of the bar so it stays inside the toast.
-      tight: plainLines({
-        ...toast,
-        words: { ...DEFAULT_WORDS, percent: "bare", reset: "decimal" },
-        bar: { ...toast.bar, room: 34 },
-      }),
-    };
-    expect(lines).toEqual({
-      left: [
-        "Claude 5h           █████░░░  58% left  2h 14m",
-        "Claude Weekly       █░░░░░░░  12% left  3d 4h",
-        "                    runs out in 12h 33m",
-      ],
-      remaining: [
-        "Claude 5h           ███░░  58% remaining  2h 14m",
-        "Claude Weekly       █░░░░  12% remaining  3d 4h",
-        "                    runs out in 12h 33m",
-      ],
-      narrow: [
-        "Claude 5h           58% remaining 2h 14m",
-        "Claude Weekly       12% remaining 3d 4h  runs out in 12h 33m",
-      ],
-      none: plainLines({ ...base, runsOut: true }),
-      tight: [
-        "Claude 5h           ██░  58%  2.2h",
-        "Claude Weekly       ░░░  12%  3.2d",
-        "                 runs out in 12.6h",
-      ],
-    });
-    for (const line of [...lines.left, ...lines.remaining]) {
-      expect(line.length).toBeLessThanOrEqual(48);
-    }
-    for (const line of lines.tight) expect(line.length).toBeLessThanOrEqual(34);
+  /** A toast of `providers` `room` columns wide, with runs out in, as plain lines. */
+  const toast = (
+    layout: ToastLayout,
+    room: number,
+    providers = [CLAUDE],
+    change: Partial<ToastInput> = {},
+  ) =>
+    toastLines({
+      groups: groups("toast", providers),
+      words: DEFAULT_WORDS,
+      nowMs: NOW,
+      layout,
+      bar: "blocks",
+      room,
+      runsOut: true,
+      ...change,
+    }).map(lineText);
+  const tokens = { sessionTokens: { input: 12_300, cachedInput: 0, output: 2_100 } };
+  /** A row without a window and a long name. */
+  const PREMIUM = provider("copilot", "Copilot", [
+    row("copilot.premium", {
+      label: "Premium requests",
+      percentRemaining: 80,
+      resetsAt: at((18 * 24 * 60 + 10 * 60 + 33) * MINUTE),
+    }),
+  ]);
+  const widest = (lines: string[]) => Math.max(...lines.map(columnsOf));
+
+  it("groups a toast's rows under each provider, by their short window names, with wide bars", () => {
+    const lines = toast("grouped", 54, [CLAUDE, ZEN, ROUTER, TWO_ACCOUNTS], tokens);
+    expect(lines).toEqual([
+      "Claude",
+      "  5h      ████████████░░░░░░░░  58% left  2h 14m",
+      "  7d      ██░░░░░░░░░░░░░░░░░░  12% left  3d 4h",
+      "          runs out in 12h 33m",
+      "OpenCode Zen",
+      "  Balance $1,240.50 left",
+      "OpenRouter  Sign in again",
+      "Copilot (work)  Timed out",
+      "  30d     ████████░░░░░░░░░░░░  40% left",
+      "Copilot (home)",
+      "  30d     ██████████████████░░  90% left",
+      "Session  12.3K in · 2.10K out",
+    ]);
+    expect(widest(lines)).toBeLessThanOrEqual(54);
   });
 
-  it("writes plain lines for toasts and the CLI, errors and session tokens last", () => {
+  it("lays a detailed toast out like v5: two lines per row and a bar as wide as the toast", () => {
+    const lines = toast("detailed", 54, [CLAUDE, ZEN, ROUTER, TWO_ACCOUNTS], tokens);
+    expect(lines).toEqual([
+      "Claude",
+      `5h${" ".repeat(46)}2h 14m`,
+      `${"█".repeat(26)}${"░".repeat(18)}  58% left`,
+      `Weekly${" ".repeat(43)}3d 4h`,
+      `${"█".repeat(5)}${"░".repeat(39)}  12% left`,
+      "runs out in 12h 33m",
+      "",
+      "OpenCode Zen",
+      `Balance${" ".repeat(33)}$1,240.50 left`,
+      "",
+      "OpenRouter",
+      "Sign in again",
+      "",
+      "Copilot (work)",
+      "Timed out",
+      "Plan",
+      `${"█".repeat(18)}${"░".repeat(26)}  40% left`,
+      "",
+      "Copilot (home)",
+      "Plan",
+      `${"█".repeat(40)}${"░".repeat(4)}  90% left`,
+      "",
+      `Session${" ".repeat(27)}12.3K in · 2.10K out`,
+    ]);
+    expect(lines.map(columnsOf).filter((width) => width !== 54 && width > 20)).toEqual([]);
+  });
+
+  it("names a grouped row by its window unless you renamed it or its group shares the window", () => {
+    const named = (change: (settings: RowSettings) => void, wording: Partial<Words> = {}) =>
+      toastLines({
+        groups: visibleGroups(snapshot([CLAUDE]), settings(change), "toast", words(wording)),
+        words: words(wording),
+        nowMs: NOW,
+        layout: "grouped",
+        bar: "blocks",
+        room: 54,
+      }).map(lineText);
+    expect({
+      // The weekly limit and Fable's both reset weekly, so both keep their labels.
+      shared: named(() => {}, { detail: "detailed" }),
+      // Your toast name shows, cut to the 9 columns of the name column.
+      renamed: named((settings) => {
+        settings.surfaces.toast.names = { "anthropic.weekly": "All models" };
+      }),
+    }).toEqual({
+      shared: [
+        "Claude",
+        "  5h     ████████████░░░░░░░░  58% left  2h 14m",
+        "  Weekly ██░░░░░░░░░░░░░░░░░░  12% left  3d 4h",
+        "  Fable  ██████████████████░░  90% left",
+      ],
+      renamed: [
+        "Claude",
+        "  5h        ████████████░░░░░░░░  58% left  2h 14m",
+        "  All mode… ██░░░░░░░░░░░░░░░░░░  12% left  3d 4h",
+      ],
+    });
+  });
+
+  it("fits both toast layouts in a narrow toast, cutting long names with …", () => {
+    const narrow = {
+      grouped: toast("grouped", 38, [PREMIUM, CLAUDE]),
+      detailed: toast("detailed", 38, [PREMIUM, CLAUDE]),
+    };
+    expect(narrow).toEqual({
+      grouped: [
+        "Copilot",
+        "  Premium…  ██░  80% left  18d 10h 33m",
+        "Claude",
+        "  5h        ██░  58% left  2h 14m",
+        "  7d        ░░░  12% left  3d 4h",
+        "            runs out in 12h 33m",
+      ],
+      detailed: [
+        "Copilot",
+        `Premium requests${" ".repeat(11)}18d 10h 33m`,
+        `${"█".repeat(22)}${"░".repeat(6)}  80% left`,
+        "",
+        "Claude",
+        `5h${" ".repeat(30)}2h 14m`,
+        `${"█".repeat(16)}${"░".repeat(12)}  58% left`,
+        `Weekly${" ".repeat(27)}3d 4h`,
+        `${"█".repeat(3)}${"░".repeat(25)}  12% left`,
+        "runs out in 12h 33m",
+      ],
+    });
+    for (const room of [38, 30, 22]) {
+      for (const layout of ["grouped", "detailed"] as const) {
+        const lines = toast(layout, room, [PREMIUM, CLAUDE, ROUTER]);
+        expect(widest(lines), `${layout} ${room}`).toBeLessThanOrEqual(room);
+        expect(lines.filter((line) => line !== line.trimEnd())).toEqual([]);
+      }
+    }
+    // Without room for 3 cells, a grouped row has no bar.
+    expect(toast("grouped", 24, [CLAUDE])).toEqual([
+      "Claude",
+      "  5h  58% left  2h 14m",
+      "  7d  12% left  3d 4h",
+      "     runs out in 12h 33m",
+    ]);
+  });
+
+  it("shows no toast bar with bars off: the percent alone, at the right in a detailed toast", () => {
+    expect({
+      grouped: toast("grouped", 54, [CLAUDE], { bar: "none", runsOut: false }),
+      detailed: toast("detailed", 54, [CLAUDE], { bar: "none", runsOut: false }),
+    }).toEqual({
+      grouped: ["Claude", "  5h  58% left  2h 14m", "  7d  12% left  3d 4h"],
+      detailed: [
+        "Claude",
+        `5h${" ".repeat(46)}2h 14m`,
+        "58% left".padStart(54),
+        `Weekly${" ".repeat(43)}3d 4h`,
+        "12% left".padStart(54),
+      ],
+    });
+  });
+
+  it("writes plain lines for the Web and terminal /quota text, errors and session tokens last", () => {
     expect(
       plainLines({
         groups: groups("toast"),

@@ -149,7 +149,9 @@ describe("V2 CLI command boundary", () => {
     // On Home the quota window only says to open a session, and the reply toast shows the quota.
     const toastMessages = () => tui.toast.mock.calls.map(([toast]) => toast.message as string);
     await vi.waitFor(() =>
-      expect(toastMessages().filter((message) => message.includes("Copilot Plan"))).toHaveLength(1),
+      expect(
+        toastMessages().filter((message) => message.startsWith("Copilot\n  Plan ")),
+      ).toHaveLength(1),
     );
 
     // The surfaces read the server's snapshot over the RPC; one call serves both of ses_1's.

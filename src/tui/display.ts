@@ -339,6 +339,7 @@ const SHOW = {
   days: (value) => (value === 1 ? "every day" : `every ${value} days`),
   day: (value) => (typeof value === "number" ? `day ${value}` : "calendar month"),
   rows: named({ summary: "main rows only", detailed: "all rows" }),
+  toastLayout: named({ grouped: "Grouped", detailed: "Detailed" }),
   models: named({ false: "all", true: "current model's only" }),
   tokens: named({ current: "this session", tree: "with subagents" }),
   limitHit: named({ false: "retry like normal", true: "wait for the reset" }),
@@ -394,9 +395,10 @@ export const FIELDS: readonly Field[] = [
     SHOW.resetNotice,
     TOAST,
   ),
-  numberField("toast.seconds", "Stays on screen", 9, [1, 120], [5, 9, 15, 30], unit("s"), {
+  listField("toast.layout", "Layout", "grouped", ["grouped", "detailed"], SHOW.toastLayout, {
     group: "Look",
   }),
+  numberField("toast.seconds", "Stays on screen", 9, [1, 120], [5, 9, 15, 30], unit("s")),
   tokensField("toast.sessionTokens"),
   runsOutField("toast", "after the row"),
   ...COLOR_FIELDS.slice(0, 4),

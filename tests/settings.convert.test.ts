@@ -95,6 +95,7 @@ const ROWS: Array<{
   {
     v5: { formatStyle: "allWindows", toastStyle: "classic" },
     dropped: ["formatStyle", "toastStyle"],
+    sections: { toast: { layout: "grouped" } },
   },
   { v5: { tuiSidebarPanel: { formatStyle: "grouped" } }, dropped: ["tuiSidebarPanel.formatStyle"] },
   {

@@ -72,6 +72,7 @@ const EXPECTED = {
     afterCompaction: true,
     whenAllFail: true,
     resetNotice: "off",
+    layout: "grouped",
     seconds: 9,
     sessionTokens: true,
   },
@@ -390,7 +391,11 @@ it.each([
   },
   {
     input: { toast: { afterReply: "sometimes", seconds: 0, afterQuestion: true } },
-    expected: { toast: { afterReply: "low", seconds: 9, afterQuestion: true } },
+    expected: { toast: { afterReply: "low", seconds: 9, afterQuestion: true, layout: "grouped" } },
+  },
+  {
+    input: { toast: { layout: "classic", seconds: 5 } },
+    expected: { toast: { layout: "grouped", seconds: 5 } },
   },
 ])("keeps valid entries and defaults invalid moved values: $input", async ({ input, expected }) => {
   await file(JSON.stringify(input));
