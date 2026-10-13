@@ -18,6 +18,7 @@
  */
 import {
   type InputRenderable,
+  type MouseEvent,
   type Renderable,
   RGBA,
   type ScrollBoxRenderable,
@@ -165,8 +166,7 @@ function UsageLineText(props: {
               : part.back
                 ? roleColor(theme(), part.back)
                 : TRANSPARENT,
-            attributes:
-              part.role === "title" || part.role === "heading" ? TextAttributes.BOLD : undefined,
+            bold: part.role === "title" || part.role === "heading",
           }}
         >
           {sanitizeDisplayText(part.text)}
@@ -544,6 +544,8 @@ export function createUsageTab(
         flexShrink={0}
         width={RANGE_LIST_WIDTH + 1}
         marginRight={1}
+        // On a short window the list ends at the window's bottom line instead of drawing over it.
+        overflow="hidden"
         border={["right"]}
         borderStyle="single"
         borderColor={theme().text.muted}
@@ -674,7 +676,11 @@ export function createUsageTab(
         placeholder="YYYY-MM-DD"
         backgroundColor={theme().background.raised.high}
         textColor={theme().text.base}
-        onMouseDown={() => dateInput(field)?.focus()}
+        onMouseDown={(event: MouseEvent) => {
+          // The window under the box would take the keyboard back and end the typing.
+          event.stopPropagation();
+          dateInput(field)?.focus();
+        }}
       />
     );
     /** The report's dates after the range's name; a click on Between's types them. */

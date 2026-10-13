@@ -132,12 +132,8 @@ const plugin = Plugin.define({
       editing: settings,
     };
     const quotaWindow = createQuotaWindow(api, host, settings);
-    /** `/quota_usage [range]`: the Usage tab, on the typed range; a wrong range says why. */
+    /** `/quota_usage [range]`: the Usage tab, on the typed range or This session; a wrong range says why. */
     const openUsage = (argumentsText: string) => {
-      if (!argumentsText) {
-        quotaWindow.open("usage");
-        return;
-      }
       const parsed = parseUsageArguments(argumentsText);
       if (parsed.ok) quotaWindow.openUsage(parsed);
       else api.ui.toast.show({ variant: "warning", title: TOAST_TITLE, message: parsed.error });

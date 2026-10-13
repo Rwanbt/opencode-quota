@@ -1198,6 +1198,11 @@ describe("v6 surfaces on the quota snapshot", () => {
       }),
     );
     expect(activeLabels(usageTab())).toContain("Between");
+
+    // A bare /quota_usage starts on This session again.
+    tui.typed("/quota_usage");
+    await vi.waitFor(() => expect(activeLabels(usageTab())).toContain("This session"));
+    expect(activeLabels(usageTab())).not.toContain("Between");
     await tui.dispose();
   });
 
@@ -1308,6 +1313,11 @@ describe("v6 surfaces on the quota snapshot", () => {
     tui.press(11, "return");
     expect(to?.focused).toBe(true);
     expect(words(usageTab())).toContain("enter apply tab other date esc back");
+    // A click on a date box stays with it: the window under it does not take the keyboard back.
+    const click = { stopPropagation: vi.fn() };
+    findAll(usageTab(), (item) => item.type === "input")[1]?.props.onMouseDown(click);
+    expect(click.stopPropagation).toHaveBeenCalledOnce();
+    expect(to?.focused).toBe(true);
     tui.press(11, "return");
     expect(tui.toast).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -1336,6 +1346,22 @@ describe("v6 surfaces on the quota snapshot", () => {
     const usageTab = () => tui.render("session.composer.top", { sessionID: "ses_1" });
     tui.typed("/quota_usage 30d");
     await vi.waitFor(() => expect(words(usageTab())).toContain("Breakdown"));
+    // Headings are bold: a span takes `bold` from its style (it ignores `attributes`).
+    expect(
+      findAll(
+        usageTab(),
+        (node) => node.type === "span" && node.props.children === "Breakdown",
+      ).map((node) => node.props.style.bold),
+    ).toEqual([true]);
+    // On a short window the range list cuts its lines instead of drawing over the key line.
+    const rangeList = findAll(
+      usageTab(),
+      (node) =>
+        node.type === "box" &&
+        findAll(node.props.children, (child) => child.props?.id === "quota-usage-range-today")
+          .length > 0,
+    ).at(-1);
+    expect(rangeList?.props.overflow).toBe("hidden");
 
     // The range list has the keyboard: ↑ shows 7 days at once, ↓ 30 days again. No row is lit.
     expect(litUsageLines(usageTab())).toEqual([]);
