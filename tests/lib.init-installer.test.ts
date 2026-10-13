@@ -443,6 +443,36 @@ describe("init installer planning and merge behavior", () => {
     expect(secondPlan.edits.every((edit) => edit.valueChanges.length === 0)).toBe(true);
   });
 
+  it("keeps the comments inside a plugin list when it pins an entry to @4", async () => {
+    const projectDir = join(tempDir, "project");
+    mkdirSync(projectDir, { recursive: true });
+    writeFileSync(
+      join(projectDir, "opencode.jsonc"),
+      `{
+  "plugin": [
+    // Keep this other plugin pinned
+    "other-plugin@1.0.0",
+    ["@slkiser/opencode-quota@latest", {
+      // Custom option explanation
+      "keep": true
+    }]
+  ]
+}
+`,
+      "utf8",
+    );
+
+    await applyInitInstallerPlan(await planSelections({}, projectDir));
+
+    const written = readFileSync(join(projectDir, "opencode.jsonc"), "utf8");
+    expect(written).toContain("// Keep this other plugin pinned");
+    expect(written).toContain("// Custom option explanation");
+    expect(readJson(join(projectDir, "opencode.jsonc")).plugin).toEqual([
+      "other-plugin@1.0.0",
+      ["@slkiser/opencode-quota@4", { keep: true }],
+    ]);
+  });
+
   it("adds the tui plugin when tui config only references the server entrypoint", async () => {
     const projectDir = join(tempDir, "project");
     mkdirSync(projectDir, { recursive: true });

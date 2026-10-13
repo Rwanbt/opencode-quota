@@ -132,6 +132,15 @@ function collectValueEdits(
       return;
     }
 
+    // Same length (an entry changed in place): edit only the changed entries, so the
+    // comments between them stay.
+    if (desired.length === current.length) {
+      for (let index = 0; index < current.length; index++) {
+        collectValueEdits(current[index], desired[index], [...path, index], edits);
+      }
+      return;
+    }
+
     const keyedObjectPrefixMatches =
       desired.length >= current.length &&
       current.every((value, index) => {
