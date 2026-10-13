@@ -1150,7 +1150,7 @@ describe("v6 surfaces on the quota snapshot", () => {
     await tui.dispose();
   });
 
-  it("runs the 4.x and 5.x /tokens_* names, on by default, and names the new command once the System switch is off", async () => {
+  it("runs the 4.x and 5.x /tokens_* names, on by default, names the new command while the System switch is off, and runs them again once it is back on", async () => {
     writeUsageHistory();
     const tui = await startHosts();
     const windowTree = () => tui.render("session.composer.top", { sessionID: "ses_1" });
@@ -1189,6 +1189,19 @@ describe("v6 surfaces on the quota snapshot", () => {
       }),
     );
     expect(tui.posted).not.toHaveBeenCalled();
+
+    // Switched back on, both names open Usage again.
+    tui.typed("/quota_status");
+    await vi.waitFor(() => expect(words(oldCommands())).toContain("off"));
+    clickable(oldCommands(), "›").props.onMouseUp();
+    await vi.waitFor(() => expect(words(oldCommands())).toContain("on"), { timeout: 5_000 });
+    tui.typed("/tokens_monthly");
+    await vi.waitFor(() => expect(activeLabels(windowTree())).toContain("Last 30 days"));
+    tui.typed(`/tokens_between ${localDate(-6)} ${localDate(-3)}`);
+    await vi.waitFor(() => expect(activeLabels(windowTree())).toContain("Between"));
+    expect(
+      findAll(windowTree(), (node) => node.type === "input").map((node) => node.props.value),
+    ).toEqual([localDate(-6), localDate(-3)]);
     await tui.dispose();
   });
 
