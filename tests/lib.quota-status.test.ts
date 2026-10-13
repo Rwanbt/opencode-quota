@@ -2298,10 +2298,15 @@ describe("buildStatusReportData", () => {
     );
     const pricingDir = join(cacheHome, "opencode", "opencode-quota");
     mkdirSync(pricingDir, { recursive: true });
+    // Made now, so the list is never 3 days old and the report never tries a price download.
     writeFileSync(
       join(pricingDir, "modelsdev-pricing.runtime.min.json"),
       JSON.stringify({
-        _meta: { source: garbage(), generatedAt: pick([NOW, Number(DIGITS)]), units: garbage() },
+        _meta: {
+          source: garbage(),
+          generatedAt: pick([Date.now(), Number(DIGITS)]),
+          units: garbage(),
+        },
         providers: { [garbage()]: { [garbage()]: { input: 1, output: 2 } } },
       }),
     );
