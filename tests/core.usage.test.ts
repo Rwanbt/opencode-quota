@@ -113,14 +113,16 @@ describe("usage report ranges", () => {
     message({ created: at(-7, 23, 59, 59, 999), tokens: { output: 8 } }),
     message({ created: at(-29, 0), tokens: { output: 16 } }),
     message({ created: at(-30, 12), tokens: { output: 32 } }),
+    message({ created: at(-89, 0), tokens: { output: 64 } }),
+    message({ created: at(-90, 23, 59, 59, 999), tokens: { output: 128 } }),
   ];
 
   const cases: Array<{ query: UsageQuery; tokens: number; days: [string, string, number] }> = [
     { query: { range: "today" }, tokens: 1, days: ["2026-03-15", "2026-03-15", 1] },
     { query: { range: "7d" }, tokens: 1 + 2 + 4, days: ["2026-03-09", "2026-03-15", 7] },
     { query: { range: "30d" }, tokens: 31, days: ["2026-02-14", "2026-03-15", 30] },
-    // All time runs from the first to the last message.
-    { query: { range: "all" }, tokens: 63, days: ["2026-02-13", "2026-03-15", 31] },
+    // 90d starts 89 days before today, on 2025-12-16.
+    { query: { range: "90d" }, tokens: 127, days: ["2025-12-16", "2026-03-15", 90] },
     {
       query: { range: "between", from: "2026-03-08", to: "2026-03-14" },
       tokens: 2 + 4 + 8,
@@ -180,8 +182,8 @@ describe("usage report ranges", () => {
   });
 
   it("reports zeros, not an error, before OpenCode has any history", async () => {
-    const all = await usageReport({ range: "all" }, NOW);
-    expect(all.totals).toEqual({
+    const quarter = await usageReport({ range: "90d" }, NOW);
+    expect(quarter.totals).toEqual({
       costUsd: 0,
       sessions: 0,
       tokens: { processed: 0, cachedInput: 0, uncachedInput: 0, output: 0 },
@@ -191,8 +193,8 @@ describe("usage report ranges", () => {
       unpricedTokens: 0,
       unpricedShare: 0,
     });
-    expect(all.providers).toEqual([]);
-    expect(all.days).toEqual([]);
+    expect(quarter.providers).toEqual([]);
+    expect(quarter.days).toHaveLength(90);
 
     const week = await usageReport({ range: "7d" }, NOW);
     expect(week.days.map((day) => [day.tokens, day.costShare, day.tokenShare])).toEqual(
@@ -221,7 +223,7 @@ describe("usage report ranges", () => {
     { query: { range: "between", from: "2026-03-01" }, error: "to must be a date like 2026-01-31" },
     { query: { range: "session" }, error: "sessionID is required for range session" },
     {
-      query: { range: "session_tree", sessionID: "ses_missing" },
+      query: { range: "session", sessionID: "ses_missing" },
       error: "Session not found: ses_missing",
     },
   ])("rejects $query.range: $error", async ({ query, error }) => {
@@ -320,9 +322,9 @@ describe("usage report sessions", () => {
   ];
 
   it.each<{ query: UsageQuery; tokens: number; sessions: number }>([
-    { query: { range: "session", sessionID: "ses_root" }, tokens: 1, sessions: 1 },
-    { query: { range: "session_tree", sessionID: "ses_root" }, tokens: 1 + 2 + 4, sessions: 1 },
-    { query: { range: "session_tree", sessionID: "ses_child" }, tokens: 2 + 4, sessions: 1 },
+    // A session counts with its subagent sessions, and theirs.
+    { query: { range: "session", sessionID: "ses_root" }, tokens: 1 + 2 + 4, sessions: 1 },
+    { query: { range: "session", sessionID: "ses_child" }, tokens: 2 + 4, sessions: 1 },
     // Subagent sessions count as part of their top session.
     { query: { range: "today" }, tokens: 15, sessions: 2 },
   ])("$query.range $query.sessionID counts $sessions session(s)", async (item) => {
@@ -369,7 +371,7 @@ describe("usage report sessions", () => {
     };
 
     it.each<{ query: UsageQuery; forkAddsWork: boolean; tokens: number; sessions: number }>([
-      { query: { range: "all" }, forkAddsWork: false, tokens: 1 + 2, sessions: 1 },
+      { query: { range: "90d" }, forkAddsWork: false, tokens: 1 + 2, sessions: 1 },
       { query: { range: "today" }, forkAddsWork: false, tokens: 1 + 2, sessions: 1 },
       {
         query: { range: "between", from: "2026-03-15", to: "2026-03-15" },
@@ -383,21 +385,9 @@ describe("usage report sessions", () => {
         tokens: 0,
         sessions: 0,
       },
-      {
-        query: { range: "session_tree", sessionID: "ses_fork" },
-        forkAddsWork: false,
-        tokens: 0,
-        sessions: 0,
-      },
-      { query: { range: "all" }, forkAddsWork: true, tokens: 1 + 2 + 4 + 8, sessions: 2 },
+      { query: { range: "90d" }, forkAddsWork: true, tokens: 1 + 2 + 4 + 8, sessions: 2 },
       {
         query: { range: "session", sessionID: "ses_fork" },
-        forkAddsWork: true,
-        tokens: 4,
-        sessions: 1,
-      },
-      {
-        query: { range: "session_tree", sessionID: "ses_fork" },
         forkAddsWork: true,
         tokens: 4 + 8,
         sessions: 1,
@@ -726,7 +716,7 @@ describe("usage report reading", () => {
     }, 1);
 
     try {
-      const report = await usageReport({ range: "all" }, NOW);
+      const report = await usageReport({ range: "90d" }, NOW);
       measureHold();
       expect(report.totals.tokens.processed).toBe(4 * count);
       expect(report.totals.sessions).toBe(300);

@@ -47,11 +47,6 @@ const TEXT_NAME_MAX = 20;
 /** A short-text line that goes on under the one before starts this far in. */
 const TEXT_CONTINUE = "  ";
 
-/** "7 days" for "Last 7 days": the range's label as the range picker shows it. */
-function rangeLabel(range: UsageRange): string {
-  return usageRangeLabel(range).replace(/^Last /u, "");
-}
-
 /**
  * The matching table: the quota providers an OpenCode provider id (a model's `providerID`,
  * like "github-copilot" or "zai-coding-plan") stands for. The id itself (a custom provider
@@ -186,7 +181,8 @@ export function quickLookText(input: QuickLookTextInput): string {
       usage.totals.tokens.processed > 0
         ? [formatUsd(usage.totals.costUsd), `${formatTokens(usage.totals.tokens.processed)} tokens`]
         : ["no usage"];
-    for (const text of [rangeLabel(usage.range), ...totals]) header.push({ text, before: " · " });
+    for (const text of [usageRangeLabel(usage.range), ...totals])
+      header.push({ text, before: " · " });
   }
   const nameWidth = Math.min(
     TEXT_NAME_MAX,

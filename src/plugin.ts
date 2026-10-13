@@ -471,7 +471,7 @@ export const QuotaToastPlugin = Plugin.define({
       editor.add({
         name: "quota_usage",
         description:
-          "Tokens and API cost: today, 24h, 7d (default), 30d, all, session, session_tree, or between YYYY-MM-DD YYYY-MM-DD.",
+          "Tokens and API cost: today, 24h, 7d, 30d, 90d, session (default; with its subagents), or between YYYY-MM-DD YYYY-MM-DD.",
         execute: (invocation) =>
           postUsage(invocation.sessionID, "quota_usage", invocation.prompt.text),
       });

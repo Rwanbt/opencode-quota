@@ -246,7 +246,7 @@ function daysReport(days: Amounts[], range?: UsageReport["range"], sessions = 1)
 const longReport = () =>
   daysReport(
     Array.from({ length: 400 }, (_, index): Amounts => [index % 5, (index % 5) * M]),
-    "all",
+    "between",
     40,
   );
 
@@ -769,7 +769,7 @@ describe("usageText", () => {
     const text = usageText(t3Report(), { mode: "cost", breakdown: "day", width: 200 });
     const lines = text.split("\n");
     expect(lines.slice(0, 2)).toEqual([
-      "Usage · Last 30 days",
+      "Usage · 30 days",
       "$5,415.41  636 sessions · API estimate",
     ]);
     for (const line of lines) expect(line.length).toBeLessThanOrEqual(64);

@@ -176,7 +176,8 @@ describe("V2 server plugin", () => {
   });
 
   it.each([
-    ["90d", 'Unknown range "90d".'],
+    ["all", 'Unknown range "all".'],
+    ["session_tree", 'Unknown range "session_tree".'],
     ["between 2026-09-01", "between needs two dates."],
     ["between 2026-09-31 2026-10-01", '"2026-09-31" is not a date like 2026-01-31.'],
     ["between 2026-10-02 2026-10-01", "2026-10-01 is before 2026-10-02."],
@@ -189,7 +190,7 @@ describe("V2 server plugin", () => {
 
     expect(ctx.session.prompt.mock.calls[0][0].text).toBe(
       formatQuotaReportMessage(
-        `${problem}\nUsage: /quota_usage [today | 24h | 7d | 30d | all | session | session_tree | between YYYY-MM-DD YYYY-MM-DD]`,
+        `${problem}\nUsage: /quota_usage [today | 24h | 7d | 30d | 90d | session | between YYYY-MM-DD YYYY-MM-DD]`,
       ),
     );
   });

@@ -29,9 +29,9 @@ Your `/tokens_*` commands keep working; they are on for everyone. Turn them off 
 | `/tokens_daily` | `/quota_usage 24h` |
 | `/tokens_weekly` | `/quota_usage 7d` |
 | `/tokens_monthly` | `/quota_usage 30d` |
-| `/tokens_all` | `/quota_usage all` |
+| `/tokens_all` | `/quota_usage 90d` |
 | `/tokens_session` | `/quota_usage session` |
-| `/tokens_session_all` | `/quota_usage session_tree` |
+| `/tokens_session_all` | `/quota_usage session` |
 | `/tokens_between <from> <to>` | `/quota_usage between <from> <to>` |
 | `/quota_announcements` | The notices on the System tab (`/quota_status`) |
 | `/pricing_refresh` | **Update** on the Prices line of the Usage tab (`/quota_usage`); once per OpenCode run, prices older than 7 days also download on their own |

@@ -81,12 +81,12 @@ All quota settings live in `opencode-quota/settings.jsonc`, with sections for Si
 
 Type these in OpenCode. Add a range after `/quota_usage`, like `/quota_usage 30d` or `/quota_usage between 2026-09-01 2026-09-25`.
 
-| Command                | What it shows                                                                                                     |
-| ---------------------- | ----------------------------------------------------------------------------------------------------------------- |
-| `/quota`               | Limits. Web and Desktop: limits next to the last 7 days of usage                                                  |
-| `/quota_usage [range]` | Tokens and API cost: `today`, `24h`, `7d` (default), `30d`, `all`, `session`, `session_tree`, `between` two dates |
-| `/quota_status`        | Setup check: logins, providers, pricing, and notices                                                              |
-| `/quota_settings`      | TUI: quota window, Settings tabs                                                                                  |
+| Command                | What it shows                                                                                                         |
+| ---------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `/quota`               | Limits. Web and Desktop: limits next to the last 7 days of usage                                                      |
+| `/quota_usage [range]` | Tokens and API cost: `today`, `24h`, `7d`, `30d`, `90d`, `session` (default, with its subagents), `between` two dates |
+| `/quota_status`        | Setup check: logins, providers, pricing, and notices                                                                  |
+| `/quota_settings`      | TUI: quota window, Settings tabs                                                                                      |
 
 In the terminal, `/quota_usage` opens the window's Usage tab on that range: change it there, and open a model's details with enter or a click. **Update** on its Prices line refreshes pricing from `models.dev`.
 

@@ -263,15 +263,12 @@ describe("server quota RPC", () => {
       ["mystery-1", false],
     ]);
 
+    // This session counts its subagent sessions too.
     const session = (await call("usage", { range: "session", sessionID: "ses_root" })) as {
       report: UsageReport;
     };
     expect(session.report.sessionID).toBe("ses_root");
-    expect(session.report.totals.tokens.processed).toBe(1_000);
-    const tree = (await call("usage", { range: "session_tree", sessionID: "ses_root" })) as {
-      report: UsageReport;
-    };
-    expect(tree.report.totals.tokens.processed).toBe(1_500);
+    expect(session.report.totals.tokens.processed).toBe(1_500);
   });
 
   it("serves v6 rows from the store, saves them and emits changed", async () => {

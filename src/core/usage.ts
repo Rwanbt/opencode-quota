@@ -12,6 +12,7 @@
  *   model without a price adds tokens but no cost; its tokens are the unpriced share. A failed
  *   compaction names no model, so its tokens are unpriced too (provider and model "unknown").
  * - Sessions count conversations: a subagent session counts as part of its top parent.
+ * - "session" reads the session and its subagent sessions.
  * - Ranges and days are local calendar days: "7d" is today and the 6 days before it, and
  *   "between" includes both dates. "24h" is the rolling last 24 hours.
  * - Token kinds: cached input = cache reads; uncached input = input + cache writes;
@@ -34,7 +35,6 @@ import {
   readAllSessionsIndex,
   readUsageMessagePages,
   resolveSessionTree,
-  SessionNotFoundError,
 } from "../lib/opencode-storage.js";
 import { type ModelPricing, resolveModelPricing } from "../lib/pricing-key.js";
 import {
@@ -55,7 +55,7 @@ export {
 
 export type UsageQuery = {
   range: UsageRange;
-  /** The session for "session" and "session_tree" (the session plus its subagents). */
+  /** The session for "session", which also counts its subagent sessions. */
   sessionID?: string;
   /** Local dates like "2026-01-31" for "between", both included. */
   from?: string;
@@ -111,10 +111,10 @@ export type UsageModelRow = UsageRow & {
 
 export type UsageReport = {
   range: UsageRange;
-  /** The time window (epoch ms, both included); absent for "all" and the session ranges. */
+  /** The time window (epoch ms, both included); absent for "session". */
   sinceMs?: number;
   untilMs?: number;
-  /** Present for the session ranges. */
+  /** Present for "session". */
   sessionID?: string;
   generatedAtMs: number;
   totals: {
@@ -137,7 +137,12 @@ export type UsageReport = {
 };
 
 /** How many local days the rolling ranges cover, today included. */
-const RANGE_DAYS: Partial<Record<UsageRange, number>> = { today: 1, "7d": 7, "30d": 30 };
+const RANGE_DAYS: Partial<Record<UsageRange, number>> = {
+  today: 1,
+  "7d": 7,
+  "30d": 30,
+  "90d": 90,
+};
 
 const HOUR_MS = 60 * 60 * 1000;
 
@@ -210,20 +215,13 @@ function requireSessionID(query: UsageQuery): string {
   return query.sessionID;
 }
 
-/** The sessions a session range reads; undefined for the other ranges, which read them all. */
-async function sessionsToRead(
-  query: UsageQuery,
-  sessionsIndex: Record<string, OpenCodeSessionInfo>,
-): Promise<string[] | undefined> {
-  if (query.range === "session") {
-    const sessionID = requireSessionID(query);
-    if (!sessionsIndex[sessionID]) throw new SessionNotFoundError(sessionID, getOpenCodeDbPath());
-    return [sessionID];
-  }
-  if (query.range === "session_tree") {
-    return resolveSessionTree(requireSessionID(query));
-  }
-  return undefined;
+/**
+ * The sessions "session" reads: the session and its subagent sessions. Undefined for the other
+ * ranges, which read them all.
+ */
+async function sessionsToRead(query: UsageQuery): Promise<string[] | undefined> {
+  if (query.range !== "session") return undefined;
+  return resolveSessionTree(requireSessionID(query));
 }
 
 /** The session at the top of `sessionID`'s parent chain (subagents belong to their parent). */
@@ -392,7 +390,7 @@ type ModelTally = {
 async function buildUsageReport(query: UsageQuery, nowMs: number): Promise<UsageReport> {
   const window = resolveWindow(query, nowMs);
   const sessionsIndex = await readAllSessionsIndex();
-  const sessionIDs = await sessionsToRead(query, sessionsIndex);
+  const sessionIDs = await sessionsToRead(query);
 
   const totalTokens: UsageTokens = { processed: 0, cachedInput: 0, uncachedInput: 0, output: 0 };
   const tokensByType = emptyByType();
@@ -472,13 +470,12 @@ async function buildUsageReport(query: UsageQuery, nowMs: number): Promise<Usage
   const dayFirstMs = window.sinceMs ?? firstMs;
   const dayLastMs = window.untilMs ?? lastMs;
   const dayList = dayFirstMs <= dayLastMs ? localDays(dayFirstMs, dayLastMs) : [];
-  const isSessionRange = query.range === "session" || query.range === "session_tree";
 
   return {
     range: query.range,
     ...(window.sinceMs === undefined ? {} : { sinceMs: window.sinceMs }),
     ...(window.untilMs === undefined ? {} : { untilMs: window.untilMs }),
-    ...(isSessionRange ? { sessionID: requireSessionID(query) } : {}),
+    ...(query.range === "session" ? { sessionID: requireSessionID(query) } : {}),
     generatedAtMs: nowMs,
     totals: {
       costUsd: total.costUsd,

@@ -627,7 +627,7 @@ describe("v6 surfaces on the quota snapshot", () => {
     // /quota_usage opens it on Usage (its ranges; the window starts without the keyboard, so no
     // key hint), /quota_status on System, /quota_settings on Layout's first page, All places.
     await tui.command("usage").run();
-    const usageKeys = "Session + subagents";
+    const usageKeys = "90 days";
     await vi.waitFor(() => expect(quotaWindow()).toContain(usageKeys));
     await tui.command("status").run();
     expect(quotaWindow()).toContainEqual(expect.stringContaining("Copy the report"));
@@ -1115,15 +1115,17 @@ describe("v6 surfaces on the quota snapshot", () => {
     });
     const tui = await startHosts();
 
-    // The palette's usage command opens the window on its Usage tab, on the last 7 days.
+    // The palette's usage command opens the window on its Usage tab, on this session.
     await tui.command("usage").run();
     const usageTab = () => tui.render("session.composer.top", { sessionID: "ses_1" });
     await vi.waitFor(() => expect(words(usageTab())).toContain("Breakdown"));
+    expect(activeLabels(usageTab())).toContain("This session");
+    clickable(usageTab(), "7 days").props.onMouseUp();
+    await vi.waitFor(() => expect(words(usageTab()).join(" ")).toContain("Daily cost"));
     const tab = words(usageTab());
     expect(tab).toEqual(
       expect.arrayContaining([
         "Usage",
-        "Last 7 days",
         // The daily chart sits beside the total when it gets 32 columns there.
         expect.stringMatching(/^\$\d+\.\d\d 1 session · API estimate Daily cost$/u),
         expect.stringMatching(/^Unpriced tokens excluded: 10\.9% \(mystery-1\) /u),
@@ -1169,7 +1171,7 @@ describe("v6 surfaces on the quota snapshot", () => {
 
     tui.typed("/quota_usage 30d");
     await vi.waitFor(() => expect(words(usageTab())).toContain("Breakdown"));
-    expect(activeLabels(usageTab())).toContain("Last 30 days");
+    expect(activeLabels(usageTab())).toContain("30 days");
     expect(words(usageTab())).toContainEqual(expect.stringMatching(/ 2 sessions · API estimate/u));
 
     tui.typed(`/quota_usage between ${localDate(-12)} ${localDate(-8)}`);
@@ -1182,11 +1184,11 @@ describe("v6 surfaces on the quota snapshot", () => {
     );
 
     // A wrong range leaves the tab as it was and says how to type one.
-    tui.typed("/quota_usage 90d");
+    tui.typed("/quota_usage all");
     expect(tui.toast).toHaveBeenCalledWith(
       expect.objectContaining({
         variant: "warning",
-        message: expect.stringMatching(/^Unknown range "90d"\.\nUsage: \/quota_usage \[today/u),
+        message: expect.stringMatching(/^Unknown range "all"\.\nUsage: \/quota_usage \[today/u),
       }),
     );
     expect(activeLabels(usageTab())).toContain("Between");
@@ -1200,7 +1202,7 @@ describe("v6 surfaces on the quota snapshot", () => {
 
     // On by default: /tokens_monthly opens Usage on the last 30 days, /tokens_between on its dates.
     tui.typed("/tokens_monthly");
-    await vi.waitFor(() => expect(activeLabels(windowTree())).toContain("Last 30 days"));
+    await vi.waitFor(() => expect(activeLabels(windowTree())).toContain("30 days"));
     tui.typed(`/tokens_between ${localDate(-12)} ${localDate(-8)}`);
     await vi.waitFor(() => expect(activeLabels(windowTree())).toContain("Between"));
     expect(
@@ -1239,7 +1241,7 @@ describe("v6 surfaces on the quota snapshot", () => {
     clickable(oldCommands(), "›").props.onMouseUp();
     await vi.waitFor(() => expect(words(oldCommands())).toContain("on"), { timeout: 5_000 });
     tui.typed("/tokens_monthly");
-    await vi.waitFor(() => expect(activeLabels(windowTree())).toContain("Last 30 days"));
+    await vi.waitFor(() => expect(activeLabels(windowTree())).toContain("30 days"));
     tui.typed(`/tokens_between ${localDate(-6)} ${localDate(-3)}`);
     await vi.waitFor(() => expect(activeLabels(windowTree())).toContain("Between"));
     expect(
@@ -1266,16 +1268,16 @@ describe("v6 surfaces on the quota snapshot", () => {
     };
 
     await tui.command("usage").run();
-    clickable(usageTab(), "Last 30 days").props.onMouseUp();
+    clickable(usageTab(), "30 days").props.onMouseUp();
     await vi.waitFor(() =>
       expect(words(usageTab())).toContainEqual(expect.stringMatching(/ 2 sessions · /u)),
     );
-    // The last 7 days answer, asked first, arrives now; the tab keeps the last 30 days.
+    // This session's answer, asked first, arrives now; the tab keeps the last 30 days.
     releaseFirst();
     await vi.waitFor(() => expect(calls).toBe(2));
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(words(usageTab())).toContainEqual(expect.stringMatching(/ 2 sessions · /u));
-    expect(activeLabels(usageTab())).toContain("Last 30 days");
+    expect(activeLabels(usageTab())).toContain("30 days");
     await tui.dispose();
   });
 

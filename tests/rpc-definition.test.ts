@@ -126,11 +126,10 @@ describe("quota RPC definition", () => {
   });
 
   it("validates usage input", async () => {
-    for (const range of ["today", "24h", "7d", "30d", "all"]) {
+    for (const range of ["today", "24h", "7d", "30d", "90d"]) {
       await expectAccepted(methods.usage.input, { range });
     }
     await expectAccepted(methods.usage.input, { range: "session", sessionID: "ses_1" });
-    await expectAccepted(methods.usage.input, { range: "session_tree", sessionID: "ses_1" });
     // Leap days exist in leap years only (every 4th year, but not 1900; 2000 is one).
     for (const [from, to] of [
       ["2026-01-01", "2026-01-01"],
@@ -140,16 +139,16 @@ describe("quota RPC definition", () => {
       await expectAccepted(methods.usage.input, { range: "between", from, to });
     }
 
-    const rangeIssue =
-      "range must be one of today, 24h, 7d, 30d, all, session, session_tree, between";
+    const rangeIssue = "range must be one of today, 24h, 7d, 30d, 90d, session, between";
     const cases: Array<[unknown, string]> = [
       [null, "input must be an object"],
       [{}, rangeIssue],
-      [{ range: "90d" }, rangeIssue],
+      [{ range: "all" }, rangeIssue],
+      [{ range: "session_tree", sessionID: "ses_1" }, rangeIssue],
       [{ range: "toString" }, rangeIssue],
-      [{ range: "all", sessionID: 1 }, "sessionID must be a string"],
+      [{ range: "90d", sessionID: 1 }, "sessionID must be a string"],
       [{ range: "session" }, "sessionID is required for range session"],
-      [{ range: "session_tree", sessionID: "" }, "sessionID is required for range session_tree"],
+      [{ range: "session", sessionID: "" }, "sessionID is required for range session"],
       [{ range: "between", to: "2026-01-01" }, "from must be a date like 2026-01-31"],
       [
         { range: "between", from: "2026-01-01", to: "1/2/2026" },
@@ -192,7 +191,7 @@ describe("quota RPC definition", () => {
   });
 
   it("requires a report in usage output, and ok and a message in downloadPrices output", async () => {
-    await expectAccepted(methods.usage.output, { report: { range: "all" } });
+    await expectAccepted(methods.usage.output, { report: { range: "90d" } });
     for (const value of [undefined, {}, { report: null }, { report: [] }]) {
       await expectRejected(methods.usage.output, value, "output must carry a report");
     }

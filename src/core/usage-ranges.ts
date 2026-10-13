@@ -2,27 +2,26 @@
  * The usage ranges, in the order every surface lists them, with their user-facing labels.
  * Pure data and parsing: the TUI loads this file without any server code.
  *
- * - "24h" is the rolling last 24 hours; "today", "7d" and "30d" are local calendar days,
+ * - "24h" is the rolling last 24 hours; "today", "7d", "30d" and "90d" are local calendar days,
  *   today included.
- * - "session_tree" is the session plus its subagent sessions.
+ * - "session" is the session plus its subagent sessions.
  * - "between" takes two local dates, both included.
  */
 import { parseCalendarDate } from "../lib/calendar-date.js";
 
 export const USAGE_RANGES = [
   { range: "today", label: "Today" },
-  { range: "24h", label: "Last 24 hours" },
-  { range: "7d", label: "Last 7 days" },
-  { range: "30d", label: "Last 30 days" },
-  { range: "all", label: "All time" },
+  { range: "24h", label: "24 hours" },
+  { range: "7d", label: "7 days" },
+  { range: "30d", label: "30 days" },
+  { range: "90d", label: "90 days" },
   { range: "session", label: "This session" },
-  { range: "session_tree", label: "Session + subagents" },
   { range: "between", label: "Between" },
 ] as const;
 
 export type UsageRange = (typeof USAGE_RANGES)[number]["range"];
 
-export const DEFAULT_USAGE_RANGE: UsageRange = "7d";
+export const DEFAULT_USAGE_RANGE: UsageRange = "session";
 
 /** The 4.x and 5.x token commands (`system.oldCommands`), each `/quota_usage` on its range. */
 export const OLD_USAGE_COMMANDS: Readonly<Record<string, UsageRange>> = {
@@ -30,9 +29,9 @@ export const OLD_USAGE_COMMANDS: Readonly<Record<string, UsageRange>> = {
   tokens_daily: "24h",
   tokens_weekly: "7d",
   tokens_monthly: "30d",
-  tokens_all: "all",
+  tokens_all: "90d",
   tokens_session: "session",
-  tokens_session_all: "session_tree",
+  tokens_session_all: "session",
   tokens_between: "between",
 };
 
@@ -49,7 +48,7 @@ type UsageArguments =
   | { ok: false; error: string };
 
 const USAGE_ARGUMENTS_HELP =
-  "Usage: /quota_usage [today | 24h | 7d | 30d | all | session | session_tree | between YYYY-MM-DD YYYY-MM-DD]";
+  "Usage: /quota_usage [today | 24h | 7d | 30d | 90d | session | between YYYY-MM-DD YYYY-MM-DD]";
 
 function argumentsError(problem: string): UsageArguments {
   return { ok: false, error: `${problem}\n${USAGE_ARGUMENTS_HELP}` };

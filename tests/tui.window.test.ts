@@ -274,10 +274,10 @@ describe("quota window: tab bar", () => {
 });
 
 describe("quota window: Usage range line", () => {
-  // "Range" and its gap take 8 columns; every range 103 more.
+  // "Range" and its gap take 8 columns; every range 66 more.
   it.each([
-    { width: 111, fits: true },
-    { width: 110, fits: false },
+    { width: 74, fits: true },
+    { width: 73, fits: false },
   ])("at $width columns every range fits: $fits", ({ width, fits }) => {
     expect(allRangesFit(width)).toBe(fits);
   });
