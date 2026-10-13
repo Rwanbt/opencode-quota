@@ -3,12 +3,14 @@
  * then the plugin on a fake OpenCode host: its commands, the quota commands typed in the prompt,
  * and what it does after a turn.
  */
+import { createRoot } from "solid-js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ProviderSnapshot, QuotaSnapshot, ResetNotice } from "../src/core/types.js";
 import type { QuotaClient } from "../src/tui/client.js";
 import { type DisplaySettings, defaultDisplaySettings } from "../src/tui/display.js";
 import plugin from "../src/tui/index.tsx";
 import { createToasts, type TurnEnd, toastRoom } from "../src/tui/toasts.js";
+import { THEME } from "./helpers/jsx-tree.js";
 
 const NOW = Date.parse("2026-10-10T12:00:00.000Z");
 
@@ -336,13 +338,15 @@ type Layer = {
 };
 type Route = { type: "home" } | { type: "session"; sessionID: string };
 
-/** The TUI plugin on a fake OpenCode host, on Home or in a session. */
-function startTui(route: Route = { type: "home" }) {
+/** The TUI plugin on a fake OpenCode host, on Home or in a session, of `version` when given. */
+function startTui(route: Route = { type: "home" }, version?: string) {
   const listeners = new Map<string, Listener>();
   const layers: Layer[] = [];
   const editor = { plainText: "", clear: vi.fn() };
   let renderApp: () => unknown = () => null;
   const context = {
+    ...(version ? { app: { version, channel: "latest" } } : {}),
+    theme: THEME,
     location: { directory: process.cwd() },
     renderer: { currentFocusedEditor: editor as typeof editor | null, width: 120 },
     client: { rpc: vi.fn(() => rpc) },
@@ -360,8 +364,9 @@ function startTui(route: Route = { type: "home" }) {
     ui: {
       slot: vi.fn((claim: { append: string; render: () => unknown }) => {
         if (claim.append === "app") {
-          renderApp = claim.render;
-          claim.render();
+          // OpenCode draws the slot under its renderer, inside a Solid owner.
+          renderApp = () => createRoot(() => claim.render());
+          renderApp();
         }
         return vi.fn();
       }),
@@ -634,5 +639,50 @@ describe("turn events of the TUI plugin", () => {
     expect(rpc.refresh.mock.calls.map(([input]) => input)).toEqual([
       { reason: "turn", sessionID: "ses_1" },
     ]);
+  });
+});
+
+describe("colored toasts of the TUI plugin", () => {
+  const PLAIN = `Claude\n  7d ${"█".repeat(16)}░░░░  80% left`;
+
+  /**
+   * The messages OpenCode `version`'s toast gets after a compaction (its `show` stands for that
+   * toast). JSX makes plain `{ type, props }` nodes here.
+   */
+  async function afterCompaction(version?: string, show?: (toast: { message: unknown }) => void) {
+    vi.stubGlobal("React", {
+      createElement: (type: unknown, props: object | null, ...children: unknown[]) => ({
+        type,
+        props: { ...props, children: children.length > 1 ? children : children[0] },
+      }),
+    });
+    const tui = startTui({ type: "session", sessionID: "ses_1" }, version);
+    if (show) tui.toast.mockImplementation(show);
+    tui.emit("session.compaction.ended", { sessionID: "ses_1" });
+    await vi.waitFor(() => expect(tui.toast).toHaveBeenCalled());
+    return tui.toast.mock.calls.map(([toast]) => toast.message as unknown);
+  }
+
+  /** What OpenCode's <text> draws of a message of spans. */
+  const drawn = (message: unknown) =>
+    (message as Array<string | { props: { children: string } }>)
+      .map((child) => (typeof child === "string" ? child : child.props.children))
+      .join("");
+
+  it("colors the quota toast on OpenCode 2.0.28, with the same text as elsewhere", async () => {
+    const colored = await afterCompaction("2.0.28");
+    expect(colored).toHaveLength(1);
+    expect(typeof colored[0]).not.toBe("string");
+    expect(drawn(colored[0])).toBe(PLAIN);
+    expect(await afterCompaction("2.0.29")).toEqual([PLAIN]);
+    expect(await afterCompaction()).toEqual([PLAIN]);
+  });
+
+  it("shows the plain toast when OpenCode's toast throws on the colored one", async () => {
+    const messages = await afterCompaction("2.0.28", (toast) => {
+      if (typeof toast.message !== "string") throw new Error("message must be a string");
+    });
+    expect(messages).toHaveLength(2);
+    expect(messages[1]).toBe(PLAIN);
   });
 });

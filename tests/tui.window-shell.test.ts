@@ -186,7 +186,7 @@ function fakeHost() {
       },
     }),
   );
-  const settings = createSettingsEditor(api as never, display);
+  const settings = createSettingsEditor(api as never, display, api.ui.toast.show);
   const surface = {
     theme: () => THEME,
     display: display.shown,

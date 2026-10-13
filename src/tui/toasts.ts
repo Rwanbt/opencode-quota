@@ -1,9 +1,9 @@
 /**
  * Quota toasts (§4.4). OpenCode shows one toast at a time, so quota takes a turn only when
  * the display settings say so: after compaction and when every provider fails by default;
- * after each reply, after a question, and on a limit reset only when turned on. Toasts are
- * plain text (OpenCode colors only their border) in the grouped or detailed layout
- * (`toast.layout`), with bars in the sidebar's bar shape.
+ * after each reply, after a question, and on a limit reset only when turned on. A quota toast
+ * shows its rows in the grouped or detailed layout (`toast.layout`), with bars in the sidebar's
+ * bar shape; the host colors them where OpenCode can draw that (`toast-colors.tsx`).
  *
  * Reset notices that arrive together show as one toast. While a turn's toast is being made,
  * they wait and show after it, so the turn's toast does not replace them at once. When the TUI
@@ -19,7 +19,7 @@ import type { DisplaySettings } from "./display.js";
 
 export const TOAST_TITLE = "OpenCode Quota";
 
-type ToastOptions = {
+export type ToastOptions = {
   variant: "info" | "success" | "warning" | "error";
   title: string;
   message: string;
@@ -29,7 +29,8 @@ type ToastOptions = {
 export type TurnEnd = "reply" | "compaction" | "question";
 
 export type ToastHost = {
-  show: (toast: ToastOptions) => void;
+  /** Shows a toast. A quota toast brings its `lines` too; its message is their plain text. */
+  show: (toast: ToastOptions, lines?: Line[]) => void;
   display: () => DisplaySettings;
   /** The terminal's columns, which a toast's width follows. */
   terminalWidth: () => number;
@@ -60,7 +61,7 @@ export function toastRoom(terminalWidth: number): number {
 }
 
 /** `groups` in the toast layout the settings pick, as wide as the toast's text. */
-function quotaLines(
+function layoutLines(
   groups: Group[],
   words: Words,
   display: DisplaySettings,
@@ -80,21 +81,27 @@ function quotaLines(
   });
 }
 
-function joinLines(lines: Line[]): string {
+/** A quota toast's lines as its plain message. */
+export function plainMessage(lines: Line[]): string {
   return lines.map(lineText).join("\n");
 }
 
+/** The session tokens a quota toast shows, when its settings show them. */
+function toastTokens(snapshot: QuotaSnapshot, display: DisplaySettings) {
+  return display.toast.sessionTokens ? snapshot.sessionTokens : undefined;
+}
+
 /** The rows the Toast tab shows, in its layout, then the session tokens. */
-export function toastText(
+export function quotaToastLines(
   snapshot: QuotaSnapshot,
   display: DisplaySettings,
   nowMs: number,
   terminalWidth: number,
-): string {
+): Line[] {
   const words = snapshot.words ?? DEFAULT_WORDS;
   const groups = visibleGroups(snapshot, display, "toast", words);
-  const tokens = display.toast.sessionTokens ? snapshot.sessionTokens : undefined;
-  return joinLines(quotaLines(groups, words, display, nowMs, terminalWidth, tokens));
+  const tokens = toastTokens(snapshot, display);
+  return layoutLines(groups, words, display, nowMs, terminalWidth, tokens);
 }
 
 function wantsTurnToast(display: DisplaySettings, trigger: TurnEnd, anyLow: boolean): boolean {
@@ -152,16 +159,20 @@ export function createToasts(host: ToastHost): Toasts {
       ),
     );
     const duration = display.toast.seconds * 1000;
+    const width = host.terminalWidth();
     if (wantsTurnToast(display, trigger, anyLow)) {
-      const message = toastText(snapshot, display, nowMs, host.terminalWidth());
-      if (message) host.show({ variant: "info", title: TOAST_TITLE, message, duration });
+      const tokens = toastTokens(snapshot, display);
+      const lines = layoutLines(groups, words, display, nowMs, width, tokens);
+      const message = plainMessage(lines);
+      if (message) host.show({ variant: "info", title: TOAST_TITLE, message, duration }, lines);
       return;
     }
     if (allFail && display.toast.whenAllFail && !allFailShown) {
       allFailShown = true;
       const failing = groups.filter((group) => group.error);
-      const message = joinLines(quotaLines(failing, words, display, nowMs, host.terminalWidth()));
-      if (message) host.show({ variant: "error", title: TOAST_TITLE, message, duration });
+      const lines = layoutLines(failing, words, display, nowMs, width);
+      const message = plainMessage(lines);
+      if (message) host.show({ variant: "error", title: TOAST_TITLE, message, duration }, lines);
     }
   }
 

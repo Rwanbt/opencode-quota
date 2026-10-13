@@ -42,7 +42,7 @@ import {
 import { foundProviderIds, isTicked, PROVIDERS_KEY, withTick } from "../server-settings.js";
 import type { SurfaceHost } from "../sidebar.js";
 import { namedColor, roleColor } from "../theme.js";
-import { TOAST_TITLE, toastText } from "../toasts.js";
+import { plainMessage, quotaToastLines, TOAST_TITLE, type ToastHost } from "../toasts.js";
 import { draggedTo, movedBy, surfaceTree, type TreeProvider } from "./drag.js";
 import type { WindowHost, WindowTheme } from "./shell.js";
 import { Option } from "./usage.js";
@@ -322,7 +322,11 @@ export function OptionRow(props: {
 
 export type SettingsEditor = ReturnType<typeof createSettingsEditor>;
 
-export function createSettingsEditor(api: WindowHost, display: DisplayStore) {
+export function createSettingsEditor(
+  api: WindowHost,
+  display: DisplayStore,
+  showToast: ToastHost["show"],
+) {
   const [tab, setTabNow] = createSignal<SettingsTab>();
   const [selected, setSelected] = createSignal("");
   const [typing, setTyping] = createSignal<Typed & { id: string; value: string }>();
@@ -597,13 +601,12 @@ export function createSettingsEditor(api: WindowHost, display: DisplayStore) {
   function previewToast(host: SurfaceHost, sessionID: string): void {
     const settings = shown();
     const snapshot = host.quota.snapshot(sessionID);
-    const message =
-      snapshot &&
-      settings.surfaces.toast.enabled &&
-      toastText(snapshot, settings, Date.now(), api.renderer.width);
+    if (!snapshot || !settings.surfaces.toast.enabled) return;
+    const lines = quotaToastLines(snapshot, settings, Date.now(), api.renderer.width);
+    const message = plainMessage(lines);
     if (!message) return;
     const duration = settings.toast.seconds * 1000;
-    api.ui.toast.show({ variant: "info", title: TOAST_TITLE, message, duration });
+    showToast({ variant: "info", title: TOAST_TITLE, message, duration }, lines);
   }
 
   /**

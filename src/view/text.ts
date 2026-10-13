@@ -1,6 +1,7 @@
 /**
  * The lines of every quota surface, built from the visible groups (`select.ts`). The TUI
- * draws each segment in its color role; toasts and the CLI print the plain text.
+ * draws each segment in its color role; the Web and terminal `/quota` text print the plain
+ * text.
  */
 import { describeError } from "../core/errors.js";
 import { paceOf, paceText } from "../core/pace.js";

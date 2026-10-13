@@ -17,7 +17,7 @@
  */
 import { Plugin } from "@opencode/plugin/tui";
 import type { JSX } from "@opentui/solid";
-import { onCleanup, Show } from "solid-js";
+import { getOwner, type Owner, onCleanup, Show } from "solid-js";
 import { OLD_USAGE_COMMANDS, parseUsageArguments, type UsageRange } from "../core/usage-ranges.js";
 import { QuotaRpc } from "../rpc.js";
 import { type ClientHost, createQuotaClient, quotaCallOptions, reportFailure } from "./client.js";
@@ -26,6 +26,7 @@ import { createServerSettings } from "./server-settings.js";
 import { SidebarPanel, type SurfaceHost } from "./sidebar.js";
 import { HomeFooter, StatusLine } from "./status-line.js";
 import type { Theme } from "./theme.js";
+import { createToastShow } from "./toast-colors.js";
 import { createToasts, TOAST_TITLE, type TurnEnd } from "./toasts.js";
 import { createSettingsEditor } from "./window/settings.js";
 import { createQuotaWindow, type WindowHost } from "./window/shell.js";
@@ -36,6 +37,8 @@ type TuiEvent = { data?: Record<string, unknown> };
 /** What the plugin needs from OpenCode's TUI context, besides the window's needs. */
 type TuiContext = WindowHost &
   ClientHost & {
+    /** The running OpenCode, for example `{ version: "2.0.28" }`; read defensively. */
+    app?: { version?: unknown };
     theme: Theme & WindowHost["theme"];
     storage: {
       store<Value extends object>(
@@ -110,7 +113,16 @@ const plugin = Plugin.define({
         });
       }
     });
-    const settings = createSettingsEditor(api, display);
+    /** The app slot's Solid owner while it is mounted: colored toasts are made under it. */
+    let appOwner: Owner | undefined;
+    const showToast = createToastShow({
+      show: (toast) => api.ui.toast.show(toast),
+      version: () => api.app?.version,
+      theme: () => api.theme,
+      display: display.shown,
+      owner: () => appOwner,
+    });
+    const settings = createSettingsEditor(api, display, showToast);
     const draftQuota = {
       ...quota,
       snapshot: (sessionID?: string) => settings.withDraftWords(quota.snapshot(sessionID)),
@@ -118,7 +130,7 @@ const plugin = Plugin.define({
         settings.withDraftWords(await quota.refresh(reason, sessionID)),
     };
     const toasts = createToasts({
-      show: (toast) => api.ui.toast.show(toast),
+      show: showToast,
       display: display.shown,
       terminalWidth: () => api.renderer.width,
       quota: draftQuota,
@@ -174,6 +186,8 @@ const plugin = Plugin.define({
         // happen right after it starts. Leaving a mount drops its keymap layers and event
         // listeners, so each mount stops the last one's and registers everything again.
         disposeMount?.();
+        const owner = getOwner() ?? undefined;
+        appOwner = owner;
         const stopQuota = quota.start();
         // Load settings on Home too, including switches for otherwise hidden surfaces.
         queueMicrotask(() => {
@@ -269,6 +283,7 @@ const plugin = Plugin.define({
           if (disposed) return;
           disposed = true;
           if (disposeMount === dispose) disposeMount = undefined;
+          if (appOwner === owner) appOwner = undefined;
           stopQuota();
           toasts.cancel();
           for (const stop of listeners) stop();
