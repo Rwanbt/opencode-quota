@@ -10,6 +10,7 @@ import { formatShare, formatTokens, formatUsd } from "../src/view/format.js";
 import {
   breakdownModels,
   modelDetailView,
+  rangeDates,
   type UsageLine,
   type UsageViewOptions,
   usageText,
@@ -155,10 +156,23 @@ function from(lines: UsageLine[], text: string): UsageLine[] {
   return lines.slice(index);
 }
 
+/** The first line whose text holds `text` and the lines after it, up to the next blank line. */
+function section(lines: UsageLine[], text: string): UsageLine[] {
+  const after = from(lines, text);
+  const end = after.findIndex((line) => line.length === 0);
+  return end < 0 ? after : after.slice(0, end);
+}
+
 /** The T3 report's view from the first line holding `text`; default: cost by model, 80 columns. */
 function t3From(text: string, options: Partial<UsageViewOptions> = {}): UsageLine[] {
   const view = usageView(t3Report(), { mode: "cost", breakdown: "model", width: 80, ...options });
   return from(view, text);
+}
+
+/** The T3 report's section from the first line holding `text`; default: cost by model, 80 columns. */
+function t3Section(text: string, options: Partial<UsageViewOptions> = {}): UsageLine[] {
+  const view = usageView(t3Report(), { mode: "cost", breakdown: "model", width: 80, ...options });
+  return section(view, text);
 }
 
 /** One provider with a price, one free model, one model without a price, over 7 days. */
@@ -521,8 +535,8 @@ describe("usageView", () => {
     const tall = { ...t3Report(), providers: [...t3Report().providers, ...t3Report().providers] };
     const tallLines = usageView(tall, { mode: "cost", breakdown: "model", width: 110 });
     const tallRows = tallLines.filter((line) => line.some((part) => part.role === "bar"));
-    // 2 + 1 + 1 + 8 list lines, less the chart's title, baseline and dates.
-    expect(tallRows).toHaveLength(9);
+    // 2 + 1 + 8 list lines, less the chart's title, baseline and dates.
+    expect(tallRows).toHaveLength(8);
   });
 
   it("charts many days a few to a column, with the year on dates outside this year", () => {
@@ -675,7 +689,7 @@ describe("usageView", () => {
     header,
     rows,
   }) => {
-    const lines = t3From("Breakdown", options);
+    const lines = t3Section("Breakdown", options);
     const texts = lines.map(textOf);
     expect(texts[1]).toMatch(header);
     for (const [index, row] of rows.entries()) expect(texts[index + 2]).toMatch(row);
@@ -683,7 +697,7 @@ describe("usageView", () => {
   });
 
   it("breakdown bars: the biggest amount's bar is full, the others in proportion", () => {
-    const lines = t3From("Breakdown").slice(2);
+    const lines = t3Section("Breakdown").slice(2);
     const bars = lines.map(
       (line) => line.find((part) => part.text.startsWith("━"))?.text.length ?? 0,
     );
@@ -710,7 +724,7 @@ describe("usageView", () => {
   });
 
   it("breakdown by day: newest first, used days only, $0.00 for free models, no price for unpriced", () => {
-    const lines = from(
+    const lines = section(
       usageView(unpricedReport(), { mode: "cost", breakdown: "day", width: 64 }),
       "Breakdown",
     );
@@ -750,11 +764,11 @@ describe("usageView", () => {
         { text: " (a-1, …)", role: "muted" },
       ],
     },
-  ])("one unpriced note line under the total: $name", ({ report, width, note }) => {
+  ])("one unpriced note line at the bottom: $name", ({ report, width, note }) => {
     const lines = usageView(report, { mode: "cost", breakdown: "model", width });
     const notes = lines.filter((line) => line.some((part) => part.role === "warning"));
     expect(notes).toEqual(note ? [note] : []);
-    if (note) expect(lines[1]).toBe(notes[0]);
+    if (note) expect(lines.at(-1)).toBe(notes[0]);
   });
 
   it("says so in one line when the range has no usage", () => {
@@ -776,7 +790,11 @@ describe("usageText", () => {
     expect(text).not.toMatch(/Daily cost|[▁▂▃▄▅▆▇]/);
     expect(text).toContain("▒ Input $369.53   ░ Cache read $2,749.39");
     expect(lines.filter((line) => /^ ?\d+ {2}\w{3}, /.test(line))).toHaveLength(10);
-    expect(lines.at(-1)).toBe("and 18 more");
+    expect(lines.slice(-3)).toEqual([
+      "and 18 more",
+      "",
+      "Unpriced tokens excluded: <0.1% (exo-free)",
+    ]);
   });
 
   it.each([
@@ -794,6 +812,23 @@ describe("usageText", () => {
     expect(usageText(report, { mode: "tokens", breakdown: "model" })).toBe(
       `${title}\nNo usage in this range.`,
     );
+  });
+});
+
+describe("rangeDates", () => {
+  it.each([
+    { name: "seven days", since: new Date(2026, 9, 4), until: NOW, dates: "Oct 4 – Oct 10" },
+    { name: "one day", since: new Date(2026, 9, 10), until: NOW, dates: "Oct 10" },
+    {
+      name: "days that start last year",
+      since: new Date(2025, 11, 20),
+      until: new Date(2026, 0, 5, 23, 59),
+      dates: "Dec 20, 2025 – Jan 5",
+    },
+    { name: "this session", since: undefined, until: undefined, dates: undefined },
+  ])("names the days of $name", ({ since, until, dates }) => {
+    const report = { ...EMPTY_REPORT, sinceMs: since?.valueOf(), untilMs: until?.valueOf() };
+    expect(rangeDates(report)).toBe(dates);
   });
 });
 
@@ -904,8 +939,10 @@ describe("breakdownModels", () => {
     const models = breakdownModels(report, mode);
     const lines = usageView(report, { mode, breakdown: "model", width: 80 });
 
-    expect(textOf(lines[lines.length - models.length - 1])).toMatch(/^# {2}Model/);
-    for (const [index, row] of lines.slice(-models.length).entries()) {
+    const header = lines.findIndex((line) => /^# {2}Model/.test(textOf(line)));
+    const rows = lines.slice(header + 1, header + 1 + models.length);
+    expect(lines[header + 1 + models.length]).toEqual([]);
+    for (const [index, row] of rows.entries()) {
       const model = models[index];
       const provider = report.providers.findIndex((item) => item.providerID === model.providerID);
       expect(textOf(row)).toContain(model.modelID);

@@ -1,14 +1,17 @@
 /** @jsxImportSource @opentui/solid */
 /**
  * The quota window's Usage tab: tokens and API cost from OpenCode's own history, laid out by
- * `view/usage.ts`, and the model detail popup. Its first lines pick what it shows: Show (cost or
- * tokens), Range (every range when they fit, else ‹ the one shown ›), Dates (for "Between") and
- * Prices (download new ones); the Breakdown heading picks by model or by day.
+ * `view/usage.ts`, and the model detail popup. The window puts the range list (`Rail`) left of
+ * the scrolling content (`View`), a muted line between them. The content's first line has the
+ * chosen range and its dates, and Cost and Tokens at its right; the Breakdown heading picks by
+ * model or by day.
  *
- * Its keys work like the Settings tabs': ↑↓ walk those lines and then the model rows, the
- * current one highlighted; ←/→ change a line; space or enter change it too, type the dates,
- * download prices or open a model's details. While a date has the keyboard, enter goes to the
- * next date and then applies them, tab switches dates, esc gives the keyboard back.
+ * The range list has the keyboard when the tab shows: ↑↓ change the range. → or enter give the
+ * keyboard to the model rows: ↑↓ walk them, the current one highlighted, enter opens a model's
+ * details and ← goes back to the range list. Anywhere in the tab: c cost, t tokens, b by model
+ * or by day, p download new prices, and d types the dates of "Between": the two date boxes show
+ * on the first line, enter goes to the next date and then applies them, tab switches dates, esc
+ * gives the keyboard back. A click picks a range, Cost or Tokens, Model or Day, or opens a model.
  *
  * The tab keeps its choices while the window is open and closed; each show asks the server
  * again. An answer that arrives after a newer question is dropped.
@@ -36,6 +39,7 @@ import {
   breakdownModels,
   modelDetailTitle,
   modelDetailView,
+  rangeDates,
   type UsageBreakdown,
   type UsageLine,
   type UsageMode,
@@ -43,7 +47,7 @@ import {
   usageView,
 } from "../../view/usage.js";
 import { errorToast, quotaCallOptions, rpcErrorMessage } from "../client.js";
-import type { WindowHost, WindowKey, WindowTheme } from "./shell.js";
+import type { KeyHint, WindowHost, WindowKey, WindowTheme } from "./shell.js";
 
 /** OpenCode's theme also has categorical hue scales, for things told apart by color. */
 type UsageTheme = WindowTheme & { categorical?: ReadonlyArray<Record<number, RGBA>> };
@@ -61,11 +65,13 @@ const KEYS = "Usage";
 /** An option's two spaces around its label, inside its raised background. */
 const OPTION_PAD = 2;
 const TRANSPARENT = RGBA.fromInts(0, 0, 0, 0);
-/** The column of the control lines' names ("Show", "Range", ...), and the gap after it. */
-const LABEL_WIDTH = "Prices".length + 2;
-const RANGES_WIDTH = USAGE_RANGES.reduce((sum, item) => sum + item.label.length + OPTION_PAD, 0);
-const PRICES_LABEL = "Update ▸";
-const PRICES_BUSY_LABEL = "Updating…";
+/** Each range of the range list starts this far in; the chosen one has "› " there. */
+const RANGE_INDENT = 2;
+/** The range list: the longest label, its indent and 2 more columns. */
+const RANGE_LIST_WIDTH =
+  RANGE_INDENT + Math.max(...USAGE_RANGES.map((item) => item.label.length)) + 2;
+/** What the window keeps left of the content: the range list, the line after it and a gap. */
+export const USAGE_RAIL_WIDTH = RANGE_LIST_WIDTH + 2;
 
 /** How each "by type" part is shaded, from the muted color (0) to the text color (1). */
 const PART_SHADES: Record<string, number> = {
@@ -75,35 +81,21 @@ const PART_SHADES: Record<string, number> = {
   "part:output": 1,
 };
 
-const KEYS_HINT = "↑↓ select · space/enter or click to use · ←/→ change · tab next tab · esc close";
-const DATE_HINT =
-  "Typing a date: enter next date, then apply · tab other date · esc back to the window";
+/** Where the tab's keyboard is: the range list, or the content with its model rows. */
+type Area = "ranges" | "content";
 
-/** Whether the Range line shows every range in `width` columns; else it shows ‹ one ›. */
-export function allRangesFit(width: number): boolean {
-  return LABEL_WIDTH + RANGES_WIDTH <= width;
+/** A range's line in the range list. */
+function rangeId(range: UsageRange): string {
+  return `quota-usage-range-${range}`;
 }
 
-/** The lines ↑↓ walk, top to bottom: the control lines, then each model of the breakdown. */
-type Stop = "show" | "range" | "dates" | "prices" | "breakdown" | `model:${number}`;
-
-/** A stop's element id, to scroll it into view. */
-function stopId(stop: Stop): string {
-  return `quota-usage-${stop.replace(":", "-")}`;
+/** A model row's element id, to scroll it into view. */
+function modelRowId(index: number): string {
+  return `quota-usage-model-${index}`;
 }
 
-/** The model's place in the breakdown, or -1 when `stop` is no model row. */
-function modelIndex(stop: Stop): number {
-  return stop.startsWith("model:") ? Number(stop.slice("model:".length)) : -1;
-}
-
-/** The control lines, top to bottom; the model rows follow them. */
-const CONTROL_STOPS: readonly Stop[] = ["show", "range", "dates", "prices", "breakdown"];
-
-/** A stop's place in the window, top to bottom. */
-function stopPlace(stop: Stop): number {
-  const model = modelIndex(stop);
-  return model >= 0 ? CONTROL_STOPS.length + model : CONTROL_STOPS.indexOf(stop);
+function isBreakdownHeading(line: UsageLine): boolean {
+  return line.length === 1 && line[0].role === "heading" && line[0].text === "Breakdown";
 }
 
 /** `from` moved `share` of the way to `to`. */
@@ -239,37 +231,6 @@ export function Option(props: {
   );
 }
 
-/**
- * A control line: its name in the first column, then its options. The current line is
- * highlighted across the tab, like a Settings line.
- */
-function ControlLine(props: {
-  stop: Stop;
-  label: string;
-  lit: boolean;
-  theme: UsageTheme;
-  children: JSX.Element;
-}): JSX.Element {
-  return (
-    <box
-      id={stopId(props.stop)}
-      flexDirection="row"
-      flexShrink={0}
-      backgroundColor={props.lit ? props.theme.background.action.primary.focused : TRANSPARENT}
-    >
-      <text
-        fg={props.lit ? props.theme.text.action.primary.focused : props.theme.text.muted}
-        wrapMode="none"
-        flexShrink={0}
-        selectable={false}
-      >
-        {props.label.padEnd(LABEL_WIDTH)}
-      </text>
-      {props.children}
-    </box>
-  );
-}
-
 /** The model detail popup, in OpenCode's dialog: scrolls with ↑↓, closes with esc. */
 function ModelDetail(props: {
   api: WindowHost;
@@ -335,14 +296,16 @@ export type UsageTab = {
   choose(choice: UsageChoice): void;
   /** True while one of the Between dates has the keyboard. */
   typingDate(): boolean;
-  /** Asks the server for the report again, for the window's session. */
+  /** Gives the range list the keyboard and asks the server for the report again, for the window's session. */
   show(sessionID: string): void;
-  /** The tab's keys, for the window's bottom line. */
-  hint(): string;
+  /** The tab's keys for the window's bottom line; they follow where the keyboard is. */
+  hints(): KeyHint[];
+  /** The range list, left of the window's scrolling content. */
+  Rail(): JSX.Element;
   View(props: { width: number; keyTarget: () => Renderable | undefined }): JSX.Element;
 };
 
-/** `scroll`: the window's scrollbox, which keeps the current line in view. */
+/** `scroll`: the window's scrollbox, which keeps the current model row in view. */
 export function createUsageTab(
   api: WindowHost,
   scroll: () => ScrollBoxRenderable | undefined,
@@ -351,10 +314,13 @@ export function createUsageTab(
   const [mode, setMode] = createSignal<UsageMode>("cost");
   const [breakdown, setBreakdown] = createSignal<UsageBreakdown>("model");
   const [dates, setDates] = createSignal(thisMonth(Date.now()));
-  /** The highlighted line. */
-  const [focus, setFocus] = createSignal<Stop>("show");
+  const [area, setArea] = createSignal<Area>("ranges");
+  /** The model row the content highlights while it has the keyboard (see `litModel`). */
+  const [modelFocus, setModelFocus] = createSignal(0);
   const [result, setResult] = createSignal<UsageResult>({ state: "loading" });
   const [downloading, setDownloading] = createSignal(false);
+  /** The two date boxes show on the first line in place of the dates. */
+  const [editingDates, setEditingDates] = createSignal(false);
   let sessionID = "";
   let latestQuestion = 0;
   let fromInput: InputRenderable | undefined;
@@ -367,17 +333,11 @@ export function createUsageTab(
     return field === "from" ? fromInput : toInput;
   }
 
-  /** A model row's place changes with a new report or order: the Breakdown line stays lit. */
-  function leaveModelRow(): void {
-    if (modelIndex(focus()) >= 0) setFocus("breakdown");
-  }
-
   async function load(): Promise<void> {
     const question = ++latestQuestion;
     const query: UsageQuery = { range: range(), sessionID };
     if (range() === "between") Object.assign(query, dates());
     setResult({ state: "loading" });
-    leaveModelRow();
     try {
       const { report } = await api.client.rpc(QuotaRpc).usage(query, quotaCallOptions(api));
       if (question === latestQuestion) setResult({ state: "ready", report });
@@ -387,23 +347,18 @@ export function createUsageTab(
     }
   }
 
+  /** Shows the date boxes and gives the first one the keyboard once it is drawn. */
   function typeDates(): void {
-    setFocus("dates");
-    fromInput?.focus();
+    setEditingDates(true);
+    setTimeout(() => fromInput?.focus(), 50);
   }
 
-  /** `typing`: a click on "Between" gives the keyboard to its first date; ←/→ never do. */
+  /** The range list keeps the keyboard; a click on "Between" (`typing`) types its dates. */
   function chooseRange(next: UsageRange, typing: boolean): void {
     setRange(next);
-    setFocus(next === "between" && typing ? "dates" : "range");
+    setArea("ranges");
     void load();
-    if (next === "between" && typing) setTimeout(typeDates, 50);
-  }
-
-  function stepRange(delta: number): void {
-    const index = USAGE_RANGES.findIndex((item) => item.range === range());
-    const count = USAGE_RANGES.length;
-    chooseRange(USAGE_RANGES[(index + delta + count) % count].range, false);
+    if (next === "between" && typing) typeDates();
   }
 
   /** Enter in a date: From goes on to To; To applies both when they are dates in order. */
@@ -427,14 +382,14 @@ export function createUsageTab(
     void load();
   }
 
-  /** The keyboard back to the window; the Dates line is lit again. */
+  /** The keyboard back to the window; the dates show again in place of the boxes. */
   function backToWindow(): void {
     setDateFocus(undefined);
+    setEditingDates(false);
     windowBox()?.focus();
   }
 
   async function downloadPrices(): Promise<void> {
-    setFocus("prices");
     if (downloading()) return;
     setDownloading(true);
     try {
@@ -463,11 +418,28 @@ export function createUsageTab(
     return current.state === "failed" ? current.message : undefined;
   }
 
+  /** The models the breakdown shows as rows: none by day, without usage or without a report. */
+  function modelRows(): UsageModelRow[] {
+    const report = readyReport();
+    return report && breakdown() === "model" ? breakdownModels(report, mode()) : [];
+  }
+
+  /**
+   * The highlighted model row: while the content has the keyboard, the chosen row, or the last
+   * one when a new report has fewer rows. Undefined without rows.
+   */
+  function litModel(): number | undefined {
+    const count = modelRows().length;
+    if (area() !== "content" || count === 0) return undefined;
+    return Math.min(modelFocus(), count - 1);
+  }
+
   function openModel(index: number): void {
     const report = readyReport();
-    const model = report && breakdownModels(report, mode())[index];
+    const model = modelRows()[index];
     if (!report || !model) return;
-    setFocus(`model:${index}`);
+    setArea("content");
+    setModelFocus(index);
     const shownMode = mode();
     api.ui.dialog.show(() => (
       <ModelDetail api={api} report={report} model={model} mode={shownMode} />
@@ -475,85 +447,132 @@ export function createUsageTab(
     api.ui.dialog.set({ size: "large" });
   }
 
-  /** The breakdown's order follows the mode, so a model row lets go. */
+  /** The breakdown's order follows the mode, so the first model row is the chosen one again. */
   function chooseMode(next: UsageMode): void {
     setMode(next);
-    setFocus("show");
+    setModelFocus(0);
   }
 
   function chooseBreakdown(next: UsageBreakdown): void {
     setBreakdown(next);
-    setFocus("breakdown");
+    setModelFocus(0);
   }
 
-  /** The lines ↑↓ walk now: Dates only for "Between", Breakdown and models only with usage. */
-  function stops(): Stop[] {
-    const list: Stop[] = ["show", "range"];
-    if (range() === "between") list.push("dates");
-    list.push("prices");
-    const report = readyReport();
-    if (report && report.totals.tokens.processed > 0) {
-      list.push("breakdown");
-      if (breakdown() === "model") {
-        const count = breakdownModels(report, mode()).length;
-        for (let index = 0; index < count; index += 1) list.push(`model:${index}`);
-      }
-    }
-    return list;
+  /** → or enter in the range list: the model rows get the keyboard, the first one in view. */
+  function toModels(): ReturnType<WindowKey["run"]> {
+    if (modelRows().length === 0) return false;
+    setArea("content");
+    setModelFocus(0);
+    scroll()?.scrollChildIntoView(modelRowId(0));
+  }
+
+  /** ← in the content: the range list gets the keyboard back, the content its top line. */
+  function toRanges(): void {
+    setArea("ranges");
+    scroll()?.scrollTo(0);
   }
 
   /**
-   * The lit line: the highlighted one, or the nearest line above it while its line is gone
-   * (a report that failed to load has no Breakdown line).
+   * ↑↓: the next range in the range list (applied at once); in the content the next model row,
+   * scrolled into view. Past the first or last row, or without rows, the window scrolls.
    */
-  function current(): Stop {
-    const list = stops();
-    if (list.includes(focus())) return focus();
-    const place = stopPlace(focus());
-    return list.filter((stop) => stopPlace(stop) < place).at(-1) ?? "show";
-  }
-
-  /** ↑↓: the next line, scrolled into view; past the first or last one the window scrolls. */
   function move(delta: number): ReturnType<WindowKey["run"]> {
-    const list = stops();
-    const next = list.indexOf(current()) + delta;
-    if (next < 0 || next >= list.length) return false;
-    setFocus(list[next]);
-    if (next === 0) scroll()?.scrollTo(0);
-    else scroll()?.scrollChildIntoView(stopId(list[next]));
-  }
-
-  /** ←/→ on a line with options: the other one, or the next range. */
-  function change(delta: number): ReturnType<WindowKey["run"]> {
-    switch (current()) {
-      case "show":
-        chooseMode(mode() === "cost" ? "tokens" : "cost");
-        return;
-      case "range":
-        stepRange(delta);
-        return;
-      case "breakdown":
-        chooseBreakdown(breakdown() === "model" ? "day" : "model");
-        return;
-      default:
-        return false;
+    if (area() === "ranges") {
+      const index = USAGE_RANGES.findIndex((item) => item.range === range());
+      const next = USAGE_RANGES[index + delta];
+      if (next) chooseRange(next.range, false);
+      return;
     }
+    const current = litModel();
+    if (current === undefined) return false;
+    const next = current + delta;
+    if (next < 0 || next >= modelRows().length) return false;
+    setModelFocus(next);
+    scroll()?.scrollChildIntoView(modelRowId(next));
   }
 
-  /** Space or enter: change the line, type the dates, download prices or open the model. */
-  function use(): ReturnType<WindowKey["run"]> {
-    const stop = current();
-    if (stop === "dates") return typeDates();
-    if (stop === "prices") return void downloadPrices();
-    const model = modelIndex(stop);
-    if (model >= 0) return openModel(model);
-    return change(1);
+  /** Enter: in the range list the model rows get the keyboard; in the content it opens the model. */
+  function enter(): ReturnType<WindowKey["run"]> {
+    if (area() === "ranges") return toModels();
+    const model = litModel();
+    if (model !== undefined) openModel(model);
+  }
+
+  function hints(): KeyHint[] {
+    const field = dateFocus();
+    if (field) {
+      return [
+        { key: "enter", label: field === "from" ? "next date" : "apply" },
+        { key: "tab", label: "other date" },
+        { key: "esc", label: "back" },
+      ];
+    }
+    const hasRows = modelRows().length > 0;
+    let moves: KeyHint[];
+    if (area() === "ranges") {
+      moves = [{ key: "↑↓", label: "range" }, ...(hasRows ? [{ key: "→", label: "models" }] : [])];
+    } else if (hasRows) {
+      moves = [
+        { key: "↑↓", label: "models" },
+        { key: "enter", label: "details" },
+        { key: "←", label: "ranges" },
+      ];
+    } else {
+      moves = [
+        { key: "↑↓", label: "scroll" },
+        { key: "←", label: "ranges" },
+      ];
+    }
+    return [
+      ...moves,
+      ...(range() === "between" ? [{ key: "d", label: "type dates" }] : []),
+      { key: "c", label: "cost" },
+      { key: "t", label: "tokens" },
+      { key: "b", label: "by model/day" },
+      downloading() ? { label: "updating prices…" } : { key: "p", label: "update prices" },
+      { key: "tab", label: "next tab" },
+      { key: "esc", label: "close" },
+    ];
+  }
+
+  /** The ranges, the chosen one marked, bold and raised across the list; a click picks one. */
+  function Rail(): JSX.Element {
+    const theme = () => api.theme as UsageTheme;
+    return (
+      <box
+        flexDirection="column"
+        flexShrink={0}
+        width={RANGE_LIST_WIDTH + 1}
+        marginRight={1}
+        border={["right"]}
+        borderStyle="single"
+        borderColor={theme().text.muted}
+      >
+        {USAGE_RANGES.map((item) => {
+          const chosen = item.range === range();
+          const marker = chosen ? "› " : " ".repeat(RANGE_INDENT);
+          return (
+            <text
+              id={rangeId(item.range)}
+              fg={chosen ? theme().text.action.primary.selected : theme().text.muted}
+              bg={chosen ? theme().background.raised.high : TRANSPARENT}
+              attributes={chosen ? TextAttributes.BOLD : TextAttributes.NONE}
+              wrapMode="none"
+              flexShrink={0}
+              selectable={false}
+              onMouseUp={() => chooseRange(item.range, true)}
+            >
+              {`${marker}${item.label}`.padEnd(RANGE_LIST_WIDTH)}
+            </text>
+          );
+        })}
+      </box>
+    );
   }
 
   function View(props: { width: number; keyTarget: () => Renderable | undefined }): JSX.Element {
     const theme = () => api.theme as UsageTheme;
     windowBox = props.keyTarget;
-    const lit = (stop: Stop) => current() === stop && dateFocus() === undefined;
     // A key's `window` action runs while the window has the keyboard, its `date` action while a
     // date input inside the window has it. A key without the action, or an action that returns
     // false, goes on to the window's own keys; letters and digits a date has no key for reach
@@ -564,25 +583,24 @@ export function createUsageTab(
       window?: WindowKey["run"];
       date?: (field: DateField) => void;
     }> = [
-      { bind: "up", title: "Previous line", window: () => move(-1) },
-      { bind: "down", title: "Next line", window: () => move(1) },
+      { bind: "up", title: "Previous range or model", window: () => move(-1) },
+      { bind: "down", title: "Next range or model", window: () => move(1) },
+      {
+        bind: "right",
+        title: "To the models",
+        window: () => (area() === "ranges" ? toModels() : false),
+        date: (field) => dateInput(field)?.moveCursorRight(),
+      },
       {
         bind: "left",
-        title: "Change the line",
-        window: () => change(-1),
+        title: "Back to the ranges",
+        window: () => (area() === "content" ? toRanges() : false),
         date: (field) => dateInput(field)?.moveCursorLeft(),
       },
       {
-        bind: "right",
-        title: "Change the line",
-        window: () => change(1),
-        date: (field) => dateInput(field)?.moveCursorRight(),
-      },
-      { bind: "space", title: "Use the line", window: use },
-      {
         bind: "return",
-        title: "Use the line, or the next date",
-        window: use,
+        title: "To the models, open a model, or the next date",
+        window: enter,
         date: (field) => submitDate(field),
       },
       {
@@ -591,6 +609,21 @@ export function createUsageTab(
         date: (field) => dateInput(field === "from" ? "to" : "from")?.focus(),
       },
       { bind: "escape", title: "Back to the window", date: backToWindow },
+      { bind: "c", title: "Show cost", window: () => chooseMode("cost") },
+      { bind: "t", title: "Show tokens", window: () => chooseMode("tokens") },
+      {
+        bind: "b",
+        title: "Breakdown by model or by day",
+        window: () => chooseBreakdown(breakdown() === "model" ? "day" : "model"),
+      },
+      { bind: "p", title: "Update prices", window: () => void downloadPrices() },
+      {
+        bind: "d",
+        title: "Type the dates",
+        window: () => {
+          if (range() === "between") typeDates();
+        },
+      },
     ];
     // Above the window's own keys; the window's target also covers the inputs inside it.
     api.keymap.layer(() => ({
@@ -614,22 +647,24 @@ export function createUsageTab(
         ? usageView(report, { mode: mode(), breakdown: breakdown(), width: props.width })
         : [];
     };
-    /** The view's last lines are the model rows (see `breakdownModels`). */
+    /** The model rows follow the Breakdown heading and its column names (see `breakdownModels`). */
     const firstModelLine = () => {
-      const report = readyReport();
-      if (!report || breakdown() !== "model") return Number.POSITIVE_INFINITY;
-      return lines().length - breakdownModels(report, mode()).length;
+      if (modelRows().length === 0) return Number.POSITIVE_INFINITY;
+      return lines().findIndex(isBreakdownHeading) + 2;
     };
     const dateBox = (field: DateField) => (
       <input
         ref={(element: InputRenderable) => {
           if (field === "from") fromInput = element;
           else toInput = element;
-          element.on("focused", () => {
-            setFocus("dates");
-            setDateFocus(field);
+          element.on("focused", () => setDateFocus(field));
+          element.on("blurred", () => {
+            setDateFocus((now) => (now === field ? undefined : now));
+            // The keyboard went elsewhere (a click in the window): the dates show again.
+            queueMicrotask(() => {
+              if (dateFocus() === undefined) setEditingDates(false);
+            });
           });
-          element.on("blurred", () => setDateFocus((now) => (now === field ? undefined : now)));
         }}
         // A date's 10 characters, the cursor after them, and the input's scroll margin.
         width={13}
@@ -642,102 +677,60 @@ export function createUsageTab(
         onMouseDown={() => dateInput(field)?.focus()}
       />
     );
-    const plain = (text: string, isLit: boolean) => (
-      <text
-        fg={isLit ? theme().text.action.primary.focused : theme().text.muted}
-        wrapMode="none"
-        flexShrink={0}
-        selectable={false}
-      >
-        {text}
-      </text>
-    );
+    /** The report's dates after the range's name; a click on Between's types them. */
+    const datesText = () => {
+      const report = readyReport();
+      const text = report ? rangeDates(report) : undefined;
+      if (!text) return null;
+      return (
+        <text
+          fg={theme().text.muted}
+          wrapMode="none"
+          flexShrink={0}
+          selectable={false}
+          onMouseUp={range() === "between" ? typeDates : undefined}
+        >
+          {`  ${text}`}
+        </text>
+      );
+    };
 
     return (
       <box flexDirection="column" flexShrink={0} width={props.width}>
-        <ControlLine stop="show" label="Show" lit={lit("show")} theme={theme()}>
+        <box flexDirection="row" flexShrink={0}>
+          <text
+            fg={theme().text.base}
+            attributes={TextAttributes.BOLD}
+            wrapMode="none"
+            flexShrink={0}
+            selectable={false}
+          >
+            {usageRangeLabel(range())}
+          </text>
+          <Show when={editingDates() && range() === "between"} fallback={datesText()}>
+            <box flexDirection="row" columnGap={1} marginLeft={2} flexShrink={0}>
+              {dateBox("from")}
+              <text fg={theme().text.muted} wrapMode="none" flexShrink={0} selectable={false}>
+                to
+              </text>
+              {dateBox("to")}
+            </box>
+          </Show>
+          <box flexGrow={1} />
           <Option
             label="Cost"
             active={mode() === "cost"}
-            lit={lit("show")}
             theme={theme()}
             run={() => chooseMode("cost")}
           />
           <Option
             label="Tokens"
             active={mode() === "tokens"}
-            lit={lit("show")}
             theme={theme()}
             run={() => chooseMode("tokens")}
           />
-        </ControlLine>
-        <ControlLine stop="range" label="Range" lit={lit("range")} theme={theme()}>
-          <Show
-            when={allRangesFit(props.width)}
-            fallback={
-              <>
-                <text
-                  fg={theme().text.action.primary.selected}
-                  selectable={false}
-                  onMouseUp={() => stepRange(-1)}
-                >
-                  ‹
-                </text>
-                <Option
-                  label={usageRangeLabel(range())}
-                  active
-                  theme={theme()}
-                  run={() => stepRange(1)}
-                />
-                <text
-                  fg={theme().text.action.primary.selected}
-                  selectable={false}
-                  onMouseUp={() => stepRange(1)}
-                >
-                  ›
-                </text>
-              </>
-            }
-          >
-            {USAGE_RANGES.map((item) => (
-              <Option
-                label={item.label}
-                active={item.range === range()}
-                lit={lit("range")}
-                theme={theme()}
-                run={() => chooseRange(item.range, true)}
-              />
-            ))}
-          </Show>
-        </ControlLine>
-        <Show when={range() === "between"}>
-          <ControlLine stop="dates" label="Dates" lit={lit("dates")} theme={theme()}>
-            <box flexDirection="row" columnGap={1}>
-              {dateBox("from")}
-              {plain("to", lit("dates"))}
-              {dateBox("to")}
-              <Show when={dateFocus() === undefined}>
-                {plain(" enter or click a date to change it", lit("dates"))}
-              </Show>
-            </box>
-          </ControlLine>
-        </Show>
-        <ControlLine stop="prices" label="Prices" lit={lit("prices")} theme={theme()}>
-          <text
-            fg={
-              lit("prices")
-                ? theme().text.action.primary.focused
-                : theme().text.action.primary.selected
-            }
-            wrapMode="none"
-            flexShrink={0}
-            selectable={false}
-            onMouseUp={() => void downloadPrices()}
-          >
-            {downloading() ? PRICES_BUSY_LABEL : PRICES_LABEL}
-          </text>
-        </ControlLine>
-        <box flexDirection="column" marginTop={2}>
+        </box>
+        <box flexDirection="column" marginTop={1}>
           <Show when={result().state === "loading"}>
             <text fg={theme().text.muted}>Loading usage…</text>
           </Show>
@@ -747,30 +740,20 @@ export function createUsageTab(
             </text>
           </Show>
           {lines().map((line, index) => {
-            const model = index - firstModelLine();
-            if (line.length === 1 && line[0].role === "heading" && line[0].text === "Breakdown") {
+            if (isBreakdownHeading(line)) {
               return (
-                <box
-                  id={stopId("breakdown")}
-                  flexDirection="row"
-                  columnGap={1}
-                  backgroundColor={
-                    lit("breakdown") ? theme().background.action.primary.focused : TRANSPARENT
-                  }
-                >
-                  <UsageLineText line={line} theme={theme()} selected={lit("breakdown")} />
+                <box flexDirection="row" columnGap={1}>
+                  <UsageLineText line={line} theme={theme()} />
                   <box flexDirection="row" flexShrink={0}>
                     <Option
                       label="Model"
                       active={breakdown() === "model"}
-                      lit={lit("breakdown")}
                       theme={theme()}
                       run={() => chooseBreakdown("model")}
                     />
                     <Option
                       label="Day"
                       active={breakdown() === "day"}
-                      lit={lit("breakdown")}
                       theme={theme()}
                       run={() => chooseBreakdown("day")}
                     />
@@ -778,13 +761,16 @@ export function createUsageTab(
                 </box>
               );
             }
-            if (model < 0) return <UsageLineText line={line} theme={theme()} />;
+            const model = index - firstModelLine();
+            if (model < 0 || model >= modelRows().length) {
+              return <UsageLineText line={line} theme={theme()} />;
+            }
             return (
               <UsageLineText
                 line={line}
                 theme={theme()}
-                id={stopId(`model:${model}`)}
-                selected={lit(`model:${model}`)}
+                id={modelRowId(model)}
+                selected={litModel() === model}
                 onClick={() => openModel(model)}
               />
             );
@@ -798,14 +784,16 @@ export function createUsageTab(
     choose(choice) {
       setRange(choice.range);
       if (choice.from && choice.to) setDates({ from: choice.from, to: choice.to });
-      setFocus("range");
+      setArea("ranges");
     },
     typingDate: () => dateFocus() !== undefined,
-    hint: () => (dateFocus() !== undefined ? DATE_HINT : KEYS_HINT),
     show(nextSessionID) {
       sessionID = nextSessionID;
+      setArea("ranges");
       void load();
     },
+    hints,
+    Rail,
     View,
   };
 }

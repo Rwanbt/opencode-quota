@@ -152,14 +152,14 @@ function words(node: unknown): string[] {
   return textLines(node).map((line) => line.replace(/\s+/gu, " ").trim());
 }
 
-/** The labels of the active choices: the tab, Cost or Tokens, the range, Model or Day. */
+/** The labels of the active choices: the tab, Cost or Tokens, the range (without its ›), Model or Day. */
 function activeLabels(node: unknown): string[] {
-  return findAll(node, (item) => item.type === "text" && item.props.fg === "selected").map(
-    (item) => textLines(item)[0] ?? "",
+  return findAll(node, (item) => item.type === "text" && item.props.fg === "selected").map((item) =>
+    (textLines(item)[0] ?? "").replace(/^› /u, "").trim(),
   );
 }
 
-/** The ids of the Usage tab's lit lines: a control line's box, or a model row's spans. */
+/** The ids of the Usage tab's lit model rows. */
 function litUsageLines(node: unknown): string[] {
   return findAll(node, (item) => String(item.props?.id ?? "").startsWith("quota-usage-"))
     .filter(
@@ -604,7 +604,8 @@ describe("v6 surfaces on the quota snapshot", () => {
     await vi.waitFor(() => expect(quotaWindow()).toContain("  Provider error 503"));
     expect(quotaWindow()).toEqual(
       expect.arrayContaining([
-        "OpenCode Quota",
+        // The title and the plugin's version from package.json.
+        expect.stringMatching(/^OpenCode Quota v\d+\.\d+\.\d+$/u),
         "Usage",
         "Limits",
         "System",
@@ -624,11 +625,12 @@ describe("v6 surfaces on the quota snapshot", () => {
     );
     expect(quotaWindow()).not.toContain("Close");
 
-    // /quota_usage opens it on Usage (its ranges; the window starts without the keyboard, so no
-    // key hint), /quota_status on System, /quota_settings on Layout's first page, All places.
+    // /quota_usage opens it on Usage (its range list; the window starts without the keyboard, so
+    // no key hint), /quota_status on System, /quota_settings on Layout's first page, All places.
     await tui.command("usage").run();
-    const usageKeys = "90 days";
-    await vi.waitFor(() => expect(quotaWindow()).toContain(usageKeys));
+    await vi.waitFor(() =>
+      expect(quotaWindow()).toContainEqual(expect.stringContaining("90 days")),
+    );
     await tui.command("status").run();
     expect(quotaWindow()).toContainEqual(expect.stringContaining("Copy the report"));
     await tui.command("settings").run();
@@ -1128,7 +1130,6 @@ describe("v6 surfaces on the quota snapshot", () => {
         "Usage",
         // The daily chart sits beside the total when it gets 32 columns there.
         expect.stringMatching(/^\$\d+\.\d\d 1 session · API estimate Daily cost$/u),
-        expect.stringMatching(/^Unpriced tokens excluded: 10\.9% \(mystery-1\) /u),
         "Totals",
         "Cost by type",
         "# Model Cost Share Tokens",
@@ -1136,6 +1137,8 @@ describe("v6 surfaces on the quota snapshot", () => {
         "2 ● mystery-1 no price 0% 500K ▸",
       ]),
     );
+    // The share without a price is the content's last line.
+    expect(tab.at(-2)).toBe("Unpriced tokens excluded: 10.9% (mystery-1)");
 
     // A click on a model row opens its details in OpenCode's dialog.
     const modelRow = findAll(
@@ -1176,6 +1179,9 @@ describe("v6 surfaces on the quota snapshot", () => {
 
     tui.typed(`/quota_usage between ${localDate(-12)} ${localDate(-8)}`);
     await vi.waitFor(() => expect(activeLabels(usageTab())).toContain("Between"));
+    // d puts the typed dates in two boxes to change them.
+    expect(findAll(usageTab(), (node) => node.type === "input")).toEqual([]);
+    tui.press(11, "d");
     expect(
       findAll(usageTab(), (node) => node.type === "input").map((node) => node.props.value),
     ).toEqual([localDate(-12), localDate(-8)]);
@@ -1205,6 +1211,7 @@ describe("v6 surfaces on the quota snapshot", () => {
     await vi.waitFor(() => expect(activeLabels(windowTree())).toContain("30 days"));
     tui.typed(`/tokens_between ${localDate(-12)} ${localDate(-8)}`);
     await vi.waitFor(() => expect(activeLabels(windowTree())).toContain("Between"));
+    tui.press(11, "d");
     expect(
       findAll(windowTree(), (node) => node.type === "input").map((node) => node.props.value),
     ).toEqual([localDate(-12), localDate(-8)]);
@@ -1244,6 +1251,7 @@ describe("v6 surfaces on the quota snapshot", () => {
     await vi.waitFor(() => expect(activeLabels(windowTree())).toContain("30 days"));
     tui.typed(`/tokens_between ${localDate(-6)} ${localDate(-3)}`);
     await vi.waitFor(() => expect(activeLabels(windowTree())).toContain("Between"));
+    tui.press(11, "d");
     expect(
       findAll(windowTree(), (node) => node.type === "input").map((node) => node.props.value),
     ).toEqual([localDate(-6), localDate(-3)]);
@@ -1294,13 +1302,12 @@ describe("v6 surfaces on the quota snapshot", () => {
       node.props.ref([from, to][index]);
     }
     await vi.waitFor(() => expect(from?.focused).toBe(true));
-    // While a date has the keyboard, the window's hint says what the keys do there.
-    expect(words(usageTab())).toContain(
-      "Typing a date: enter next date, then apply · tab other date · esc back to the window",
-    );
+    // While a date has the keyboard, the window's bottom line names the keys there.
+    expect(words(usageTab())).toContain("enter next date tab other date esc back");
 
     tui.press(11, "return");
     expect(to?.focused).toBe(true);
+    expect(words(usageTab())).toContain("enter apply tab other date esc back");
     tui.press(11, "return");
     expect(tui.toast).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -1315,54 +1322,70 @@ describe("v6 surfaces on the quota snapshot", () => {
       expect(words(usageTab())).toContainEqual(expect.stringMatching(/^1 ● mystery-old /u)),
     );
     expect(words(usageTab())).not.toContainEqual(expect.stringContaining("claude-sonnet-4-5"));
-    expect(words(usageTab())).toContain("enter or click a date to change it");
+    // The boxes give way to the dates after the range's name.
+    expect(findAll(usageTab(), (node) => node.type === "input")).toEqual([]);
+    expect(words(usageTab())).toContainEqual(
+      expect.stringMatching(/^\w{3} \d{1,2}(, \d{4})? – \w{3} \d{1,2}(, \d{4})?$/u),
+    );
     await tui.dispose();
   });
 
-  it("walks the Usage tab's lines with ↑↓ like a Settings tab, one lit at a time, and changes them with ←/→", async () => {
+  it("picks a range with ↑↓, walks the model rows after →, and switches what it shows with c, t and b", async () => {
     writeUsageHistory();
     const tui = await startHosts();
     const usageTab = () => tui.render("session.composer.top", { sessionID: "ses_1" });
     tui.typed("/quota_usage 30d");
     await vi.waitFor(() => expect(words(usageTab())).toContain("Breakdown"));
 
-    // Opened on a range: the Range line is lit; ↑ goes to Show, and → shows tokens.
-    expect(litUsageLines(usageTab())).toEqual(["quota-usage-range"]);
+    // The range list has the keyboard: ↑ shows 7 days at once, ↓ 30 days again. No row is lit.
+    expect(litUsageLines(usageTab())).toEqual([]);
     tui.press(11, "up");
-    expect(litUsageLines(usageTab())).toEqual(["quota-usage-show"]);
-    tui.press(11, "right");
-    expect(activeLabels(usageTab())).toContain("Tokens");
+    expect(activeLabels(usageTab())).toContain("7 days");
+    tui.press(11, "down");
+    expect(activeLabels(usageTab())).toContain("30 days");
+    await vi.waitFor(() =>
+      expect(words(usageTab())).toContainEqual(expect.stringMatching(/ 2 sessions · /u)),
+    );
 
-    // Down past Range and Prices to Breakdown: ←/→ pick Day, then Model again.
-    tui.press(11, "down");
-    tui.press(11, "down");
-    tui.press(11, "down");
-    expect(litUsageLines(usageTab())).toEqual(["quota-usage-breakdown"]);
+    // → gives the model rows the keyboard, each lit alone; past the last one ↓ scrolls the
+    // window. Enter opens the lit one's details.
     tui.press(11, "right");
-    expect(activeLabels(usageTab())).toContain("Day");
-    tui.press(11, "left");
-    expect(activeLabels(usageTab())).toContain("Model");
-
-    // Then the model rows, each lit alone; enter opens the lit one's details.
-    tui.press(11, "down");
+    expect(litUsageLines(usageTab())).toEqual(["quota-usage-model-0"]);
     tui.press(11, "down");
     expect(litUsageLines(usageTab())).toEqual(["quota-usage-model-1"]);
     expect(tui.press(11, "down")).toBe(false);
     tui.press(11, "return");
     expect(tui.dialog.show).toHaveBeenCalledOnce();
     expect(words(tui.dialog.show.mock.calls[0]?.[0]())).toContain("● mystery-old");
+
+    // t shows tokens and c cost, from the first row again; b breaks down by day, which has no
+    // model rows, then by model again.
+    tui.press(11, "t");
+    expect(activeLabels(usageTab())).toContain("Tokens");
+    expect(litUsageLines(usageTab())).toEqual(["quota-usage-model-0"]);
+    tui.press(11, "c");
+    expect(activeLabels(usageTab())).toContain("Cost");
+    tui.press(11, "b");
+    expect(activeLabels(usageTab())).toContain("Day");
+    expect(litUsageLines(usageTab())).toEqual([]);
+    tui.press(11, "b");
+    expect(activeLabels(usageTab())).toContain("Model");
+
+    // ← gives the range list the keyboard back.
+    tui.press(11, "left");
+    expect(litUsageLines(usageTab())).toEqual([]);
+    tui.press(11, "up");
+    expect(activeLabels(usageTab())).toContain("7 days");
     await tui.dispose();
   });
 
-  it("lights the nearest line above when the lit model row is gone after a reload fails", async () => {
+  it("gives the range list the keyboard when the tab shows again, and keeps it there without model rows", async () => {
     writeUsageHistory();
     const tui = await startHosts();
     const usageTab = () => tui.render("session.composer.top", { sessionID: "ses_1" });
     tui.typed("/quota_usage 30d");
     await vi.waitFor(() => expect(words(usageTab())).toContain("Breakdown"));
-    tui.press(11, "down");
-    tui.press(11, "down");
-    tui.press(11, "down");
+    tui.press(11, "right");
     expect(litUsageLines(usageTab())).toEqual(["quota-usage-model-0"]);
 
     // Away to Limits and back: the reload fails, so there is no Breakdown line nor model rows.
@@ -1375,9 +1398,10 @@ describe("v6 surfaces on the quota snapshot", () => {
     await vi.waitFor(() =>
       expect(words(usageTab())).toContainEqual(expect.stringContaining("Couldn't load the usage")),
     );
-    expect(litUsageLines(usageTab())).toEqual(["quota-usage-prices"]);
+    expect(litUsageLines(usageTab())).toEqual([]);
+    expect(tui.press(11, "right")).toBe(false);
     tui.press(11, "up");
-    expect(litUsageLines(usageTab())).toEqual(["quota-usage-range"]);
+    expect(activeLabels(usageTab())).toContain("7 days");
     await tui.dispose();
   });
 
@@ -1422,7 +1446,7 @@ describe("v6 surfaces on the quota snapshot", () => {
       state: { version: 1, updatedAt: 1 },
     });
 
-    clickable(usageTab(), "Update ▸").props.onMouseUp();
+    tui.press(11, "p");
 
     await vi.waitFor(() =>
       expect(tui.toast).toHaveBeenCalledWith({

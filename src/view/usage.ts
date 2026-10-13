@@ -6,10 +6,10 @@
  *
  * Sections, top to bottom: the total, the providers as a small table, a daily chart (beside
  * the total and the providers when it gets 32 columns there, as tall as they are), totals by
- * token kind, cost (or tokens) by type, and the breakdown by model or by day. In the TUI the
- * chart fills its width with each day split by provider in the providers' colors, the "by type"
- * bar is a thin line across the view and each breakdown row
- * has a bar of its amount. `modelDetailView` lays out one model of the breakdown. Every line
+ * token kind, cost (or tokens) by type, the breakdown by model or by day, and the share of
+ * tokens without a price. In the TUI the chart fills its width with each day split by provider
+ * in the providers' colors, the "by type" bar is a thin line across the view and each breakdown
+ * row has a bar of its amount. `modelDetailView` lays out one model of the breakdown. Every line
  * fits in `width` terminal columns.
  */
 import type { UsageByType, UsageModelRow, UsageReport, UsageRow } from "../core/usage.js";
@@ -63,12 +63,8 @@ export type UsageRole =
 type UsageSpan = { text: string; role: UsageRole; back?: UsageRole };
 export type UsageLine = UsageSpan[];
 
-/**
- * The chart sits beside the total and the providers, like T3's page, when it gets this much;
- * below the roomy width the unpriced note is cut to the table's width to make room.
- */
+/** The chart sits beside the total and the providers, like T3's page, when it gets this much. */
 const BESIDE_CHART_MIN_WIDTH = 32;
-const BESIDE_CHART_ROOMY_WIDTH = 60;
 /** The total and the provider list never get wider than this, so their numbers stay close. */
 const LIST_MAX_WIDTH = 48;
 const COLUMN_GAP = 3;
@@ -76,9 +72,8 @@ const COLUMN_GAP = 3;
 const SIDE_GAP = 4;
 /** Narrower views are laid out at this width and then cut. */
 const LAYOUT_MIN_WIDTH = 32;
+/** Under the providers the chart has this many rows; beside them, at least this many. */
 const CHART_ROWS = 6;
-/** Beside the providers, the chart grows with them up to this many rows. */
-const CHART_ROWS_MAX = 12;
 const DETAIL_CHART_ROWS = 5;
 /** A day's column is at most this wide, so a short range does not draw a few huge blocks. */
 const CHART_COLUMN_MAX = 16;
@@ -175,6 +170,18 @@ function shortDate(date: Date, thisYear: number): string {
 function dayDate(day: string): Date {
   const [year, month, date] = day.split("-").map(Number);
   return new Date(year, month - 1, date);
+}
+
+/**
+ * The days a report covers, like "Oct 7 – Oct 13", or one day like "Oct 13"; undefined for
+ * "session", which has no time window.
+ */
+export function rangeDates(report: UsageReport): string | undefined {
+  if (report.sinceMs === undefined || report.untilMs === undefined) return undefined;
+  const thisYear = new Date(report.generatedAtMs).getFullYear();
+  const first = shortDate(new Date(report.sinceMs), thisYear);
+  const last = shortDate(new Date(report.untilMs), thisYear);
+  return first === last ? first : `${first} – ${last}`;
 }
 
 function rangeTitle(report: UsageReport): string {
@@ -632,7 +639,7 @@ function modelName(report: UsageReport, model: UsageModelRow): string {
 
 /**
  * The models of the model breakdown, in its order. In `usageView` with the model breakdown,
- * the last lines are these models' rows, one each, in this order.
+ * these models' rows follow the Breakdown heading and its column names, one each, in this order.
  */
 export function breakdownModels(report: UsageReport, mode: UsageMode): UsageModelRow[] {
   return inModeOrder(
@@ -743,27 +750,15 @@ function buildView(
   const layoutWidth = Math.max(LAYOUT_MIN_WIDTH, width);
 
   const listWidth = Math.min(LIST_MAX_WIDTH, layoutWidth);
-  const providers = providerLines(view, listWidth);
-  const total = totalLines(view, listWidth);
-  const listWith = (noteWidth: number) =>
-    [...total, ...unpricedLines(view, noteWidth), [], ...providers].map((line) =>
-      clip(line, listWidth),
-    );
-  const list = listWith(listWidth);
+  const list = [...totalLines(view, listWidth), [], ...providerLines(view, listWidth)].map((line) =>
+    clip(line, listWidth),
+  );
   let top = list;
   if (contents.chart) {
-    // Beside the list when the chart gets room there; the unpriced note may give up its model
-    // names (cut to the table's width) for that.
-    const tableWidth = Math.max(LAYOUT_MIN_WIDTH, ...[...providers, ...total].map(lineWidth));
-    const besideList = [list, listWith(Math.min(listWidth, tableWidth))].find(
-      (lines, index) =>
-        layoutWidth - Math.max(...lines.map(lineWidth)) - SIDE_GAP >=
-        (index === 0 ? BESIDE_CHART_ROOMY_WIDTH : BESIDE_CHART_MIN_WIDTH),
-    );
-    if (besideList) {
-      const listUsed = Math.max(...besideList.map(lineWidth));
+    const listUsed = Math.max(...list.map(lineWidth));
+    if (layoutWidth - listUsed - SIDE_GAP >= BESIDE_CHART_MIN_WIDTH) {
       // As tall as the list: the chart's title, baseline and dates take 3 lines.
-      const rows = Math.min(CHART_ROWS_MAX, Math.max(CHART_ROWS, besideList.length - 3));
+      const rows = Math.max(CHART_ROWS, list.length - 3);
       const chart = chartLines(
         chartDays(report, view.mode),
         view.mode,
@@ -771,7 +766,7 @@ function buildView(
         layoutWidth - listUsed - SIDE_GAP,
         rows,
       );
-      top = sideBySide(besideList, chart, listUsed + SIDE_GAP);
+      top = sideBySide(list, chart, listUsed + SIDE_GAP);
     } else {
       const chart = chartLines(
         chartDays(report, view.mode),
@@ -793,6 +788,7 @@ function buildView(
       contents.colored,
     ),
     breakdownLines(view, layoutWidth, contents.breakdownRows, contents.colored),
+    unpricedLines(view, layoutWidth),
   ].filter((lines) => lines.length > 0);
   const gap: UsageLine[] = Array.from({ length: contents.sectionGap }, () => []);
   return sections

@@ -4,10 +4,11 @@
  * above the message box of a session, where it covers the chat
  * with the same size on every tab: Usage, Limits, System and the Settings tabs Layout, Colors
  * and Providers (`settings.tsx`); Layout has a line of pages under the tab bar, All places and
- * one per place. The tab bar is one line, with "esc" at its right end to close the window:
- * when its tabs don't fit, it drops the "Settings" label, then shows the tabs around the
- * current one between ‹ and ›. The bottom line lists the
- * tab's keys; the Settings tabs have Save and Discard above it. While the window is focused (it
+ * one per place. The tab bar is one line: the window's title and the plugin's version, the
+ * tabs, and "esc" at its right end to close the window. When its tabs don't fit, it drops the
+ * "Settings" label, then shows the tabs around the current one between ‹ and ›. Usage keeps its
+ * range list left of the scrolling tab body. The bottom line lists the tab's keys (Usage's as
+ * key and label pairs); the Settings tabs have Save and Discard above it. While the window is focused (it
  * is after opening; click it to give it the keyboard again) its keys work: ↑↓ select or scroll,
  * space/enter use a line, ←/→ change it, tab switches tabs, esc closes. Closing gives the
  * keyboard back to whatever had it before. System shows the maintainer notices, the switches
@@ -18,6 +19,7 @@ import type { BoxRenderable, Renderable, RGBA, ScrollBoxRenderable } from "@open
 import type { JSX } from "@opentui/solid";
 import { createSignal, onCleanup, onMount, Show } from "solid-js";
 import { sanitizeDisplayText } from "../../lib/display-sanitize.js";
+import { getPackageVersion } from "../../lib/version.js";
 import { QuotaRpc } from "../../rpc.js";
 import { columnsOf } from "../../view/columns.js";
 import { type ClientHost, errorToast, quotaCallOptions, rpcErrorMessage } from "../client.js";
@@ -31,7 +33,7 @@ import {
   SETTINGS_GROUPS,
   type SettingsEditor,
 } from "./settings.js";
-import { Choice, createUsageTab, type UsageChoice } from "./usage.js";
+import { Choice, createUsageTab, USAGE_RAIL_WIDTH, type UsageChoice } from "./usage.js";
 import {
   LimitsView,
   type NoticeReport,
@@ -99,6 +101,32 @@ export function hintLines(hint: string, width: number): string {
     }
   }
   return lines.join("\n");
+}
+
+/** A key and what it does, for a tab's bottom line; without a key, a note such as "updating…". */
+export type KeyHint = { key?: string; label: string };
+const KEY_HINT_GAP = "  ";
+
+function keyHintText(hint: KeyHint): string {
+  return hint.key ? `${hint.key} ${hint.label}` : hint.label;
+}
+
+/** The key hints in `width` columns, two spaces apart, lines broken between hints, never inside one. */
+export function keyHintLines(hints: readonly KeyHint[], width: number): KeyHint[][] {
+  const lines: KeyHint[][] = [];
+  let lineWidth = 0;
+  for (const hint of hints) {
+    const hintWidth = columnsOf(keyHintText(hint));
+    const last = lines.at(-1);
+    if (last && lineWidth + KEY_HINT_GAP.length + hintWidth <= width) {
+      last.push(hint);
+      lineWidth += KEY_HINT_GAP.length + hintWidth;
+    } else {
+      lines.push([hint]);
+      lineWidth = hintWidth;
+    }
+  }
+  return lines;
 }
 
 export type TabStrip = { first: number; last: number; settingsLabel: boolean };
@@ -227,6 +255,11 @@ export function createQuotaWindow(
   const options = () => quotaCallOptions(api);
   const usage = createUsageTab(api, () => scroll);
   const showError = (error: unknown) => api.ui.toast.show(errorToast(error));
+  /** The installed plugin's version from its package.json, like "v5.0.2", after the title. */
+  const [version, setVersion] = createSignal("");
+  void getPackageVersion().then((found) => {
+    if (found) setVersion(`v${found}`);
+  });
 
   async function loadNotices(): Promise<void> {
     const request = ++noticeRequest;
@@ -482,17 +515,45 @@ export function createQuotaWindow(
       return isSettingsTab(shown) ? shown : undefined;
     };
     const viewHint = () => {
-      if (tab() === "usage") return usage.hint();
       const end = "tab next tab · esc close";
       if (tab() === "limits") return `┃ where even use would be · ↑↓ scroll · ${end}`;
       return `↑↓ select · space/enter or click to use · ‹ › (or ←/→) change · ${end}`;
     };
     const hint = () =>
-      (tab() === "usage" && usage.typingDate() ? usage.hint() : undefined) ??
       settings.hint(tab() ?? "", hasKeyboard()) ??
       (hasKeyboard()
         ? viewHint()
         : "The keyboard is somewhere else (the message box, a dialog). Click this box to use ↑↓ space tab esc here.");
+    /**
+     * Usage's own key hints while the tab or one of its dates has the keyboard, unless the
+     * bottom bar asks about unsaved settings.
+     */
+    const usageHints = (): KeyHint[] | undefined => {
+      if (tab() !== "usage") return undefined;
+      if (usage.typingDate()) return usage.hints();
+      if (!hasKeyboard() || settings.hint(tab() ?? "", true) !== undefined) return undefined;
+      return usage.hints();
+    };
+    /** Usage's key hints: each key bold in the text color, its label muted, two spaces apart. */
+    const KeyHints = (hintProps: { hints: KeyHint[] }) => (
+      <box flexDirection="column" flexShrink={0}>
+        {keyHintLines(hintProps.hints, width()).map((line) => (
+          <text wrapMode="none" selectable={false}>
+            {line.flatMap((item, index) => [
+              ...(index > 0
+                ? [<span style={{ fg: theme().text.muted }}>{KEY_HINT_GAP}</span>]
+                : []),
+              ...(item.key ? [<b style={{ fg: theme().text.base }}>{item.key}</b>] : []),
+              <span style={{ fg: theme().text.muted }}>
+                {item.key ? ` ${item.label}` : item.label}
+              </span>,
+            ])}
+          </text>
+        ))}
+      </box>
+    );
+    /** The title and the version, as the tab bar shows them. */
+    const titleText = () => (version() ? `${WINDOW_TITLE} ${version()}` : WINDOW_TITLE);
     /** The drawn tab bodies' width: the scrollbar's column and a gap before it stay free. */
     const bodyWidth = () => width() - 2;
     const strip = () =>
@@ -500,7 +561,7 @@ export function createQuotaWindow(
         BAR_TABS.map((item) => item.title),
         TABS.length,
         Math.max(0, BAR_TABS.indexOf(barTabOf(tab()) ?? BAR_TABS[0])),
-        width() - WINDOW_TITLE.length - TAB_GAP - CLOSE_WIDTH,
+        width() - columnsOf(titleText()) - TAB_GAP - CLOSE_WIDTH,
       );
     const label = (text: string) => (
       <text fg={theme().text.base} wrapMode="none" selectable={false}>
@@ -592,7 +653,10 @@ export function createQuotaWindow(
       >
         <box flexDirection="row" flexShrink={0}>
           <box flexDirection="row" columnGap={TAB_GAP} flexGrow={1}>
-            {label(WINDOW_TITLE)}
+            <text fg={theme().text.base} wrapMode="none" selectable={false}>
+              <b>{WINDOW_TITLE}</b>
+              <span style={{ fg: theme().text.muted }}>{version() ? ` ${version()}` : ""}</span>
+            </text>
             <Show when={strip().first > 0}>{arrow("‹", -1)}</Show>
             {stripItems()}
             <Show when={strip().last < BAR_TABS.length - 1}>{arrow("›", 1)}</Show>
@@ -606,60 +670,68 @@ export function createQuotaWindow(
             <settings.Header tab={shown()} refocus={() => windowBox?.focus()} showPage={showTab} />
           )}
         </Show>
-        <scrollbox
-          ref={(element: ScrollBoxRenderable) => {
-            scroll = element;
-            ownScroll = element;
-          }}
+        <box
+          flexDirection="row"
           // Basis 0: the tab body gets the room left over and scrolls; it never squeezes the rest.
           flexGrow={1}
           flexBasis={0}
           minHeight={0}
           marginTop={1}
         >
-          <Show when={tab() === "system"}>
-            <NoticesView theme={theme()} report={notices()} />
-          </Show>
-          {tabOptions().map((option) => (
-            <OptionRow
-              line={option}
-              theme={theme()}
-              active={selected() === option.id}
-              click={settings.click}
-              press={() => setSelected(option.id)}
-              use={() => useLine(option, true)}
-              valueWidth={option.cycle ? 3 : 9}
-              width={bodyWidth()}
-            />
-          ))}
-          <Show when={tab() === "limits"}>
-            <LimitsView
-              host={host}
-              sessionID={props.sessionID}
-              nowMs={nowMs()}
-              width={bodyWidth()}
-            />
-          </Show>
           <Show when={tab() === "usage"}>
-            <usage.View width={bodyWidth()} keyTarget={() => windowBox} />
+            <usage.Rail />
           </Show>
-          <Show when={tab() === "system"}>
-            <StatusView theme={theme()} report={status()} width={bodyWidth()} />
-          </Show>
-          <Show when={settingsTab()}>
-            {(shown: () => SettingsTab) => (
-              <settings.Body
-                tab={shown()}
-                showPage={showTab}
-                host={host}
-                sessionID={props.sessionID}
-                box={() => windowBox}
-                scroll={() => scroll}
+          <scrollbox
+            ref={(element: ScrollBoxRenderable) => {
+              scroll = element;
+              ownScroll = element;
+            }}
+            flexGrow={1}
+          >
+            <Show when={tab() === "system"}>
+              <NoticesView theme={theme()} report={notices()} />
+            </Show>
+            {tabOptions().map((option) => (
+              <OptionRow
+                line={option}
+                theme={theme()}
+                active={selected() === option.id}
+                click={settings.click}
+                press={() => setSelected(option.id)}
+                use={() => useLine(option, true)}
+                valueWidth={option.cycle ? 3 : 9}
                 width={bodyWidth()}
               />
-            )}
-          </Show>
-        </scrollbox>
+            ))}
+            <Show when={tab() === "limits"}>
+              <LimitsView
+                host={host}
+                sessionID={props.sessionID}
+                nowMs={nowMs()}
+                width={bodyWidth()}
+              />
+            </Show>
+            <Show when={tab() === "usage"}>
+              <usage.View width={bodyWidth() - USAGE_RAIL_WIDTH} keyTarget={() => windowBox} />
+            </Show>
+            <Show when={tab() === "system"}>
+              <StatusView theme={theme()} report={status()} width={bodyWidth()} />
+            </Show>
+            <Show when={settingsTab()}>
+              {(shown: () => SettingsTab) => (
+                <settings.Body
+                  tab={shown()}
+                  showPage={showTab}
+                  host={host}
+                  sessionID={props.sessionID}
+                  box={() => windowBox}
+                  scroll={() => scroll}
+                  width={bodyWidth()}
+                />
+              )}
+            </Show>
+          </scrollbox>
+        </box>
         <box flexDirection="column" marginTop={1} flexShrink={0}>
           <box flexDirection="row" gap={2}>
             <settings.Buttons
@@ -670,9 +742,16 @@ export function createQuotaWindow(
               close={close}
             />
           </box>
-          <text fg={theme().text.muted} wrapMode="word" selectable={false}>
-            {hintLines(hint(), width())}
-          </text>
+          <Show
+            when={usageHints()}
+            fallback={
+              <text fg={theme().text.muted} wrapMode="word" selectable={false}>
+                {hintLines(hint(), width())}
+              </text>
+            }
+          >
+            {(hints: () => KeyHint[]) => <KeyHints hints={hints()} />}
+          </Show>
         </box>
       </box>
     );

@@ -34,7 +34,7 @@ Your `/tokens_*` commands keep working; they are on for everyone. Turn them off 
 | `/tokens_session_all` | `/quota_usage session` |
 | `/tokens_between <from> <to>` | `/quota_usage between <from> <to>` |
 | `/quota_announcements` | The notices on the System tab (`/quota_status`) |
-| `/pricing_refresh` | **Update** on the Prices line of the Usage tab (`/quota_usage`); once per OpenCode run, prices older than 7 days also download on their own |
+| `/pricing_refresh` | `p` in the Usage tab (`/quota_usage`); once per OpenCode run, prices older than 7 days also download on their own |
 
 Project settings files (`<your-repo>/opencode-quota/quota-toast.jsonc`) are not read; `/quota_status` lists any it finds. Put what you still need in `settings.jsonc`.
 

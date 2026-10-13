@@ -1,11 +1,14 @@
-import { describe, expect, it } from "vitest";
+import { createRoot } from "solid-js";
+import { describe, expect, it, vi } from "vitest";
 import type { ProviderSnapshot, QuotaRow, QuotaSnapshot } from "../src/core/types.js";
+import type { UsageReport } from "../src/core/usage.js";
 import { defaultDisplaySettings } from "../src/tui/display.js";
 import { limitsLines } from "../src/tui/window/limits.js";
-import { hintLines, tabStrip } from "../src/tui/window/shell.tsx";
-import { allRangesFit } from "../src/tui/window/usage.tsx";
+import { hintLines, keyHintLines, tabStrip } from "../src/tui/window/shell.tsx";
+import { createUsageTab } from "../src/tui/window/usage.tsx";
 import { noticeItems, statusLines } from "../src/tui/window/views.tsx";
 import { lineText } from "../src/view/text.js";
+import { THEME } from "./helpers/jsx-tree.js";
 
 const NOW = Date.parse("2026-10-10T12:00:00.000Z");
 const MINUTE = 60_000;
@@ -273,16 +276,6 @@ describe("quota window: tab bar", () => {
   });
 });
 
-describe("quota window: Usage range line", () => {
-  // "Range" and its gap take 8 columns; every range 66 more.
-  it.each([
-    { width: 74, fits: true },
-    { width: 73, fits: false },
-  ])("at $width columns every range fits: $fits", ({ width, fits }) => {
-    expect(allRangesFit(width)).toBe(fits);
-  });
-});
-
 describe("quota window: keyboard hint", () => {
   it("breaks its lines between items, never inside one", () => {
     expect(hintLines("↑↓ select · tab next tab · esc close", 24)).toBe(
@@ -295,5 +288,128 @@ describe("quota window: keyboard hint", () => {
 
   it("keeps one line when it fits", () => {
     expect(hintLines("tab next tab · esc close", 80)).toBe("tab next tab · esc close");
+  });
+});
+
+describe("quota window: key hints", () => {
+  const hints = [
+    { key: "↑↓", label: "range" },
+    { key: "c", label: "cost" },
+    { label: "updating prices…" },
+    { key: "esc", label: "close" },
+  ];
+  // "↑↓ range" 8, "c cost" 6, "updating prices…" 16, "esc close" 9, two columns between.
+  it.each([
+    { width: 45, lines: [["↑↓", "c", undefined, "esc"]] },
+    { width: 44, lines: [["↑↓", "c", undefined], ["esc"]] },
+    {
+      width: 33,
+      lines: [
+        ["↑↓", "c"],
+        [undefined, "esc"],
+      ],
+    },
+    { width: 10, lines: [["↑↓"], ["c"], [undefined], ["esc"]] },
+  ])("at $width columns breaks between hints, two spaces apart", ({ width, lines }) => {
+    expect(keyHintLines(hints, width).map((line) => line.map((hint) => hint.key))).toEqual(lines);
+  });
+});
+
+/** One provider with two models of $1 and 100 tokens each, all of it input. */
+function twoModelReport(): UsageReport {
+  const byType = { input: 0, cacheRead: 0, cacheWrite: 0, output: 0 };
+  const half = { costUsd: 1, costShare: 0.5, tokens: 100, tokenShare: 0.5, unpricedTokens: 0 };
+  const whole = { costUsd: 2, costShare: 1, tokens: 200, tokenShare: 1, unpricedTokens: 0 };
+  return {
+    range: "session",
+    sessionID: "ses_1",
+    generatedAtMs: NOW,
+    totals: {
+      costUsd: 2,
+      sessions: 1,
+      tokens: { processed: 200, cachedInput: 0, uncachedInput: 200, output: 0 },
+      tokensByType: { ...byType, input: 200 },
+      costByType: { ...byType, input: 2 },
+      cacheSavingsUsd: 0,
+      unpricedTokens: 0,
+      unpricedShare: 0,
+    },
+    providers: [{ providerID: "anthropic", sessions: 1, ...whole }],
+    models: ["claude-a", "claude-b"].map((modelID) => ({
+      providerID: "anthropic",
+      modelID,
+      priced: true,
+      ...half,
+      costByType: { ...byType, input: 1 },
+      tokensByType: { ...byType, input: 100 },
+      days: [],
+    })),
+    days: [{ date: "2026-10-10", ...whole }],
+  };
+}
+
+describe("quota window: Usage keys", () => {
+  it("names the keys for where the keyboard is, and says so while prices update", async () => {
+    vi.stubGlobal("React", {
+      createElement: (
+        type: unknown,
+        props: Record<string, unknown> | null,
+        ...children: unknown[]
+      ) => {
+        const all = { ...props, children: children.length > 1 ? children : children[0] };
+        return typeof type === "function" ? type(all) : { type, props: all };
+      },
+    });
+    type Key = { bind: string; run: () => unknown };
+    const layers: Array<{ commands: Key[] }> = [];
+    let answerPrices = (_answer: { ok: boolean; message: string }) => {};
+    const api = {
+      location: { directory: "/project" },
+      theme: THEME,
+      client: {
+        rpc: () => ({
+          usage: async () => ({ report: twoModelReport() }),
+          downloadPrices: () =>
+            new Promise((resolve) => {
+              answerPrices = resolve;
+            }),
+        }),
+      },
+      keymap: { layer: (build: () => { commands: Key[] }) => layers.push(build()) },
+      ui: { toast: { show: vi.fn() }, dialog: { show: vi.fn(), set: vi.fn(), clear: vi.fn() } },
+    };
+    const usage = createUsageTab(api as never, () => undefined);
+    createRoot(() => usage.View({ width: 100, keyTarget: () => undefined }));
+    const press = (bind: string) =>
+      layers
+        .at(-1)
+        ?.commands.find((key) => key.bind === bind)
+        ?.run();
+    const hints = () =>
+      usage
+        .hints()
+        .map((hint) => (hint.key ? `${hint.key} ${hint.label}` : hint.label))
+        .join("  ");
+    const shared = "c cost  t tokens  b by model/day  p update prices  tab next tab  esc close";
+
+    // The range list has the keyboard; once the report has model rows, → goes to them.
+    usage.show("ses_1");
+    expect(hints()).toBe(`↑↓ range  ${shared}`);
+    await vi.waitFor(() => expect(hints()).toBe(`↑↓ range  → models  ${shared}`));
+    press("right");
+    expect(hints()).toBe(`↑↓ models  enter details  ← ranges  ${shared}`);
+    // By day there are no model rows: ↑↓ scroll the window.
+    press("b");
+    expect(hints()).toBe(`↑↓ scroll  ← ranges  ${shared}`);
+    press("left");
+    expect(hints()).toBe(`↑↓ range  ${shared}`);
+
+    // Between adds d; p says it is updating until the answer comes.
+    press("down");
+    expect(hints()).toBe(`↑↓ range  d type dates  ${shared}`);
+    press("p");
+    expect(hints()).toContain("b by model/day  updating prices…  tab next tab");
+    answerPrices({ ok: false, message: "Couldn't download new prices: network down." });
+    await vi.waitFor(() => expect(hints()).toContain("b by model/day  p update prices  tab"));
   });
 });
