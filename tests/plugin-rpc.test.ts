@@ -269,6 +269,11 @@ describe("server quota RPC", () => {
     };
     expect(session.report.sessionID).toBe("ses_root");
     expect(session.report.totals.tokens.processed).toBe(1_500);
+
+    // All time reads the whole history, with no time window.
+    const all = (await call("usage", { range: "all" })) as { report: UsageReport };
+    expect(all.report).not.toHaveProperty("sinceMs");
+    expect(all.report.totals.tokens.processed).toBe(1_500);
   });
 
   it("serves v6 rows from the store, saves them and emits changed", async () => {

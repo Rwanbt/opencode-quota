@@ -4,7 +4,9 @@
  *
  * - "24h" is the rolling last 24 hours; "today", "7d", "30d" and "90d" are local calendar days,
  *   today included.
+ * - "all" is the whole history.
  * - "session" is the session plus its subagent sessions.
+ * - A bare `/quota_usage` and the Usage tab start on "today".
  * - "between" takes two local dates, both included.
  */
 import { parseCalendarDate } from "../lib/calendar-date.js";
@@ -15,13 +17,14 @@ export const USAGE_RANGES = [
   { range: "7d", label: "7 days" },
   { range: "30d", label: "30 days" },
   { range: "90d", label: "90 days" },
+  { range: "all", label: "All time" },
   { range: "session", label: "This session" },
   { range: "between", label: "Between" },
 ] as const;
 
 export type UsageRange = (typeof USAGE_RANGES)[number]["range"];
 
-export const DEFAULT_USAGE_RANGE: UsageRange = "session";
+export const DEFAULT_USAGE_RANGE: UsageRange = "today";
 
 /** The 4.x and 5.x token commands (`system.oldCommands`), each `/quota_usage` on its range. */
 export const OLD_USAGE_COMMANDS: Readonly<Record<string, UsageRange>> = {
@@ -29,7 +32,7 @@ export const OLD_USAGE_COMMANDS: Readonly<Record<string, UsageRange>> = {
   tokens_daily: "24h",
   tokens_weekly: "7d",
   tokens_monthly: "30d",
-  tokens_all: "90d",
+  tokens_all: "all",
   tokens_session: "session",
   tokens_session_all: "session",
   tokens_between: "between",
@@ -48,7 +51,7 @@ type UsageArguments =
   | { ok: false; error: string };
 
 const USAGE_ARGUMENTS_HELP =
-  "Usage: /quota_usage [today | 24h | 7d | 30d | 90d | session | between YYYY-MM-DD YYYY-MM-DD]";
+  "Usage: /quota_usage [today | 24h | 7d | 30d | 90d | all | session | between YYYY-MM-DD YYYY-MM-DD]";
 
 function argumentsError(problem: string): UsageArguments {
   return { ok: false, error: `${problem}\n${USAGE_ARGUMENTS_HELP}` };

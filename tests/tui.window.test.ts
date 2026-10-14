@@ -1,7 +1,7 @@
 import { createRoot } from "solid-js";
 import { describe, expect, it, vi } from "vitest";
 import type { ProviderSnapshot, QuotaRow, QuotaSnapshot } from "../src/core/types.js";
-import type { UsageReport } from "../src/core/usage.js";
+import { USAGE_RANGES, type UsageReport } from "../src/core/usage.js";
 import { defaultDisplaySettings } from "../src/tui/display.js";
 import { limitsLines } from "../src/tui/window/limits.js";
 import { hintLines, keyHintLines, tabStrip } from "../src/tui/window/shell.tsx";
@@ -405,8 +405,8 @@ describe("quota window: Usage keys", () => {
     press("left");
     expect(hints()).toBe(`↑↓ range  ${shared}`);
 
-    // Between adds d; p says it is updating until the answer comes.
-    press("down");
+    // Between, the last range, adds d; p says it is updating until the answer comes.
+    for (let step = 1; step < USAGE_RANGES.length; step++) press("down");
     expect(hints()).toBe(`↑↓ range  d type dates  ${shared}`);
     press("p");
     expect(hints()).toContain("b by model/day  updating prices…  tab next tab");

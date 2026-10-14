@@ -174,7 +174,7 @@ function dayDate(day: string): Date {
 
 /**
  * The days a report covers, like "Oct 7 – Oct 13", or one day like "Oct 13"; undefined for
- * "session", which has no time window.
+ * "all" and "session", which have no time window.
  */
 export function rangeDates(report: UsageReport): string | undefined {
   if (report.sinceMs === undefined || report.untilMs === undefined) return undefined;

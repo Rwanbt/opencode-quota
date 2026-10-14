@@ -133,6 +133,7 @@ const USAGE_RANGE_NEEDS: Record<UsageRange, "nothing" | "sessionID" | "dates"> =
   "7d": "nothing",
   "30d": "nothing",
   "90d": "nothing",
+  all: "nothing",
   session: "sessionID",
   between: "dates",
 };

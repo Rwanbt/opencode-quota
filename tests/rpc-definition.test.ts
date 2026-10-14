@@ -126,7 +126,7 @@ describe("quota RPC definition", () => {
   });
 
   it("validates usage input", async () => {
-    for (const range of ["today", "24h", "7d", "30d", "90d"]) {
+    for (const range of ["today", "24h", "7d", "30d", "90d", "all"]) {
       await expectAccepted(methods.usage.input, { range });
     }
     await expectAccepted(methods.usage.input, { range: "session", sessionID: "ses_1" });
@@ -139,11 +139,10 @@ describe("quota RPC definition", () => {
       await expectAccepted(methods.usage.input, { range: "between", from, to });
     }
 
-    const rangeIssue = "range must be one of today, 24h, 7d, 30d, 90d, session, between";
+    const rangeIssue = "range must be one of today, 24h, 7d, 30d, 90d, all, session, between";
     const cases: Array<[unknown, string]> = [
       [null, "input must be an object"],
       [{}, rangeIssue],
-      [{ range: "all" }, rangeIssue],
       [{ range: "session_tree", sessionID: "ses_1" }, rangeIssue],
       [{ range: "toString" }, rangeIssue],
       [{ range: "90d", sessionID: 1 }, "sessionID must be a string"],

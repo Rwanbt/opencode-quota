@@ -1224,11 +1224,10 @@ describe("v6 surfaces on the quota snapshot", () => {
     });
     const tui = await startHosts();
 
-    // The palette's usage command opens the window on its Usage tab, on this session.
+    // The palette's usage command opens the window on its Usage tab, on Today.
     await tui.command("usage").run();
     const usageTab = () => tui.render("session.composer.top", { sessionID: "ses_1" });
-    await vi.waitFor(() => expect(words(usageTab())).toContain("Breakdown"));
-    expect(activeLabels(usageTab())).toContain("This session");
+    await vi.waitFor(() => expect(activeLabels(usageTab())).toContain("Today"));
     clickable(usageTab(), "7 days").props.onMouseUp();
     await vi.waitFor(() => expect(words(usageTab()).join(" ")).toContain("Daily cost"));
     const tab = words(usageTab());
@@ -1297,19 +1296,30 @@ describe("v6 surfaces on the quota snapshot", () => {
     );
 
     // A wrong range leaves the tab as it was and says how to type one.
-    tui.typed("/quota_usage all");
+    tui.typed("/quota_usage session_tree");
     expect(tui.toast).toHaveBeenCalledWith(
       expect.objectContaining({
         variant: "warning",
-        message: expect.stringMatching(/^Unknown range "all"\.\nUsage: \/quota_usage \[today/u),
+        message: expect.stringMatching(
+          /^Unknown range "session_tree"\.\nUsage: \/quota_usage \[today/u,
+        ),
       }),
     );
     expect(activeLabels(usageTab())).toContain("Between");
 
-    // A bare /quota_usage starts on This session again.
+    // All time counts the session from 10 days ago too.
+    tui.typed("/quota_usage all");
+    await vi.waitFor(() => expect(activeLabels(usageTab())).toContain("All time"));
+    await vi.waitFor(() =>
+      expect(words(usageTab())).toContainEqual(
+        expect.stringMatching(/ 2 sessions · API estimate/u),
+      ),
+    );
+
+    // A bare /quota_usage starts on Today again.
     tui.typed("/quota_usage");
-    await vi.waitFor(() => expect(activeLabels(usageTab())).toContain("This session"));
-    expect(activeLabels(usageTab())).not.toContain("Between");
+    await vi.waitFor(() => expect(activeLabels(usageTab())).toContain("Today"));
+    expect(activeLabels(usageTab())).not.toContain("All time");
     await tui.dispose();
   });
 
@@ -1318,9 +1328,12 @@ describe("v6 surfaces on the quota snapshot", () => {
     const tui = await startHosts();
     const windowTree = () => tui.render("session.composer.top", { sessionID: "ses_1" });
 
-    // On by default: /tokens_monthly opens Usage on the last 30 days, /tokens_between on its dates.
+    // On by default: /tokens_monthly opens Usage on the last 30 days, /tokens_all on all time,
+    // /tokens_between on its dates.
     tui.typed("/tokens_monthly");
     await vi.waitFor(() => expect(activeLabels(windowTree())).toContain("30 days"));
+    tui.typed("/tokens_all");
+    await vi.waitFor(() => expect(activeLabels(windowTree())).toContain("All time"));
     tui.typed(`/tokens_between ${localDate(-12)} ${localDate(-8)}`);
     await vi.waitFor(() => expect(activeLabels(windowTree())).toContain("Between"));
     tui.press(11, "d");
@@ -1392,7 +1405,7 @@ describe("v6 surfaces on the quota snapshot", () => {
     await vi.waitFor(() =>
       expect(words(usageTab())).toContainEqual(expect.stringMatching(/ 2 sessions · /u)),
     );
-    // This session's answer, asked first, arrives now; the tab keeps the last 30 days.
+    // Today's answer, asked first, arrives now; the tab keeps the last 30 days.
     releaseFirst();
     await vi.waitFor(() => expect(calls).toBe(2));
     await new Promise((resolve) => setTimeout(resolve, 20));

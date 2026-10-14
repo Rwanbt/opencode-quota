@@ -14,7 +14,7 @@
  * - Sessions count conversations: a subagent session counts as part of its top parent.
  * - "session" reads the session and its subagent sessions.
  * - Ranges and days are local calendar days: "7d" is today and the 6 days before it, and
- *   "between" includes both dates. "24h" is the rolling last 24 hours.
+ *   "between" includes both dates. "24h" is the rolling last 24 hours. "all" has no window.
  * - Token kinds: cached input = cache reads; uncached input = input + cache writes;
  *   output = output + reasoning; processed = all three. By type, input, cache reads, cache
  *   writes and output (with reasoning) each count on their own.
@@ -111,7 +111,7 @@ export type UsageModelRow = UsageRow & {
 
 export type UsageReport = {
   range: UsageRange;
-  /** The time window (epoch ms, both included); absent for "session". */
+  /** The time window (epoch ms, both included); absent for "all" and "session". */
   sinceMs?: number;
   untilMs?: number;
   /** Present for "session". */

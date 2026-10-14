@@ -144,7 +144,7 @@ const plugin = Plugin.define({
       editing: settings,
     };
     const quotaWindow = createQuotaWindow(api, host, settings);
-    /** `/quota_usage [range]`: the Usage tab, on the typed range or This session; a wrong range says why. */
+    /** `/quota_usage [range]`: the Usage tab, on the typed range or Today; a wrong range says why. */
     const openUsage = (argumentsText: string) => {
       const parsed = parseUsageArguments(argumentsText);
       if (parsed.ok) quotaWindow.openUsage(parsed);

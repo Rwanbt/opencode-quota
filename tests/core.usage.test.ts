@@ -123,6 +123,8 @@ describe("usage report ranges", () => {
     { query: { range: "30d" }, tokens: 31, days: ["2026-02-14", "2026-03-15", 30] },
     // 90d starts 89 days before today, on 2025-12-16.
     { query: { range: "90d" }, tokens: 127, days: ["2025-12-16", "2026-03-15", 90] },
+    // All time runs from the first to the last message: the one 90 days ago counts too.
+    { query: { range: "all" }, tokens: 255, days: ["2025-12-15", "2026-03-15", 91] },
     {
       query: { range: "between", from: "2026-03-08", to: "2026-03-14" },
       tokens: 2 + 4 + 8,
@@ -195,6 +197,13 @@ describe("usage report ranges", () => {
     });
     expect(quarter.providers).toEqual([]);
     expect(quarter.days).toHaveLength(90);
+
+    // All time has no window, so no days either.
+    const all = await usageReport({ range: "all" }, NOW);
+    expect(all).not.toHaveProperty("sinceMs");
+    expect(all).not.toHaveProperty("untilMs");
+    expect(all.totals.tokens.processed).toBe(0);
+    expect(all.days).toEqual([]);
 
     const week = await usageReport({ range: "7d" }, NOW);
     expect(week.days.map((day) => [day.tokens, day.costShare, day.tokenShare])).toEqual(
