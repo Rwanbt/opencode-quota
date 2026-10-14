@@ -38,7 +38,8 @@ export type RowSettings = {
   window: Record<string, WindowChoice>;
 };
 
-export type VisibleRow = { row: QuotaRow; label: string };
+/** A row as a place shows it: `label` is your name for it, or its own; `named` says you named it. */
+export type VisibleRow = { row: QuotaRow; label: string; named: boolean };
 
 /** One provider account on a surface: its title, its rows, and its last error. */
 export type Group = {
@@ -135,7 +136,10 @@ export function visibleGroups(
         (row) => prefixes === undefined || prefixes.some((prefix) => row.id.startsWith(prefix)),
       )
       .filter((row) => words.detail === "detailed" || row.prominence === "primary")
-      .map((row) => ({ row, label: (shown.names ?? settings.labels)[row.id] ?? row.label }));
+      .map((row) => {
+        const name = (shown.names ?? settings.labels)[row.id];
+        return { row, label: name ?? row.label, named: name !== undefined };
+      });
     return groupsOf(provider, rows, provider.rows.length > 0);
   });
 }

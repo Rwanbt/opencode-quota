@@ -135,7 +135,7 @@ function clip(segments: Segment[], width: number): Segment[] {
  * row of its group has the same one; else its label.
  */
 export function rowName(item: VisibleRow, group: Pick<Group, "rows">, words: Words): string {
-  if (words.rowNames === "full" || item.label !== item.row.label || !item.row.window) {
+  if (words.rowNames === "full" || item.named || !item.row.window) {
     return item.label;
   }
   const short = WINDOWS[item.row.window].short;

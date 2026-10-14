@@ -71,6 +71,7 @@ describe("quota report messages", () => {
         runsOut: false,
         onlyCurrentModel: false,
         sessionTokens: "current",
+        rowNames: "short",
       },
     } as const;
     const notices = [

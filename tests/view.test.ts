@@ -734,10 +734,11 @@ describe("view text", () => {
     });
   });
 
-  /** A row as a place shows it: `shown` is your name for it, its own label by default. */
-  const visible = (label: string, window?: QuotaWindow, shown = label): VisibleRow => ({
+  /** A row as a place shows it: `shown` is your name for it; without one, its own label. */
+  const visible = (label: string, window?: QuotaWindow, shown?: string): VisibleRow => ({
     row: row(`claude.${label}`, { label, ...(window ? { window } : {}) }),
-    label: shown,
+    label: shown ?? label,
+    named: shown !== undefined,
   });
 
   it("names a row by its window's short name only when that tells it apart in its group", () => {
@@ -746,7 +747,9 @@ describe("view text", () => {
     const fable = visible("Fable", "week");
     const premium = visible("Premium requests");
     const renamed = visible("Plan", "month", "Pro plan");
-    const shared = { rows: [fiveHour, weekly, fable, premium, renamed] };
+    // Named with its own label: your name still wins over "1d".
+    const keptName = visible("Daily", "day", "Daily");
+    const shared = { rows: [fiveHour, weekly, fable, premium, renamed, keptName] };
     const short = (item: VisibleRow, group = shared) => rowName(item, group, DEFAULT_WORDS);
     const full = (item: VisibleRow) => rowName(item, shared, words({ rowNames: "full" }));
     expect({
@@ -756,6 +759,7 @@ describe("view text", () => {
       shared: [short(weekly), short(fable)],
       noWindow: short(premium),
       renamed: short(renamed),
+      keptName: [short(keptName), short(visible("Daily", "day"), { rows: [] })],
       others: [short(fiveHour), short(renamed, { rows: [renamed] })],
       full: [fiveHour, weekly, fable, premium, renamed].map(full),
     }).toEqual({
@@ -763,6 +767,7 @@ describe("view text", () => {
       shared: ["Weekly", "Fable"],
       noWindow: "Premium requests",
       renamed: "Pro plan",
+      keptName: ["Daily", "1d"],
       others: ["5h", "Pro plan"],
       full: ["5h", "Weekly", "Fable", "Premium requests", "Pro plan"],
     });

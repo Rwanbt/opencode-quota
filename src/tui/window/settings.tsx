@@ -869,13 +869,7 @@ export function createSettingsEditor(
         hint: `Type a new name, then enter · enter with nothing typed = its own name ("${row.label}") · esc stop`,
         apply: (text) =>
           display.edit((settings) =>
-            renameRow(
-              settings,
-              props.tab === "toast" ? "toast" : "sidebar",
-              line.id,
-              row.label,
-              text,
-            ),
+            renameRow(settings, props.tab === "toast" ? "toast" : "sidebar", line.id, text),
           ),
       });
     }
@@ -1077,7 +1071,7 @@ export function createSettingsEditor(
         }
         if (withRows()) return "";
         const picked = pickRow(
-          { rows: provider.rows.map((item) => ({ row: item, label: item.label })) },
+          { rows: provider.rows.map((item) => ({ row: item, label: item.label, named: false })) },
           shown()[props.tab === "statusLine" ? "statusLine" : "collapsed"].window[
             provider.providerId
           ],

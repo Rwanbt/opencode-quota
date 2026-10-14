@@ -181,14 +181,8 @@ const snapshot = quotaSnapshot([providerSnapshot("anthropic", "Claude", rows)], 
 });
 
 it("uses Sidebar names on Sidebar, Collapsed, Status line and Limits, and Toast names on toasts", () => {
-  let display = renameRow(
-    displaySettings(defaultSettings()),
-    "sidebar",
-    rows[0].id,
-    "5h",
-    "Session",
-  );
-  display = renameRow(display, "toast", rows[0].id, "5h", "Reply quota");
+  let display = renameRow(displaySettings(defaultSettings()), "sidebar", rows[0].id, "Session");
+  display = renameRow(display, "toast", rows[0].id, "Reply quota");
   for (const surface of ["sidebar", "collapsed", "statusLine"] as const)
     expect(visibleGroups(snapshot, display, surface, DEFAULT_WORDS)[0]?.rows[0]?.label).toBe(
       "Session",
@@ -319,10 +313,10 @@ it("Save writes file settings with comments kept and reaches another TUI", async
   const first = await connect();
   const second = await connect();
   first.display.edit((settings) =>
-    renameRow(settings, "sidebar", "anthropic.five_hour", "5h", "Session"),
+    renameRow(settings, "sidebar", "anthropic.five_hour", "Session"),
   );
   second.display.edit((settings) =>
-    renameRow(settings, "sidebar", "anthropic.weekly", "Weekly", "Long window"),
+    renameRow(settings, "sidebar", "anthropic.weekly", "Long window"),
   );
   await second.server.save();
   // The folder watch can miss a change; the stat poll that catches it runs every 2 s.
@@ -350,7 +344,7 @@ it("resets names and colors without writing undefined or losing literal dotted i
     '{ "sidebar": { "names": { "anthropic.five_hour": "Session" } }, "colors": { "good": "blue" } }',
   );
   const { server, display } = await connect();
-  display.edit((settings) => renameRow(settings, "sidebar", "anthropic.five_hour", "5h", ""));
+  display.edit((settings) => renameRow(settings, "sidebar", "anthropic.five_hour", ""));
   display.edit((settings) => setIn(settings, ["colors", "good"], undefined));
   await server.save();
   expect((await loadSettings()).settings.sidebar.names).toEqual({});

@@ -639,20 +639,18 @@ export function presetValues(
   return PRESETS[name].choices[next as string] ?? {};
 }
 
-/** Your name for a row; nothing typed, or its own name, puts its own name back. */
+/**
+ * Your name for a row; nothing typed puts its own name back. A name equal to its own label
+ * stays, so it shows where `words.rowNames` "short" would show the window's short name.
+ */
 export function renameRow(
   settings: DisplaySettings,
   surface: "sidebar" | "toast",
   rowId: string,
-  ownLabel: string,
   text: string,
 ): DisplaySettings {
   const label = text.trim();
-  return setIn(
-    settings,
-    [surface, "names", rowId],
-    label && label !== ownLabel ? label : undefined,
-  );
+  return setIn(settings, [surface, "names", rowId], label || undefined);
 }
 
 /**

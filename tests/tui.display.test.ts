@@ -134,17 +134,14 @@ describe("the Settings tabs' field table", () => {
     expect(withPreset(quiet, "toast", -1).toast.afterCompaction).toBe(false);
   });
 
-  it("renames a row whose id holds a dot, and its own name or nothing puts it back", () => {
-    const renamed = renameRow(
-      defaultDisplaySettings(),
-      "sidebar",
-      "anthropic.five_hour",
-      "5h",
-      " Session ",
-    );
-    expect(renamed.labels).toEqual({ "anthropic.five_hour": "Session" });
-    expect(renameRow(renamed, "sidebar", "anthropic.five_hour", "5h", "5h").labels).toEqual({});
-    expect(renameRow(renamed, "sidebar", "anthropic.five_hour", "5h", "").labels).toEqual({});
+  it("renames a row whose id holds a dot, keeps its own name typed, and nothing puts it back", () => {
+    const renamed = renameRow(defaultDisplaySettings(), "sidebar", "anthropic.weekly", " Session ");
+    expect(renamed.labels).toEqual({ "anthropic.weekly": "Session" });
+    // Typed, its own name stays, so it shows where short row names would show "7d".
+    expect(renameRow(renamed, "sidebar", "anthropic.weekly", "Weekly").labels).toEqual({
+      "anthropic.weekly": "Weekly",
+    });
+    expect(renameRow(renamed, "sidebar", "anthropic.weekly", "").labels).toEqual({});
   });
 
   it("resets only the tab's lines, its surface and its windows; row names stay", () => {
