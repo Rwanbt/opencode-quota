@@ -131,8 +131,8 @@ export const SETTINGS_SCHEMA = {
   "layout.separator": { kind: "separator", default: " · " },
   /** The words every client uses: "58% left", "58% remaining", "58%", or "42% used". */
   "words.percent": choice(["left", "remaining", "bare", "used"], "left"),
-  /** "2h 14m", "2h14m", "2h", or "2.2h" (with `resetDecimals`). */
-  "words.reset": choice(["exact", "compact", "short", "decimal"], "exact"),
+  /** "4.5d" (smart), "2h 14m", "2h14m", "2h", or "2.2h" (with `resetDecimals`). */
+  "words.reset": choice(["smart", "exact", "compact", "short", "decimal"], "smart"),
   "words.resetDecimals": { ...whole(0, 4), default: 1 },
   /** Rows named by their window ("5h", "7d") where that tells them apart, or by their labels. */
   "words.rowNames": choice(["short", "full"], "short"),

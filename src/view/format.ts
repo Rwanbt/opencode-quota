@@ -36,7 +36,7 @@ export function formatShare(share: number): string {
 /** The words until the server sends its own (docs/v6-build.local.md §5). */
 export const DEFAULT_WORDS: Words = {
   percent: "left",
-  reset: "exact",
+  reset: "smart",
   resetDecimals: 1,
   rowNames: "short",
   detail: "summary",
@@ -69,10 +69,19 @@ export function percentText(words: Words, percentRemaining: number, withWord: bo
   return word ? `${value}% ${word}` : `${value}%`;
 }
 
-/** docs/v6-plan.local.md §4.7. Zero units are dropped in every style; the past is "now". */
+/**
+ * docs/v6-plan.local.md §4.7. Zero units are dropped in every style; the past is "now".
+ * "smart" rounds to the nearest: a day or more in days with one decimal ("4.5d"), from 12 hours
+ * in whole hours ("23h"), below that like "exact" ("11h 35m"). A time that rounds to 24 hours
+ * is "1.0d".
+ */
 export function formatDuration(ms: number, style: ResetStyle, decimals: number): string {
   if (!(ms > 0)) return "now";
   const minutes = Math.ceil(ms / 60_000);
+  if (style === "smart" && minutes >= 720) {
+    const hours = Math.round(minutes / 60);
+    return hours < 24 ? `${hours}h` : `${(Math.round(minutes / 144) / 10).toFixed(1)}d`;
+  }
   if (style === "decimal") {
     return minutes >= 1440
       ? `${(minutes / 1440).toFixed(decimals)}d`

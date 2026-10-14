@@ -168,7 +168,7 @@ describe("CLI reports", () => {
 
       expect(report).toEqual({
         exitCode: 0,
-        stdout: "Synthetic Weekly    19% used      2d 5h 14m\n",
+        stdout: "Synthetic Weekly    19% used      2.2d\n",
         stderr: "",
       });
     });

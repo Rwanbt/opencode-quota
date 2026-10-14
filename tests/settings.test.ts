@@ -238,7 +238,7 @@ describe("saveSettings", () => {
       ok: true,
       issues: [],
       diff: [
-        { key: "words.reset", before: "exact", after: "short" },
+        { key: "words.reset", before: "smart", after: "short" },
         { key: "providers.checking.minIntervalMs", before: 300_000, after: 60_000 },
       ],
     });

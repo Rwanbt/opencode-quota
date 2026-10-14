@@ -313,7 +313,7 @@ describe("quota_settings_get", () => {
       from: "file",
       allowed: 'one of: "left", "remaining", "bare", "used"',
     });
-    expect(result.settings?.["words.reset"]).toMatchObject({ value: "exact", from: "default" });
+    expect(result.settings?.["words.reset"]).toMatchObject({ value: "smart", from: "default" });
     expect(result.apiKeys).toEqual([
       { provider: "my-gateway-quota", apiKeyEnv: GATEWAY_VARIABLE, isSet: true },
       {

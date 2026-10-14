@@ -105,7 +105,7 @@ const EXPECTED = {
   },
   words: {
     percent: "left",
-    reset: "exact",
+    reset: "smart",
     resetDecimals: 1,
     rowNames: "short",
     detail: "summary",

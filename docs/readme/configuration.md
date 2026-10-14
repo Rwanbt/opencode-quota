@@ -27,6 +27,7 @@ Without the file, OpenCode Quota uses its defaults and writes nothing. Saving cr
 | Skip a provider | `providers.off: ["openai"]` |
 | Show quota used instead of left | `words.percent: "used"` |
 | Show `81%` instead of `81% left` | `words.percent: "bare"` |
+| Show `3d 23h 58m` instead of `4.0d` | `words.reset: "exact"` |
 | Show `2h14m` instead of `2h 14m` | `words.reset: "compact"` |
 | Show reset countdowns as decimals | `words.reset: "decimal"` |
 | Show `Weekly` instead of `7d` | `words.rowNames: "full"` |
@@ -193,7 +194,7 @@ Roles are `good`, `warning`, `low`, `empty`, `title`, `provider`, `account`, `la
 | Setting | Default | Values |
 | --- | --- | --- |
 | `words.percent` | `"left"` | `left`, `remaining`, `bare`, `used`. |
-| `words.reset` | `"exact"` | `exact` gives `2h 14m`, `compact` gives `2h14m`, `short` gives `2h`, `decimal` gives `2.2h`. |
+| `words.reset` | `"smart"` | `smart` gives `4.5d` from a day, `23h` from 12 hours, `2h 14m` below, each rounded to the nearest; `exact` gives `2h 14m`, `compact` gives `2h14m`, `short` gives `2h`, `decimal` gives `2.2h`. The Limits tab always shows exact times. |
 | `words.resetDecimals` | `1` | Whole number 0–4. |
 | `words.rowNames` | `"short"` | `short` shows a row's window (`5h`, `7d`, `30d`) unless it has none or shares it with another row of the provider; `full` shows its name (`Weekly`). |
 | `words.detail` | `"summary"` | `detailed` includes supplementary rows. |

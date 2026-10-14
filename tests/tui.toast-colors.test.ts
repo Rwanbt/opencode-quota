@@ -95,8 +95,8 @@ describe("colored quota toasts", () => {
       ["██", "red", false],
       ["░░░░░░░░░░░░░░░░░░", "muted", false],
       ["  12% left", "red", false],
-      ["  3d 4h", "muted", false],
-      ["     runs out in 12h 33m", "yellow", false],
+      ["  3.2d", "muted", false],
+      ["     runs out in 13h", "yellow", false],
       ["OpenRouter", "text", true],
       ["  Sign in again", "red", false],
     ]);

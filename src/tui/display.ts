@@ -446,7 +446,11 @@ export const FIELDS: readonly Field[] = [
     group: "Words",
     preset: "words",
   }),
-  serverField("words.reset", "Reset times", SHOW.reset, { ...ALL_PLACES, preset: "words" }),
+  serverField("words.reset", "Reset times", SHOW.reset, {
+    ...ALL_PLACES,
+    note: "the Limits tab always shows exact times",
+    preset: "words",
+  }),
   serverField("words.resetDecimals", "Decimals", SHOW.decimals, {
     ...ALL_PLACES,
     note: "for the decimal reset times",
@@ -454,7 +458,7 @@ export const FIELDS: readonly Field[] = [
   }),
   serverField("words.rowNames", "Row names", SHOW.rowNames, {
     ...ALL_PLACES,
-    note: "a row you renamed keeps your name",
+    note: "a row you renamed keeps your name; the Limits tab shows full names",
     preset: "words",
   }),
   serverField("words.detail", "Extra rows", SHOW.rows, { ...ALL_PLACES, group: "What shows" }),
@@ -586,7 +590,7 @@ export const PRESETS: Record<PresetName, Preset> = {
     drives: "Percent, Reset times and Row names",
     before: "words.percent",
     choices: {
-      normal: { "words.percent": "left", "words.reset": "exact", "words.rowNames": "short" },
+      normal: { "words.percent": "left", "words.reset": "smart", "words.rowNames": "short" },
       short: { "words.percent": "bare", "words.reset": "compact", "words.rowNames": "short" },
       "spelled out": {
         "words.percent": "remaining",

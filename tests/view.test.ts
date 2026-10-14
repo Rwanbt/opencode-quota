@@ -144,6 +144,19 @@ describe("view format", () => {
     { ms: 30_000, style: "exact", expected: "1m" },
     { ms: 0, style: "exact", expected: "now" },
     { ms: -MINUTE, style: "compact", expected: "now" },
+    // Smart: days with one decimal, then whole hours from 12 hours, each to the nearest.
+    { ms: (17 * 1440 + 4 * 60 + 6) * MINUTE, style: "smart", expected: "17.2d" },
+    { ms: (4 * 1440 + 11 * 60 + 58) * MINUTE, style: "smart", expected: "4.5d" },
+    { ms: (3 * 1440 + 23 * 60 + 58) * MINUTE, style: "smart", expected: "4.0d" },
+    { ms: (1440 + 2 * 60) * MINUTE, style: "smart", expected: "1.1d" },
+    { ms: (23 * 60 + 58) * MINUTE, style: "smart", expected: "1.0d" },
+    { ms: (23 * 60 + 10) * MINUTE, style: "smart", expected: "23h" },
+    { ms: (12 * 60 + 40) * MINUTE, style: "smart", expected: "13h" },
+    { ms: 12 * 60 * MINUTE, style: "smart", expected: "12h" },
+    { ms: (11 * 60 + 59) * MINUTE, style: "smart", expected: "11h 59m" },
+    { ms: 2 * 60 * MINUTE, style: "smart", expected: "2h" },
+    { ms: 25 * MINUTE, style: "smart", expected: "25m" },
+    { ms: 0, style: "smart", expected: "now" },
   ] as const)("$ms ms in the $style style is $expected", ({ ms, style, expected }) => {
     expect(formatDuration(ms, style, 1)).toBe(expected);
   });
@@ -360,7 +373,7 @@ describe("view text", () => {
     expect(lines.map(lineText)).toEqual([
       "Claude",
       " 5h       █████░░░  58% 2h 14m",
-      " 7d       █░░░░░░░  12%  3d 4h",
+      " 7d       █░░░░░░░  12%   3.2d",
       "",
       "OpenCode Zen",
       " Balance  $1,240.50 left",
@@ -423,6 +436,7 @@ describe("view text", () => {
     const lines = collapsedLines({
       groups: groups("collapsed", [CLAUDE]),
       ...drawn,
+      words: words({ reset: "exact" }),
       nowMs: NOW + 7 * MINUTE,
       width: 60,
       window: {},
@@ -483,7 +497,7 @@ describe("view text", () => {
   });
 
   it.each([
-    { room: 200, level: "full", first: "Claude █░░░░ 12% 3d 4h", shown: 3 },
+    { room: 200, level: "full", first: "Claude █░░░░ 12% 3.2d", shown: 3 },
     { room: 75, level: "bar", first: "Claude █░░░░ 12%", shown: 3 },
     { room: 70, level: "numbers", first: "Claude 12%", shown: 3 },
     { room: 40, level: "numbers", first: "Claude 12%", shown: 1 },
@@ -524,7 +538,7 @@ describe("view text", () => {
   });
 
   it("draws the one-provider status line with a big bar", () => {
-    expect(lineText(bigStatusLine(statusInput())!)).toBe("Claude 7d █░░░░░░░░░ 12% left · 3d 4h");
+    expect(lineText(bigStatusLine(statusInput())!)).toBe("Claude 7d █░░░░░░░░░ 12% left · 3.2d");
     // Without a percent row it shows the error (or value) instead of a bar.
     expect(lineText(bigStatusLine(statusInput([ROUTER]))!)).toBe("OpenRouter Sign in again");
     expect(bigStatusLine(statusInput([]))).toBeUndefined();
@@ -552,16 +566,16 @@ describe("view text", () => {
       sidebar: [
         "Claude",
         " 5h       █████░░░  58% 2h 14m",
-        " 7d       █░░░░░░░  12%  3d 4h",
-        "          runs out in 12h 33m",
+        " 7d       █░░░░░░░  12%   3.2d",
+        "          runs out in 13h",
       ],
       off: 3,
-      collapsed: ["Claude    7d   █░░░░░░░  12%   3d 4h", "          runs out in 12h 33m"],
-      status: "Claude █░░░░ 12% 3d 4h (runs out in 12h 33m)",
-      big: "Claude 7d █░░░░░░░░░ 12% left · 3d 4h · runs out in 12h 33m",
+      collapsed: ["Claude    7d   █░░░░░░░  12%    3.2d", "          runs out in 13h"],
+      status: "Claude █░░░░ 12% 3.2d (runs out in 13h)",
+      big: "Claude 7d █░░░░░░░░░ 12% left · 3.2d · runs out in 13h",
       plain: [
         "Claude 5h           58% left      2h 14m",
-        "Claude Weekly       12% left      3d 4h  runs out in 12h 33m",
+        "Claude Weekly       12% left      3.2d  runs out in 13h",
       ],
     });
   });
@@ -599,8 +613,8 @@ describe("view text", () => {
     expect(lines).toEqual([
       "Claude",
       "  5h      ████████████░░░░░░░░  58% left  2h 14m",
-      "  7d      ██░░░░░░░░░░░░░░░░░░  12% left  3d 4h",
-      "          runs out in 12h 33m",
+      "  7d      ██░░░░░░░░░░░░░░░░░░  12% left  3.2d",
+      "          runs out in 13h",
       "OpenCode Zen",
       "  Balance $1,240.50 left",
       "OpenRouter  Sign in again",
@@ -619,9 +633,9 @@ describe("view text", () => {
       "Claude",
       `5h${" ".repeat(46)}2h 14m`,
       `${"█".repeat(26)}${"░".repeat(18)}  58% left`,
-      `7d${" ".repeat(47)}3d 4h`,
+      `7d${" ".repeat(48)}3.2d`,
       `${"█".repeat(5)}${"░".repeat(39)}  12% left`,
-      "runs out in 12h 33m",
+      "runs out in 13h",
       "",
       "OpenCode Zen",
       `Balance${" ".repeat(33)}$1,240.50 left`,
@@ -664,13 +678,13 @@ describe("view text", () => {
       shared: [
         "Claude",
         "  5h     ████████████░░░░░░░░  58% left  2h 14m",
-        "  Weekly ██░░░░░░░░░░░░░░░░░░  12% left  3d 4h",
+        "  Weekly ██░░░░░░░░░░░░░░░░░░  12% left  3.2d",
         "  Fable  ██████████████████░░  90% left",
       ],
       renamed: [
         "Claude",
         "  5h        ████████████░░░░░░░░  58% left  2h 14m",
-        "  All mode… ██░░░░░░░░░░░░░░░░░░  12% left  3d 4h",
+        "  All mode… ██░░░░░░░░░░░░░░░░░░  12% left  3.2d",
       ],
     });
   });
@@ -683,23 +697,23 @@ describe("view text", () => {
     expect(narrow).toEqual({
       grouped: [
         "Copilot",
-        "  Premium…  ██░  80% left  18d 10h 33m",
+        "  Premium…  ██████░░  80% left  18.4d",
         "Claude",
-        "  5h        ██░  58% left  2h 14m",
-        "  7d        ░░░  12% left  3d 4h",
-        "            runs out in 12h 33m",
+        "  5h        █████░░░  58% left  2h 14m",
+        "  7d        █░░░░░░░  12% left  3.2d",
+        "            runs out in 13h",
       ],
       detailed: [
         "Copilot",
-        `Premium requests${" ".repeat(11)}18d 10h 33m`,
+        `Premium requests${" ".repeat(17)}18.4d`,
         `${"█".repeat(22)}${"░".repeat(6)}  80% left`,
         "",
         "Claude",
         `5h${" ".repeat(30)}2h 14m`,
         `${"█".repeat(16)}${"░".repeat(12)}  58% left`,
-        `7d${" ".repeat(31)}3d 4h`,
+        `7d${" ".repeat(32)}3.2d`,
         `${"█".repeat(3)}${"░".repeat(25)}  12% left`,
-        "runs out in 12h 33m",
+        "runs out in 13h",
       ],
     });
     for (const room of [38, 30, 22]) {
@@ -713,8 +727,8 @@ describe("view text", () => {
     expect(toast("grouped", 24, [CLAUDE])).toEqual([
       "Claude",
       "  5h  58% left  2h 14m",
-      "  7d  12% left  3d 4h",
-      "     runs out in 12h 33m",
+      "  7d  12% left  3.2d",
+      "     runs out in 13h",
     ]);
   });
 
@@ -723,12 +737,12 @@ describe("view text", () => {
       grouped: toast("grouped", 54, [CLAUDE], { bar: "none", runsOut: false }),
       detailed: toast("detailed", 54, [CLAUDE], { bar: "none", runsOut: false }),
     }).toEqual({
-      grouped: ["Claude", "  5h  58% left  2h 14m", "  7d  12% left  3d 4h"],
+      grouped: ["Claude", "  5h  58% left  2h 14m", "  7d  12% left  3.2d"],
       detailed: [
         "Claude",
         `5h${" ".repeat(46)}2h 14m`,
         "58% left".padStart(54),
-        `7d${" ".repeat(47)}3d 4h`,
+        `7d${" ".repeat(48)}3.2d`,
         "12% left".padStart(54),
       ],
     });
@@ -797,28 +811,28 @@ describe("view text", () => {
       };
     };
     expect(places({})).toEqual({
-      sidebar: ["Claude", " 5h       █████░░░  58% 2h 14m", " 7d       █░░░░░░░  12%  3d 4h"],
-      collapsed: ["Claude    7d   █░░░░░░░  12%   3d 4h"],
-      statusLine: "Claude 7d █░░░░░░░░░ 12% left · 3d 4h",
-      grouped: ["Claude", "  5h ████░░░  58% left  2h 14m", "  7d █░░░░░░  12% left  3d 4h"],
+      sidebar: ["Claude", " 5h       █████░░░  58% 2h 14m", " 7d       █░░░░░░░  12%   3.2d"],
+      collapsed: ["Claude    7d   █░░░░░░░  12%    3.2d"],
+      statusLine: "Claude 7d █░░░░░░░░░ 12% left · 3.2d",
+      grouped: ["Claude", "  5h ████░░░  58% left  2h 14m", "  7d █░░░░░░  12% left  3.2d"],
       detailed: [
         "Claude",
         `5h${" ".repeat(22)}2h 14m`,
         `${"█".repeat(12)}${"░".repeat(8)}  58% left`,
-        `7d${" ".repeat(23)}3d 4h`,
+        `7d${" ".repeat(24)}3.2d`,
         `${"█".repeat(2)}${"░".repeat(18)}  12% left`,
       ],
     });
     expect(places({ rowNames: "full" })).toEqual({
-      sidebar: ["Claude", " 5h       █████░░░  58% 2h 14m", " Weekly   █░░░░░░░  12%  3d 4h"],
-      collapsed: ["Claude    Wee… █░░░░░░░  12%   3d 4h"],
-      statusLine: "Claude Weekly █░░░░░░░░░ 12% left · 3d 4h",
-      grouped: ["Claude", "  5h     ██░  58% left  2h 14m", "  Weekly ░░░  12% left  3d 4h"],
+      sidebar: ["Claude", " 5h       █████░░░  58% 2h 14m", " Weekly   █░░░░░░░  12%   3.2d"],
+      collapsed: ["Claude    Wee… █░░░░░░░  12%    3.2d"],
+      statusLine: "Claude Weekly █░░░░░░░░░ 12% left · 3.2d",
+      grouped: ["Claude", "  5h     ██░  58% left  2h 14m", "  Weekly ░░░  12% left  3.2d"],
       detailed: [
         "Claude",
         `5h${" ".repeat(22)}2h 14m`,
         `${"█".repeat(12)}${"░".repeat(8)}  58% left`,
-        `Weekly${" ".repeat(19)}3d 4h`,
+        `Weekly${" ".repeat(20)}3.2d`,
         `${"█".repeat(2)}${"░".repeat(18)}  12% left`,
       ],
     });
@@ -830,8 +844,8 @@ describe("view text", () => {
     for (const rowNames of ["short", "full"] as const) {
       const shown = places({ rowNames }, renamed);
       expect([shown.collapsed, shown.statusLine]).toEqual([
-        ["Claude    All  █░░░░░░░  12%   3d 4h"],
-        "Claude All █░░░░░░░░░ 12% left · 3d 4h",
+        ["Claude    All  █░░░░░░░  12%    3.2d"],
+        "Claude All █░░░░░░░░░ 12% left · 3.2d",
       ]);
     }
   });
@@ -846,7 +860,7 @@ describe("view text", () => {
       }),
     ).toEqual([
       "Claude 5h           58% left      2h 14m",
-      "Claude Weekly       12% left      3d 4h",
+      "Claude Weekly       12% left      3.2d",
       "OpenCode Zen Balan… $1,240.50 left",
       "OpenRouter          Sign in again",
       "Session  12.3K in · 2.10K out",

@@ -410,7 +410,7 @@ describe("convertV5, which v5 files", () => {
           message: `${broken} does not parse as a JSON object, so it was not converted`,
         },
       ],
-      diff: [{ key: "words.reset", before: "exact", after: "short" }],
+      diff: [{ key: "words.reset", before: "smart", after: "short" }],
     });
     expect((await loadSettings()).settings.words).toMatchObject({
       percent: "used",

@@ -100,6 +100,19 @@ describe("quota window: Limits", () => {
     expect(lines[2]).toMatch(/^ {3}Fable +[█░]+ {2}90% left$/u);
   });
 
+  it("shows exact times and full row names whatever the words", () => {
+    const weekly = row("anthropic.weekly", {
+      label: "Weekly",
+      window: "week",
+      percentRemaining: 60,
+      resetsAt: at(3 * 1440 + 23 * 60 + 58),
+    });
+    // The words default to smart times ("4.0d") and short row names ("7d").
+    expect(limits([provider("anthropic", "Claude", [weekly])])[1]).toMatch(
+      /^ {3}Weekly +[█░┃]+ {2}60% left {3}resets in 3d 23h 58m/u,
+    );
+  });
+
   it("lines every provider up in one grid that fills the window, under name-only provider lines", () => {
     const lines = limits([CLAUDE, ZEN]);
     const [claude, fiveHour, fable, gap, zen, balance] = lines;

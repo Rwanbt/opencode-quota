@@ -1,6 +1,7 @@
 /**
  * The lines of the quota window's Limits tab: every provider and row of the snapshot, in the
- * sidebar's order and under your row names. Pure.
+ * sidebar's order, under your names for the rows, else their full names. Pure. Its times are
+ * always exact ("2h 30m"), whatever the reset words.
  *
  * All rows share one grid: label │ bar │ percent │ reset │ pace, each column as wide as its
  * widest entry, the percent right-aligned. The bar has your bar shape (the thin ━─ line when bars
@@ -108,18 +109,16 @@ function rowTexts(item: VisibleRow, words: Words, nowMs: number): RowTexts {
     return { item, percentWords: rowValueText(item.row), reset: "", shortReset: "" };
   }
   const pace = paceOf(item.row, nowMs);
+  const exact: Words = { ...words, reset: "exact" };
   return {
     item,
     percent,
     percentWords: percentText(words, percent, true),
-    reset: resetText(item.row, nowMs, words),
-    shortReset: resetText(item.row, nowMs, {
-      ...words,
-      reset: words.reset === "decimal" ? "decimal" : "short",
-    }),
+    reset: resetText(item.row, nowMs, exact),
+    shortReset: resetText(item.row, nowMs, { ...words, reset: "short" }),
     ...(pace
       ? {
-          pace: { text: paceText(pace, words), role: pace.kind === "fast" ? "warning" : "value" },
+          pace: { text: paceText(pace, exact), role: pace.kind === "fast" ? "warning" : "value" },
           evenLeft: pace.evenLeft,
         }
       : {}),
