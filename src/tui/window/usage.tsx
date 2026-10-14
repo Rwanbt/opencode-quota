@@ -209,7 +209,7 @@ export function Choice(props: {
 }
 
 /**
- * An option inside the Usage tab (cost or tokens, a range, model or day): the current one bold on
+ * An option inside the Usage tab (cost or tokens, model or day): the current one bold on
  * a raised background, so a row of options reads apart from the tab bar's underlined tabs. On
  * the highlighted line (`lit`) the other options take its text color.
  */

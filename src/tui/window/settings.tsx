@@ -177,8 +177,27 @@ const PAGES_ID = "pages";
 /** The body starts right after the page list's line: its lines carry their own indent. */
 const PAGE_LIST_GAP = 0;
 const DOUBLE_CLICK_MS = 400;
-/** Where a line's value starts: past the 3 spaces, the 26-column title, its space and the "‹ ". */
-const VALUE_COLUMN = 32;
+/** A line's columns besides its title and value: the 3 spaces, the title's space, "‹ " and " ›". */
+const LINE_FRAME = 8;
+const TITLE_WIDTH = 26;
+const TITLE_MIN = 12;
+const VALUE_WIDTH = 24;
+const VALUE_MIN = 6;
+
+/**
+ * A line's title and value widths in `width` columns: 26 and the value's own width when both
+ * fit; else the title gives way first (down to 12 columns), then the value (down to 6).
+ */
+export function lineColumns(
+  width: number | undefined,
+  valueWidth = VALUE_WIDTH,
+): { title: number; value: number } {
+  if (width === undefined) return { title: TITLE_WIDTH, value: valueWidth };
+  const room = width - LINE_FRAME;
+  const title = Math.max(TITLE_MIN, Math.min(TITLE_WIDTH, room - valueWidth));
+  const value = Math.max(Math.min(VALUE_MIN, valueWidth), Math.min(valueWidth, room - title));
+  return { title, value };
+}
 
 /** Selection id of a tree line; a row id could equal a setting's path. */
 function lineKey(id: string): string {
@@ -246,24 +265,31 @@ export function OptionRow(props: {
   /** The first line of a list has no gap above its group heading. */
   first?: boolean;
   valueWidth?: number;
-  /** The line's room; a note that doesn't fit after the value goes on a line under it. */
+  /**
+   * The line's room: the title, then the value, narrow to fit it (`lineColumns`); a note that
+   * doesn't fit after the value goes on a line under it.
+   */
   width?: number;
-  /** The input that replaces the value while the line takes typing. */
-  input?: () => JSX.Element;
+  /** The input that replaces the value while the line takes typing, `width` columns wide. */
+  input?: (width: number) => JSX.Element;
 }): JSX.Element {
   const line = props.line;
   const fg = () => (props.active ? props.theme.text.action.primary.focused : props.theme.text.base);
   const arrow = () => (props.active ? fg() : props.theme.text.action.primary.selected);
   const note = () => line.note?.() ?? "";
+  const columns = () => lineColumns(props.width, props.valueWidth);
+  /** Where the value starts: past the 3 spaces, the title, its space and the "‹ ". */
+  const valueColumn = () => 3 + columns().title + 1 + 2;
   const noteInline = () => {
     if (props.width === undefined) return true;
     const swatches = 3 * (line.swatches?.() ?? []).length;
-    const end = VALUE_COLUMN + (props.valueWidth ?? 24) + 2 + swatches;
+    const end = valueColumn() + columns().value + 2 + swatches;
     return end + 3 + columnsOf(note()) <= props.width;
   };
   const indent = "  ".repeat(line.depth ?? 0);
   // A tick without a word has the value's room too, so a long name shows whole.
-  const titleWidth = () => (line.tick && !line.value() ? 26 + 2 + (props.valueWidth ?? 24) : 26);
+  const titleWidth = () =>
+    line.tick && !line.value() ? columns().title + 2 + columns().value : columns().title;
   const noteColor = () =>
     props.active
       ? fg()
@@ -296,11 +322,11 @@ export function OptionRow(props: {
           when={props.input}
           fallback={
             <Cell fg={line.tick ? noteColor() : fg()} onUp={props.click(props.use)}>
-              {fit(line.value(), props.valueWidth ?? 24)}
+              {fit(line.value(), columns().value)}
             </Cell>
           }
         >
-          {props.input?.()}
+          {props.input?.(columns().value)}
         </Show>
         <Cell fg={arrow()} onUp={props.click(props.use)}>
           {line.run ? " ▸" : line.cycle && !line.tick ? " ›" : "  "}
@@ -321,14 +347,14 @@ export function OptionRow(props: {
         </Show>
       </box>
       <Show when={note() && !noteInline()}>
-        <box paddingLeft={VALUE_COLUMN} width={props.width}>
+        <box paddingLeft={valueColumn()} width={props.width}>
           <Cell fg={noteColor()} shrink wrap>
             {note()}
           </Cell>
         </box>
       </Show>
       <Show when={line.detail}>
-        <box paddingLeft={VALUE_COLUMN} width={props.width}>
+        <box paddingLeft={valueColumn()} width={props.width}>
           <Cell fg={props.theme.text.muted} shrink wrap>
             {line.detail}
           </Cell>
@@ -1123,7 +1149,9 @@ export function createSettingsEditor(
               use={() => useOption(line)}
               input={
                 typing()?.id === line.id
-                  ? () => <TypingInput width={24} placeholder={line.typed?.placeholder ?? ""} />
+                  ? (width: number) => (
+                      <TypingInput width={width} placeholder={line.typed?.placeholder ?? ""} />
+                    )
                   : undefined
               }
             />

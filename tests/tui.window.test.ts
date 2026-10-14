@@ -4,11 +4,13 @@ import type { ProviderSnapshot, QuotaRow, QuotaSnapshot } from "../src/core/type
 import { USAGE_RANGES, type UsageReport } from "../src/core/usage.js";
 import { defaultDisplaySettings } from "../src/tui/display.js";
 import { limitsLines } from "../src/tui/window/limits.js";
+import { lineColumns, OptionRow } from "../src/tui/window/settings.tsx";
 import { hintLines, keyHintLines, tabStrip } from "../src/tui/window/shell.tsx";
 import { createUsageTab } from "../src/tui/window/usage.tsx";
 import { noticeItems, statusLines } from "../src/tui/window/views.tsx";
+import { columnsOf } from "../src/view/columns.js";
 import { lineText } from "../src/view/text.js";
-import { THEME } from "./helpers/jsx-tree.js";
+import { findAll, THEME, textLines } from "./helpers/jsx-tree.js";
 
 const NOW = Date.parse("2026-10-10T12:00:00.000Z");
 const MINUTE = 60_000;
@@ -274,6 +276,72 @@ describe("quota window: tab bar", () => {
       last,
       settingsLabel: false,
     });
+  });
+});
+
+describe("quota window: Settings lines", () => {
+  it("narrows the title first, then the value, so a line fits its room", () => {
+    expect(lineColumns(undefined)).toEqual({ title: 26, value: 24 });
+    expect(lineColumns(70)).toEqual({ title: 26, value: 24 });
+    // 80 columns with Layout's page list: the title gives way.
+    expect(lineColumns(53)).toEqual({ title: 21, value: 24 });
+    // 60 columns: the title stops at 12, then the value narrows.
+    expect(lineColumns(33)).toEqual({ title: 12, value: 13 });
+    expect(lineColumns(10)).toEqual({ title: 12, value: 6 });
+    // System's short values keep their own width.
+    expect(lineColumns(33, 3)).toEqual({ title: 22, value: 3 });
+  });
+
+  it("keeps the value and its › inside a narrow line", () => {
+    vi.stubGlobal("React", {
+      createElement: (
+        type: unknown,
+        props: Record<string, unknown> | null,
+        ...children: unknown[]
+      ) => {
+        const all = { ...props, children: children.length > 1 ? children : children[0] };
+        return typeof type === "function" ? type(all) : { type, props: all };
+      },
+    });
+    // Show hands back a function; call it to get what it draws.
+    const drawn = (node: unknown): unknown =>
+      typeof node === "function"
+        ? drawn(node())
+        : Array.isArray(node)
+          ? node.map(drawn)
+          : node && typeof node === "object" && "props" in node
+            ? {
+                ...(node as { props: object }),
+                props: {
+                  ...(node as { props: { children?: unknown } }).props,
+                  children: drawn((node as { props: { children?: unknown } }).props.children),
+                },
+              }
+            : node;
+    const tree = createRoot(() =>
+      drawn(
+        OptionRow({
+          line: {
+            id: "spacing.providers",
+            title: "Between providers",
+            value: () => "1 empty line",
+            cycle: () => {},
+          },
+          theme: THEME as never,
+          active: false,
+          click: (run) => run,
+          press: () => {},
+          use: () => {},
+          width: 33,
+        }),
+      ),
+    );
+    const [row] = findAll(tree, (node) => node.props?.id === "quota-settings.spacing.providers");
+    const text = textLines(row).join("");
+    expect(columnsOf(text)).toBeLessThanOrEqual(33);
+    expect(text).toContain("1 empty line");
+    expect(text.trimEnd().endsWith("›")).toBe(true);
+    vi.unstubAllGlobals();
   });
 });
 
