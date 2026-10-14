@@ -265,13 +265,35 @@ type KeyLayer = {
   commands: Array<{ bind?: string; run: () => unknown }>;
 };
 
-/** A line on a node that a click uses: its text is `text`. */
+/** A line on a node that a click uses: its text is `text` (a list's chosen item has › before it). */
 function clickable(tree: unknown, text: string): Node {
   return findAll(
     tree,
     (node) =>
-      typeof node.props?.onMouseUp === "function" && textLines(node).join("").trim() === text,
+      typeof node.props?.onMouseUp === "function" &&
+      textLines(node).join("").trim().replace(/^› /u, "") === text,
   )[0]!;
+}
+
+/** The ids of the window's lit Settings lines, after their "quota-settings." prefix. */
+function litSettingLines(tree: unknown): string[] {
+  return findAll(
+    tree,
+    (node) =>
+      String(node.props?.id ?? "").startsWith("quota-settings.") &&
+      node.props.backgroundColor === "action-bg",
+  ).map((node) => String(node.props.id).slice("quota-settings.".length));
+}
+
+/** Layout's page list: the box around its pages. */
+function pageList(tree: unknown): Node | undefined {
+  return findAll(
+    tree,
+    (node) =>
+      node.type === "box" &&
+      findAll(node.props.children, (child) => child.props?.id === "quota-layout-page-layout")
+        .length > 0,
+  ).at(-1);
 }
 
 /** The lines of the window's Settings line with this setting path (or id). */
@@ -937,23 +959,45 @@ describe("v6 surfaces on the quota snapshot", () => {
       await tui.dispose();
     });
 
-    it("walks Layout's pages with ←/→ on its first line, and goes back to the last page", async () => {
+    it("lists Layout's pages left of the body: ↑↓ change the page, → or enter go to its lines, ↑ on the first line goes back", async () => {
       const { tui, windowTree } = await openSettings("Layout");
-      // /quota_settings opens Layout on All places, its page line lit.
+      // /quota_settings opens Layout on All places; its page list has the keyboard, so no line
+      // is lit.
       expect(activeLabels(windowTree())).toEqual(expect.arrayContaining(["Layout", "All places"]));
-      expect(findAll(windowTree(), (node) => node.props?.id === "quota-settings.pages")).toEqual([
-        expect.objectContaining({
-          props: expect.objectContaining({ backgroundColor: "action-bg" }),
-        }),
+      await vi.waitFor(() => expect(settingLine(windowTree(), "words.detail")).not.toEqual([]));
+      expect(litSettingLines(windowTree())).toEqual([]);
+
+      // The pages are a column with a line at its right, left of the scrolling body, like
+      // Usage's ranges.
+      const tree = windowTree();
+      const list = pageList(tree);
+      expect(textLines(list).map((line) => line.trim())).toEqual([
+        "› All places",
+        "Sidebar",
+        "Collapsed",
+        "Status line",
+        "Toast",
       ]);
+      expect(list?.props).toMatchObject({
+        flexDirection: "column",
+        border: ["right"],
+        overflow: "hidden",
+      });
+      const row = findAll(
+        tree,
+        (node) => Array.isArray(node.props?.children) && node.props.children.includes(list),
+      )[0];
+      expect(row?.props.flexDirection).toBe("row");
+      const rightOfList = row?.props.children.slice(row.props.children.indexOf(list) + 1);
+      expect(findAll(rightOfList, (node) => node.type === "scrollbox")).toHaveLength(1);
+      // On a short window the switch and warning above the body end at the bottom line too.
+      expect(rightOfList?.[0]?.props.overflow).toBe("hidden");
 
       // All places: the layout lines, Wording above the words lines it sets, then What shows.
-      await vi.waitFor(() => expect(settingLine(windowTree(), "words.detail")).not.toEqual([]));
       const lineIds = findAll(windowTree(), (node) =>
         String(node.props?.id ?? "").startsWith("quota-settings."),
       ).map((node) => String(node.props.id).slice("quota-settings.".length));
       expect(lineIds).toEqual([
-        "pages",
         "preset.layout",
         "layout.bar",
         "layout.barWidth",
@@ -977,13 +1021,46 @@ describe("v6 surfaces on the quota snapshot", () => {
         "sets Bar width and the 3 Spacing lines",
       );
 
-      tui.press(11, "right");
+      // ↓ shows the next page at once, ↑ the one before; above the first page ↑ stays there.
+      tui.press(11, "down");
       expect(activeLabels(windowTree())).toContain("Sidebar");
-      tui.press(11, "left");
+      tui.press(11, "down");
+      expect(activeLabels(windowTree())).toContain("Collapsed");
+      tui.press(11, "up");
+      expect(activeLabels(windowTree())).toContain("Sidebar");
+
+      // → goes to the page's first line, its switch; ↑ there goes back to the list.
+      tui.press(11, "right");
+      expect(litSettingLines(windowTree())).toEqual(["surface"]);
+      tui.press(11, "up");
+      expect(litSettingLines(windowTree())).toEqual([]);
+      tui.press(11, "up");
       expect(activeLabels(windowTree())).toContain("All places");
-      // From the first page, ← goes round to the last.
-      tui.press(11, "left");
+      tui.press(11, "up");
+      expect(activeLabels(windowTree())).toContain("All places");
+
+      // Enter goes to All places' first line, its first option; ←/→ there change its value.
+      tui.press(11, "return");
+      expect(litSettingLines(windowTree())).toEqual(["preset.layout"]);
+      const preset = words(settingLine(windowTree(), "preset.layout"));
+      tui.press(11, "right");
+      expect(words(settingLine(windowTree(), "preset.layout"))).not.toEqual(preset);
+      expect(activeLabels(windowTree())).toContain("All places");
+      tui.press(11, "down");
+      expect(litSettingLines(windowTree())).toEqual(["layout.bar"]);
+      tui.press(11, "up");
+      tui.press(11, "up");
+      expect(litSettingLines(windowTree())).toEqual([]);
+
+      // A click on a page shows it and gives the list the keyboard, even on the page shown.
+      tui.press(11, "return");
+      clickable(windowTree(), "All places").props.onMouseUp();
+      expect(litSettingLines(windowTree())).toEqual([]);
+      clickable(windowTree(), "Toast").props.onMouseUp();
       expect(activeLabels(windowTree())).toContain("Toast");
+      tui.press(11, "up");
+      expect(activeLabels(windowTree())).toContain("Status line");
+      tui.press(11, "down");
 
       // Back on Layout from another tab: the page shown last.
       clickable(windowTree(), "Colors").props.onMouseUp();

@@ -1,5 +1,10 @@
 /** @jsxImportSource @opentui/solid */
-/** The Settings tabs edit settings.jsonc; surfaces preview saved settings with draft changes. */
+/**
+ * The Settings tabs edit settings.jsonc; surfaces preview saved settings with draft changes.
+ * Layout's pages are a list left of the body (`Pages`), like Usage's ranges. When a page shows,
+ * the list has the keyboard: ↑↓ change the page, → or enter go to the page's first line, and ↑
+ * on that line goes back to the list.
+ */
 import {
   type BoxRenderable,
   type MouseEvent,
@@ -44,8 +49,8 @@ import type { SurfaceHost } from "../sidebar.js";
 import { namedColor, roleColor } from "../theme.js";
 import { plainMessage, quotaToastLines, TOAST_TITLE, type ToastHost } from "../toasts.js";
 import { draggedTo, movedBy, surfaceTree, type TreeProvider } from "./drag.js";
+import { Rail, railRoom } from "./rail.js";
 import type { WindowHost, WindowTheme } from "./shell.js";
-import { Option } from "./usage.js";
 
 export const SETTINGS_TABS: ReadonlyArray<{
   tab: SettingsTab;
@@ -110,7 +115,7 @@ export function isSettingsTab(tab: string | undefined): tab is SettingsTab {
   return SETTINGS_TABS.some((item) => item.tab === tab);
 }
 
-/** The pages of `tab`'s Settings tab when it has more than one, for the line under the tab bar. */
+/** The pages of `tab`'s Settings tab when it has more than one, for the list left of the body. */
 function pagesOf(tab: SettingsTab): readonly SettingsTab[] | undefined {
   const pages = SETTINGS_GROUPS.find((group) => group.pages.includes(tab))?.pages ?? [];
   return pages.length > 1 ? pages : undefined;
@@ -118,6 +123,12 @@ function pagesOf(tab: SettingsTab): readonly SettingsTab[] | undefined {
 
 function pageTitle(tab: SettingsTab): string {
   return SETTINGS_TABS.find((item) => item.tab === tab)?.title ?? tab;
+}
+
+/** What the window keeps left of a Settings tab's body: Layout's page list, else nothing. */
+export function pagesRoom(tab: string | undefined): number {
+  const pages = isSettingsTab(tab) ? pagesOf(tab) : undefined;
+  return pages ? railRoom(pages.map(pageTitle), PAGE_LIST_GAP) : 0;
 }
 
 /** "Reset page" on Layout's pages, which reset only their own lines; "Reset tab" elsewhere. */
@@ -161,8 +172,10 @@ const KEYS = "Quota window";
 const TRANSPARENT = RGBA.fromInts(0, 0, 0, 0);
 /** The id of a surface tab's switch line. */
 const SWITCH_ID = "surface";
-/** The id of Layout's line of pages. */
+/** The selection id of Layout's page list: the list has the keyboard. */
 const PAGES_ID = "pages";
+/** The body starts right after the page list's line: its lines carry their own indent. */
+const PAGE_LIST_GAP = 0;
 const DOUBLE_CLICK_MS = 400;
 /** Where a line's value starts: past the 3 spaces, the 26-column title, its space and the "‹ ". */
 const VALUE_COLUMN = 32;
@@ -175,6 +188,11 @@ function lineKey(id: string): string {
 /** Renderable id of a line, so the list can scroll it into view. */
 function boxId(id: string): string {
   return `quota-settings.${id}`;
+}
+
+/** Renderable id of a page in Layout's page list. */
+function pageId(tab: SettingsTab): string {
+  return `quota-layout-page-${tab}`;
 }
 
 function windowChoices(provider: ProviderSnapshot): WindowChoice[] {
@@ -610,16 +628,36 @@ export function createSettingsEditor(
   }
 
   /**
-   * Above a Settings tab's body: Layout's line of pages, the surface switch, and a warning when
-   * the sidebar is hidden. `showPage` shows another page.
+   * Layout's pages, left of the body (`rail.tsx`). A click shows a page and gives the list the
+   * keyboard.
    */
-  function Header(props: {
-    tab: SettingsTab;
-    refocus: () => void;
-    showPage: (tab: SettingsTab) => void;
-  }): JSX.Element {
+  function Pages(props: { tab: SettingsTab; showPage: (tab: SettingsTab) => void }): JSX.Element {
+    return (
+      <Show when={pagesOf(props.tab)}>
+        {(pages: () => readonly SettingsTab[]) => (
+          <Rail
+            items={pages().map((page) => ({ key: page, label: pageTitle(page), id: pageId(page) }))}
+            chosen={props.tab}
+            theme={theme()}
+            gap={PAGE_LIST_GAP}
+            pick={(page) =>
+              click(() => {
+                props.showPage(page);
+                setSelected(PAGES_ID);
+              })()
+            }
+          />
+        )}
+      </Show>
+    );
+  }
+
+  /**
+   * Above a Settings tab's scrolling body: the surface switch, and a warning when the sidebar is
+   * hidden.
+   */
+  function Header(props: { tab: SettingsTab; refocus: () => void }): JSX.Element {
     const info = () => SETTINGS_TABS.find((item) => item.tab === props.tab) ?? SETTINGS_TABS[0];
-    const pagesLit = () => selected() === PAGES_ID;
     const surface = () => (isSurfaceTab(props.tab) ? props.tab : undefined);
     const surfaceOn = () => {
       const current = surface();
@@ -628,73 +666,44 @@ export function createSettingsEditor(
     const sidebarHidden = () => info().watchesSidebar && sidebars() === 0;
     const active = () => selected() === SWITCH_ID;
     return (
-      <>
-        <Show when={pagesOf(props.tab)}>
-          {(pages: () => readonly SettingsTab[]) => (
-            <box
-              id={boxId(PAGES_ID)}
-              marginTop={1}
-              flexDirection="row"
-              flexShrink={0}
-              backgroundColor={pagesLit() ? theme().background.action.primary.focused : TRANSPARENT}
-              onMouseDown={() => setSelected(PAGES_ID)}
-            >
-              <Cell>{"  "}</Cell>
-              <For each={pages()}>
-                {(page: SettingsTab) => (
-                  <Option
-                    label={pageTitle(page)}
-                    active={page === props.tab}
-                    lit={pagesLit()}
-                    theme={theme()}
-                    run={click(() => props.showPage(page))}
-                  />
-                )}
-              </For>
+      <Show when={surface() || sidebarHidden()}>
+        <box flexDirection="column" flexShrink={0} marginBottom={1}>
+          <Show when={surface()}>
+            {(current: () => Surface) => (
+              <box
+                id={boxId(SWITCH_ID)}
+                flexShrink={0}
+                backgroundColor={active() ? theme().background.action.primary.focused : TRANSPARENT}
+                onMouseDown={() => setSelected(SWITCH_ID)}
+                onMouseUp={click(() => toggleSurface(current()))}
+              >
+                <Cell fg={active() ? theme().text.action.primary.focused : theme().text.base} bold>
+                  {`   ${surfaceOn() ? "[x]" : "[ ]"} ${info().switchTitle}`}
+                </Cell>
+              </box>
+            )}
+          </Show>
+          <Show when={sidebarHidden()}>
+            <box paddingLeft={3} flexDirection="row" gap={2} flexShrink={0}>
+              <text
+                fg={theme().text.feedback.warning.base}
+                wrapMode="word"
+                selectable={false}
+                flexShrink={1}
+              >
+                The sidebar is hidden, so there is nothing to watch here.
+              </text>
+              <Button
+                label="Show sidebar"
+                run={() => {
+                  api.keymap.dispatch("session.sidebar.toggle");
+                  setTimeout(props.refocus, 50);
+                }}
+              />
             </box>
-          )}
-        </Show>
-        <Show when={surface()}>
-          {(current: () => Surface) => (
-            <box
-              marginTop={1}
-              flexShrink={0}
-              backgroundColor={active() ? theme().background.action.primary.focused : TRANSPARENT}
-              onMouseDown={() => setSelected(SWITCH_ID)}
-              onMouseUp={click(() => toggleSurface(current()))}
-            >
-              <Cell fg={active() ? theme().text.action.primary.focused : theme().text.base} bold>
-                {`   ${surfaceOn() ? "[x]" : "[ ]"} ${info().switchTitle}`}
-              </Cell>
-            </box>
-          )}
-        </Show>
-        <Show when={sidebarHidden()}>
-          <box
-            paddingLeft={3}
-            marginTop={surface() ? 0 : 1}
-            flexDirection="row"
-            gap={2}
-            flexShrink={0}
-          >
-            <text
-              fg={theme().text.feedback.warning.base}
-              wrapMode="word"
-              selectable={false}
-              flexShrink={1}
-            >
-              The sidebar is hidden, so there is nothing to watch here.
-            </text>
-            <Button
-              label="Show sidebar"
-              run={() => {
-                api.keymap.dispatch("session.sidebar.toggle");
-                setTimeout(props.refocus, 50);
-              }}
-            />
-          </box>
-        </Show>
-      </>
+          </Show>
+        </box>
+      </Show>
     );
   }
 
@@ -743,8 +752,15 @@ export function createSettingsEditor(
       return line;
     }
 
-    /** ↑↓ select the next line; past the first or last one they scroll. */
+    /**
+     * ↑↓ select the next line; past the first or last one they scroll. In Layout's page list
+     * they show the page above or below.
+     */
     function select(delta: number): void {
+      if (selected() === PAGES_ID) {
+        stepPage(delta);
+        return;
+      }
       const ids = [
         ...(pagesOf(props.tab) ? [PAGES_ID] : []),
         ...(surface() ? [SWITCH_ID] : []),
@@ -841,18 +857,28 @@ export function createSettingsEditor(
       stopTyping();
     }
 
-    /** ←/→ on Layout's line of pages: the page before or after this one. */
+    /** ↑↓ in Layout's page list: the page above or below this one, shown at once. */
     function stepPage(delta: number): void {
-      const pages = pagesOf(props.tab);
-      if (pages) props.showPage(stepIn(pages, props.tab, delta));
+      const pages = pagesOf(props.tab) ?? [];
+      const next = pages[pages.indexOf(props.tab) + delta];
+      if (next) props.showPage(next);
     }
 
-    /** Space or enter: next page, flip a switch, run a button, next value, or show/hide a line. */
+    /** →, enter or space in Layout's page list: the page's first line, its switch or first option. */
+    function toFirstLine(): void {
+      const first = surface() ? SWITCH_ID : options()[0]?.id;
+      if (first) setSelected(first);
+    }
+
+    /**
+     * Space or enter: to the page's lines from the page list, flip a switch, run a button, next
+     * value, or show/hide a line.
+     */
     function activate(): void {
       const current = surface();
       const option = selectedOption();
       const line = selectedLine();
-      if (selected() === PAGES_ID) stepPage(1);
+      if (selected() === PAGES_ID) toFirstLine();
       else if (selected() === SWITCH_ID && current) toggleSurface(current);
       else if (option) useOption(option);
       else if (line) toggleHidden(line.id);
@@ -865,11 +891,13 @@ export function createSettingsEditor(
       else startTyping();
     }
 
+    /** ←/→ change the selected line's value; → in the page list goes to the page's lines. */
     function sideways(delta: number): void {
       const option = selectedOption();
       const line = selectedLine();
-      if (selected() === PAGES_ID) stepPage(delta);
-      else if (option) option.cycle?.(delta);
+      if (selected() === PAGES_ID) {
+        if (delta > 0) toFirstLine();
+      } else if (option) option.cycle?.(delta);
       else if (line && !line.row) cycleWindow(line.providerId, delta);
     }
 
@@ -1290,7 +1318,9 @@ export function createSettingsEditor(
       if (!isSettingsTab(windowTab)) return undefined;
       const reset = `ctrl+r ${resetLabel(windowTab).toLowerCase()}`;
       const end = `↑↓ select · tab next tab · ctrl+s save · ${reset} · esc close`;
-      if (selected() === PAGES_ID) return `←/→ or click another page · ${end}`;
+      if (selected() === PAGES_ID) {
+        return `↑↓ page · → or enter the page's lines · tab next tab · ctrl+s save · ${reset} · esc close`;
+      }
       if (windowTab === "layout") return `‹ › or ←/→ change · ${end}`;
       if (windowTab === "providers") {
         return `‹ › or ←/→ change · space ticks a provider or flips a switch · double-click a number (or e) to type it · ${end}`;
@@ -1306,6 +1336,7 @@ export function createSettingsEditor(
       const naming = rowsTab ? "double-click a row (or e) to rename it" : "‹ › pick a window";
       return `${moving} · [x] or space show/hide · ${naming} · ${end}`;
     },
+    Pages,
     Header,
     Body,
     Buttons,

@@ -204,6 +204,7 @@ function fakeHost() {
   };
   return {
     quotaWindow,
+    settings,
     server,
     noticeCalls,
     statusCalls,
@@ -445,5 +446,13 @@ describe("quota window shell", () => {
     press(host.layers, "escape");
     expect(host.keyboard.current).toBe(messageBox);
     view.dispose();
+  });
+
+  it("names the page list's keys while a Layout page shows", () => {
+    const host = fakeHost();
+    host.quotaWindow.open("settings");
+    expect(host.settings.hint("layout", true)).toBe(
+      "↑↓ page · → or enter the page's lines · tab next tab · ctrl+s save · ctrl+r reset page · esc close",
+    );
   });
 });

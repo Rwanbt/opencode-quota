@@ -3,13 +3,14 @@
  * The quota window. `/quota`, `/quota_usage`, `/quota_status` and `/quota_settings` open it
  * above the message box of a session, where it covers the chat
  * with the same size on every tab: Usage, Limits, System and the Settings tabs Layout, Colors
- * and Providers (`settings.tsx`); Layout has a line of pages under the tab bar, All places and
- * one per place. The tab bar is one line: the window's title and the plugin's version, the
- * tabs, and "esc" at its right end to close the window. When its tabs don't fit, it drops the
- * "Settings" label, then shows the tabs around the current one between ‹ and ›. Usage keeps its
- * range list left of the scrolling tab body. The bottom line lists the tab's keys (Usage's as
- * key and label pairs); the Settings tabs have Save and Discard above it. While the window is focused (it
- * is after opening; click it to give it the keyboard again) its keys work: ↑↓ select or scroll,
+ * and Providers (`settings.tsx`); Layout has pages, All places and one per place. The tab bar is
+ * one line: the window's title and the plugin's version, the tabs, and "esc" at its right end to
+ * close the window. When its tabs don't fit, it drops the "Settings" label, then shows the tabs
+ * around the current one between ‹ and ›. Usage keeps its range list and Layout its page list
+ * left of the scrolling tab body (`rail.tsx`); a Settings tab's switch and warning sit above
+ * that body. The bottom line lists the tab's keys (Usage's as key and label pairs); the Settings
+ * tabs have Save and Discard above it. While the window is focused (it is after opening; click
+ * it to give it the keyboard again) its keys work: ↑↓ select or scroll,
  * space/enter use a line, ←/→ change it, tab switches tabs, esc closes. Closing gives the
  * keyboard back to whatever had it before. System shows the maintainer notices, the switches
  * for other tools and the status report, each under its own title.
@@ -31,6 +32,7 @@ import {
   isSettingsTab,
   type OptionLine,
   OptionRow,
+  pagesRoom,
   SETTINGS_GROUPS,
   type SettingsEditor,
 } from "./settings.js";
@@ -671,11 +673,6 @@ export function createQuotaWindow(
             esc
           </text>
         </box>
-        <Show when={settingsTab()}>
-          {(shown: () => SettingsTab) => (
-            <settings.Header tab={shown()} refocus={() => windowBox?.focus()} showPage={showTab} />
-          )}
-        </Show>
         <box
           flexDirection="row"
           // Basis 0: the tab body gets the room left over and scrolls; it never squeezes the rest.
@@ -687,56 +684,69 @@ export function createQuotaWindow(
           <Show when={tab() === "usage"}>
             <usage.Rail />
           </Show>
-          <scrollbox
-            ref={(element: ScrollBoxRenderable) => {
-              scroll = element;
-              ownScroll = element;
-            }}
-            flexGrow={1}
-          >
-            <Show when={tab() === "system"}>
-              <NoticesView theme={theme()} report={notices()} />
-            </Show>
-            {tabOptions().map((option) => (
-              <OptionRow
-                line={option}
-                theme={theme()}
-                active={selected() === option.id}
-                click={settings.click}
-                press={() => setSelected(option.id)}
-                use={() => useLine(option, true)}
-                valueWidth={option.cycle ? 3 : 9}
-                width={bodyWidth()}
-              />
-            ))}
-            <Show when={tab() === "limits"}>
-              <LimitsView
-                host={host}
-                sessionID={props.sessionID}
-                nowMs={nowMs()}
-                width={bodyWidth()}
-              />
-            </Show>
-            <Show when={tab() === "usage"}>
-              <usage.View width={bodyWidth() - USAGE_RAIL_WIDTH} keyTarget={() => windowBox} />
-            </Show>
-            <Show when={tab() === "system"}>
-              <StatusView theme={theme()} report={status()} width={bodyWidth()} />
-            </Show>
+          <Show when={settingsTab()}>
+            {(shown: () => SettingsTab) => <settings.Pages tab={shown()} showPage={showTab} />}
+          </Show>
+          {/* On a short window a Settings tab's switch and warning end at the bottom line too. */}
+          <box flexDirection="column" flexGrow={1} overflow="hidden">
             <Show when={settingsTab()}>
               {(shown: () => SettingsTab) => (
-                <settings.Body
-                  tab={shown()}
-                  showPage={showTab}
-                  host={host}
-                  sessionID={props.sessionID}
-                  box={() => windowBox}
-                  scroll={() => scroll}
-                  width={bodyWidth()}
-                />
+                <settings.Header tab={shown()} refocus={() => windowBox?.focus()} />
               )}
             </Show>
-          </scrollbox>
+            <scrollbox
+              ref={(element: ScrollBoxRenderable) => {
+                scroll = element;
+                ownScroll = element;
+              }}
+              flexGrow={1}
+              flexBasis={0}
+              minHeight={0}
+            >
+              <Show when={tab() === "system"}>
+                <NoticesView theme={theme()} report={notices()} />
+              </Show>
+              {tabOptions().map((option) => (
+                <OptionRow
+                  line={option}
+                  theme={theme()}
+                  active={selected() === option.id}
+                  click={settings.click}
+                  press={() => setSelected(option.id)}
+                  use={() => useLine(option, true)}
+                  valueWidth={option.cycle ? 3 : 9}
+                  width={bodyWidth()}
+                />
+              ))}
+              <Show when={tab() === "limits"}>
+                <LimitsView
+                  host={host}
+                  sessionID={props.sessionID}
+                  nowMs={nowMs()}
+                  width={bodyWidth()}
+                />
+              </Show>
+              <Show when={tab() === "usage"}>
+                <usage.View width={bodyWidth() - USAGE_RAIL_WIDTH} keyTarget={() => windowBox} />
+              </Show>
+              <Show when={tab() === "system"}>
+                <StatusView theme={theme()} report={status()} width={bodyWidth()} />
+              </Show>
+              <Show when={settingsTab()}>
+                {(shown: () => SettingsTab) => (
+                  <settings.Body
+                    tab={shown()}
+                    showPage={showTab}
+                    host={host}
+                    sessionID={props.sessionID}
+                    box={() => windowBox}
+                    scroll={() => scroll}
+                    width={bodyWidth() - pagesRoom(shown())}
+                  />
+                )}
+              </Show>
+            </scrollbox>
+          </box>
         </box>
         <box flexDirection="column" marginTop={1} flexShrink={0}>
           <box flexDirection="row" gap={2}>

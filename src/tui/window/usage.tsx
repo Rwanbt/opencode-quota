@@ -50,6 +50,7 @@ import {
   usageView,
 } from "../../view/usage.js";
 import { errorToast, quotaCallOptions, rpcErrorMessage } from "../client.js";
+import { Rail, railRoom } from "./rail.js";
 import type { KeyHint, WindowHost, WindowKey, WindowTheme } from "./shell.js";
 
 /** OpenCode's theme also has categorical hue scales, for things told apart by color. */
@@ -68,13 +69,13 @@ const KEYS = "Usage";
 /** An option's two spaces around its label, inside its raised background. */
 const OPTION_PAD = 2;
 const TRANSPARENT = RGBA.fromInts(0, 0, 0, 0);
-/** Each range of the range list starts this far in; the chosen one has "› " there. */
-const RANGE_INDENT = 2;
-/** The range list: the longest label, its indent and 2 more columns. */
-const RANGE_LIST_WIDTH =
-  RANGE_INDENT + Math.max(...USAGE_RANGES.map((item) => item.label.length)) + 2;
+/** The content starts one column after the range list's line. */
+const RANGE_LIST_GAP = 1;
 /** What the window keeps left of the content: the range list, the line after it and a gap. */
-export const USAGE_RAIL_WIDTH = RANGE_LIST_WIDTH + 2;
+export const USAGE_RAIL_WIDTH = railRoom(
+  USAGE_RANGES.map((item) => item.label),
+  RANGE_LIST_GAP,
+);
 
 /** How each "by type" part is shaded, from the muted color (0) to the text color (1). */
 const PART_SHADES: Record<string, number> = {
@@ -91,6 +92,13 @@ type Area = "ranges" | "content";
 function rangeId(range: UsageRange): string {
   return `quota-usage-range-${range}`;
 }
+
+/** The range list's items, each with its element id. */
+const RANGE_ITEMS = USAGE_RANGES.map((item) => ({
+  key: item.range,
+  label: item.label,
+  id: rangeId(item.range),
+}));
 
 /** A model row's element id, to scroll it into view. */
 function modelRowId(index: number): string {
@@ -537,40 +545,16 @@ export function createUsageTab(
     ];
   }
 
-  /** The ranges, the chosen one marked, bold and raised across the list; a click picks one. */
-  function Rail(): JSX.Element {
-    const theme = () => api.theme as UsageTheme;
+  /** The ranges (`rail.tsx`); a click picks one, and on "Between" types its dates. */
+  function RangeList(): JSX.Element {
     return (
-      <box
-        flexDirection="column"
-        flexShrink={0}
-        width={RANGE_LIST_WIDTH + 1}
-        marginRight={1}
-        // On a short window the list ends at the window's bottom line instead of drawing over it.
-        overflow="hidden"
-        border={["right"]}
-        borderStyle="single"
-        borderColor={theme().text.muted}
-      >
-        {USAGE_RANGES.map((item) => {
-          const chosen = item.range === range();
-          const marker = chosen ? "› " : " ".repeat(RANGE_INDENT);
-          return (
-            <text
-              id={rangeId(item.range)}
-              fg={chosen ? theme().text.action.primary.selected : theme().text.muted}
-              bg={chosen ? theme().background.raised.high : TRANSPARENT}
-              attributes={chosen ? TextAttributes.BOLD : TextAttributes.NONE}
-              wrapMode="none"
-              flexShrink={0}
-              selectable={false}
-              onMouseUp={() => chooseRange(item.range, true)}
-            >
-              {`${marker}${item.label}`.padEnd(RANGE_LIST_WIDTH)}
-            </text>
-          );
-        })}
-      </box>
+      <Rail
+        items={RANGE_ITEMS}
+        chosen={range()}
+        theme={api.theme}
+        gap={RANGE_LIST_GAP}
+        pick={(next) => chooseRange(next, true)}
+      />
     );
   }
 
@@ -802,7 +786,7 @@ export function createUsageTab(
       void load();
     },
     hints,
-    Rail,
+    Rail: RangeList,
     View,
   };
 }
