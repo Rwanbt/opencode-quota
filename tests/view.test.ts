@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import type { ProviderSnapshot, QuotaRow, QuotaSnapshot, Words } from "../src/core/types.js";
+import type {
+  ProviderSnapshot,
+  QuotaRow,
+  QuotaSnapshot,
+  QuotaWindow,
+  Words,
+} from "../src/core/types.js";
 import { defaultDisplaySettings } from "../src/tui/display.js";
 import { columnsOf } from "../src/view/columns.js";
 import {
@@ -12,13 +18,20 @@ import {
   percentText,
   rowValueText,
 } from "../src/view/format.js";
-import { pickRow, type RowSettings, visibleGroups } from "../src/view/select.js";
+import {
+  pickRow,
+  type RowSettings,
+  type Surface,
+  type VisibleRow,
+  visibleGroups,
+} from "../src/view/select.js";
 import {
   bigStatusLine,
   collapsedLines,
   collapsedTitle,
   lineText,
   plainLines,
+  rowName,
   type StatusInput,
   sidebarLines,
   sidebarTitle,
@@ -347,7 +360,7 @@ describe("view text", () => {
     expect(lines.map(lineText)).toEqual([
       "Claude",
       " 5h       █████░░░  58% 2h 14m",
-      " Weekly   █░░░░░░░  12%  3d 4h",
+      " 7d       █░░░░░░░  12%  3d 4h",
       "",
       "OpenCode Zen",
       " Balance  $1,240.50 left",
@@ -539,7 +552,7 @@ describe("view text", () => {
       sidebar: [
         "Claude",
         " 5h       █████░░░  58% 2h 14m",
-        " Weekly   █░░░░░░░  12%  3d 4h",
+        " 7d       █░░░░░░░  12%  3d 4h",
         "          runs out in 12h 33m",
       ],
       off: 3,
@@ -606,7 +619,7 @@ describe("view text", () => {
       "Claude",
       `5h${" ".repeat(46)}2h 14m`,
       `${"█".repeat(26)}${"░".repeat(18)}  58% left`,
-      `Weekly${" ".repeat(43)}3d 4h`,
+      `7d${" ".repeat(47)}3d 4h`,
       `${"█".repeat(5)}${"░".repeat(39)}  12% left`,
       "runs out in 12h 33m",
       "",
@@ -618,11 +631,11 @@ describe("view text", () => {
       "",
       "Copilot (work)",
       "Timed out",
-      "Plan",
+      "30d",
       `${"█".repeat(18)}${"░".repeat(26)}  40% left`,
       "",
       "Copilot (home)",
-      "Plan",
+      "30d",
       `${"█".repeat(40)}${"░".repeat(4)}  90% left`,
       "",
       `Session${" ".repeat(27)}12.3K in · 2.10K out`,
@@ -684,7 +697,7 @@ describe("view text", () => {
         "Claude",
         `5h${" ".repeat(30)}2h 14m`,
         `${"█".repeat(16)}${"░".repeat(12)}  58% left`,
-        `Weekly${" ".repeat(27)}3d 4h`,
+        `7d${" ".repeat(31)}3d 4h`,
         `${"█".repeat(3)}${"░".repeat(25)}  12% left`,
         "runs out in 12h 33m",
       ],
@@ -715,10 +728,107 @@ describe("view text", () => {
         "Claude",
         `5h${" ".repeat(46)}2h 14m`,
         "58% left".padStart(54),
-        `Weekly${" ".repeat(43)}3d 4h`,
+        `7d${" ".repeat(47)}3d 4h`,
         "12% left".padStart(54),
       ],
     });
+  });
+
+  /** A row as a place shows it: `shown` is your name for it, its own label by default. */
+  const visible = (label: string, window?: QuotaWindow, shown = label): VisibleRow => ({
+    row: row(`claude.${label}`, { label, ...(window ? { window } : {}) }),
+    label: shown,
+  });
+
+  it("names a row by its window's short name only when that tells it apart in its group", () => {
+    const fiveHour = visible("5h", "five_hour");
+    const weekly = visible("Weekly", "week");
+    const fable = visible("Fable", "week");
+    const premium = visible("Premium requests");
+    const renamed = visible("Plan", "month", "Pro plan");
+    const shared = { rows: [fiveHour, weekly, fable, premium, renamed] };
+    const short = (item: VisibleRow, group = shared) => rowName(item, group, DEFAULT_WORDS);
+    const full = (item: VisibleRow) => rowName(item, shared, words({ rowNames: "full" }));
+    expect({
+      // The only 7d row of its group.
+      unique: short(weekly, { rows: [fiveHour, weekly] }),
+      // Weekly and Fable both reset weekly, so both keep their labels.
+      shared: [short(weekly), short(fable)],
+      noWindow: short(premium),
+      renamed: short(renamed),
+      others: [short(fiveHour), short(renamed, { rows: [renamed] })],
+      full: [fiveHour, weekly, fable, premium, renamed].map(full),
+    }).toEqual({
+      unique: "7d",
+      shared: ["Weekly", "Fable"],
+      noWindow: "Premium requests",
+      renamed: "Pro plan",
+      others: ["5h", "Pro plan"],
+      full: ["5h", "Weekly", "Fable", "Premium requests", "Pro plan"],
+    });
+  });
+
+  it("names the rows of every place by their window, or by their labels with rowNames full", () => {
+    /** Claude's rows on each place, in the words given. */
+    const places = (
+      wording: Partial<Words>,
+      change: (settings: RowSettings) => void = () => {},
+    ) => {
+      const used = words(wording);
+      const shown = settings(change);
+      const of = (surface: Surface) => visibleGroups(snapshot([CLAUDE]), shown, surface, used);
+      const base = { layout: display.layout, words: used, nowMs: NOW };
+      const toastBase = { words: used, nowMs: NOW, bar: "blocks" as const, room: 30 };
+      return {
+        sidebar: sidebarLines({ ...base, groups: of("sidebar"), width: 40 }).map(lineText),
+        collapsed: collapsedLines({ ...base, groups: of("collapsed"), width: 40, window: {} }).map(
+          lineText,
+        ),
+        statusLine: lineText(bigStatusLine({ ...base, groups: of("statusLine"), window: {} })!),
+        grouped: toastLines({ ...toastBase, groups: of("toast"), layout: "grouped" }).map(lineText),
+        detailed: toastLines({ ...toastBase, groups: of("toast"), layout: "detailed" }).map(
+          lineText,
+        ),
+      };
+    };
+    expect(places({})).toEqual({
+      sidebar: ["Claude", " 5h       █████░░░  58% 2h 14m", " 7d       █░░░░░░░  12%  3d 4h"],
+      collapsed: ["Claude    7d   █░░░░░░░  12%   3d 4h"],
+      statusLine: "Claude 7d █░░░░░░░░░ 12% left · 3d 4h",
+      grouped: ["Claude", "  5h ████░░░  58% left  2h 14m", "  7d █░░░░░░  12% left  3d 4h"],
+      detailed: [
+        "Claude",
+        `5h${" ".repeat(22)}2h 14m`,
+        `${"█".repeat(12)}${"░".repeat(8)}  58% left`,
+        `7d${" ".repeat(23)}3d 4h`,
+        `${"█".repeat(2)}${"░".repeat(18)}  12% left`,
+      ],
+    });
+    expect(places({ rowNames: "full" })).toEqual({
+      sidebar: ["Claude", " 5h       █████░░░  58% 2h 14m", " Weekly   █░░░░░░░  12%  3d 4h"],
+      collapsed: ["Claude    Wee… █░░░░░░░  12%   3d 4h"],
+      statusLine: "Claude Weekly █░░░░░░░░░ 12% left · 3d 4h",
+      grouped: ["Claude", "  5h     ██░  58% left  2h 14m", "  Weekly ░░░  12% left  3d 4h"],
+      detailed: [
+        "Claude",
+        `5h${" ".repeat(22)}2h 14m`,
+        `${"█".repeat(12)}${"░".repeat(8)}  58% left`,
+        `Weekly${" ".repeat(19)}3d 4h`,
+        `${"█".repeat(2)}${"░".repeat(18)}  12% left`,
+      ],
+    });
+    // Your name for a row shows collapsed and on the status line too, in both.
+    const renamed = (settings: RowSettings) => {
+      settings.surfaces.collapsed.names = { "anthropic.weekly": "All" };
+      settings.surfaces.statusLine.names = { "anthropic.weekly": "All" };
+    };
+    for (const rowNames of ["short", "full"] as const) {
+      const shown = places({ rowNames }, renamed);
+      expect([shown.collapsed, shown.statusLine]).toEqual([
+        ["Claude    All  █░░░░░░░  12%   3d 4h"],
+        "Claude All █░░░░░░░░░ 12% left · 3d 4h",
+      ]);
+    }
   });
 
   it("writes plain lines for the Web and terminal /quota text, errors and session tokens last", () => {

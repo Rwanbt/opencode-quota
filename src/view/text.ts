@@ -129,6 +129,22 @@ function clip(segments: Segment[], width: number): Segment[] {
   return [...cut(rest, width - columnsOf(mark)), { ...error, text: mark }];
 }
 
+/**
+ * A row's name on the sidebar, the collapsed panel, the status line and a toast: your name for
+ * it; else, with `words.rowNames` "short", its window's short name ("5h", "7d") when no other
+ * row of its group has the same one; else its label.
+ */
+export function rowName(item: VisibleRow, group: Pick<Group, "rows">, words: Words): string {
+  if (words.rowNames === "full" || item.label !== item.row.label || !item.row.window) {
+    return item.label;
+  }
+  const short = WINDOWS[item.row.window].short;
+  const shared = group.rows.some(
+    (other) => other !== item && other.row.window && WINDOWS[other.row.window].short === short,
+  );
+  return shared ? item.label : short;
+}
+
 type SidebarInput = {
   groups: Group[];
   layout: Layout;
@@ -192,9 +208,11 @@ export function sidebarLines(input: SidebarInput): Line[] {
   const barWidth =
     layout.bar === "none" ? 0 : Math.max(0, Math.min(layout.barWidth, width - fixed));
 
-  const rowLine = ({ row, label }: VisibleRow): Line => {
+  const rowLine = (item: VisibleRow, group: Group): Line => {
+    const { row } = item;
     const percent = row.percentRemaining;
-    const labelText = `${" ".repeat(layout.indent)}${fit(label, layout.labelWidth)} `;
+    const name = rowName(item, group, words);
+    const labelText = `${" ".repeat(layout.indent)}${fit(name, layout.labelWidth)} `;
     const labelSegment: Segment = { text: labelText, role: "label", percent };
     if (percent === undefined) {
       return {
@@ -220,7 +238,7 @@ export function sidebarLines(input: SidebarInput): Line[] {
     }
     lines.push(groupLine(group, nowMs, width, true));
     for (const item of group.rows) {
-      lines.push(rowLine(item));
+      lines.push(rowLine(item, group));
       const runsOut = runsOutText(input.runsOut, item.row, nowMs, words);
       if (!runsOut) continue;
       const text = `${" ".repeat(layout.indent + layout.labelWidth + 1)}${runsOut}`;
@@ -241,11 +259,6 @@ export function collapsedTitle(groups: Group[]): string {
     .size;
   const providers = `${count} ${count === 1 ? "provider" : "providers"}`;
   return `▶ Quota (${providers}${errors ? `, ${errors} ${errors === 1 ? "error" : "errors"}` : ""})`;
-}
-
-/** A row's short window name, for example "5h" or "7d"; else its label. */
-function shortWindow(item: VisibleRow): string {
-  return item.row.window ? WINDOWS[item.row.window].short : item.label;
 }
 
 type CollapsedInput = {
@@ -284,7 +297,7 @@ export function collapsedLines(input: CollapsedInput): Line[] {
       segments: clip(
         [
           name,
-          { text: `${fit(shortWindow(picked), 4)} `, role: "label", percent },
+          { text: `${fit(rowName(picked, group, words), 4)} `, role: "label", percent },
           ...barSegments(layout.bar, percent, barWidth),
           {
             text: percentText(words, percent, words.percent === "used").padStart(5),
@@ -470,7 +483,11 @@ export function bigStatusLine(input: StatusInput, width?: number): Line | undefi
       : undefined;
   const runsOut = runsOutText(input.runsOut, picked.row, input.nowMs, input.words);
   const segments: Segment[] = [
-    { text: `${statusName(input, group)} ${shortWindow(picked)} `, role: "statusName", percent },
+    {
+      text: `${statusName(input, group)} ${rowName(picked, group, input.words)} `,
+      role: "statusName",
+      percent,
+    },
     ...barSegments(input.layout.bar, percent, 10),
     { text: ` ${percentText(input.words, percent, true)}`, role: "percent", percent },
     ...(after ? [after] : []),
@@ -563,19 +580,6 @@ function runsOutLine(id: string, runsOut: string, column: number, room: number):
 }
 
 /**
- * A row's name in a grouped toast: your name for it; else its short window name ("5h", "7d")
- * when no other row of its group has the same one; else its label.
- */
-function groupedName(item: VisibleRow, group: Group): string {
-  if (item.label !== item.row.label || !item.row.window) return item.label;
-  const short = WINDOWS[item.row.window].short;
-  const shared = group.rows.some(
-    (other) => other !== item && other.row.window && WINDOWS[other.row.window].short === short,
-  );
-  return shared ? item.label : short;
-}
-
-/**
  * The grouped toast: a line per provider account with its error, then its rows indented 2:
  * the name, a bar in the room the other columns leave (at most 20 cells), the percent and the
  * reset time. "runs out in" goes under the row at the bar's column.
@@ -587,7 +591,7 @@ function groupedToastLines(input: ToastInput): Line[] {
   const percentWidth = 4 + (word ? word.length + 1 : 0);
   const named = input.groups.map((group) => ({
     group,
-    rows: group.rows.map((item) => ({ ...item, name: groupedName(item, group) })),
+    rows: group.rows.map((item) => ({ ...item, name: rowName(item, group, words) })),
   }));
   const items = named.flatMap(({ rows }) => rows);
   const resetWidth = Math.max(
@@ -654,7 +658,7 @@ function spread(left: Segment, right: Segment, room: number): Segment[] {
 
 /**
  * The detailed toast (v5's look): an empty line between providers, the provider's name, its
- * error under it, then per row its label with the reset time at the right, and a bar as wide
+ * error under it, then per row its name with the reset time at the right, and a bar as wide
  * as the toast with the percent at the right. "runs out in" goes under the bar.
  */
 function detailedToastLines(input: ToastInput): Line[] {
@@ -667,9 +671,10 @@ function detailedToastLines(input: ToastInput): Line[] {
   const percentWidth = Math.max(0, ...percents.map(columnsOf));
   const barWidth = input.bar === "none" ? 0 : room - 2 - percentWidth;
 
-  const rowLines = ({ row, label }: VisibleRow): Line[] => {
+  const rowLines = (item: VisibleRow, group: Group): Line[] => {
+    const { row } = item;
     const percent = row.percentRemaining;
-    const name: Segment = { text: label, role: "label", percent };
+    const name: Segment = { text: rowName(item, group, words), role: "label", percent };
     if (percent === undefined) {
       const value: Segment = { text: rowValueText(row), role: "value" };
       return [{ id: row.id, segments: spread(name, value, room) }];
@@ -703,7 +708,7 @@ function detailedToastLines(input: ToastInput): Line[] {
       ...(index > 0 ? [blank] : []),
       groupLine(group, nowMs, room, false),
       ...(state ? [{ id: group.providerId, segments: clip([state], room) }] : []),
-      ...group.rows.flatMap(rowLines),
+      ...group.rows.flatMap((item) => rowLines(item, group)),
     ];
   });
   if (!input.sessionTokens) return lines;

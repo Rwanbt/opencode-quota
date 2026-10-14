@@ -29,6 +29,7 @@ Without the file, OpenCode Quota uses its defaults and writes nothing. Saving cr
 | Show `81%` instead of `81% left` | `words.percent: "bare"` |
 | Show `2h14m` instead of `2h 14m` | `words.reset: "compact"` |
 | Show reset countdowns as decimals | `words.reset: "decimal"` |
+| Show `Weekly` instead of `7d` | `words.rowNames: "full"` |
 | Show extra accounting rows | `words.detail: "detailed"` |
 | Show only the current model's provider | `words.onlyCurrentModel: true` |
 | Include subagent session tokens | `words.sessionTokens: "tree"` |
@@ -52,14 +53,16 @@ Nest the keys in the file:
 }
 ```
 
-The `words` settings apply to the sidebar, status line, toasts, `/quota`, and terminal `show`. Web and Desktop `/quota` text and terminal `show` always include "runs out in" when the limit's pace runs out before its reset. Each TUI surface has its own `runsOut` switch: on for the sidebar and toasts, off for the one-line collapsed sidebar and status line. The Limits tab always shows pace.
+The `words` settings apply to the sidebar, status line, toasts, `/quota`, and terminal `show`; `words.rowNames` applies only to the sidebar, status line and toasts. Web and Desktop `/quota` text and terminal `show` always include "runs out in" when the limit's pace runs out before its reset. Each TUI surface has its own `runsOut` switch: on for the sidebar and toasts, off for the one-line collapsed sidebar and status line. The Limits tab always shows pace.
 
 ## TUI surfaces
+
+The sidebar, collapsed sidebar, toasts and the status line's big bar (`statusLine.detail: "one"`) show a row's window (`5h`, `7d`, `30d`) instead of its name, unless the row has no window or shares it with another row of the provider. `words.rowNames: "full"` shows every row's name (`Weekly`). A row you renamed shows your name either way.
 
 - Sidebar shows a bar per row and session tokens. Its title carries the percent's word from `words.percent` ("Quota left"), so its rows show only the number. Click the title to collapse it. `sidebar.names` holds row names by row id. The collapsed sidebar, status line and quota window's Limits tab use those names too.
 - Collapsed shows one line per provider. `collapsed.window` picks a window per provider id.
 - Status line shows under the message box when no sidebar panel with quota is on screen: the window is too narrow for the sidebar, the sidebar is closed, or `sidebar.show` is off. `statusLine.withSidebar: true` shows it next to the sidebar too. While its Layout page is open, it shows whenever `statusLine.show` is on. It uses the room OpenCode's footer leaves free. `statusLine.window` picks its own window per provider. The `‹ ›` window picker on each page changes only that page's setting. Scroll with the mouse wheel or click `‹` and `+N ›` when providers do not fit.
-- Toasts appear after compaction, when every provider fails, and after a reply once a limit is getting low (below `colors.warningBelow`, 50% left by default), for 9 seconds by default. `toast.layout` (Layout on the Toast page) picks their look. `grouped`, the default, has a line per provider with its error, then a line per row: its window (`5h`, `7d`), or its name when it has none or shares it with another row of the provider, then its bar (up to 20 cells; none when not even 3 fit), percent and reset time. `detailed`, the 5.x look, has an empty line between providers, the error under the provider's name, and two lines per row with a percent: its name and reset time, then a bar as wide as the toast and the percent. Rows have no bar with `layout.bar: "none"`. `toast.names` holds their row names; a row you renamed shows your name in both layouts. Renaming a row on Sidebar or Toast changes that page's names only. Quota toasts use the sidebar's colors (`colors`). Toasts appear only in the TUI.
+- Toasts appear after compaction, when every provider fails, and after a reply once a limit is getting low (below `colors.warningBelow`, 50% left by default), for 9 seconds by default. `toast.layout` (Layout on the Toast page) picks their look. `grouped`, the default, has a line per provider with its error, then a line per row: its window or name, then its bar (up to 20 cells; none when not even 3 fit), percent and reset time. `detailed`, the 5.x look, has an empty line between providers, the error under the provider's name, and two lines per row with a percent: its window or name and reset time, then a bar as wide as the toast and the percent. Rows have no bar with `layout.bar: "none"`. `toast.names` holds their row names; a row you renamed shows your name in both layouts. Renaming a row on Sidebar or Toast changes that page's names only. Quota toasts use the sidebar's colors (`colors`). Toasts appear only in the TUI.
 
 `/quota`, `/quota_usage`, `/quota_status` and `/quota_settings` open the quota window on Limits, Usage, System and the first Settings tab. The 4.x and 5.x `/tokens_*` commands are other names for `/quota_usage` ranges until `system.oldCommands` is off; see [Updating](updating.md#moving-from-5x).
 
@@ -192,6 +195,7 @@ Roles are `good`, `warning`, `low`, `empty`, `title`, `provider`, `account`, `la
 | `words.percent` | `"left"` | `left`, `remaining`, `bare`, `used`. |
 | `words.reset` | `"exact"` | `exact` gives `2h 14m`, `compact` gives `2h14m`, `short` gives `2h`, `decimal` gives `2.2h`. |
 | `words.resetDecimals` | `1` | Whole number 0–4. |
+| `words.rowNames` | `"short"` | `short` shows a row's window (`5h`, `7d`, `30d`) unless it has none or shares it with another row of the provider; `full` shows its name (`Weekly`). |
 | `words.detail` | `"summary"` | `detailed` includes supplementary rows. |
 | `words.onlyCurrentModel` | `false` | Show providers serving the current model. |
 | `words.sessionTokens` | `"current"` | `tree` includes subagent sessions, each counted once. |

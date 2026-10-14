@@ -574,13 +574,14 @@ describe("v6 surfaces on the quota snapshot", () => {
     const sidebar = () => tui.render("sidebar.content", { sessionID: "ses_1" });
     // The first look asks the server; the providers answer in the background and the
     // `changed` event brings their rows, the last of them the custom source's.
-    await vi.waitFor(() => expect(words(sidebar())).toContain("Monthly █████░░░ 64% 2h 14m"), {
+    await vi.waitFor(() => expect(words(sidebar())).toContain("30d █████░░░ 64% 2h 14m"), {
       timeout: 10_000,
     });
 
     // Sidebar: every provider and its rows, under a title that says the percents are what is
-    // left; an over-quota row shows 0%. Each bar takes its level's theme color: plenty, getting
-    // low, almost out.
+    // left; a row with a window is named by its length, one without by its label; an
+    // over-quota row shows 0%. Each bar takes its level's theme color: plenty, getting low,
+    // almost out.
     const expanded = sidebar();
     expect(words(expanded)).toEqual(
       expect.arrayContaining([
@@ -597,7 +598,7 @@ describe("v6 surfaces on the quota snapshot", () => {
       );
       return findAll(text, (node) => node.type === "span")[1]?.props.style.fg;
     };
-    expect(["Plan", "Weekly", "5h"].map(barColor)).toEqual(["green", "yellow", "red"]);
+    expect(["Plan", "7d", "5h"].map(barColor)).toEqual(["green", "yellow", "red"]);
     // Provider names are bold: a span takes `bold` from its style (it ignores `attributes`).
     const nameStyles = findAll(
       expanded,
@@ -1063,13 +1064,14 @@ describe("v6 surfaces on the quota snapshot", () => {
         "words.percent",
         "words.reset",
         "words.resetDecimals",
+        "words.rowNames",
         "words.detail",
         "words.onlyCurrentModel",
         "words.sessionTokens",
       ]);
       expect(words(windowTree())).toEqual(expect.arrayContaining(["Words", "What shows"]));
       expect(words(settingLine(windowTree(), "preset.words"))).toContain(
-        "sets Percent and Reset times",
+        "sets Percent, Reset times and Row names",
       );
       expect(words(settingLine(windowTree(), "preset.layout"))).toContain(
         "sets Bar width and the 3 Spacing lines",

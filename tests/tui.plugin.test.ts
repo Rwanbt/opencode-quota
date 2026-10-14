@@ -10,6 +10,7 @@ import type { QuotaClient } from "../src/tui/client.js";
 import { type DisplaySettings, defaultDisplaySettings } from "../src/tui/display.js";
 import plugin from "../src/tui/index.tsx";
 import { createToasts, type TurnEnd, toastRoom } from "../src/tui/toasts.js";
+import { DEFAULT_WORDS } from "../src/view/format.js";
 import { THEME } from "./helpers/jsx-tree.js";
 
 const NOW = Date.parse("2026-10-10T12:00:00.000Z");
@@ -141,7 +142,11 @@ describe("quota toasts", () => {
   });
 
   it("lays the toast out as picked on the Toast page, as wide as the terminal lets it", async () => {
-    const message = async (layout: "grouped" | "detailed", terminalWidth: number) => {
+    const message = async (
+      layout: "grouped" | "detailed",
+      terminalWidth: number,
+      answer: QuotaSnapshot = OK,
+    ) => {
       const show = vi.fn();
       const display = defaultDisplaySettings();
       display.toast.layout = layout;
@@ -149,22 +154,28 @@ describe("quota toasts", () => {
         show,
         display: () => display,
         terminalWidth: () => terminalWidth,
-        quota: { refresh: async () => OK } as unknown as QuotaClient,
+        quota: { refresh: async () => answer } as unknown as QuotaClient,
         isChildSession: () => false,
         now: () => NOW,
       });
       await toasts.afterTurn("compaction", "ses_1");
       return show.mock.calls[0]?.[0].message;
     };
+    const fullNames = { ...OK, words: { ...DEFAULT_WORDS, rowNames: "full" as const } };
     expect({
       grouped: await message("grouped", 33),
       detailed: await message("detailed", 120),
       narrow: await message("detailed", 33),
+      // With the server's words.rowNames "full", both layouts name the row by its label.
+      groupedFull: await message("grouped", 33, fullNames),
+      detailedFull: await message("detailed", 33, fullNames),
     }).toEqual({
       // A 33-column terminal leaves the toast 18 columns of text beside its close "x".
       grouped: "Claude\n  7d ██░  80% left",
-      detailed: `Claude\nWeekly\n${"█".repeat(33)}${"░".repeat(8)}  80% left`,
-      narrow: "Claude\nWeekly\n██████░░  80% left",
+      detailed: `Claude\n7d\n${"█".repeat(33)}${"░".repeat(8)}  80% left`,
+      narrow: "Claude\n7d\n██████░░  80% left",
+      groupedFull: "Claude\n  Weekly  80% left",
+      detailedFull: "Claude\nWeekly\n██████░░  80% left",
     });
   });
 

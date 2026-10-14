@@ -143,6 +143,12 @@ export type Words = {
   reset: ResetStyle;
   /** Decimals of the "decimal" reset style. */
   resetDecimals: number;
+  /**
+   * How the sidebar, the collapsed panel, the status line and toasts name a row: "short" by
+   * its window ("5h", "7d") unless another row of its provider has the same one, "full" by its
+   * label. A row you renamed shows your name in both.
+   */
+  rowNames: "short" | "full";
   /** "detailed" also shows supplementary rows. */
   detail: "summary" | "detailed";
   /** Show only the providers serving the session's current model. */

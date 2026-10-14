@@ -193,7 +193,7 @@ describe("loadSettings", () => {
       {
         key: "words",
         message:
-          "unknown setting (key 1); valid in words: percent, reset, resetDecimals, detail, onlyCurrentModel, sessionTokens",
+          "unknown setting (key 1); valid in words: percent, reset, resetDecimals, rowNames, detail, onlyCurrentModel, sessionTokens",
       },
       { key: "providers.checking", message: "expected an object" },
     ]);

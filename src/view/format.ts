@@ -38,6 +38,7 @@ export const DEFAULT_WORDS: Words = {
   percent: "left",
   reset: "exact",
   resetDecimals: 1,
+  rowNames: "short",
   detail: "summary",
   onlyCurrentModel: false,
   sessionTokens: "current",

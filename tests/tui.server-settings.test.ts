@@ -56,6 +56,10 @@ describe("the Settings tabs' lines", () => {
       "42% used",
     ]);
     expect(field("words.reset").show("compact")).toBe("2h14m · 5d3h20m");
+    expect(field("words.rowNames").values.map(field("words.rowNames").show)).toEqual([
+      "5h, 7d, 30d",
+      "Weekly, Daily, …",
+    ]);
     expect(field("providers.checking.minIntervalMs").show(300_000)).toBe("every 5 min");
     expect(field("providers.cursor.includedApiUsd").show(null)).toBe("from the plan");
     // Each Cursor plan says the API use it includes, as the Cursor provider counts it.
@@ -70,12 +74,23 @@ describe("the Settings tabs' lines", () => {
 
   it.each([
     {
-      values: { "words.percent": "bare", "words.reset": "compact" },
+      values: { "words.percent": "bare", "words.reset": "compact", "words.rowNames": "short" },
       choice: "short",
       next: "spelled out",
     },
     {
-      values: { "words.percent": "used", "words.reset": "exact" },
+      values: { "words.percent": "remaining", "words.reset": "exact", "words.rowNames": "full" },
+      choice: "spelled out",
+      next: "normal",
+    },
+    {
+      // Spelled-out words with short row names are your own choice.
+      values: { "words.percent": "remaining", "words.reset": "exact", "words.rowNames": "short" },
+      choice: undefined,
+      next: "normal",
+    },
+    {
+      values: { "words.percent": "used", "words.reset": "exact", "words.rowNames": "short" },
       choice: undefined,
       next: "normal",
     },

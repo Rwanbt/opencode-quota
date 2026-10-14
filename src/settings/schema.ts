@@ -134,6 +134,8 @@ export const SETTINGS_SCHEMA = {
   /** "2h 14m", "2h14m", "2h", or "2.2h" (with `resetDecimals`). */
   "words.reset": choice(["exact", "compact", "short", "decimal"], "exact"),
   "words.resetDecimals": { ...whole(0, 4), default: 1 },
+  /** Rows named by their window ("5h", "7d") where that tells them apart, or by their labels. */
+  "words.rowNames": choice(["short", "full"], "short"),
   /** "detailed" also shows supplementary rows. */
   "words.detail": choice(["summary", "detailed"], "summary"),
   /** Show only the providers serving the session's current model. */

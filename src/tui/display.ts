@@ -342,6 +342,7 @@ const SHOW = {
   days: (value) => (value === 1 ? "every day" : `every ${value} days`),
   day: (value) => (typeof value === "number" ? `day ${value}` : "calendar month"),
   rows: named({ summary: "main rows only", detailed: "all rows" }),
+  rowNames: named({ short: "5h, 7d, 30d", full: "Weekly, Daily, …" }),
   toastLayout: named({ grouped: "Grouped", detailed: "Detailed" }),
   models: named({ false: "all", true: "current model's only" }),
   tokens: named({ current: "this session", tree: "with subagents" }),
@@ -450,6 +451,11 @@ export const FIELDS: readonly Field[] = [
     ...ALL_PLACES,
     note: "for the decimal reset times",
     values: [0, 1, 2],
+  }),
+  serverField("words.rowNames", "Row names", SHOW.rowNames, {
+    ...ALL_PLACES,
+    note: "a row you renamed keeps your name",
+    preset: "words",
   }),
   serverField("words.detail", "Extra rows", SHOW.rows, { ...ALL_PLACES, group: "What shows" }),
   serverField("words.onlyCurrentModel", "Providers shown", SHOW.models, ALL_PLACES),
@@ -577,12 +583,16 @@ export const PRESETS: Record<PresetName, Preset> = {
   words: {
     tab: "layout",
     title: "Wording",
-    drives: "Percent and Reset times",
+    drives: "Percent, Reset times and Row names",
     before: "words.percent",
     choices: {
-      normal: { "words.percent": "left", "words.reset": "exact" },
-      short: { "words.percent": "bare", "words.reset": "compact" },
-      "spelled out": { "words.percent": "remaining", "words.reset": "exact" },
+      normal: { "words.percent": "left", "words.reset": "exact", "words.rowNames": "short" },
+      short: { "words.percent": "bare", "words.reset": "compact", "words.rowNames": "short" },
+      "spelled out": {
+        "words.percent": "remaining",
+        "words.reset": "exact",
+        "words.rowNames": "full",
+      },
     },
   },
 };
