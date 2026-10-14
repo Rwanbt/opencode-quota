@@ -4,6 +4,7 @@ import type { QuotaRow } from "../src/core/types.js";
 import {
   containsQuotaReport,
   formatQuotaReportMessage,
+  quotaLimitsText,
   quotaMessageText,
   removeQuotaReports,
 } from "../src/lib/quota-report-message.js";
@@ -108,5 +109,15 @@ describe("quota report messages", () => {
     expect(quotaMessageText({ snapshot: otherModel, usage: undefined, notices: [], nowMs })).toBe(
       "Quota\nNo quota provider serves the session's current model. Run /quota_status to see why.",
     );
+
+    // The TUI's Limits tab copies the same limits, without the notices and terminal escapes.
+    expect(quotaLimitsText(snapshot, nowMs)).toBe(
+      quotaMessageText({ snapshot, usage: undefined, notices: [], nowMs }),
+    );
+    const escaped = {
+      ...snapshot,
+      providers: [{ ...snapshot.providers[0], label: "Claude\u001b[31m" }],
+    };
+    expect(quotaLimitsText(escaped, nowMs)).toBe("Quota\n● Claude  5h 58% left · fable 90% left");
   });
 });

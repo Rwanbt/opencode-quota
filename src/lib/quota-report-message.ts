@@ -8,6 +8,7 @@ import type { UsageReport } from "../core/usage.js";
 import type { Notice } from "../rpc.js";
 import { quickLookText } from "../view/quick-look.js";
 import type { RowSettings, SurfaceRows } from "../view/select.js";
+import { sanitizeDisplayText } from "./display-sanitize.js";
 
 /** Metadata key on every quota report message. OpenCode stores message metadata with the message. */
 export const QUOTA_REPORT_METADATA_KEY = "opencodeQuota";
@@ -44,6 +45,15 @@ const NO_DISPLAY_CHOICES: RowSettings = {
   window: {},
   surfaces: { sidebar: EVERY_ROW, collapsed: EVERY_ROW, statusLine: EVERY_ROW, toast: EVERY_ROW },
 };
+
+/**
+ * The limits of every provider as the /quota report of Web and Desktop writes them, without its
+ * usage and notices: what the TUI's Limits tab copies.
+ */
+export function quotaLimitsText(snapshot: QuotaSnapshot, nowMs: number): string {
+  const text = quickLookText({ snapshot, usage: undefined, settings: NO_DISPLAY_CHOICES, nowMs });
+  return sanitizeDisplayText(text);
+}
 
 /**
  * The /quota report of Web and Desktop: the short text of `view/quick-look.ts` for every

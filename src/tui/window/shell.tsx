@@ -11,8 +11,9 @@
  * that body. The bottom line lists the tab's keys (Usage's as key and label pairs); the Settings
  * tabs have Save and Discard above it. While the window is focused (it is after opening; click
  * it to give it the keyboard again) its keys work: ↑↓ select or scroll,
- * space/enter use a line, ←/→ change it, tab switches tabs, esc closes. Closing gives the
- * keyboard back to whatever had it before. Plugin shows the maintainer notices, the switches
+ * space/enter use a line, ←/→ change it, c on Limits copies its limits as text, tab switches
+ * tabs, esc closes. Closing gives the keyboard back to whatever had it before. Plugin shows the
+ * maintainer notices, the switches
  * for other tools and the status report, each under its own title.
  */
 import type { Plugin } from "@opencode/plugin/tui";
@@ -21,6 +22,7 @@ import type { JSX } from "@opentui/solid";
 import { createSignal, onCleanup, onMount, Show } from "solid-js";
 import { DEFAULT_USAGE_RANGE } from "../../core/usage-ranges.js";
 import { sanitizeDisplayText } from "../../lib/display-sanitize.js";
+import { quotaLimitsText } from "../../lib/quota-report-message.js";
 import { getPackageVersion } from "../../lib/version.js";
 import { QuotaRpc } from "../../rpc.js";
 import { columnsOf } from "../../view/columns.js";
@@ -336,17 +338,37 @@ export function createQuotaWindow(
     scroll?.scrollTo(0);
   }
 
+  /** Copies `text` and says in a toast titled `title` whether the terminal let it. */
+  function copyWithToast(
+    text: string,
+    title: string,
+    messages: { copied: string; failed: string },
+  ): void {
+    const copied = api.renderer.copyToClipboardOSC52(text);
+    api.ui.toast.show({
+      variant: copied ? "success" : "warning",
+      title,
+      message: copied ? messages.copied : messages.failed,
+      duration: 4_000,
+    });
+  }
+
   function copyReport(): void {
     const report = status();
     if (report.state !== "ready") return;
-    const copied = api.renderer.copyToClipboardOSC52(report.text);
-    api.ui.toast.show({
-      variant: copied ? "success" : "warning",
-      title: "Status report",
-      message: copied
-        ? "Copied. Paste it into a GitHub issue."
-        : "This terminal doesn't allow copying; select the text instead.",
-      duration: 4_000,
+    copyWithToast(report.text, "Status report", {
+      copied: "Copied. Paste it into a GitHub issue.",
+      failed: "This terminal doesn't allow copying; select the text instead.",
+    });
+  }
+
+  /** c on Limits: every provider's limits as Web and Desktop /quota write them. */
+  function copyLimits(sessionID: string): void {
+    const snapshot = host.quota.snapshot(sessionID);
+    if (!snapshot) return;
+    copyWithToast(quotaLimitsText(snapshot, Date.now()), "Limits", {
+      copied: "Copied the limits report",
+      failed: "This terminal doesn't allow copying.",
     });
   }
 
@@ -512,6 +534,12 @@ export function createQuotaWindow(
         { bind: "return", title: "Use the line", group: KEYS, run: () => useSelected(true) },
         { bind: "left", title: "Change the line", group: KEYS, run: () => useSelected(false) },
         { bind: "right", title: "Change the line", group: KEYS, run: () => useSelected(false) },
+        {
+          bind: "c",
+          title: "Copy the limits report",
+          group: KEYS,
+          run: () => (tab() === "limits" ? copyLimits(props.sessionID) : false),
+        },
         { bind: "tab", title: "Next tab", group: KEYS, run: () => switchTab(1) },
         { bind: "shift+tab", title: "Previous tab", group: KEYS, run: () => switchTab(-1) },
         { bind: "escape", title: "Close", group: KEYS, run: close },
@@ -524,7 +552,7 @@ export function createQuotaWindow(
     };
     const viewHint = () => {
       const end = "tab next tab · esc close";
-      if (tab() === "limits") return `┃ where even use would be · ↑↓ scroll · ${end}`;
+      if (tab() === "limits") return `┃ where even use would be · c copy · ↑↓ scroll · ${end}`;
       return `↑↓ select · space/enter or click to use · ‹ › (or ←/→) change · ${end}`;
     };
     const hint = () =>

@@ -6,6 +6,7 @@
 import { createRoot } from "solid-js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { QuotaSnapshot } from "../src/core/types.js";
+import { quotaLimitsText } from "../src/lib/quota-report-message.js";
 import type {
   QuotaRpcNoticeListInput,
   QuotaRpcNoticeListOutput,
@@ -209,6 +210,7 @@ function fakeHost(snapshot?: QuotaSnapshot) {
     quotaWindow,
     settings,
     display,
+    toasts: api.ui.toast.show,
     server,
     noticeCalls,
     statusCalls,
@@ -494,6 +496,50 @@ describe("quota window shell", () => {
     // Back at the window for all providers, OpenAI has no pick of its own again.
     clickOnce("‹ lowest left ›");
     expect(picked()).toEqual({ "*": "five_hour" });
+  });
+
+  it("copies the limits on Limits as Web /quota writes them", () => {
+    const nowMs = Date.now();
+    const snapshot: QuotaSnapshot = {
+      version: 6,
+      generatedAtMs: nowMs,
+      resetNotices: [],
+      providers: [
+        providerSnapshot(
+          "openai",
+          "OpenAI",
+          [
+            quotaRow("openai.five_hour", {
+              label: "5h",
+              window: "five_hour",
+              percentRemaining: 65,
+            }),
+            quotaRow("openai.weekly", { label: "Weekly", window: "week", percentRemaining: 26 }),
+          ],
+          { checkedAtMs: nowMs },
+        ),
+      ],
+    };
+    const host = fakeHost(snapshot);
+    host.quotaWindow.open("limits");
+    const view = draw(host.quotaWindow);
+
+    press(host.layers, "c");
+    expect(host.copied).toEqual([quotaLimitsText(snapshot, nowMs)]);
+    expect(host.copied[0]).toBe("Quota\n● OpenAI  5h 65% left · 7d 26% left");
+    expect(host.toasts).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        variant: "success",
+        title: "Limits",
+        message: "Copied the limits report",
+      }),
+    );
+
+    // Only Limits copies with c.
+    host.quotaWindow.open("system");
+    press(host.layers, "c");
+    expect(host.copied).toHaveLength(1);
+    view.dispose();
   });
 
   it("names the page list's keys while a Layout page shows", () => {
