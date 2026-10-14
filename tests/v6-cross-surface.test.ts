@@ -936,23 +936,23 @@ describe("v6 surfaces on the quota snapshot", () => {
       { page: "All places", heading: " Preset", line: "Layout preset" },
       {
         page: "Sidebar",
-        toggle: " [x] Show the Quota panel in the session sidebar",
+        toggle: "   [x] Show the Quota panel in the session sidebar",
         heading: " What it shows",
         line: "Session tokens line",
       },
       {
         page: "Collapsed",
-        toggle: " [x] When the panel is collapsed, show one line per provider",
+        toggle: "   [x] When the panel is collapsed, show one line per provider",
         heading: " What it shows",
         line: "Runs out in …",
       },
       {
         page: "Toast",
-        toggle: " [x] Show quota toasts",
+        toggle: "   [x] Show quota toasts",
         heading: " Preset",
         line: "When toasts show",
       },
-    ])("puts $page's first lines under a heading, and its switch in the headings' column", async ({
+    ])("puts $page's first lines under a heading, and its switch under Enable/disable", async ({
       page,
       toggle,
       heading,
@@ -962,7 +962,7 @@ describe("v6 surfaces on the quota snapshot", () => {
       try {
         await vi.waitFor(() => expect(textLines(windowTree())).toContain(heading));
         const lines = textLines(windowTree());
-        if (toggle) expect(lines).toContain(toggle);
+        if (toggle) expect(lines[lines.indexOf(toggle) - 1]).toBe(" Enable/disable");
         const at = lines.findIndex((text) => text.startsWith(`   ${line}`));
         expect(at).toBeGreaterThan(0);
         expect(lines[at - 1]).toBe(heading);

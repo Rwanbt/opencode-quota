@@ -682,8 +682,8 @@ export function createSettingsEditor(
   }
 
   /**
-   * Above a Settings tab's scrolling body: the surface switch, which turns the whole page's place
-   * on or off and so starts in the headings' column, and a warning when the sidebar is hidden.
+   * Above a Settings tab's scrolling body: the surface switch under its "Enable/disable" heading,
+   * and a warning when the sidebar is hidden.
    */
   function Header(props: { tab: SettingsTab; refocus: () => void }): JSX.Element {
     const info = () => SETTINGS_TABS.find((item) => item.tab === props.tab) ?? SETTINGS_TABS[0];
@@ -698,6 +698,11 @@ export function createSettingsEditor(
       <Show when={surface() || sidebarHidden()}>
         <box flexDirection="column" flexShrink={0} marginBottom={1}>
           <Show when={surface()}>
+            <Cell fg={theme().text.action.primary.selected} bold>
+              {" Enable/disable"}
+            </Cell>
+          </Show>
+          <Show when={surface()}>
             {(current: () => Surface) => (
               <box
                 id={boxId(SWITCH_ID)}
@@ -707,7 +712,7 @@ export function createSettingsEditor(
                 onMouseUp={click(() => toggleSurface(current()))}
               >
                 <Cell fg={active() ? theme().text.action.primary.focused : theme().text.base} bold>
-                  {` ${surfaceOn() ? "[x]" : "[ ]"} ${info().switchTitle}`}
+                  {`   ${surfaceOn() ? "[x]" : "[ ]"} ${info().switchTitle}`}
                 </Cell>
               </box>
             )}
