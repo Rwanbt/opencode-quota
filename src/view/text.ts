@@ -18,7 +18,7 @@ import {
   rowValueText,
   sessionTokensText,
 } from "./format.js";
-import { type Group, pickRow, type VisibleRow, type WindowChoice } from "./select.js";
+import { type Group, pickRow, type VisibleRow, type WindowChoice, windowFor } from "./select.js";
 
 /** Every colored thing quota draws; the TUI maps each to a theme color. */
 export type ColorRole =
@@ -304,7 +304,7 @@ type CollapsedInput = {
   words: Words;
   nowMs: number;
   width: number;
-  /** Preferred window by provider id. */
+  /** Preferred window by provider id, or for all providers (`windowFor`). */
   window: Record<string, WindowChoice>;
   /** A "runs out in 2h" line under each provider whose shown row runs out before its reset. */
   runsOut?: boolean;
@@ -319,7 +319,7 @@ export function collapsedLines(input: CollapsedInput): Line[] {
   const { layout, words, nowMs } = input;
   const picks = input.groups.map((group) => ({
     group,
-    picked: pickRow(group, input.window[group.providerId]),
+    picked: pickRow(group, windowFor(input.window, group.providerId)),
   }));
   const withWord = words.percent === "used";
   // The percent after a space: " 100%", or "  100% used" with its word.
@@ -414,7 +414,7 @@ function statusName(input: StatusInput, group: Group): string {
  */
 function statusSegment(input: StatusInput, group: Group, level: StatusLevel): Line {
   const { layout, words, nowMs } = input;
-  const picked = pickRow(group, input.window[group.providerId]);
+  const picked = pickRow(group, windowFor(input.window, group.providerId));
   const percent = picked?.row.percentRemaining;
   const name: Segment = { text: statusName(input, group), role: "statusName", percent };
   if (!picked || percent === undefined) {
@@ -524,7 +524,7 @@ export function statusLayout(
 export function bigStatusLine(input: StatusInput, width?: number): Line | undefined {
   const group = input.groups[0];
   if (!group) return undefined;
-  const picked = pickRow(group, input.window[group.providerId]);
+  const picked = pickRow(group, windowFor(input.window, group.providerId));
   const percent = picked?.row.percentRemaining;
   if (!picked || percent === undefined) {
     const line = statusSegment(input, group, "full");

@@ -11,6 +11,7 @@ import type {
   QuotaWindow,
   Words,
 } from "../core/types.js";
+import { ALL_PROVIDERS } from "../core/windows.js";
 
 export type Surface = "sidebar" | "collapsed" | "statusLine" | "toast";
 
@@ -34,7 +35,10 @@ export type RowSettings = {
   /** Your names for rows, by row id. */
   labels: Record<string, string>;
   surfaces: Record<Surface, SurfaceRows>;
-  /** Preferred window by provider id; "lowest" (the default) shows the row with the least left. */
+  /**
+   * Preferred window by provider id, and by `ALL_PROVIDERS` for every other provider; "lowest"
+   * (the default) shows the row with the least left.
+   */
   window: Record<string, WindowChoice>;
 };
 
@@ -145,8 +149,20 @@ export function visibleGroups(
 }
 
 /**
+ * The window a provider shows in the collapsed sidebar or the status line: its own pick, else the
+ * pick for all providers, else "lowest".
+ */
+export function windowFor(
+  windows: Readonly<Record<string, WindowChoice>>,
+  providerId: string,
+): WindowChoice {
+  return windows[providerId] ?? windows[ALL_PROVIDERS] ?? "lowest";
+}
+
+/**
  * The one row a group shows in the collapsed sidebar and the status line: the preferred
- * window, else the row with the least left, else the first row.
+ * window's row; with "lowest", or when the group has no row of that window, the row with the
+ * least left; else the first row.
  */
 export function pickRow(
   group: Pick<Group, "rows">,

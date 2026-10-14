@@ -5,6 +5,7 @@
  */
 import { createRoot } from "solid-js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { QuotaSnapshot } from "../src/core/types.js";
 import type {
   QuotaRpcNoticeListInput,
   QuotaRpcNoticeListOutput,
@@ -14,6 +15,7 @@ import { createFileDisplay } from "../src/tui/display.js";
 import { createServerSettings } from "../src/tui/server-settings.js";
 import { createSettingsEditor } from "../src/tui/window/settings.tsx";
 import { createQuotaWindow, type QuotaWindow } from "../src/tui/window/shell.tsx";
+import { providerSnapshot, quotaRow } from "./helpers/fake-answers.js";
 import { findAll, THEME, textLines } from "./helpers/jsx-tree.js";
 
 type Key = { bind: string; run: () => void };
@@ -61,7 +63,8 @@ type FakeBox = {
   destroy(): void;
 };
 
-function fakeHost() {
+/** The window on a fake host; `snapshot` is the quota every surface shows (none by default). */
+function fakeHost(snapshot?: QuotaSnapshot) {
   const keyboard: { current?: FakeBox } = {};
   const box = (): FakeBox => {
     const listeners = new Map<string, Array<() => void>>();
@@ -191,7 +194,7 @@ function fakeHost() {
     theme: () => THEME,
     display: display.shown,
     quota: {
-      snapshot: () => undefined,
+      snapshot: () => snapshot,
       watch: () => () => {},
       refresh: async () => undefined,
     },
@@ -205,6 +208,7 @@ function fakeHost() {
   return {
     quotaWindow,
     settings,
+    display,
     server,
     noticeCalls,
     statusCalls,
@@ -454,6 +458,42 @@ describe("quota window shell", () => {
     const view = draw(host.quotaWindow);
     expect(textLines(view.tree)).toContain("   Loading quota…");
     view.dispose();
+  });
+
+  it("picks a window for all providers on Collapsed, and a provider's own pick over it", async () => {
+    const snapshot: QuotaSnapshot = {
+      version: 6,
+      generatedAtMs: 0,
+      resetNotices: [],
+      providers: [
+        providerSnapshot("openai", "OpenAI", [
+          quotaRow("openai.five_hour", { label: "5h", window: "five_hour", percentRemaining: 65 }),
+          quotaRow("openai.weekly", { label: "Weekly", window: "week", percentRemaining: 26 }),
+        ]),
+      ],
+    };
+    const host = fakeHost(snapshot);
+    host.quotaWindow.open("collapsed");
+    await flush();
+    const picked = () => host.display.shown().collapsed.window;
+    /** Draws the window, clicks what shows `text`, and takes the window away again. */
+    const clickOnce = (text: string, line = false) => {
+      const view = draw(host.quotaWindow);
+      if (line) clickLine(view.tree, text);
+      else click(view.tree, text);
+      view.dispose();
+    };
+
+    clickOnce("For all providers", true);
+    expect(picked()).toEqual({ "*": "five_hour" });
+    // OpenAI shows the window for all providers until it gets a pick of its own.
+    clickOnce("‹ 5h ");
+    expect(picked()).toEqual({ "*": "five_hour", openai: "week" });
+    clickOnce("‹ 7d ");
+    expect(picked()).toEqual({ "*": "five_hour", openai: "lowest" });
+    // Back at the window for all providers, OpenAI has no pick of its own again.
+    clickOnce("‹ lowest left ›");
+    expect(picked()).toEqual({ "*": "five_hour" });
   });
 
   it("names the page list's keys while a Layout page shows", () => {

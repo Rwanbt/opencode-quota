@@ -16,13 +16,19 @@ import {
 import type { JSX } from "@opentui/solid";
 import { createEffect, createMemo, createSignal, For, on, Show } from "solid-js";
 import { describeError } from "../../core/errors.js";
-import type { ProviderSnapshot, QuotaRow, QuotaSnapshot } from "../../core/types.js";
-import { WINDOWS } from "../../core/windows.js";
+import type { ProviderSnapshot, QuotaRow, QuotaSnapshot, QuotaWindow } from "../../core/types.js";
+import { ALL_PROVIDERS, WINDOWS } from "../../core/windows.js";
 import type { CustomProviderSwitch } from "../../settings/index.js";
 import { CHANGED_SINCE_REVIEW } from "../../settings/schema.js";
 import { columnsOf } from "../../view/columns.js";
 import { DEFAULT_WORDS, fit, percentText, resetText, rowValueText } from "../../view/format.js";
-import { pickRow, type Surface, type SurfaceRows, type WindowChoice } from "../../view/select.js";
+import {
+  pickRow,
+  type Surface,
+  type SurfaceRows,
+  type WindowChoice,
+  windowFor,
+} from "../../view/select.js";
 import type { ColorRole } from "../../view/text.js";
 import { rpcErrorMessage } from "../client.js";
 import {
@@ -224,6 +230,18 @@ function windowChoices(provider: ProviderSnapshot): WindowChoice[] {
 
 function windowTitle(choice: WindowChoice): string {
   return choice === "lowest" ? "lowest left" : WINDOWS[choice].short;
+}
+
+/**
+ * What a provider's ‹ › shows without a pick of its own: the pick for all providers when the
+ * provider has that window (one of its `choices`), else lowest.
+ */
+function inheritedWindow(
+  windows: Readonly<Record<string, WindowChoice>>,
+  choices: readonly WindowChoice[],
+): WindowChoice {
+  const all = windows[ALL_PROVIDERS];
+  return all !== undefined && choices.includes(all) ? all : "lowest";
 }
 
 /**
@@ -576,6 +594,43 @@ export function createSettingsEditor(
   }
 
   /**
+   * Collapsed's and Status line's window for every provider without its own pick in the list
+   * below. ‹ › step through lowest and the windows the providers have.
+   */
+  function allProvidersLine(
+    surface: "collapsed" | "statusLine",
+    snapshot: QuotaSnapshot | undefined,
+  ): OptionLine {
+    const current = (): WindowChoice => shown()[surface].window[ALL_PROVIDERS] ?? "lowest";
+    const choices = (): WindowChoice[] => {
+      const found = new Set(
+        (snapshot?.providers ?? []).flatMap((provider) =>
+          provider.rows.flatMap((row) =>
+            row.window && row.percentRemaining !== undefined ? [row.window] : [],
+          ),
+        ),
+      );
+      const windows = (Object.keys(WINDOWS) as QuotaWindow[]).filter(
+        (window) => found.has(window) || window === current(),
+      );
+      return ["lowest", ...windows];
+    };
+    return {
+      id: `${surface}.window.${ALL_PROVIDERS}`,
+      group: "Window",
+      title: "For all providers",
+      value: () => windowTitle(current()),
+      cycle: (delta) => {
+        const next = stepIn(choices(), current(), delta);
+        display.edit((settings) =>
+          setIn(settings, [surface, "window", ALL_PROVIDERS], next === "lowest" ? undefined : next),
+        );
+      },
+      note: () => "a pick below wins; a provider without it shows its lowest",
+    };
+  }
+
+  /**
    * A Settings page's lines. A preset sits above the line it names, under that line's heading,
    * or else first, under "Preset". `refocus` gives the window the keyboard again.
    */
@@ -605,6 +660,9 @@ export function createSettingsEditor(
         .map((name) => ({ ...presetLine(name), group: "Preset" })),
       ...(settingsTab === "colors" ? themeLines(refocus) : []),
       ...fields,
+      ...(settingsTab === "collapsed" || settingsTab === "statusLine"
+        ? [allProvidersLine(settingsTab, snapshot)]
+        : []),
     ];
   }
 
@@ -762,6 +820,8 @@ export function createSettingsEditor(
     const withRows = () => props.tab === "sidebar" || props.tab === "toast";
     const snapshot = () => props.host.quota.snapshot(props.sessionID);
     const words = () => snapshot()?.words ?? DEFAULT_WORDS;
+    /** The picked windows of Collapsed or Status line. */
+    const windows = () => shown()[props.tab === "statusLine" ? "statusLine" : "collapsed"].window;
     const tree = (): TreeProvider[] => {
       const current = surface();
       const loaded = snapshot();
@@ -822,19 +882,14 @@ export function createSettingsEditor(
       const provider = tree().find((item) => item.provider.providerId === providerId)?.provider;
       const choices = provider ? windowChoices(provider) : [];
       if (choices.length === 0) return;
-      const index = Math.max(
-        0,
-        choices.indexOf(
-          shown()[props.tab === "statusLine" ? "statusLine" : "collapsed"].window[providerId] ??
-            "lowest",
-        ),
-      );
-      const next = choices[(index + delta + choices.length) % choices.length];
+      const inherited = inheritedWindow(windows(), choices);
+      const next = stepIn(choices, windows()[providerId] ?? inherited, delta);
+      // The window it would show anyway is no pick of its own, so it follows "For all providers".
       display.edit((settings) =>
         setIn(
           settings,
           [props.tab === "statusLine" ? "statusLine" : "collapsed", "window", providerId],
-          next === "lowest" ? undefined : next,
+          next === inherited ? undefined : next,
         ),
       );
     }
@@ -1072,9 +1127,7 @@ export function createSettingsEditor(
         if (withRows()) return "";
         const picked = pickRow(
           { rows: provider.rows.map((item) => ({ row: item, label: item.label, named: false })) },
-          shown()[props.tab === "statusLine" ? "statusLine" : "collapsed"].window[
-            provider.providerId
-          ],
+          windowFor(windows(), provider.providerId),
         );
         return picked ? summary(picked.row) : "";
       };
@@ -1122,7 +1175,7 @@ export function createSettingsEditor(
               fg={active() ? fg() : text.action.primary.selected}
               onUp={click(() => cycleWindow(line.providerId, 1))}
             >
-              {` ‹ ${fit(windowTitle(shown()[props.tab === "statusLine" ? "statusLine" : "collapsed"].window[line.providerId] ?? "lowest"), 11)} › `}
+              {` ‹ ${fit(windowTitle(windows()[line.providerId] ?? inheritedWindow(windows(), choices())), 11)} › `}
             </Cell>
           </Show>
           <Cell fg={lit() ? fg() : text.muted} shrink>

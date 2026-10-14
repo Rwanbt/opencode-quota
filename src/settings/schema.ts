@@ -8,7 +8,7 @@ import { isAbsolute } from "node:path";
 import type { Node } from "jsonc-parser";
 import { getNodeValue } from "jsonc-parser";
 import type { QuotaWindow } from "../core/types.js";
-import { isQuotaWindow } from "../core/windows.js";
+import { ALL_PROVIDERS, isQuotaWindow } from "../core/windows.js";
 import { isRecord } from "../lib/json-guards.js";
 import { normalizeQuotaProviderId, QUOTA_PROVIDER_CATALOG } from "../lib/provider-metadata.js";
 import {
@@ -81,6 +81,7 @@ export const SETTINGS_SCHEMA = {
   "collapsed.hidden": { kind: "strings", default: [] },
   "collapsed.providerOrder": { kind: "strings", default: [] },
   "collapsed.rowOrder": { kind: "rowOrder", default: {} },
+  /** A window by provider id; `ALL_PROVIDERS` ("*") for every provider without its own. */
   "collapsed.window": { kind: "window", default: {} },
   "statusLine.show": bool(true),
   /** Also while a sidebar panel shows quota; else only when none is on screen. */
@@ -312,7 +313,7 @@ export function describeRule(rule: SettingRule): string {
     case "rowOrder":
       return "an object of provider ids and lists of row ids";
     case "window":
-      return "an object of provider ids and quota windows or lowest";
+      return `an object of provider ids (or "${ALL_PROVIDERS}" for every provider) and quota windows or lowest`;
     case "color":
       return "a theme color, bar, or #rrggbb";
     case "separator":

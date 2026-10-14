@@ -6,6 +6,7 @@ import type {
   QuotaWindow,
   Words,
 } from "../src/core/types.js";
+import { ALL_PROVIDERS } from "../src/core/windows.js";
 import { defaultDisplaySettings } from "../src/tui/display.js";
 import { columnsOf } from "../src/view/columns.js";
 import {
@@ -24,6 +25,7 @@ import {
   type Surface,
   type VisibleRow,
   visibleGroups,
+  type WindowChoice,
 } from "../src/view/select.js";
 import {
   bigStatusLine,
@@ -432,6 +434,66 @@ describe("view text", () => {
       "OpenCode… $1,240.50 left",
       "OpenRout… Sign in again",
     ]);
+  });
+
+  describe("one window for all providers", () => {
+    const OPENAI = provider("openai", "OpenAI", [
+      row("openai.five_hour", { label: "5h", window: "five_hour", percentRemaining: 65 }),
+      row("openai.weekly", { label: "Weekly", window: "week", percentRemaining: 26 }),
+    ]);
+    const COPILOT = provider("copilot", "Copilot", [
+      row("copilot.allowance", { label: "Plan", window: "month", percentRemaining: 70 }),
+    ]);
+    const CHUTES = provider("chutes", "Chutes", [
+      row("chutes.daily", { label: "Daily", window: "day", percentRemaining: 90 }),
+    ]);
+    const providers = [OPENAI, CLAUDE, COPILOT, CHUTES];
+    /** Each provider's shown row on the collapsed panel and the status line, for `window`. */
+    const shown = (window: Record<string, WindowChoice>) => ({
+      collapsed: collapsedLines({
+        groups: groups("collapsed", providers),
+        ...drawn,
+        width: 40,
+        window,
+      }).map((line) => lineText(line).slice(0, 14).trimEnd()),
+      statusLine: statusLayout({ ...statusInput(providers), window }, 200, 0, "numbers").shown.map(
+        lineText,
+      ),
+    });
+
+    it.each([
+      {
+        name: "without a pick, each provider's lowest",
+        window: {},
+        rows: ["OpenAI    7d", "Claude    7d", "Copilot   30d", "Chutes    1d"],
+        percents: ["OpenAI 26%", "Claude 12%", "Copilot 70%", "Chutes 90%"],
+      },
+      {
+        name: "the window for all providers where a provider has it, else its lowest",
+        window: { [ALL_PROVIDERS]: "five_hour" },
+        rows: ["OpenAI    5h", "Claude    5h", "Copilot   30d", "Chutes    1d"],
+        percents: ["OpenAI 65%", "Claude 58%", "Copilot 70%", "Chutes 90%"],
+      },
+      {
+        name: "a provider's own pick over the one for all providers",
+        window: { [ALL_PROVIDERS]: "five_hour", anthropic: "week" },
+        rows: ["OpenAI    5h", "Claude    7d", "Copilot   30d", "Chutes    1d"],
+        percents: ["OpenAI 65%", "Claude 12%", "Copilot 70%", "Chutes 90%"],
+      },
+      {
+        name: "a provider's own lowest over the one for all providers",
+        window: { [ALL_PROVIDERS]: "five_hour", openai: "lowest" },
+        rows: ["OpenAI    7d", "Claude    5h", "Copilot   30d", "Chutes    1d"],
+        percents: ["OpenAI 26%", "Claude 58%", "Copilot 70%", "Chutes 90%"],
+      },
+    ] as const)("shows $name", ({ window, rows, percents }) => {
+      expect(shown(window)).toEqual({ collapsed: rows, statusLine: percents });
+    });
+
+    it("gives the big bar the window for all providers too", () => {
+      const input = { ...statusInput([OPENAI]), window: { [ALL_PROVIDERS]: "five_hour" } };
+      expect(lineText(bigStatusLine(input)!)).toBe("OpenAI 5h ███████░░░ 65% left");
+    });
   });
 
   it("keeps a space before a long reset time on a collapsed line", () => {

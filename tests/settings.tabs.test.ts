@@ -339,6 +339,20 @@ it("Save writes file settings with comments kept and reaches another TUI", async
   expect(first.server.dirty()).toBe(false);
 });
 
+it("Save writes the window for all providers next to a provider's own", async () => {
+  await file('{ "collapsed": { "window": { "openai": "week" } } }');
+  const { server, display } = await connect();
+  display.edit((settings) => setIn(settings, ["collapsed", "window", "*"], "five_hour"));
+  await server.save();
+  expect((await loadSettings()).settings.collapsed.window).toEqual({
+    openai: "week",
+    "*": "five_hour",
+  });
+  display.edit((settings) => setIn(settings, ["collapsed", "window", "*"], undefined));
+  await server.save();
+  expect((await loadSettings()).settings.collapsed.window).toEqual({ openai: "week" });
+});
+
 it("resets names and colors without writing undefined or losing literal dotted ids", async () => {
   await file(
     '{ "sidebar": { "names": { "anthropic.five_hour": "Session" } }, "colors": { "good": "blue" } }',
@@ -384,6 +398,14 @@ it.each([
   {
     input: { collapsed: { window: { anthropic: "week", openai: "fortnight" } } },
     expected: { collapsed: { window: { anthropic: "week" } } },
+  },
+  {
+    input: { statusLine: { window: { "*": "five_hour", openai: "lowest", copilot: 5 } } },
+    expected: { statusLine: { window: { "*": "five_hour", openai: "lowest" } } },
+  },
+  {
+    input: { collapsed: { window: { "*": "fortnight" } } },
+    expected: { collapsed: { window: {} } },
   },
   {
     input: { toast: { afterReply: "sometimes", seconds: 0, afterQuestion: true } },

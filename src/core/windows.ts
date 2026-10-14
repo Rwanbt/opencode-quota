@@ -29,6 +29,12 @@ export const WINDOWS: Readonly<Record<QuotaWindow, WindowInfo>> = {
   code_review: { label: "Code review", short: "Rev", resets: false },
 };
 
+/**
+ * The key of `collapsed.window` and `statusLine.window` that picks the window of every provider
+ * without a pick of its own.
+ */
+export const ALL_PROVIDERS = "*";
+
 export function isQuotaWindow(value: unknown): value is QuotaWindow {
   return typeof value === "string" && Object.hasOwn(WINDOWS, value);
 }
