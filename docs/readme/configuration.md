@@ -13,9 +13,9 @@ One global file, `settings.jsonc`:
 
 There are no project settings. Comments and trailing commas are allowed. Every key is optional. A missing or invalid value uses its default. `/quota_status` shows the file it reads and any problems in it.
 
-Every quota setting lives here, in the sections `sidebar`, `collapsed`, `statusLine`, `toast`, `colors`, `layout`, `words`, `providers`, and `system`. In the TUI, `/quota_settings` edits them through the server. Its **Layout** tab has **All places** (`layout` and `words`) and a page per place (Sidebar, Collapsed, Status line, Toast); **Colors** and **Providers** edit their own sections, and the window's System tab the `system` switches. Save, or ctrl+s, writes them to this file and keeps its comments. While you edit, the sidebar, status line, toasts and quota window show saved values with your unsaved changes on top. Discard drops those changes. File edits and a Save from any TUI reach all open TUIs within a few seconds.
+Every quota setting lives here, in the sections `sidebar`, `collapsed`, `statusLine`, `toast`, `colors`, `layout`, `words`, `providers`, and `system`. In the TUI, `/quota_settings` edits them through the server. Its **Layout** tab has **All places** (`layout` and `words`) and a page per place (Sidebar, Collapsed, Status line, Toast); **Colors** and **Providers** edit their own sections, and the window's Plugin tab the `system` switches. Save, or ctrl+s, writes them to this file and keeps its comments. While you edit, the sidebar, status line, toasts and quota window show saved values with your unsaved changes on top. Discard drops those changes. File edits and a Save from any TUI reach all open TUIs within a few seconds.
 
-Only the sidebar panel's open or collapsed state lives in OpenCode's plugin storage. Custom definitions, the Claude CLI path and the export path are file-only settings. The System tab (`/quota_status`) has the old command names, quota file and OpenTelemetry switches; they save as soon as you change them.
+Only the sidebar panel's open or collapsed state lives in OpenCode's plugin storage. Custom definitions, the Claude CLI path and the export path are file-only settings. The Plugin tab (`/quota_status`) has the old command names, quota file and OpenTelemetry switches; they save as soon as you change them.
 
 Without the file, OpenCode Quota uses its defaults and writes nothing. Saving creates the file with the default sections. After 4.x or 5.x, the first start converts their global settings into it. See [Updating](updating.md#moving-from-5x).
 
@@ -217,7 +217,7 @@ In the TUI, they are on **Layout → All places**, since every place follows the
 
 ### System
 
-Maintainer notices are written into the plugin with an end date. Active notices show on the System tab (`/quota_status`) and at the end of `/quota` text on Web and Desktop. Their count shows on the first Home screen of each local day for 10 minutes, only when a notice is active.
+Maintainer notices are written into the plugin with an end date. Active notices show on the Plugin tab (`/quota_status`) and at the end of `/quota` text on Web and Desktop. Their count shows on the first Home screen of each local day for 10 minutes, only when a notice is active.
 
 | Setting | Default | Values |
 | --- | --- | --- |

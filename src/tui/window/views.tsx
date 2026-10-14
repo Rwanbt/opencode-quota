@@ -1,6 +1,6 @@
 /** @jsxImportSource @opentui/solid */
 /**
- * The bodies of the quota window's Limits and System tabs. Their text comes from pure
+ * The bodies of the quota window's Limits and Plugin tabs. Their text comes from pure
  * builders: `limits.ts`, and `noticeItems` and `statusLines` here; the views only color it.
  */
 import { TextAttributes } from "@opentui/core";
@@ -34,7 +34,7 @@ export type StatusLine = { text: string; heading: boolean };
 const STATUS_LEAD = 3;
 
 /**
- * The status report on System: the /quota_status report's lines, its title ("# ") and its
+ * The status report on Plugin: the /quota_status report's lines, its title ("# ") and its
  * section titles (an unindented line that ends with ":") marked so they can be bold. A list
  * joined with " | " that is wider than `width` goes on under itself between items, lined up
  * after its "key: ", so an id like `google-gemini-cli` never breaks at its "-".
@@ -97,7 +97,7 @@ export function LimitsView(props: {
   );
 }
 
-/** System's notices under their title: a bullet, the message, and its link under it. */
+/** Plugin's notices under their title: a bullet, the message, and its link under it. */
 export function NoticesView(props: { theme: WindowTheme; report: NoticeReport }): JSX.Element {
   const theme = () => props.theme;
   const body = () => {

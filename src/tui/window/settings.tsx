@@ -1295,13 +1295,13 @@ export function createSettingsEditor(
     },
     /** A line takes typing, so the window's own keys rest. */
     typing: () => typing() !== undefined,
-    /** A System switch's saved value (`system.exportFile`); undefined until the server answers. */
+    /** A Plugin switch's saved value (`system.exportFile`); undefined until the server answers. */
     savedSwitch(key: string): boolean | undefined {
       return server.saved() ? server.value(key) === true : undefined;
     },
-    /** Saves a System switch straight away; System has no draft and no Save. */
+    /** Saves a Plugin switch straight away; Plugin has no draft and no Save. */
     saveSwitch: (key: string, on: boolean): Promise<void> => server.saveNow(key, on),
-    /** Reads the saved settings again, for System's switches. */
+    /** Reads the saved settings again, for Plugin's switches. */
     loadSaved: (): Promise<void> => server.load(),
     /** The snapshot with All places' unsaved words, which every surface shows while you edit. */
     withDraftWords(snapshot: QuotaSnapshot | undefined): QuotaSnapshot | undefined {

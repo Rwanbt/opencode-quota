@@ -8,7 +8,7 @@
 2. Find the provider or feature that fails, and follow the matching fix below.
 3. Restart OpenCode after changing `opencode.json`. Changes to logins and `settings.jsonc` apply without a restart.
 
-The report starts with `environment`: when it was made, where (`origin`: `/quota_status`, the `quota_status` tool, the TUI System tab, or the terminal command), the OpenCode version and channel, the system, and the runtime. The `settings` section uses `settings.jsonc` keys:
+The report starts with `environment`: when it was made, where (`origin`: `/quota_status`, the `quota_status` tool, the TUI Plugin tab, or the terminal command), the OpenCode version and channel, the system, and the runtime. The `settings` section uses `settings.jsonc` keys:
 
 - `providers.off`: switched-off provider ids, or `(none)` when every discovered provider is checked.
 - `changed_from_defaults`: each setting that differs from its default, with its value. A list or names show as a count, and a color, separator or path you typed as `(custom color)`, `(custom separator)` or `(custom path)`.

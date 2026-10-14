@@ -2,7 +2,7 @@
 /**
  * The quota window. `/quota`, `/quota_usage`, `/quota_status` and `/quota_settings` open it
  * above the message box of a session, where it covers the chat
- * with the same size on every tab: Usage, Limits, System and the Settings tabs Layout, Colors
+ * with the same size on every tab: Usage, Limits, Plugin and the Settings tabs Layout, Colors
  * and Providers (`settings.tsx`); Layout has pages, All places and one per place. The tab bar is
  * one line: the window's title and the plugin's version, the tabs, and "esc" at its right end to
  * close the window. When its tabs don't fit, it drops the "Settings" label, then shows the tabs
@@ -12,7 +12,7 @@
  * tabs have Save and Discard above it. While the window is focused (it is after opening; click
  * it to give it the keyboard again) its keys work: ↑↓ select or scroll,
  * space/enter use a line, ←/→ change it, tab switches tabs, esc closes. Closing gives the
- * keyboard back to whatever had it before. System shows the maintainer notices, the switches
+ * keyboard back to whatever had it before. Plugin shows the maintainer notices, the switches
  * for other tools and the status report, each under its own title.
  */
 import type { Plugin } from "@opencode/plugin/tui";
@@ -47,7 +47,7 @@ import {
 
 type SystemSwitch = { key: string; group: string; title: string; note?: string };
 
-/** System's switches, under their group's title; each saves to settings.jsonc straight away. */
+/** Plugin's switches (`system`), under their group's title; each saves straight away. */
 const SYSTEM_SWITCHES: ReadonlyArray<SystemSwitch> = [
   {
     key: "system.oldCommands",
@@ -75,7 +75,7 @@ type BarTab = { title: string; pages: readonly WindowTab[] };
 const TABS: ReadonlyArray<BarTab> = [
   { title: "Usage", pages: ["usage"] },
   { title: "Limits", pages: ["limits"] },
-  { title: "System", pages: ["system"] },
+  { title: "Plugin", pages: ["system"] },
 ];
 /** Every tab in the order the tab bar shows them and tab and shift+tab go through them. */
 const BAR_TABS: ReadonlyArray<BarTab> = [...TABS, ...SETTINGS_GROUPS];
@@ -250,7 +250,7 @@ export function createQuotaWindow(
   /** Numbers the notice and status requests; only the newest one's answer shows. */
   let noticeRequest = 0;
   let statusRequest = 0;
-  /** System switches whose save is not back yet; another flip of the same one is ignored. */
+  /** Plugin switches whose save is not back yet; another flip of the same one is ignored. */
   const savingSwitches = new Set<string>();
 
   // The RPC client is made per call, so nothing reaches OpenCode during plugin setup.
@@ -331,7 +331,7 @@ export function createQuotaWindow(
     }
     if (next === "usage") usage.choose(choice);
     if (next === "usage" && sessionID) usage.show(sessionID);
-    // System picks Copy, so enter copies the report as soon as the tab opens.
+    // Plugin picks Copy, so enter copies the report as soon as the tab opens.
     setSelected(next === "system" ? "copy" : "");
     scroll?.scrollTo(0);
   }
@@ -351,7 +351,7 @@ export function createQuotaWindow(
   }
 
   /**
-   * The lines that ↑↓ can select, under the notices: System's switches (‹ on ›)
+   * The lines that ↑↓ can select, under the notices: Plugin's switches (‹ on ›)
    * once the saved settings arrived, then Copy (▸) above the status report.
    */
   function tabOptions(): OptionLine[] {

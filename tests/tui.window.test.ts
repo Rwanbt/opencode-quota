@@ -206,7 +206,7 @@ describe("quota window: Limits", () => {
   });
 
   it("says where to look when no provider is found", () => {
-    expect(limits([])).toEqual(["   No quota providers found. The System tab says why."]);
+    expect(limits([])).toEqual(["   No quota providers found. The Plugin tab says why."]);
   });
 });
 
@@ -288,7 +288,7 @@ describe("quota window: Settings lines", () => {
     // 60 columns: the title stops at 12, then the value narrows.
     expect(lineColumns(33)).toEqual({ title: 12, value: 13 });
     expect(lineColumns(10)).toEqual({ title: 12, value: 6 });
-    // System's short values keep their own width.
+    // Plugin's short values keep their own width.
     expect(lineColumns(33, 3)).toEqual({ title: 22, value: 3 });
   });
 

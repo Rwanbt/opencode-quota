@@ -1,6 +1,6 @@
 /**
  * The quota window (`src/tui/window/shell.tsx`) on a fake OpenCode host whose server answers
- * when the test says so: answers that arrive out of order, System's sections, and the keyboard
+ * when the test says so: answers that arrive out of order, Plugin's sections, and the keyboard
  * when OpenCode draws the window again.
  */
 import { createRoot } from "solid-js";
@@ -254,7 +254,7 @@ describe("quota window shell", () => {
     });
   });
 
-  it("saves a System switch straight away and shows the saved value", async () => {
+  it("saves a Plugin switch straight away and shows the saved value", async () => {
     const host = fakeHost();
     host.quotaWindow.open("system");
     await flush();
@@ -317,7 +317,7 @@ describe("quota window shell", () => {
     expect(host.copied).toEqual(["# Quota Status (new)"]);
   });
 
-  it("shows System's notices, switches and status report under their own titles", async () => {
+  it("shows Plugin's notices, switches and status report under their own titles", async () => {
     const host = fakeHost();
     host.quotaWindow.open("system");
     host.noticeCalls[0]?.answer();

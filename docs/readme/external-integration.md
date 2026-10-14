@@ -47,7 +47,7 @@ opencode-quota show --json --provider copilot \
 
 ## 2. Read an export file
 
-Use this for a status bar or another tool that checks quota often. In the TUI, turn on "Quota file (JSON)" on the System tab (`/quota_status`). Or add this to `opencode-quota/settings.jsonc` ([where](configuration.md#where-settings-live)):
+Use this for a status bar or another tool that checks quota often. In the TUI, turn on "Quota file (JSON)" on the Plugin tab (`/quota_status`). Or add this to `opencode-quota/settings.jsonc` ([where](configuration.md#where-settings-live)):
 
 ```jsonc
 { "system": { "exportFile": true } }
@@ -78,7 +78,7 @@ interval = 60
 
 ## 3. Send OpenTelemetry metrics
 
-Use this only when OpenCode's server process (normally the background service) already has an OpenTelemetry metrics provider and exporter. OpenCode Quota does not create or configure them. In the TUI, turn on "OpenTelemetry metrics" on the System tab (`/quota_status`). Or add this to `opencode-quota/settings.jsonc` ([where](configuration.md#where-settings-live)):
+Use this only when OpenCode's server process (normally the background service) already has an OpenTelemetry metrics provider and exporter. OpenCode Quota does not create or configure them. In the TUI, turn on "OpenTelemetry metrics" on the Plugin tab (`/quota_status`). Or add this to `opencode-quota/settings.jsonc` ([where](configuration.md#where-settings-live)):
 
 ```jsonc
 { "system": { "telemetry": true } }

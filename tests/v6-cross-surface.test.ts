@@ -652,7 +652,7 @@ describe("v6 surfaces on the quota snapshot", () => {
         expect.stringMatching(/^OpenCode Quota v\d+\.\d+\.\d+$/u),
         "Usage",
         "Limits",
-        "System",
+        "Plugin",
         // Every tab and the Settings label fit in the 120 columns the window starts with.
         "Settings",
         "Layout",
@@ -671,7 +671,7 @@ describe("v6 surfaces on the quota snapshot", () => {
     expect(quotaWindow()).not.toContain("Close");
 
     // /quota_usage opens it on Usage (its range list; the window starts without the keyboard, so
-    // no key hint), /quota_status on System, /quota_settings on Layout's first page, All places.
+    // no key hint), /quota_status on Plugin, /quota_settings on Layout's first page, All places.
     await tui.command("usage").run();
     await vi.waitFor(() =>
       expect(quotaWindow()).toContainEqual(expect.stringContaining("90 days")),
@@ -1323,7 +1323,7 @@ describe("v6 surfaces on the quota snapshot", () => {
     await tui.dispose();
   });
 
-  it("runs the 4.x and 5.x /tokens_* names, on by default, names the new command while the System switch is off, and runs them again once it is back on", async () => {
+  it("runs the 4.x and 5.x /tokens_* names, on by default, names the new command while the Plugin switch is off, and runs them again once it is back on", async () => {
     writeUsageHistory();
     const tui = await startHosts();
     const windowTree = () => tui.render("session.composer.top", { sessionID: "ses_1" });
@@ -1341,7 +1341,7 @@ describe("v6 surfaces on the quota snapshot", () => {
       findAll(windowTree(), (node) => node.type === "input").map((node) => node.props.value),
     ).toEqual([localDate(-12), localDate(-8)]);
 
-    // System's switch saves it at once.
+    // Plugin's switch saves it at once.
     tui.typed("/quota_status");
     const oldCommands = () => settingLine(windowTree(), "system.oldCommands");
     await vi.waitFor(() =>

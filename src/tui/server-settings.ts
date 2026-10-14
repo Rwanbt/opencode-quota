@@ -230,7 +230,7 @@ export function createServerSettings(rpc: ServerSettingsRpc) {
       await readSaved();
     },
     /**
-     * Saves one setting straight away, apart from the window's draft (the System tab's
+     * Saves one setting straight away, apart from the window's draft (the Plugin tab's
      * switches), then reads the saved settings again. The error says why the server refused it.
      */
     async saveNow(key: string, next: unknown): Promise<void> {

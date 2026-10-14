@@ -184,7 +184,7 @@ export type StatusOrigin = "slash_command" | "tool" | "tui" | "cli";
 const ORIGINS: Readonly<Record<StatusOrigin, string>> = {
   slash_command: "/quota_status",
   tool: "quota_status tool",
-  tui: "TUI System tab",
+  tui: "TUI Plugin tab",
   cli: "opencode-quota status (CLI)",
 };
 

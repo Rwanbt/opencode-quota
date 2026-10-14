@@ -245,7 +245,7 @@ const REPORT_WORDS: readonly string[] = `
   shown snapshot stale staleness success syntax t text the token token_expires_at tokens tool
   true unbound unit units unknown unpriced unpriced_30d usage v5 value window workspace_root
   written yes yet ~
-  environment origin os runtime bun node opencode-quota quota_status status TUI System tab CLI
+  environment origin os runtime bun node opencode-quota quota_status status TUI Plugin tab CLI
   channel version changed_from_defaults setting settings entry entries color separator null shipped
   error_kind local_state_version subscription_state unknown_cursor_models
   notices price_list_providers selection_note built-in is used prices ignored valid so one lists
@@ -386,7 +386,7 @@ const FIELD_FORMS: ReadonlyArray<readonly [RegExp, RegExp]> = (
     ],
     [
       /^- origin: /u,
-      String.raw`- origin: (?:/quota_status|quota_status tool|TUI System tab|opencode-quota status \(CLI\))`,
+      String.raw`- origin: (?:/quota_status|quota_status tool|TUI Plugin tab|opencode-quota status \(CLI\))`,
     ],
     [
       /^- opencode: /u,

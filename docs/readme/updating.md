@@ -21,7 +21,7 @@ Update as above; you don't need to edit your settings. On the first start, OpenC
 - The TUI shows a conversion toast once. `/quota_status` lists what was converted, what was dropped, and why in the server session that performs the conversion.
 - Settings you never set use the 6.x defaults: the status line shows only when the sidebar is not on screen, a toast follows a reply only once a limit is getting low, no toast follows a question, toasts use the grouped layout (`toast.layout: "detailed"` is the 5.x look), and the sidebar and toasts show "runs out in" when a limit, used at your pace, runs out before it resets.
 
-Your `/tokens_*` commands keep working; they are on for everyone. Turn them off or on with **Old command names** on the System tab (`/quota_status`), or with `"system": { "oldCommands": false }` in `settings.jsonc`. The "/" list in an open TUI shows the change after OpenCode restarts.
+Your `/tokens_*` commands keep working; they are on for everyone. Turn them off or on with **Old command names** on the Plugin tab (`/quota_status`), or with `"system": { "oldCommands": false }` in `settings.jsonc`. The "/" list in an open TUI shows the change after OpenCode restarts.
 
 | 4.x and 5.x | Same as |
 | --- | --- |
@@ -33,7 +33,7 @@ Your `/tokens_*` commands keep working; they are on for everyone. Turn them off 
 | `/tokens_session` | `/quota_usage session` |
 | `/tokens_session_all` | `/quota_usage session` |
 | `/tokens_between <from> <to>` | `/quota_usage between <from> <to>` |
-| `/quota_announcements` | The notices on the System tab (`/quota_status`) |
+| `/quota_announcements` | The notices on the Plugin tab (`/quota_status`) |
 | `/pricing_refresh` | `p` in the Usage tab (`/quota_usage`); once per OpenCode run, prices older than 7 days also download on their own |
 
 Project settings files (`<your-repo>/opencode-quota/quota-toast.jsonc`) are not read; `/quota_status` lists any it finds. Put what you still need in `settings.jsonc`.
