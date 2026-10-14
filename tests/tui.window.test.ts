@@ -4,7 +4,14 @@ import type { ProviderSnapshot, QuotaRow, QuotaSnapshot } from "../src/core/type
 import { USAGE_RANGES, type UsageReport } from "../src/core/usage.js";
 import { defaultDisplaySettings } from "../src/tui/display.js";
 import { limitsLines } from "../src/tui/window/limits.js";
-import { lineColumns, type OptionLine, OptionRow } from "../src/tui/window/settings.tsx";
+import { RAIL_LABEL_WIDTH } from "../src/tui/window/rail.tsx";
+import {
+  lineColumns,
+  type OptionLine,
+  OptionRow,
+  SETTINGS_GROUPS,
+  SETTINGS_TABS,
+} from "../src/tui/window/settings.tsx";
 import { hintLines, keyHintLines, tabStrip } from "../src/tui/window/shell.tsx";
 import { createUsageTab } from "../src/tui/window/usage.tsx";
 import { noticeItems, statusLines } from "../src/tui/window/views.tsx";
@@ -276,6 +283,16 @@ describe("quota window: tab bar", () => {
       last,
       settingsLabel: false,
     });
+  });
+});
+
+describe("quota window: the lists left of the body", () => {
+  it("fit every label of Usage's ranges and Layout's pages in their one width", () => {
+    const pages = SETTINGS_GROUPS.flatMap((group) => group.pages).map(
+      (page) => SETTINGS_TABS.find((item) => item.tab === page)?.title ?? page,
+    );
+    const labels = [...USAGE_RANGES.map((item) => item.label), ...pages];
+    expect(Math.max(...labels.map((label) => label.length))).toBe(RAIL_LABEL_WIDTH);
   });
 });
 

@@ -2,31 +2,31 @@
 /**
  * A list down the left of the quota window's tab body: Usage's ranges and Layout's pages. The
  * chosen item has "›" before it and is bold, on the raised background across the list; a muted
- * line runs down the list's right side. Like the window's other lines, the "›" is one column in
- * and the labels three. A click picks an item. On a short window the list ends at the window's
- * bottom line instead of drawing over it.
+ * line runs down the list's right side. The "›" starts in the window title's column and the
+ * labels 2 columns in. Both lists have one width, the longest label of either and a space, so
+ * the line and the body stay put between Usage and Layout. A click picks an item. On a short
+ * window the list ends at the window's bottom line instead of drawing over it.
  */
 import { RGBA, TextAttributes } from "@opentui/core";
 import type { JSX } from "@opentui/solid";
 import type { WindowTheme } from "./shell.js";
 
 const TRANSPARENT = RGBA.fromInts(0, 0, 0, 0);
-/** Each label starts this far in; the chosen one has " › " there, its "›" one column in. */
-const RAIL_INDENT = 3;
+/** Each label starts this far in; the chosen one has "› " there. */
+const RAIL_INDENT = 2;
+/** The longest label of either list: Usage's "This session". */
+export const RAIL_LABEL_WIDTH = 12;
+/** The list's width: a label's indent, the longest label and a space before the line. */
+const RAIL_WIDTH = RAIL_INDENT + RAIL_LABEL_WIDTH + 1;
 /** The muted line at the list's right. */
 const LINE_WIDTH = 1;
 
 /** An item of the list: what it picks, its label and its element id. */
 export type RailItem<Key extends string> = { key: Key; label: string; id: string };
 
-/** The list's width: the longest label, its indent and 2 more columns. */
-function railWidth(labels: readonly string[]): number {
-  return RAIL_INDENT + Math.max(...labels.map((label) => label.length)) + 2;
-}
-
 /** What the list takes left of the content: the list, the line after it and `gap` columns. */
-export function railRoom(labels: readonly string[], gap: number): number {
-  return railWidth(labels) + LINE_WIDTH + gap;
+export function railRoom(gap: number): number {
+  return RAIL_WIDTH + LINE_WIDTH + gap;
 }
 
 export function Rail<Key extends string>(props: {
@@ -37,12 +37,11 @@ export function Rail<Key extends string>(props: {
   gap: number;
   pick: (key: Key) => void;
 }): JSX.Element {
-  const width = () => railWidth(props.items.map((item) => item.label));
   return (
     <box
       flexDirection="column"
       flexShrink={0}
-      width={width() + LINE_WIDTH}
+      width={RAIL_WIDTH + LINE_WIDTH}
       marginRight={props.gap}
       overflow="hidden"
       border={["right"]}
@@ -51,7 +50,7 @@ export function Rail<Key extends string>(props: {
     >
       {props.items.map((item) => {
         const chosen = item.key === props.chosen;
-        const marker = chosen ? " › " : " ".repeat(RAIL_INDENT);
+        const marker = chosen ? "› " : " ".repeat(RAIL_INDENT);
         return (
           <text
             id={item.id}
@@ -63,7 +62,7 @@ export function Rail<Key extends string>(props: {
             selectable={false}
             onMouseUp={() => props.pick(item.key)}
           >
-            {`${marker}${item.label}`.padEnd(width())}
+            {`${marker}${item.label}`.padEnd(RAIL_WIDTH)}
           </text>
         );
       })}

@@ -128,7 +128,7 @@ function pageTitle(tab: SettingsTab): string {
 /** What the window keeps left of a Settings tab's body: Layout's page list, else nothing. */
 export function pagesRoom(tab: string | undefined): number {
   const pages = isSettingsTab(tab) ? pagesOf(tab) : undefined;
-  return pages ? railRoom(pages.map(pageTitle), PAGE_LIST_GAP) : 0;
+  return pages ? railRoom(PAGE_LIST_GAP) : 0;
 }
 
 /** "Reset page" on Layout's pages, which reset only their own lines; "Reset tab" elsewhere. */

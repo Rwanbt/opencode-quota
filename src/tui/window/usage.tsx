@@ -72,10 +72,7 @@ const TRANSPARENT = RGBA.fromInts(0, 0, 0, 0);
 /** The content starts one column after the range list's line. */
 const RANGE_LIST_GAP = 1;
 /** What the window keeps left of the content: the range list, the line after it and a gap. */
-export const USAGE_RAIL_WIDTH = railRoom(
-  USAGE_RANGES.map((item) => item.label),
-  RANGE_LIST_GAP,
-);
+export const USAGE_RAIL_WIDTH = railRoom(RANGE_LIST_GAP);
 
 /** How each "by type" part is shaded, from the muted color (0) to the text color (1). */
 const PART_SHADES: Record<string, number> = {

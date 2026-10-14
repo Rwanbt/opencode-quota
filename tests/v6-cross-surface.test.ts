@@ -1020,12 +1020,11 @@ describe("v6 surfaces on the quota snapshot", () => {
         "Status line",
         "Toast",
       ]);
-      // The chosen page's › one column in, every label three. The page's lines start right after
-      // the list's line: they carry their own indent.
-      expect(textLines(list).slice(0, 2)).toEqual([
-        expect.stringMatching(/^ › All places +$/u),
-        expect.stringMatching(/^ {3}Sidebar +$/u),
-      ]);
+      // The chosen page's › in the title's column, every label two columns in, as wide as
+      // Usage's range list. The page's lines start right after the list's line: they carry their
+      // own indent.
+      expect(textLines(list).slice(0, 2)).toEqual(["› All places   ", "  Sidebar      "]);
+      expect(list?.props.width).toBe(16);
       expect(list?.props).toMatchObject({
         marginRight: 0,
         flexDirection: "column",
@@ -1523,14 +1522,12 @@ describe("v6 surfaces on the quota snapshot", () => {
           .length > 0,
     ).at(-1);
     expect(rangeList?.props.overflow).toBe("hidden");
-    // Like the window's other lines: the chosen range's › one column in, every label three; the
-    // content starts one column after the list's line.
+    // The chosen range's › in the title's column, every label two columns in, as wide as
+    // Layout's page list; the content starts one column after the list's line.
     expect(textLines(rangeList)).toEqual(
-      expect.arrayContaining([
-        expect.stringMatching(/^ {3}Today +$/u),
-        expect.stringMatching(/^ › 30 days +$/u),
-      ]),
+      expect.arrayContaining(["  Today        ", "› 30 days      ", "  This session "]),
     );
+    expect(rangeList?.props.width).toBe(16);
     expect(rangeList?.props.marginRight).toBe(1);
 
     // The range list has the keyboard: ↑ shows 7 days at once, ↓ 30 days again. No row is lit.
