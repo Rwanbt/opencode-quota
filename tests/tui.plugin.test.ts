@@ -669,13 +669,15 @@ describe("colored toasts of the TUI plugin", () => {
       .map((child) => (typeof child === "string" ? child : child.props.children))
       .join("");
 
-  it("colors the quota toast on OpenCode 2.0.28, with the same text as elsewhere", async () => {
-    const colored = await afterCompaction("2.0.28");
+  it.each([
+    "2.0.28",
+    "2.1.0",
+    undefined,
+  ])("colors the quota toast on OpenCode %s, with the plain message's text", async (version) => {
+    const colored = await afterCompaction(version);
     expect(colored).toHaveLength(1);
     expect(typeof colored[0]).not.toBe("string");
     expect(drawn(colored[0])).toBe(PLAIN);
-    expect(await afterCompaction("2.0.29")).toEqual([PLAIN]);
-    expect(await afterCompaction()).toEqual([PLAIN]);
   });
 
   it("shows the plain toast when OpenCode's toast throws on the colored one", async () => {

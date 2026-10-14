@@ -7,11 +7,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ProviderSnapshot, QuotaRow } from "../src/core/types.js";
 import { defaultDisplaySettings } from "../src/tui/display.js";
 import type { Theme } from "../src/tui/theme.js";
-import {
-  COLORED_TOAST_VERSIONS,
-  coloredMessage,
-  createToastShow,
-} from "../src/tui/toast-colors.js";
+import { coloredMessage, createToastShow } from "../src/tui/toast-colors.js";
 import { plainMessage, type ToastOptions } from "../src/tui/toasts.js";
 import { DEFAULT_WORDS } from "../src/view/format.js";
 import { visibleGroups } from "../src/view/select.js";
@@ -106,22 +102,18 @@ describe("colored quota toasts", () => {
     ]);
   });
 
-  /**
-   * A toast shown on `version`, through an OpenCode toast that `show` stands for, once the TUI
-   * has drawn (`owner`).
-   */
-  function showOn(
-    version: unknown,
-    {
-      show = () => {},
-      drawn = true,
-    }: { show?: (toast: ToastOptions) => void; drawn?: boolean } = {},
-  ) {
+  /** A toast shown through an OpenCode toast that `show` stands for, once the TUI has drawn. */
+  function showOn({
+    show = () => {},
+    drawn = true,
+  }: {
+    show?: (toast: ToastOptions) => void;
+    drawn?: boolean;
+  } = {}) {
     const owner = drawn ? ({} as Owner) : undefined;
     const shown = vi.fn(show);
     const showToast = createToastShow({
       show: shown,
-      version: () => version,
       theme: () => THEME as unknown as Theme,
       display: defaultDisplaySettings,
       owner: () => owner,
@@ -132,28 +124,15 @@ describe("colored quota toasts", () => {
     return { messages: shown.mock.calls.map(([options]) => options.message), message };
   }
 
-  it.each(COLORED_TOAST_VERSIONS)("sends the colored spans on OpenCode %s", (version) => {
-    const { messages, message } = showOn(version);
+  it("sends the colored spans once the TUI has drawn", () => {
+    const { messages, message } = showOn();
     expect(messages).toHaveLength(1);
     expect(typeof messages[0]).not.toBe("string");
     expect(spansText(messages[0])).toBe(message);
   });
 
-  it.each([
-    "2.0.25",
-    "2.0.29",
-    "2.1.0",
-    "3.0.0",
-    "",
-    undefined,
-    2.028,
-  ])("sends the plain message on OpenCode %s, where colors were never checked", (version) => {
-    const { messages, message } = showOn(version);
-    expect(messages).toEqual([message]);
-  });
-
   it("sends the plain message when OpenCode's toast throws on the spans", () => {
-    const { messages, message } = showOn("2.0.28", {
+    const { messages, message } = showOn({
       show: (toast) => {
         if (typeof toast.message !== "string") throw new Error("message must be a string");
       },
@@ -163,36 +142,18 @@ describe("colored quota toasts", () => {
   });
 
   it("sends the plain message before the TUI has drawn, or when making the spans fails", () => {
-    const before = showOn("2.0.28", { drawn: false });
+    const before = showOn({ drawn: false });
     expect(before.messages).toEqual([before.message]);
     // Without a JSX runtime, making a span throws.
     vi.unstubAllGlobals();
-    const { messages, message } = showOn("2.0.28");
+    const { messages, message } = showOn();
     expect(messages).toEqual([message]);
   });
 
-  it("sends the plain message when reading OpenCode's version throws", () => {
+  it("sends a toast without lines as it is", () => {
     const shown = vi.fn();
     const showToast = createToastShow({
       show: shown,
-      version: () => {
-        throw new Error("app is gone");
-      },
-      theme: () => THEME as unknown as Theme,
-      display: defaultDisplaySettings,
-      owner: () => ({}) as Owner,
-    });
-    const toast = lines();
-    const message = plainMessage(toast);
-    showToast({ variant: "info", title: "OpenCode Quota", message, duration: 9_000 }, toast);
-    expect(shown.mock.calls.map(([options]) => options.message)).toEqual([message]);
-  });
-
-  it("sends a toast without lines as it is, on every version", () => {
-    const shown = vi.fn();
-    const showToast = createToastShow({
-      show: shown,
-      version: () => "2.0.28",
       theme: () => THEME as unknown as Theme,
       display: defaultDisplaySettings,
       owner: () => ({}) as Owner,

@@ -37,8 +37,6 @@ type TuiEvent = { data?: Record<string, unknown> };
 /** What the plugin needs from OpenCode's TUI context, besides the window's needs. */
 type TuiContext = WindowHost &
   ClientHost & {
-    /** The running OpenCode, for example `{ version: "2.0.28" }`; read defensively. */
-    app?: { version?: unknown };
     theme: Theme & WindowHost["theme"];
     storage: {
       store<Value extends object>(
@@ -117,7 +115,6 @@ const plugin = Plugin.define({
     let appOwner: Owner | undefined;
     const showToast = createToastShow({
       show: (toast) => api.ui.toast.show(toast),
-      version: () => api.app?.version,
       theme: () => api.theme,
       display: display.shown,
       owner: () => appOwner,
