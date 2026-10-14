@@ -337,13 +337,13 @@ describe("quota window shell", () => {
     expect(at("Copy the report")).toBeLessThan(at("# Quota Status"));
   });
 
-  it("asks for the notices each time System shows, and shows the newest answer", async () => {
+  it("asks for the notices each time Plugin shows, and shows the newest answer", async () => {
     const host = fakeHost();
     host.quotaWindow.open("system");
     await vi.advanceTimersByTimeAsync(60_000);
     expect(host.noticeCalls).toHaveLength(1);
 
-    // A notice starts; System shows again and its answer comes before the older one.
+    // A notice starts; Plugin shows again and its answer comes before the older one.
     host.server.notices.push({ id: "c", message: "A new notice." });
     host.quotaWindow.open("limits");
     host.quotaWindow.open("system");
@@ -354,7 +354,7 @@ describe("quota window shell", () => {
     expect(textLines(draw(host.quotaWindow).tree)).toContain("A new notice.");
   });
 
-  it("says why the notices could not load, and asks again the next time System shows", async () => {
+  it("says why the notices could not load, and asks again the next time Plugin shows", async () => {
     const host = fakeHost();
     host.quotaWindow.open("system");
     host.noticeCalls[0]?.fail("the server is gone");

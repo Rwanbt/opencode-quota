@@ -120,7 +120,7 @@ describe("colored quota toasts", () => {
     });
     const toast = lines();
     const message = plainMessage(toast);
-    showToast({ variant: "info", title: "OpenCode Quota", message, duration: 9_000 }, toast);
+    showToast({ variant: "info", message, duration: 9_000 }, toast);
     return { messages: shown.mock.calls.map(([options]) => options.message), message };
   }
 
