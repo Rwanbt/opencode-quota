@@ -7,6 +7,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { resolveEditableConfigPath } from "../src/lib/config-file-utils.js";
 import {
   applyConfigDocumentEdit,
+  editConfigDocument,
+  parseConfigDocument,
   planConfigDocumentEdit,
 } from "../src/lib/opencode-config-editor.js";
 
@@ -130,6 +132,60 @@ describe("OpenCode JSON/JSONC config editor", () => {
       managedComments: comments,
     });
     expect(second.changed).toBe(false);
+  });
+
+  it("edits same-length arrays to exactly the desired entries and keeps comments between them", () => {
+    const raw = `{
+  "plugin": [
+    // Comment between plugin entries
+    "other-plugin@1.0.0",
+    ["quota-plugin@latest", {
+      // Option comment
+      "keep": true,
+      "drop": true,
+      "nested": { "keep": 1, "drop": 2 }
+    }]
+  ],
+  "list": [
+    // Comment between list entries
+    {
+      "id": "a",
+      "drop": "old",
+      "map": { "keep": "1", "drop": "2" },
+      "windows": [{ "id": "w1", "extra": { "keep": 1, "drop": 2 } }]
+    },
+    "becomes-object",
+    { "becomes": "array" },
+    [{ "id": "x", "drop": true }]
+  ]
+}
+`;
+    const desiredData = {
+      plugin: ["other-plugin@1.0.0", ["quota-plugin@4", { keep: true, nested: { keep: 1 } }]],
+      list: [
+        {
+          id: "a",
+          map: { keep: "1", added: "3" },
+          windows: [{ id: "w1", extra: { keep: 1 } }, { id: "w2" }],
+        },
+        { id: "now-object" },
+        ["now", "array"],
+        [{ id: "x" }],
+      ],
+    };
+
+    const updated = editConfigDocument({
+      raw,
+      sourceFormat: "jsonc",
+      outputFormat: "jsonc",
+      path: "opencode.jsonc",
+      desiredData,
+    });
+
+    expect(parseConfigDocument(updated, "jsonc", "opencode.jsonc")).toEqual(desiredData);
+    expect(updated).toContain("// Comment between plugin entries");
+    expect(updated).toContain("// Option comment");
+    expect(updated).toContain("// Comment between list entries");
   });
 
   it("keeps an existing JSONC filename when JSON is selected later", async () => {

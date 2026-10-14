@@ -104,19 +104,30 @@ function jsonEqual(left: unknown, right: unknown): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
+// With removeMissingKeys, object keys that are missing from the desired value are
+// removed too, so the edited value matches the desired value exactly. Array entries are
+// always edited this way.
 function collectValueEdits(
   current: unknown,
   desired: unknown,
   path: (string | number)[],
   edits: Array<{ path: (string | number)[]; value: unknown }>,
+  removeMissingKeys = false,
 ): void {
   if (jsonEqual(current, desired)) {
     return;
   }
 
   if (isPlainObject(current) && isPlainObject(desired)) {
+    if (removeMissingKeys) {
+      for (const key of Object.keys(current)) {
+        if (!Object.hasOwn(desired, key)) {
+          edits.push({ path: [...path, key], value: undefined });
+        }
+      }
+    }
     for (const [key, value] of Object.entries(desired)) {
-      collectValueEdits(current[key], value, [...path, key], edits);
+      collectValueEdits(current[key], value, [...path, key], edits, removeMissingKeys);
     }
     return;
   }
@@ -136,7 +147,7 @@ function collectValueEdits(
     // comments between them stay.
     if (desired.length === current.length) {
       for (let index = 0; index < current.length; index++) {
-        collectValueEdits(current[index], desired[index], [...path, index], edits);
+        collectValueEdits(current[index], desired[index], [...path, index], edits, true);
       }
       return;
     }
@@ -154,14 +165,7 @@ function collectValueEdits(
       });
     if (keyedObjectPrefixMatches) {
       for (let index = 0; index < current.length; index++) {
-        const currentValue = current[index] as Record<string, unknown>;
-        const desiredValue = desired[index] as Record<string, unknown>;
-        for (const key of Object.keys(currentValue)) {
-          if (!Object.hasOwn(desiredValue, key)) {
-            edits.push({ path: [...path, index, key], value: undefined });
-          }
-        }
-        collectValueEdits(currentValue, desiredValue, [...path, index], edits);
+        collectValueEdits(current[index], desired[index], [...path, index], edits, true);
       }
       for (let index = current.length; index < desired.length; index++) {
         edits.push({ path: [...path, -1], value: desired[index] });
