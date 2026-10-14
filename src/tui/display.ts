@@ -255,17 +255,20 @@ function serverField(
 }
 
 /** One switch per place: the Limits tab always shows the pace. */
-function runsOutField(surface: Surface, where: string): Field {
+function runsOutField(surface: Surface, where: string, options: FieldOptions = {}): Field {
   const note = "when a limit, used at your pace so far, runs out before its reset";
   const initial = SETTINGS_SCHEMA[`${surface}.runsOut`].default;
   return {
-    ...switchField(`${surface}.runsOut`, "Runs out in …", initial, { note }),
+    ...switchField(`${surface}.runsOut`, "Runs out in …", initial, { note, ...options }),
     show: onOff("off", where),
   };
 }
 
-function tokensField(path: string): Field {
-  return { ...switchField(path, "Session tokens line", true), show: onOff("hidden", "shown") };
+function tokensField(path: string, options: FieldOptions = {}): Field {
+  return {
+    ...switchField(path, "Session tokens line", true, options),
+    show: onOff("hidden", "shown"),
+  };
 }
 
 function colorTitle(choice: FieldValue): string {
@@ -353,9 +356,9 @@ const isSeparator = (value: unknown) => typeof value === "string" && value.lengt
 
 /** Every plain setting, in the order its tab shows it. */
 export const FIELDS: readonly Field[] = [
-  tokensField("sidebar.sessionTokens"),
+  tokensField("sidebar.sessionTokens", { group: "What it shows" }),
   runsOutField("sidebar", "under the row"),
-  runsOutField("collapsed", "under the provider"),
+  runsOutField("collapsed", "under the provider", { group: "What it shows" }),
   {
     ...switchField("statusLine.withSidebar", "Next to the sidebar", false, {
       group: "When it shows",
@@ -495,7 +498,10 @@ export type Preset = {
   title: string;
   /** What it sets, after "sets": the lines by their titles or their group's heading. */
   drives: string;
-  /** The line it sits above, taking that line's heading; without one it is the page's first. */
+  /**
+   * The line it sits above, taking that line's heading; without one it is the page's first,
+   * under "Preset".
+   */
   before?: string;
   /** The values of each choice, by path. */
   choices: Record<string, Record<string, FieldValue>>;

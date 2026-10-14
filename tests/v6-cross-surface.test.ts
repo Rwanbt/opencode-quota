@@ -932,6 +932,45 @@ describe("v6 surfaces on the quota snapshot", () => {
       }
     });
 
+    it.each([
+      { page: "All places", heading: " Preset", line: "Layout preset" },
+      {
+        page: "Sidebar",
+        toggle: " [x] Show the Quota panel in the session sidebar",
+        heading: " What it shows",
+        line: "Session tokens line",
+      },
+      {
+        page: "Collapsed",
+        toggle: " [x] When the panel is collapsed, show one line per provider",
+        heading: " What it shows",
+        line: "Runs out in …",
+      },
+      {
+        page: "Toast",
+        toggle: " [x] Show quota toasts",
+        heading: " Preset",
+        line: "When toasts show",
+      },
+    ])("puts $page's first lines under a heading, and its switch in the headings' column", async ({
+      page,
+      toggle,
+      heading,
+      line,
+    }) => {
+      const { tui, windowTree } = await openSettings("Layout", page);
+      try {
+        await vi.waitFor(() => expect(textLines(windowTree())).toContain(heading));
+        const lines = textLines(windowTree());
+        if (toggle) expect(lines).toContain(toggle);
+        const at = lines.findIndex((text) => text.startsWith(`   ${line}`));
+        expect(at).toBeGreaterThan(0);
+        expect(lines[at - 1]).toBe(heading);
+      } finally {
+        await tui.dispose();
+      }
+    });
+
     it("closes with unsaved changes only after Save or Discard", async () => {
       const { tui, windowTree } = await openSettings("Layout", "All places");
       clickable(settingLine(windowTree(), "layout.barWidth"), "›").props.onMouseUp();

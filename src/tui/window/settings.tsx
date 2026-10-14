@@ -576,7 +576,7 @@ export function createSettingsEditor(
 
   /**
    * A Settings page's lines. A preset sits above the line it names, under that line's heading,
-   * or else first. `refocus` gives the window the keyboard again.
+   * or else first, under "Preset". `refocus` gives the window the keyboard again.
    */
   function optionLines(
     settingsTab: SettingsTab,
@@ -599,7 +599,9 @@ export function createSettingsEditor(
         : [line];
     });
     return [
-      ...presets.filter((name) => PRESETS[name].before === undefined).map(presetLine),
+      ...presets
+        .filter((name) => PRESETS[name].before === undefined)
+        .map((name) => ({ ...presetLine(name), group: "Preset" })),
       ...(settingsTab === "colors" ? themeLines(refocus) : []),
       ...fields,
     ];
@@ -679,8 +681,8 @@ export function createSettingsEditor(
   }
 
   /**
-   * Above a Settings tab's scrolling body: the surface switch, and a warning when the sidebar is
-   * hidden.
+   * Above a Settings tab's scrolling body: the surface switch, which turns the whole page's place
+   * on or off and so starts in the headings' column, and a warning when the sidebar is hidden.
    */
   function Header(props: { tab: SettingsTab; refocus: () => void }): JSX.Element {
     const info = () => SETTINGS_TABS.find((item) => item.tab === props.tab) ?? SETTINGS_TABS[0];
@@ -704,7 +706,7 @@ export function createSettingsEditor(
                 onMouseUp={click(() => toggleSurface(current()))}
               >
                 <Cell fg={active() ? theme().text.action.primary.focused : theme().text.base} bold>
-                  {`   ${surfaceOn() ? "[x]" : "[ ]"} ${info().switchTitle}`}
+                  {` ${surfaceOn() ? "[x]" : "[ ]"} ${info().switchTitle}`}
                 </Cell>
               </box>
             )}
