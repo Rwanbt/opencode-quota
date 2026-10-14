@@ -522,6 +522,7 @@ function settingValueText(rule: SettingRule, value: unknown, homeDir: string): s
     case "choice":
       return rule.values.includes(String(value)) ? String(value) : "(other)";
     case "number": {
+      if (rule.word !== undefined && value === rule.word) return rule.word;
       const rounded = typeof value === "number" ? Number(value.toFixed(2)) : Number.NaN;
       return Number.isFinite(rounded) && Math.abs(rounded) < 1e6
         ? String(rounded)

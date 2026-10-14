@@ -328,6 +328,7 @@ const SHOW = {
   resetNotice: (value) => RESET_NOTICES[String(value)] ?? "off",
   bar: (value) =>
     value === "none" ? "no bars" : `${barParts(value as BarShape, 60, 5).join("")} ${value}`,
+  barWidth: (value) => (value === "fill" ? "fill the room" : `${value} columns`),
   indent: (value) => (value === 1 ? "1 space" : `${value} spaces`),
   gap: (value) => (value === 1 ? "1 empty line" : value ? `${value} empty lines` : "nothing"),
   separator: (value) => (String(value).trim() ? `"${String(value).trim()}"` : "spaces"),
@@ -414,28 +415,18 @@ export const FIELDS: readonly Field[] = [
   }),
   ...COLOR_FIELDS.slice(4),
   listField("layout.bar", "Bar shape", "blocks", BAR_SHAPES, SHOW.bar, { group: "Bars" }),
-  numberField(
-    "layout.barWidth",
-    "Bar width",
-    8,
-    [1, 30],
-    [4, 6, 8, 10, 12],
-    unit("columns"),
-    LAYOUT,
-  ),
+  listField("layout.barWidth", "Bar width", "fill", ["fill", 4, 6, 8, 10, 12], SHOW.barWidth, {
+    valid: (value) => value === "fill" || isWhole(value, 1, 30),
+    ...LAYOUT,
+  }),
   numberField("layout.indent", "Row indent", 1, [0, 4], [0, 1, 2, 3], SHOW.indent, {
     group: "Spacing",
     ...LAYOUT,
   }),
-  numberField(
-    "layout.labelWidth",
-    "Label width",
-    8,
-    [3, 20],
-    [6, 8, 10, 12],
-    unit("letters"),
-    LAYOUT,
-  ),
+  numberField("layout.labelWidth", "Label width", 8, [3, 20], [6, 8, 10, 12], unit("letters"), {
+    note: "the most a row name takes",
+    ...LAYOUT,
+  }),
   numberField("layout.providerGap", "Between providers", 1, [0, 2], [0, 1], SHOW.gap, LAYOUT),
   listField("layout.separator", "Separator", " · ", [" · ", " | ", " / ", "  "], SHOW.separator, {
     group: "Status line",
@@ -517,7 +508,12 @@ export type Preset = {
   choices: Record<string, Record<string, FieldValue>>;
 };
 
-function layoutChoice(barWidth: number, indent: number, labelWidth: number, providerGap: number) {
+function layoutChoice(
+  barWidth: number | "fill",
+  indent: number,
+  labelWidth: number,
+  providerGap: number,
+) {
   return {
     "layout.barWidth": barWidth,
     "layout.indent": indent,
@@ -553,8 +549,8 @@ export const PRESETS: Record<PresetName, Preset> = {
     drives: "Bar width and the 3 Spacing lines",
     choices: {
       compact: layoutChoice(6, 1, 6, 0),
-      comfortable: layoutChoice(8, 1, 8, 1),
-      roomy: layoutChoice(10, 2, 8, 1),
+      comfortable: layoutChoice("fill", 1, 8, 1),
+      roomy: layoutChoice("fill", 2, 8, 2),
     },
   },
   toast: {

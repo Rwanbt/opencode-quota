@@ -314,6 +314,11 @@ describe("quota_settings_get", () => {
       allowed: 'one of: "left", "remaining", "bare", "used"',
     });
     expect(result.settings?.["words.reset"]).toMatchObject({ value: "smart", from: "default" });
+    expect(result.settings?.["layout.barWidth"]).toEqual({
+      value: "fill",
+      from: "default",
+      allowed: '"fill" or a whole number from 1 to 30',
+    });
     expect(result.apiKeys).toEqual([
       { provider: "my-gateway-quota", apiKeyEnv: GATEWAY_VARIABLE, isSet: true },
       {

@@ -49,8 +49,10 @@ export type Line = { id: string; segments: Segment[] };
 
 export type Layout = {
   bar: BarShape;
-  barWidth: number;
+  /** Bar cells, or "fill": the room the other columns leave, up to each place's most. */
+  barWidth: number | "fill";
   indent: number;
+  /** The most columns a row name takes; the name column fits the names next to a bar. */
   labelWidth: number;
   /** Empty lines between providers in the sidebar. */
   providerGap: number;
@@ -60,6 +62,16 @@ export type Layout = {
 
 export function lineText(line: Line): string {
   return line.segments.map((segment) => segment.text).join("");
+}
+
+/**
+ * The start of a row without a bar: its name, cut to `most` columns, then spaces up to the bar
+ * column, or 2 after a name that reaches it.
+ */
+function valueRowStart(indent: number, name: string, most: number, barColumn: number): string {
+  const text = `${" ".repeat(indent)}${columnsOf(name) > most ? fit(name, most) : name}`;
+  const gap = barColumn - columnsOf(text);
+  return `${text}${" ".repeat(gap >= 1 ? gap : 2)}`;
 }
 
 function barSegments(shape: BarShape, percent: number, width: number): Segment[] {
@@ -196,34 +208,54 @@ function sessionLine(tokens: SessionTokens, width: number): Line {
   };
 }
 
-/** §4.1: the expanded Quota panel, below its title line (`sidebarTitle`). */
+/** The most cells a "fill" bar takes on the sidebar. */
+const SIDEBAR_BAR_MOST = 20;
+
+/**
+ * §4.1: the expanded Quota panel, below its title line (`sidebarTitle`). The name column fits
+ * the longest name next to a bar; a row without a bar (a balance) starts its value there, or 2
+ * columns after a longer name.
+ */
 export function sidebarLines(input: SidebarInput): Line[] {
   const { layout, words, nowMs, width } = input;
   const percentRows = input.groups.flatMap((group) =>
-    group.rows.filter((item) => item.row.percentRemaining !== undefined),
+    group.rows
+      .filter((item) => item.row.percentRemaining !== undefined)
+      .map((item) => ({ ...item, name: rowName(item, group, words) })),
   );
   const resetWidth =
     1 + Math.max(0, ...percentRows.map((item) => resetText(item.row, nowMs, words).length));
-  const fixed = layout.indent + layout.labelWidth + 1 + 5 + resetWidth;
-  const barWidth =
-    layout.bar === "none" ? 0 : Math.max(0, Math.min(layout.barWidth, width - fixed));
+  const nameWidth = Math.min(
+    layout.labelWidth,
+    Math.max(0, ...percentRows.map((item) => columnsOf(item.name))),
+  );
+  const barColumn = layout.indent + nameWidth + 1;
+  const fixed = barColumn + 5 + resetWidth;
+  const wanted = layout.barWidth === "fill" ? SIDEBAR_BAR_MOST : layout.barWidth;
+  const barWidth = layout.bar === "none" ? 0 : Math.max(0, Math.min(wanted, width - fixed));
 
   const rowLine = (item: VisibleRow, group: Group): Line => {
     const { row } = item;
     const percent = row.percentRemaining;
     const name = rowName(item, group, words);
-    const labelText = `${" ".repeat(layout.indent)}${fit(name, layout.labelWidth)} `;
-    const labelSegment: Segment = { text: labelText, role: "label", percent };
     if (percent === undefined) {
+      const start = valueRowStart(layout.indent, name, layout.labelWidth, barColumn);
       return {
         id: row.id,
-        segments: clip([labelSegment, { text: rowValueText(row), role: "value" }], width),
+        segments: clip(
+          [
+            { text: start, role: "label" },
+            { text: rowValueText(row), role: "value" },
+          ],
+          width,
+        ),
       };
     }
+    const labelText = `${" ".repeat(layout.indent)}${fit(name, nameWidth)} `;
     return {
       id: row.id,
       segments: [
-        labelSegment,
+        { text: labelText, role: "label", percent },
         ...barSegments(layout.bar, percent, barWidth),
         { text: percentText(words, percent, false).padStart(5), role: "percent", percent },
         { text: resetText(row, nowMs, words).padStart(resetWidth), role: "reset", percent },
@@ -241,7 +273,7 @@ export function sidebarLines(input: SidebarInput): Line[] {
       lines.push(rowLine(item, group));
       const runsOut = runsOutText(input.runsOut, item.row, nowMs, words);
       if (!runsOut) continue;
-      const text = `${" ".repeat(layout.indent + layout.labelWidth + 1)}${runsOut}`;
+      const text = `${" ".repeat(barColumn)}${runsOut}`;
       lines.push({ id: item.row.id, segments: clip([{ text, role: "warning" }], width) });
     }
   });
@@ -261,6 +293,9 @@ export function collapsedTitle(groups: Group[]): string {
   return `▶ Quota (${providers}${errors ? `, ${errors} ${errors === 1 ? "error" : "errors"}` : ""})`;
 }
 
+/** A collapsed line's columns besides its bar: provider 10, row name 5, percent 5, reset 8. */
+const COLLAPSED_WITHOUT_BAR = 28;
+
 type CollapsedInput = {
   groups: Group[];
   layout: Layout;
@@ -279,7 +314,8 @@ type CollapsedInput = {
  */
 export function collapsedLines(input: CollapsedInput): Line[] {
   const { layout, words, nowMs } = input;
-  const barWidth = layout.bar === "none" ? 0 : Math.min(layout.barWidth, 10);
+  const wanted = layout.barWidth === "fill" ? input.width - COLLAPSED_WITHOUT_BAR : layout.barWidth;
+  const barWidth = layout.bar === "none" ? 0 : Math.max(0, Math.min(wanted, 10));
   const providerLine = (group: Group, picked: VisibleRow | undefined): Line => {
     const percent = picked?.row.percentRemaining;
     const name: Segment = { text: `${fit(group.title, 9)} `, role: "provider", percent };
@@ -582,7 +618,9 @@ function runsOutLine(id: string, runsOut: string, column: number, room: number):
 /**
  * The grouped toast: a line per provider account with its error, then its rows indented 2:
  * the name, a bar in the room the other columns leave (at most 20 cells), the percent and the
- * reset time. "runs out in" goes under the row at the bar's column.
+ * reset time. "runs out in" goes under the row at the bar's column. The name column fits the
+ * longest name next to a bar; a row without a bar starts its value there, or 2 columns after a
+ * longer name.
  */
 function groupedToastLines(input: ToastInput): Line[] {
   const { words, nowMs, room } = input;
@@ -602,7 +640,12 @@ function groupedToastLines(input: ToastInput): Line[] {
   );
   const nameWidth = Math.min(
     GROUPED_NAME_MAX,
-    Math.max(0, ...items.map((item) => columnsOf(item.name))),
+    Math.max(
+      0,
+      ...items
+        .filter(({ row }) => row.percentRemaining !== undefined)
+        .map(({ name }) => columnsOf(name)),
+    ),
   );
   const barColumn = GROUPED_INDENT + nameWidth + 1;
   const fixed = barColumn + 1 + percentWidth + (resetWidth > 0 ? 2 + resetWidth : 0);
@@ -612,11 +655,12 @@ function groupedToastLines(input: ToastInput): Line[] {
   const rowLines = (item: (typeof items)[number]): Line[] => {
     const { row } = item;
     const percent = row.percentRemaining;
-    const name = `${" ".repeat(GROUPED_INDENT)}${fit(item.name, nameWidth)} `;
     if (percent === undefined) {
+      const start = valueRowStart(GROUPED_INDENT, item.name, GROUPED_NAME_MAX, barColumn);
       const value: Segment = { text: rowValueText(row), role: "value" };
-      return [{ id: row.id, segments: clip([{ text: name, role: "label" }, value], room) }];
+      return [{ id: row.id, segments: clip([{ text: start, role: "label" }, value], room) }];
     }
+    const name = `${" ".repeat(GROUPED_INDENT)}${fit(item.name, nameWidth)} `;
     const number = percentText(words, percent, false).padStart(4);
     const reset = resetText(row, nowMs, words);
     const segments: Segment[] = [

@@ -43,8 +43,9 @@ describe("the Settings tabs' field table", () => {
   });
 
   it.each([
-    { path: "layout.barWidth", delta: 1, expected: 10 },
-    { path: "layout.barWidth", delta: -1, expected: 6 },
+    // From "fill", the first value, to the first and the last number.
+    { path: "layout.barWidth", delta: 1, expected: 4 },
+    { path: "layout.barWidth", delta: -1, expected: 12 },
     { path: "layout.separator", delta: -1, expected: "  " },
     { path: "statusLine.detail", delta: 1, expected: "one" },
     { path: "statusLine.runsOut", delta: 1, expected: true },
@@ -127,7 +128,7 @@ describe("the Settings tabs' field table", () => {
     const roomy = withPreset(defaults, "layout", 1);
     expect([choiceOf(roomy, "layout"), roomy.layout]).toEqual([
       "roomy",
-      { ...defaults.layout, barWidth: 10, indent: 2, providerGap: 1 },
+      { ...defaults.layout, indent: 2, providerGap: 2 },
     ]);
     const quiet = withPreset(defaults, "toast", -1);
     expect([choiceOf(quiet, "toast"), quiet.toast.afterReply]).toEqual(["quiet", "off"]);

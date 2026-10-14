@@ -183,9 +183,9 @@ Roles are `good`, `warning`, `low`, `empty`, `title`, `provider`, `account`, `la
 | Setting | Default | Values |
 | --- | --- | --- |
 | `layout.bar` | `"blocks"` | `blocks`, `shades`, `line`, `squares`, `dots`, `none`. Every place and the Limits tab use it; with `none`, Limits keeps a thin line for its pace mark. |
-| `layout.barWidth` | `8` | Whole number 1–30. |
+| `layout.barWidth` | `"fill"` | `fill` takes the room the other columns leave, at most 20 cells on the sidebar and 10 on the collapsed panel; or a whole number 1–30. |
 | `layout.indent` | `1` | Whole number 0–4. |
-| `layout.labelWidth` | `8` | Whole number 3–20. |
+| `layout.labelWidth` | `8` | Whole number 3–20: the most columns a row name takes. The name column fits the longest name next to a bar. |
 | `layout.providerGap` | `1` | Whole number 0–2. |
 | `layout.separator` | `" · "` | Up to 5 characters. |
 

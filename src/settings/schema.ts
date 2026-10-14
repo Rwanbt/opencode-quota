@@ -22,8 +22,11 @@ type NumberBounds = { min?: number; above?: number; max?: number };
 export type SettingRule = (
   | { kind: "boolean" }
   | { kind: "choice"; values: readonly string[] }
-  /** `above` is an exclusive lower bound, `min` and `max` inclusive ones. */
-  | ({ kind: "number"; integer: boolean; nullable?: boolean } & NumberBounds)
+  /**
+   * `above` is an exclusive lower bound, `min` and `max` inclusive ones. `word` is a word the
+   * setting takes instead of a number ("fill").
+   */
+  | ({ kind: "number"; integer: boolean; nullable?: boolean; word?: string } & NumberBounds)
   /** An absolute or `~/` path without `..`; also "" or a command name when allowed. */
   | { kind: "path"; allowEmpty?: boolean; allowCommand?: boolean }
   | {
@@ -124,7 +127,8 @@ export const SETTINGS_SCHEMA = {
   "colors.warningBelow": { ...whole(0, 100), default: 50 },
   "colors.lowBelow": { ...whole(0, 100), default: 20 },
   "layout.bar": choice(["blocks", "shades", "line", "squares", "dots", "none"], "blocks"),
-  "layout.barWidth": { ...whole(1, 30), default: 8 },
+  /** "fill": the room the other columns leave, up to each place's most. */
+  "layout.barWidth": { ...whole(1, 30), word: "fill", default: "fill" },
   "layout.indent": { ...whole(0, 4), default: 1 },
   "layout.labelWidth": { ...whole(3, 20), default: 8 },
   "layout.providerGap": { ...whole(0, 2), default: 1 },
@@ -195,11 +199,13 @@ type KindValue = {
 };
 type ValueOf<R> = R extends { values: readonly (infer V)[] }
   ? V
-  : R extends { nullable: true }
-    ? number | null
-    : R extends { kind: infer K extends keyof KindValue }
-      ? KindValue[K]
-      : never;
+  : R extends { word: infer W extends string }
+    ? number | W
+    : R extends { nullable: true }
+      ? number | null
+      : R extends { kind: infer K extends keyof KindValue }
+        ? KindValue[K]
+        : never;
 type Head<K> = K extends `${infer Group}.${string}` ? Group : K;
 type Under<T, Group extends string> = {
   [K in keyof T as K extends `${Group}.${infer Rest}` ? Rest : never]: T[K];
@@ -288,7 +294,8 @@ export function describeRule(rule: SettingRule): string {
             : rule.min !== undefined
               ? ` of at least ${rule.min}`
               : "";
-      return `${rule.nullable ? "null or " : ""}${kind}${bounds}`;
+      const word = rule.word === undefined ? "" : `${JSON.stringify(rule.word)} or `;
+      return `${word}${rule.nullable ? "null or " : ""}${kind}${bounds}`;
     }
     case "path": {
       const or = rule.allowEmpty ? '"" or ' : rule.allowCommand ? "a command name or " : "";
@@ -320,6 +327,7 @@ export type CheckedSetting = { value?: unknown; issues: SettingsIssue[] };
 
 function checkNumber(rule: Extract<SettingRule, { kind: "number" }>, value: unknown): boolean {
   if (value === null) return rule.nullable === true;
+  if (rule.word !== undefined && value === rule.word) return true;
   return (
     typeof value === "number" &&
     Number.isFinite(value) &&

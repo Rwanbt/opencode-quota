@@ -372,8 +372,8 @@ describe("view text", () => {
     // One empty line between providers, and before the session tokens, by default.
     expect(lines.map(lineText)).toEqual([
       "Claude",
-      " 5h       █████░░░  58% 2h 14m",
-      " 7d       █░░░░░░░  12%   3.2d",
+      " 5h ████████████░░░░░░░░  58% 2h 14m",
+      " 7d ██░░░░░░░░░░░░░░░░░░  12%   3.2d",
       "",
       "OpenCode Zen",
       " Balance  $1,240.50 left",
@@ -389,13 +389,15 @@ describe("view text", () => {
     });
   });
 
-  it("shortens the bar, then drops it, when the sidebar is narrow", () => {
-    const line = (width: number) =>
-      lineText(sidebarLines({ groups: groups("sidebar", [CLAUDE]), ...drawn, width })[1]!);
-    expect([line(40), line(26), line(22)]).toEqual([
-      " 5h       █████░░░  58% 2h 14m",
-      " 5h       ██░░  58% 2h 14m",
-      " 5h         58% 2h 14m",
+  it("fills the sidebar's room with the bar, at most 20 cells, then drops it when narrow", () => {
+    const line = (width: number, layout = display.layout) =>
+      lineText(sidebarLines({ groups: groups("sidebar", [CLAUDE]), ...drawn, layout, width })[1]!);
+    expect([line(40), line(20), line(16), line(40, { ...display.layout, barWidth: 8 })]).toEqual([
+      " 5h ████████████░░░░░░░░  58% 2h 14m",
+      " 5h ██░░  58% 2h 14m",
+      " 5h   58% 2h 14m",
+      // A number fixes the bar.
+      " 5h █████░░░  58% 2h 14m",
     ]);
   });
 
@@ -426,7 +428,7 @@ describe("view text", () => {
       window: { anthropic: "five_hour" },
     });
     expect(lines.map(lineText)).toEqual([
-      "Claude    5h   █████░░░  58%  2h 14m",
+      "Claude    5h   ██████░░░░  58%  2h 14m",
       "OpenCode… $1,240.50 left",
       "OpenRout… Sign in again",
     ]);
@@ -441,7 +443,7 @@ describe("view text", () => {
       width: 60,
       window: {},
     });
-    expect(lines.map(lineText)).toEqual(["Claude    7d   █░░░░░░░  12% 3d 3h 53m"]);
+    expect(lines.map(lineText)).toEqual(["Claude    7d   █░░░░░░░░░  12% 3d 3h 53m"]);
   });
 
   it("shows the error next to the rows kept from before, collapsed and on the status line", () => {
@@ -452,7 +454,7 @@ describe("view text", () => {
       width: 50,
       window: {},
     });
-    expect(collapsed.map(lineText)).toEqual(["Claude    7d   █░░░░░░░  12%  Sign in again"]);
+    expect(collapsed.map(lineText)).toEqual(["Claude    7d   █░░░░░░░░░  12%  Sign in again"]);
     const status = statusInput([expired]);
     expect(
       ["full", "numbers"].map((level) =>
@@ -565,12 +567,12 @@ describe("view text", () => {
     }).toEqual({
       sidebar: [
         "Claude",
-        " 5h       █████░░░  58% 2h 14m",
-        " 7d       █░░░░░░░  12%   3.2d",
-        "          runs out in 13h",
+        " 5h ████████████░░░░░░░░  58% 2h 14m",
+        " 7d ██░░░░░░░░░░░░░░░░░░  12%   3.2d",
+        "    runs out in 13h",
       ],
       off: 3,
-      collapsed: ["Claude    7d   █░░░░░░░  12%    3.2d", "          runs out in 13h"],
+      collapsed: ["Claude    7d   █░░░░░░░░░  12%    3.2d", "          runs out in 13h"],
       status: "Claude █░░░░ 12% 3.2d (runs out in 13h)",
       big: "Claude 7d █░░░░░░░░░ 12% left · 3.2d · runs out in 13h",
       plain: [
@@ -612,16 +614,17 @@ describe("view text", () => {
     const lines = toast("grouped", 54, [CLAUDE, ZEN, ROUTER, TWO_ACCOUNTS], tokens);
     expect(lines).toEqual([
       "Claude",
-      "  5h      ████████████░░░░░░░░  58% left  2h 14m",
-      "  7d      ██░░░░░░░░░░░░░░░░░░  12% left  3.2d",
-      "          runs out in 13h",
+      "  5h  ████████████░░░░░░░░  58% left  2h 14m",
+      "  7d  ██░░░░░░░░░░░░░░░░░░  12% left  3.2d",
+      "      runs out in 13h",
       "OpenCode Zen",
-      "  Balance $1,240.50 left",
+      // A row without a bar: its value 2 columns after a name longer than the name column.
+      "  Balance  $1,240.50 left",
       "OpenRouter  Sign in again",
       "Copilot (work)  Timed out",
-      "  30d     ████████░░░░░░░░░░░░  40% left",
+      "  30d ████████░░░░░░░░░░░░  40% left",
       "Copilot (home)",
-      "  30d     ██████████████████░░  90% left",
+      "  30d ██████████████████░░  90% left",
       "Session  12.3K in · 2.10K out",
     ]);
     expect(widest(lines)).toBeLessThanOrEqual(54);
@@ -811,8 +814,12 @@ describe("view text", () => {
       };
     };
     expect(places({})).toEqual({
-      sidebar: ["Claude", " 5h       █████░░░  58% 2h 14m", " 7d       █░░░░░░░  12%   3.2d"],
-      collapsed: ["Claude    7d   █░░░░░░░  12%    3.2d"],
+      sidebar: [
+        "Claude",
+        " 5h ████████████░░░░░░░░  58% 2h 14m",
+        " 7d ██░░░░░░░░░░░░░░░░░░  12%   3.2d",
+      ],
+      collapsed: ["Claude    7d   █░░░░░░░░░  12%    3.2d"],
       statusLine: "Claude 7d █░░░░░░░░░ 12% left · 3.2d",
       grouped: ["Claude", "  5h ████░░░  58% left  2h 14m", "  7d █░░░░░░  12% left  3.2d"],
       detailed: [
@@ -824,8 +831,12 @@ describe("view text", () => {
       ],
     });
     expect(places({ rowNames: "full" })).toEqual({
-      sidebar: ["Claude", " 5h       █████░░░  58% 2h 14m", " Weekly   █░░░░░░░  12%   3.2d"],
-      collapsed: ["Claude    Wee… █░░░░░░░  12%    3.2d"],
+      sidebar: [
+        "Claude",
+        " 5h     ████████████░░░░░░░░  58% 2h 14m",
+        " Weekly ██░░░░░░░░░░░░░░░░░░  12%   3.2d",
+      ],
+      collapsed: ["Claude    Wee… █░░░░░░░░░  12%    3.2d"],
       statusLine: "Claude Weekly █░░░░░░░░░ 12% left · 3.2d",
       grouped: ["Claude", "  5h     ██░  58% left  2h 14m", "  Weekly ░░░  12% left  3.2d"],
       detailed: [
@@ -844,7 +855,7 @@ describe("view text", () => {
     for (const rowNames of ["short", "full"] as const) {
       const shown = places({ rowNames }, renamed);
       expect([shown.collapsed, shown.statusLine]).toEqual([
-        ["Claude    All  █░░░░░░░  12%    3.2d"],
+        ["Claude    All  █░░░░░░░░░  12%    3.2d"],
         "Claude All █░░░░░░░░░ 12% left · 3.2d",
       ]);
     }
