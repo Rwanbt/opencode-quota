@@ -25,7 +25,7 @@ type FakeConnection =
 const FAKE_LOCATION = { directory: "/tmp/opencode-quota-fake-location" };
 
 /**
- * A fake of the server plugin's `ctx.integration` with OpenCode 2.0.26's Promise shapes:
+ * A fake of the server plugin's `ctx.integration` with OpenCode 2.0.28's Promise shapes:
  * `list()` and `get()` return `{ location, data }` envelopes and `get()` rejects for an
  * unregistered id; `connection.active()` and `connection.resolve()` return bare values.
  * Credentials are listed in the given order, which stands for OpenCode's own order (active
