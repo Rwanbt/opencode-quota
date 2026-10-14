@@ -606,6 +606,14 @@ describeVendor("openrouter", [
     rows: [["openrouter.key", null, "Spend", null, "$3.50", null]],
   },
   {
+    name: "shows a key without a limit as this month's spend when the reply has it",
+    reply: () =>
+      jsonReply({
+        data: { usage: 3.5, usage_monthly: 1.25, limit: null, limit_remaining: null },
+      }),
+    rows: [["openrouter.key", null, "This month", "month", "$1.25", null]],
+  },
+  {
     name: "rejects more left than the limit",
     reply: () => jsonReply({ data: { usage: 1, limit: 10, limit_remaining: 11 } }),
     rows: [],

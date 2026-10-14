@@ -517,12 +517,15 @@ function parseJsonV1(
   };
 }
 
-/** The key's budget (percent left), or its spend when the key has no limit. */
+/**
+ * The key's budget (percent left), or its spend when the key has no limit: this month's
+ * (`usage_monthly`, the current UTC month) when the reply has it, else all time.
+ */
 function parseOpenRouterKeyV1(body: unknown): RemoteQuotaProviderResult {
   const invalid = { success: false, error: "Invalid openrouter-key-v1 response" } as const;
   if (!isRecord(body) || !isRecord(body.data)) return invalid;
 
-  const { usage, limit, limit_remaining: remaining } = body.data;
+  const { usage, usage_monthly: usageMonthly, limit, limit_remaining: remaining } = body.data;
   const isValidUsage = typeof usage === "number" && Number.isFinite(usage) && usage >= 0;
   const isValidLimit =
     limit === null ||
@@ -556,16 +559,20 @@ function parseOpenRouterKeyV1(body: unknown): RemoteQuotaProviderResult {
     };
   }
 
+  // A reply without a usable monthly figure (an older or compatible endpoint) keeps the
+  // all-time spend.
+  const hasMonthly =
+    typeof usageMonthly === "number" && Number.isFinite(usageMonthly) && usageMonthly >= 0;
   return {
     success: true,
     rows: [
       customRow({
         key: "spend",
         name: "spend",
-        label: "Spend",
+        label: hasMonthly ? "This month" : "Spend",
         resultType: "spend",
         method: "remote_api",
-        value: { text: fmtUsdAmount(usage) },
+        value: { text: fmtUsdAmount(hasMonthly ? usageMonthly : usage) },
       }),
     ],
   };

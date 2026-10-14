@@ -344,6 +344,55 @@ describe("openrouter-key-v1", () => {
     });
   });
 
+  // OpenRouter's reply (sanitized) for a key without a limit.
+  const UNLIMITED_KEY = {
+    label: "sk-or-v1-abc...xyz",
+    limit: null,
+    limit_reset: null,
+    limit_remaining: null,
+    usage: 140.7,
+    usage_daily: 0.42,
+    usage_weekly: 2.9,
+    usage_monthly: 12.3,
+    is_free_tier: false,
+  };
+
+  it("shows this month's spend for a key without a limit", async () => {
+    await expect(fetchBody({ data: UNLIMITED_KEY }, OPENROUTER)).resolves.toEqual({
+      success: true,
+      rows: [
+        remoteRow({
+          key: "spend",
+          label: "This month",
+          type: "usage",
+          window: "month",
+          text: "$12.30",
+        }),
+      ],
+    });
+  });
+
+  it.each([
+    ["missing", undefined],
+    ["null", null],
+    ["text", "12.3"],
+    ["negative", -1],
+  ])("keeps the all-time spend when usage_monthly is %s", async (_name, usageMonthly) => {
+    const data = { ...UNLIMITED_KEY, usage_monthly: usageMonthly };
+    await expect(fetchBody({ data }, OPENROUTER)).resolves.toEqual({
+      success: true,
+      rows: [remoteRow({ key: "spend", label: "Spend", type: "usage", text: "$140.70" })],
+    });
+  });
+
+  it("keeps the budget row for a key with a limit, whatever this month's spend", async () => {
+    const data = { ...UNLIMITED_KEY, limit: 200, limit_remaining: 150 };
+    await expect(fetchBody({ data }, OPENROUTER)).resolves.toEqual({
+      success: true,
+      rows: [remoteRow({ key: "budget", label: "Budget", type: "budget", percentRemaining: 75 })],
+    });
+  });
+
   // Raw JSON text, so non-finite numbers such as 1e400 reach the parser.
   it.each([
     ["missing usage", '{"data":{"limit":10}}'],

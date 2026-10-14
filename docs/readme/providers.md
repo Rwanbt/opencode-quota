@@ -196,7 +196,7 @@ Add the providers you use to `providers.custom` in `settings.jsonc`, then set th
 
 - `quota-v1` reads the standard OpenCode Quota envelope.
 - `json-v1` maps fields from a strict JSON response through a declarative adapter.
-- `openrouter-key-v1` reads OpenRouter's key response.
+- `openrouter-key-v1` reads OpenRouter's key response, with the same rows as the [built-in OpenRouter](#openrouter).
 
 A `quota-v1` response looks like this:
 
@@ -561,7 +561,7 @@ Create an Ollama API key, then set `OLLAMA_API_KEY` (or use trusted user/global 
 
 ### OpenRouter
 
-Reads your OpenCode API key and calls OpenRouter's current-key endpoint. Limited keys show the budget's percentage left; unlimited keys show spend. No reset time is invented. `/quota_status` has an `openrouter:` section with the key source and the live check result.
+Reads your OpenCode API key and calls OpenRouter's current-key endpoint. Limited keys show the budget's percentage left. Unlimited keys show **This month**: the spend in the current UTC month (`usage_monthly`), or the all-time **Spend** when the reply has no monthly figure. No reset time is invented. `/quota_status` has an `openrouter:` section with the key source and the live check result.
 
 <a id="opencode-go"></a>
 
