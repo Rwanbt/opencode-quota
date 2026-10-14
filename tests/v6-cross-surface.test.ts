@@ -1,8 +1,13 @@
+import { DEFAULT_USAGE_RANGE, USAGE_RANGES, usageRangeLabel } from "../src/core/usage-ranges.js";
 import { QUOTA_PROVIDER_CATALOG } from "../src/lib/provider-metadata.js";
 
 const CONFIG_PROVIDER_IDS = Object.keys(QUOTA_PROVIDER_CATALOG).map((id) =>
   id === "quota-providers" ? "custom" : id,
 );
+
+/** The range list's line under the default range, where ↓ goes from it. */
+const RANGE_AFTER_DEFAULT =
+  USAGE_RANGES[USAGE_RANGES.findIndex((item) => item.range === DEFAULT_USAGE_RANGE) + 1]?.label;
 
 /**
  * The v6 surfaces end to end: the real server plugin (`src/plugin.ts`) and the real TUI plugin
@@ -1443,8 +1448,68 @@ describe("v6 surfaces on the quota snapshot", () => {
     );
     expect(litUsageLines(usageTab())).toEqual([]);
     expect(tui.press(11, "right")).toBe(false);
-    tui.press(11, "up");
-    expect(activeLabels(usageTab())).toContain("7 days");
+    tui.press(11, "down");
+    expect(activeLabels(usageTab())).toContain(RANGE_AFTER_DEFAULT);
+    await tui.dispose();
+  });
+
+  it("shows the default range whenever you switch to the Usage tab, and keeps Cost or Tokens and Model or Day", async () => {
+    writeUsageHistory();
+    const tui = await startHosts();
+    const usageTab = () => tui.render("session.composer.top", { sessionID: "ses_1" });
+    const defaultLabel = usageRangeLabel(DEFAULT_USAGE_RANGE);
+    tui.typed("/quota_usage 30d");
+    await vi.waitFor(() => expect(words(usageTab())).toContain("Breakdown"));
+    expect(activeLabels(usageTab())).toContain("30 days");
+    tui.press(11, "t");
+    tui.press(11, "b");
+
+    // tab and shift+tab: back on Usage, the default range, still Tokens by day.
+    tui.press(10, "tab");
+    usageTab();
+    tui.press(10, "shift+tab");
+    expect(activeLabels(usageTab())).toEqual(
+      expect.arrayContaining(["Usage", defaultLabel, "Tokens"]),
+    );
+    expect(activeLabels(usageTab())).not.toContain("30 days");
+    await vi.waitFor(() => expect(activeLabels(usageTab())).toContain("Day"));
+
+    // A click on the tab bar's Usage.
+    clickable(usageTab(), "30 days").props.onMouseUp();
+    expect(activeLabels(usageTab())).toContain("30 days");
+    clickable(usageTab(), "Limits").props.onMouseUp();
+    clickable(usageTab(), "Usage").props.onMouseUp();
+    expect(activeLabels(usageTab())).toContain(defaultLabel);
+
+    // The window opening on Usage from the command palette.
+    clickable(usageTab(), "30 days").props.onMouseUp();
+    await tui.command("limits").run();
+    await tui.command("usage").run();
+    expect(activeLabels(usageTab())).toContain(defaultLabel);
+
+    // A command that names a range still shows it.
+    tui.typed("/quota_usage 30d");
+    expect(activeLabels(usageTab())).toContain("30 days");
+    await vi.waitFor(() =>
+      expect(words(usageTab())).toContainEqual(expect.stringMatching(/ 2 sessions · /u)),
+    );
+
+    // Model and Day sit at the right end of the Breakdown line, as Cost and Tokens do on the
+    // first line: a spacer that grows sits between them and the heading.
+    const optionsLine = (first: string) =>
+      findAll(
+        usageTab(),
+        (node) =>
+          node.type === "box" && node.props.flexDirection === "row" && textLines(node)[0] === first,
+      ).at(-1)?.props.children as Node[];
+    expect(optionsLine("Breakdown").map((child) => child.props.flexGrow)).toEqual([
+      undefined,
+      1,
+      undefined,
+    ]);
+    expect(textLines(optionsLine("Breakdown").at(-1))).toEqual(["Model", "Day"]);
+    expect(textLines(optionsLine("30 days").slice(-2))).toEqual(["Cost", "Tokens"]);
+    expect(optionsLine("30 days").at(-3)?.props.flexGrow).toBe(1);
     await tui.dispose();
   });
 

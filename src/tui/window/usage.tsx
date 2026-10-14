@@ -3,8 +3,8 @@
  * The quota window's Usage tab: tokens and API cost from OpenCode's own history, laid out by
  * `view/usage.ts`, and the model detail popup. The window puts the range list (`Rail`) left of
  * the scrolling content (`View`), a muted line between them. The content's first line has the
- * chosen range and its dates, and Cost and Tokens at its right; the Breakdown heading picks by
- * model or by day.
+ * chosen range and its dates, and Cost and Tokens at its right; the Breakdown heading has Model
+ * and Day at its right.
  *
  * The range list has the keyboard when the tab shows: ↑↓ change the range. → or enter give the
  * keyboard to the model rows: ↑↓ walk them, the current one highlighted, enter opens a model's
@@ -13,8 +13,10 @@
  * on the first line, enter goes to the next date and then applies them, tab switches dates, esc
  * gives the keyboard back. A click picks a range, Cost or Tokens, Model or Day, or opens a model.
  *
- * The tab keeps its choices while the window is open and closed; each show asks the server
- * again. An answer that arrives after a newer question is dropped.
+ * The tab keeps Cost or Tokens and Model or Day while the window is open and closed. Switching
+ * to the tab, or opening the window on it, shows the default range; `/quota_usage <range>` and
+ * the `/tokens_*` commands show theirs. Each show asks the server again. An answer that arrives
+ * after a newer question is dropped.
  */
 import {
   type InputRenderable,
@@ -748,8 +750,9 @@ export function createUsageTab(
           {lines().map((line, index) => {
             if (isBreakdownHeading(line)) {
               return (
-                <box flexDirection="row" columnGap={1}>
+                <box flexDirection="row">
                   <UsageLineText line={line} theme={theme()} />
+                  <box flexGrow={1} />
                   <box flexDirection="row" flexShrink={0}>
                     <Option
                       label="Model"

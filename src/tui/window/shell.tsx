@@ -18,6 +18,7 @@ import type { Plugin } from "@opencode/plugin/tui";
 import type { BoxRenderable, Renderable, RGBA, ScrollBoxRenderable } from "@opentui/core";
 import type { JSX } from "@opentui/solid";
 import { createSignal, onCleanup, onMount, Show } from "solid-js";
+import { DEFAULT_USAGE_RANGE } from "../../core/usage-ranges.js";
 import { sanitizeDisplayText } from "../../lib/display-sanitize.js";
 import { getPackageVersion } from "../../lib/version.js";
 import { QuotaRpc } from "../../rpc.js";
@@ -205,8 +206,8 @@ const KEYS = "Quota window";
 
 export type QuotaWindow = {
   /**
-   * Opens the window on a tab, or switches to it; "settings" is the first Settings tab. On Home
-   * it only says to open a session.
+   * Opens the window on a tab, or switches to it; "settings" is the first Settings tab, and Usage
+   * shows the default range. On Home it only says to open a session.
    */
   open(tab: WindowTab | "settings"): void;
   /** Opens the window on its Usage tab, on `choice`. */
@@ -307,8 +308,11 @@ export function createQuotaWindow(
     return lastPages.get(item.title) ?? item.pages[0];
   }
 
-  /** Each tab asks the server again when it shows: Limits a refresh, the others their data. */
-  function showTab(next: WindowTab): void {
+  /**
+   * Each tab asks the server again when it shows: Limits a refresh, the others their data. Usage
+   * shows `choice`: the default range, unless a command named one.
+   */
+  function showTab(next: WindowTab, choice: UsageChoice = { range: DEFAULT_USAGE_RANGE }): void {
     const item = barTabOf(next);
     if (item) lastPages.set(item.title, next);
     settings.setTab(next);
@@ -323,6 +327,7 @@ export function createQuotaWindow(
       // Snapshots bring the saved settings too, so the switches show even if this read fails.
       settings.loadSaved().catch(() => {});
     }
+    if (next === "usage") usage.choose(choice);
     if (next === "usage" && sessionID) usage.show(sessionID);
     // System picks Copy, so enter copies the report as soon as the tab opens.
     setSelected(next === "system" ? "copy" : "");
@@ -374,7 +379,8 @@ export function createQuotaWindow(
     return [...switches, copy];
   }
 
-  function open(next: WindowTab | "settings"): void {
+  /** Opens the window on `next`; on Usage, on `choice` (else the default range). */
+  function open(next: WindowTab | "settings", choice?: UsageChoice): void {
     if (!routeSessionID(api)) {
       api.ui.toast.show({
         variant: "info",
@@ -384,7 +390,7 @@ export function createQuotaWindow(
       return;
     }
     if (tab() === undefined) focusBefore = api.renderer.currentFocusedRenderable;
-    showTab(next === "settings" ? pageOf(BAR_TABS[TABS.length]) : next);
+    showTab(next === "settings" ? pageOf(BAR_TABS[TABS.length]) : next, choice);
     // The command leaves the message box focused; take the keyboard once it has settled.
     setTimeout(() => windowBox?.focus(), 50);
   }
@@ -759,10 +765,7 @@ export function createQuotaWindow(
 
   return {
     open,
-    openUsage: (choice) => {
-      usage.choose(choice);
-      open("usage");
-    },
+    openUsage: (choice) => open("usage", choice),
     Slot: (props) => (
       <Show when={tab() !== undefined}>
         <Window sessionID={props.sessionID} />
