@@ -4,7 +4,7 @@ import type { ProviderSnapshot, QuotaRow, QuotaSnapshot } from "../src/core/type
 import { USAGE_RANGES, type UsageReport } from "../src/core/usage.js";
 import { defaultDisplaySettings } from "../src/tui/display.js";
 import { limitsLines } from "../src/tui/window/limits.js";
-import { lineColumns, OptionRow } from "../src/tui/window/settings.tsx";
+import { lineColumns, type OptionLine, OptionRow } from "../src/tui/window/settings.tsx";
 import { hintLines, keyHintLines, tabStrip } from "../src/tui/window/shell.tsx";
 import { createUsageTab } from "../src/tui/window/usage.tsx";
 import { noticeItems, statusLines } from "../src/tui/window/views.tsx";
@@ -292,7 +292,8 @@ describe("quota window: Settings lines", () => {
     expect(lineColumns(33, 3)).toEqual({ title: 22, value: 3 });
   });
 
-  it("keeps the value and its › inside a narrow line", () => {
+  /** What an OptionRow draws for `line`, `width` columns wide. */
+  function drawRow(line: OptionLine, width: number, active = false): unknown {
     vi.stubGlobal("React", {
       createElement: (
         type: unknown,
@@ -318,30 +319,60 @@ describe("quota window: Settings lines", () => {
                 },
               }
             : node;
-    const tree = createRoot(() =>
-      drawn(
-        OptionRow({
-          line: {
-            id: "spacing.providers",
-            title: "Between providers",
-            value: () => "1 empty line",
-            cycle: () => {},
-          },
-          theme: THEME as never,
-          active: false,
-          click: (run) => run,
-          press: () => {},
-          use: () => {},
-          width: 33,
-        }),
-      ),
+    try {
+      return createRoot(() =>
+        drawn(
+          OptionRow({
+            line,
+            theme: THEME as never,
+            active,
+            click: (run) => run,
+            press: () => {},
+            use: () => {},
+            width,
+          }),
+        ),
+      );
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  }
+
+  it("keeps the value and its › inside a narrow line", () => {
+    const tree = drawRow(
+      {
+        id: "spacing.providers",
+        title: "Between providers",
+        value: () => "1 empty line",
+        cycle: () => {},
+      },
+      33,
     );
     const [row] = findAll(tree, (node) => node.props?.id === "quota-settings.spacing.providers");
     const text = textLines(row).join("");
     expect(columnsOf(text)).toBeLessThanOrEqual(33);
     expect(text).toContain("1 empty line");
     expect(text.trimEnd().endsWith("›")).toBe(true);
-    vi.unstubAllGlobals();
+  });
+
+  it("keeps a selected line's note in its own color once it goes under the line", () => {
+    const url = "https://api.moonshot.ai/v1/users/me/balance";
+    const moonshot: OptionLine = {
+      id: "custom.moonshot",
+      title: "Moonshot",
+      value: () => "on",
+      cycle: () => {},
+      note: () => url,
+    };
+    const noteColor = (width: number) =>
+      findAll(
+        drawRow(moonshot, width, true),
+        (node) => node.type === "text" && textLines(node)[0] === url,
+      )[0]?.props.fg;
+    // After the value it is on the highlight, in the highlight's text color.
+    expect(noteColor(120)).toBe("action");
+    // Under the line it is off the highlight, so it keeps the muted color.
+    expect(noteColor(60)).toBe("muted");
   });
 });
 

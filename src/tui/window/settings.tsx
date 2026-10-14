@@ -290,8 +290,9 @@ export function OptionRow(props: {
   // A tick without a word has the value's room too, so a long name shows whole.
   const titleWidth = () =>
     line.tick && !line.value() ? columns().title + 2 + columns().value : columns().title;
-  const noteColor = () =>
-    props.active
+  /** On the selected line's highlight, the highlight's text color; under it, its own color. */
+  const noteColor = (onHighlight: boolean) =>
+    props.active && onHighlight
       ? fg()
       : line.warning
         ? props.theme.text.feedback.warning.base
@@ -321,7 +322,7 @@ export function OptionRow(props: {
         <Show
           when={props.input}
           fallback={
-            <Cell fg={line.tick ? noteColor() : fg()} onUp={props.click(props.use)}>
+            <Cell fg={line.tick ? noteColor(true) : fg()} onUp={props.click(props.use)}>
               {fit(line.value(), columns().value)}
             </Cell>
           }
@@ -340,7 +341,7 @@ export function OptionRow(props: {
         </Show>
         <Show when={note() && noteInline()}>
           <box paddingLeft={3} flexShrink={1}>
-            <Cell fg={noteColor()} shrink wrap>
+            <Cell fg={noteColor(true)} shrink wrap>
               {note()}
             </Cell>
           </box>
@@ -348,7 +349,7 @@ export function OptionRow(props: {
       </box>
       <Show when={note() && !noteInline()}>
         <box paddingLeft={valueColumn()} width={props.width}>
-          <Cell fg={noteColor()} shrink wrap>
+          <Cell fg={noteColor(false)} shrink wrap>
             {note()}
           </Cell>
         </box>
