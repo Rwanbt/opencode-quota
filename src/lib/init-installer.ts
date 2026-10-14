@@ -46,8 +46,6 @@ const OPENCODE_SCHEMA_URL = "https://opencode.ai/config.json";
 const TUI_SCHEMA_URL = "https://opencode.ai/tui.json";
 const GITHUB_REPO_URL = "https://github.com/slkiser/opencode-quota";
 const GITHUB_STAR_NOTE = `if this helps, stars are appreciated: ${GITHUB_REPO_URL}`;
-const TUI_COMMAND_DISPLAY_COMMENT =
-  "// OpenCode Quota: tuiCommandDisplay chooses whether native TUI command output appears in the session transcript or a local popup dialog.";
 
 export type InitInstallerInterface = "tui" | "web" | "both";
 export type InitInstallerScope = "project" | "global";
@@ -293,8 +291,10 @@ const QUOTA_LATEST_SPECS = new Set(["@slkiser/opencode-quota", "@slkiser/opencod
 /**
  * Pins quota entries that follow npm `latest` to @4: OpenCode Quota 5 and newer need OpenCode 2,
  * so on OpenCode 1 they fail to load. Other specs (exact versions, ranges, tags, local paths) stay.
+ * Returns the path labels of the plugin lists it changed.
  */
-function pinLatestQuotaPluginsTo4(root: JsonObject, edit: PlannedConfigEdit): void {
+function pinLatestQuotaPluginsTo4(root: JsonObject, edit: PlannedConfigEdit): string[] {
+  const pinnedPathLabels: string[] = [];
   const containers: Array<{ container: unknown[]; pathLabel: string }> = [];
   if (Array.isArray(root.plugin)) containers.push({ container: root.plugin, pathLabel: "plugin" });
   if (isPlainObject(root.tui) && Array.isArray((root.tui as JsonObject).plugin)) {
@@ -314,8 +314,10 @@ function pinLatestQuotaPluginsTo4(root: JsonObject, edit: PlannedConfigEdit): vo
       edit.valueChanges.push(
         `${pathLabel}: ${JSON.stringify(spec)} -> ${JSON.stringify(QUOTA_PLUGIN_SPEC)} (OpenCode Quota 5 needs OpenCode 2)`,
       );
+      if (!pinnedPathLabels.includes(pathLabel)) pinnedPathLabels.push(pathLabel);
     });
   }
+  return pinnedPathLabels;
 }
 
 function appendQuotaPluginIfMissing(params: {
@@ -323,14 +325,17 @@ function appendQuotaPluginIfMissing(params: {
   pathLabel: string;
   kind: "opencode" | "tui";
   edit: PlannedConfigEdit;
+  pinnedPathLabels: readonly string[];
 }): void {
-  const alreadyConfigured = params.container.some((entry) => {
-    const spec = getPluginSpecFromEntry(entry);
-    return typeof spec === "string" && isQuotaPluginSpec(spec, params.kind);
-  });
+  const existingQuotaSpec = params.container
+    .map((entry) => getPluginSpecFromEntry(entry))
+    .find((spec) => typeof spec === "string" && isQuotaPluginSpec(spec, params.kind));
 
-  if (alreadyConfigured) {
-    params.edit.skippedValues.push(`${params.pathLabel} already includes ${QUOTA_PLUGIN_SPEC}`);
+  if (existingQuotaSpec) {
+    // A pinned list already has its own change line, which names the entry.
+    if (!params.pinnedPathLabels.includes(params.pathLabel)) {
+      params.edit.skippedValues.push(`${params.pathLabel} already includes ${existingQuotaSpec}`);
+    }
     return;
   }
 
@@ -727,13 +732,14 @@ async function planOpencodeEdit(params: {
     ensureSchema(root, OPENCODE_SCHEMA_URL, edit);
   }
 
-  pinLatestQuotaPluginsTo4(root, edit);
+  const pinnedPathLabels = pinLatestQuotaPluginsTo4(root, edit);
   const plugin = ensureTopLevelPluginArray(root, edit);
   appendQuotaPluginIfMissing({
     container: plugin,
     pathLabel: "plugin",
     kind: "opencode",
     edit,
+    pinnedPathLabels,
   });
 
   if (params.legacyQuotaToastToSync) {
@@ -748,10 +754,6 @@ async function planOpencodeEdit(params: {
     target,
     desiredData: root,
     managedComments: [
-      {
-        path: ["plugin"],
-        text: TUI_COMMAND_DISPLAY_COMMENT,
-      },
       {
         path: ["plugin"],
         text: "// OpenCode Quota: loads the server plugin for slash commands and quota checks.",
@@ -940,6 +942,10 @@ async function planQuotaConfigEdit(params: {
         text: "// Automatic quota surfaces. Slash commands remain available when these are disabled.",
       },
       {
+        path: ["tuiCommandDisplay"],
+        text: '// TUI command output: "inline" in the session transcript, or "dialog" in a local popup.',
+      },
+      {
         path: ["enabledProviders"],
         text: '// Provider selection: "auto" detects providers; an array tracks only listed providers.',
       },
@@ -1057,10 +1063,15 @@ async function planTuiEdit(params: {
   if (params.selections.interfaces === "web") {
     removeQuotaPluginsFromTui(root, edit);
   } else {
-    pinLatestQuotaPluginsTo4(root, edit);
-    const existingPluginSpecs = extractPluginSpecsFromParsedConfig(root);
-    if (existingPluginSpecs.some((spec) => isQuotaPluginSpec(spec, "tui"))) {
-      edit.skippedValues.push(`tui config already includes ${QUOTA_PLUGIN_SPEC}`);
+    const pinnedPathLabels = pinLatestQuotaPluginsTo4(root, edit);
+    const existingQuotaSpec = extractPluginSpecsFromParsedConfig(root).find((spec) =>
+      isQuotaPluginSpec(spec, "tui"),
+    );
+    if (existingQuotaSpec) {
+      // A pin already has its own change line, which names the entry.
+      if (pinnedPathLabels.length === 0) {
+        edit.skippedValues.push(`tui config already includes ${existingQuotaSpec}`);
+      }
     } else {
       const pluginTarget = ensureTuiPluginArray(root, edit);
       appendQuotaPluginIfMissing({
@@ -1068,6 +1079,7 @@ async function planTuiEdit(params: {
         pathLabel: pluginTarget.pathLabel,
         kind: "tui",
         edit,
+        pinnedPathLabels,
       });
     }
   }
@@ -1079,10 +1091,6 @@ async function planTuiEdit(params: {
       params.selections.interfaces === "web"
         ? []
         : [
-            {
-              path: ["plugin"],
-              text: TUI_COMMAND_DISPLAY_COMMENT,
-            },
             {
               path: ["plugin"],
               text: "// OpenCode Quota: loads the TUI sidebar, compact status, and local commands.",
