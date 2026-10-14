@@ -77,17 +77,18 @@ const ZEN = provider("opencode", "OpenCode Zen", [
   }),
 ]);
 
-/** Where the label column ends and the bar starts: 2 + the widest label ("Balance") + 2. */
-const BAR_COLUMN = 2 + "Balance".length + 2;
+/** Where the label column ends and the bar starts: 3 + the widest label ("Balance") + 2. */
+const BAR_COLUMN = 3 + "Balance".length + 2;
 
 describe("quota window: Limits", () => {
   it("shows every row, hidden and supplementary ones too, with reset and pace", () => {
     const lines = limits([CLAUDE], WIDE, ["anthropic.five_hour"]);
-    expect(lines[0]).toBe("Claude");
+    // Like the window's other tabs: the provider one column in, its rows three.
+    expect(lines[0]).toBe(" Claude");
     expect(lines[1]).toMatch(
-      /^ {2}5h +[█░┃]+ {2}30% left {3}resets in 2h 30m {3}runs out in 1h 5m$/u,
+      /^ {3}5h +[█░┃]+ {2}30% left {3}resets in 2h 30m {3}runs out in 1h 5m$/u,
     );
-    expect(lines[2]).toMatch(/^ {2}Fable +[█░]+ {2}90% left$/u);
+    expect(lines[2]).toMatch(/^ {3}Fable +[█░]+ {2}90% left$/u);
   });
 
   it("lines every provider up in one grid that fills the window, under name-only provider lines", () => {
@@ -100,12 +101,12 @@ describe("quota window: Limits", () => {
     const percentEnd = fiveHour.indexOf("30% left") + "30% left".length;
     expect(fable.length).toBe(percentEnd);
     expect(balance).toBe(
-      `  Balance${" ".repeat(percentEnd - "  Balance".length - "$12.50 left".length)}$12.50 left`,
+      `   Balance${" ".repeat(percentEnd - "   Balance".length - "$12.50 left".length)}$12.50 left`,
     );
     // The grid fills the window; a provider's line has only its name.
     expect(fiveHour.length).toBe(WIDE);
-    expect(claude).toBe("Claude");
-    expect(zen).toBe("OpenCode Zen");
+    expect(claude).toBe(" Claude");
+    expect(zen).toBe(" OpenCode Zen");
   });
 
   it("draws the bar in the level color with the even-use marker where even use would be", () => {
@@ -133,12 +134,12 @@ describe("quota window: Limits", () => {
       generatedAtMs: NOW,
     };
     const fiveHour = lineText(limitsLines({ snapshot, display, nowMs: NOW, width: WIDE })[1]);
-    expect(fiveHour.match(/^ {2}5h +(\S+) {2}30% left/u)?.[1]).toMatch(cells);
+    expect(fiveHour.match(/^ {3}5h +(\S+) {2}30% left/u)?.[1]).toMatch(cells);
   });
 
   it.each([
-    { width: 90, cells: 32 },
-    { width: 110, cells: 52 },
+    { width: 90, cells: 31 },
+    { width: 110, cells: 51 },
     { width: 300, cells: 80 },
   ])("gives the bar the room the other columns leave, at most 80 cells ($width wide)", ({
     width,
@@ -152,16 +153,16 @@ describe("quota window: Limits", () => {
     // 80 columns leave 72 inside the window: the session's padding, the border and the padding.
     const lines = limits([CLAUDE], 72);
     for (const line of lines) expect(line.length).toBeLessThanOrEqual(72);
-    expect(lines[1]).toMatch(/^ {2}5h +[█░┃]+ {2}30% left {3}2h {3}runs out in 1h 5m$/u);
+    expect(lines[1]).toMatch(/^ {3}5h +[█░┃]+ {2}30% left {3}2h {3}runs out in 1h 5m$/u);
   });
 
   it("puts the reset and the pace under the bar when they leave it no room", () => {
     const lines = limits([CLAUDE], 50);
     for (const line of lines) expect(line.length).toBeLessThanOrEqual(50);
     expect(lines.slice(1, 4)).toEqual([
-      expect.stringMatching(/^ {2}5h +[█░┃]+ {2}30% left$/u),
-      `${" ".repeat(2 + "Fable".length + 2)}resets in 2h 30m · runs out in 1h 5m`,
-      expect.stringMatching(/^ {2}Fable +[█░]+ {2}90% left$/u),
+      expect.stringMatching(/^ {3}5h +[█░┃]+ {2}30% left$/u),
+      `${" ".repeat(3 + "Fable".length + 2)}resets in 2h 30m · runs out in 1h 5m`,
+      expect.stringMatching(/^ {3}Fable +[█░]+ {2}90% left$/u),
     ]);
   });
 
@@ -169,8 +170,8 @@ describe("quota window: Limits", () => {
     const lines = limits([CLAUDE], 40);
     for (const line of lines) expect(line.length).toBeLessThanOrEqual(40);
     expect(lines.slice(2, 4)).toEqual([
-      `${" ".repeat(9)}resets in 2h 30m`,
-      `${" ".repeat(9)}runs out in 1h 5m`,
+      `${" ".repeat(10)}resets in 2h 30m`,
+      `${" ".repeat(10)}runs out in 1h 5m`,
     ]);
   });
 
@@ -193,17 +194,17 @@ describe("quota window: Limits", () => {
   it("puts a provider's error on its own line under its name", () => {
     const failed = provider("anthropic", "Claude", [], { error: { code: "login_expired" } });
     const lines = limitLines([failed]);
-    expect(lines.map(lineText)).toEqual(["Claude", "  Sign in again"]);
+    expect(lines.map(lineText)).toEqual([" Claude", "   Sign in again"]);
     expect(lines[1].segments[0].role).toBe("error");
   });
 
   it("lines balances up at their right ends when no row has a bar", () => {
     const lines = limits([ZEN]);
-    expect(lines).toEqual(["OpenCode Zen", "  Balance  $12.50 left"]);
+    expect(lines).toEqual([" OpenCode Zen", "   Balance  $12.50 left"]);
   });
 
   it("says where to look when no provider is found", () => {
-    expect(limits([])).toEqual(["No quota providers found. The System tab says why."]);
+    expect(limits([])).toEqual(["   No quota providers found. The System tab says why."]);
   });
 });
 

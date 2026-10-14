@@ -448,6 +448,14 @@ describe("quota window shell", () => {
     view.dispose();
   });
 
+  it("says Limits is loading three columns in, as its rows will be", () => {
+    const host = fakeHost();
+    host.quotaWindow.open("limits");
+    const view = draw(host.quotaWindow);
+    expect(textLines(view.tree)).toContain("   Loading quota…");
+    view.dispose();
+  });
+
   it("names the page list's keys while a Layout page shows", () => {
     const host = fakeHost();
     host.quotaWindow.open("settings");

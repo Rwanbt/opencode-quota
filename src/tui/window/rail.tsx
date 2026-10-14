@@ -2,16 +2,17 @@
 /**
  * A list down the left of the quota window's tab body: Usage's ranges and Layout's pages. The
  * chosen item has "›" before it and is bold, on the raised background across the list; a muted
- * line runs down the list's right side. A click picks an item. On a short window the list ends
- * at the window's bottom line instead of drawing over it.
+ * line runs down the list's right side. Like the window's other lines, the "›" is one column in
+ * and the labels three. A click picks an item. On a short window the list ends at the window's
+ * bottom line instead of drawing over it.
  */
 import { RGBA, TextAttributes } from "@opentui/core";
 import type { JSX } from "@opentui/solid";
 import type { WindowTheme } from "./shell.js";
 
 const TRANSPARENT = RGBA.fromInts(0, 0, 0, 0);
-/** Each label starts this far in; the chosen one has "› " there. */
-const RAIL_INDENT = 2;
+/** Each label starts this far in; the chosen one has " › " there, its "›" one column in. */
+const RAIL_INDENT = 3;
 /** The muted line at the list's right. */
 const LINE_WIDTH = 1;
 
@@ -50,7 +51,7 @@ export function Rail<Key extends string>(props: {
     >
       {props.items.map((item) => {
         const chosen = item.key === props.chosen;
-        const marker = chosen ? "› " : " ".repeat(RAIL_INDENT);
+        const marker = chosen ? " › " : " ".repeat(RAIL_INDENT);
         return (
           <text
             id={item.id}

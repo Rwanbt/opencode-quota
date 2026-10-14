@@ -88,7 +88,7 @@ export function LimitsView(props: {
   return (
     <Show
       when={snapshot()}
-      fallback={<text fg={props.host.theme().text.muted}>Loading quota…</text>}
+      fallback={<text fg={props.host.theme().text.muted}>{"   Loading quota…"}</text>}
     >
       {lines().map((line) => (
         <LineText line={line} host={props.host} />

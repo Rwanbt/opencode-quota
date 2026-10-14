@@ -160,7 +160,7 @@ function words(node: unknown): string[] {
 /** The labels of the active choices: the tab, Cost or Tokens, the range (without its ›), Model or Day. */
 function activeLabels(node: unknown): string[] {
   return findAll(node, (item) => item.type === "text" && item.props.fg === "selected").map((item) =>
-    (textLines(item)[0] ?? "").replace(/^› /u, "").trim(),
+    (textLines(item)[0] ?? "").trim().replace(/^› /u, ""),
   );
 }
 
@@ -645,7 +645,7 @@ describe("v6 surfaces on the quota snapshot", () => {
     // /quota opens the window on Limits: every row with its bar, percent, reset and pace.
     await tui.command("limits").run();
     const quotaWindow = () => textLines(tui.render("session.composer.top", { sessionID: "ses_1" }));
-    await vi.waitFor(() => expect(quotaWindow()).toContain("  Provider error 503"));
+    await vi.waitFor(() => expect(quotaWindow()).toContain("   Provider error 503"));
     expect(quotaWindow()).toEqual(
       expect.arrayContaining([
         // The title and the plugin's version from package.json.
@@ -659,12 +659,13 @@ describe("v6 surfaces on the quota snapshot", () => {
         "Colors",
         "Providers",
         "esc",
-        "Copilot  pro",
-        expect.stringMatching(/^ {2}Plan +█+░+ {2}81% left$/u),
+        // Like the window's other tabs: a provider one column in, its rows and errors three.
+        " Copilot  pro",
+        expect.stringMatching(/^ {3}Plan +█+░+ {2}81% left$/u),
         expect.stringMatching(
-          /^ {2}5h +░+┃░+ {3}0% left {3}resets in 2h 14m {3}faster than it refills$/u,
+          /^ {3}5h +░+┃░+ {3}0% left {3}resets in 2h 14m {3}faster than it refills$/u,
         ),
-        "Custom providers  Team",
+        " Custom providers  Team",
       ]),
     );
     expect(quotaWindow()).not.toContain("Close");
@@ -978,7 +979,14 @@ describe("v6 surfaces on the quota snapshot", () => {
         "Status line",
         "Toast",
       ]);
+      // The chosen page's › one column in, every label three. The page's lines start right after
+      // the list's line: they carry their own indent.
+      expect(textLines(list).slice(0, 2)).toEqual([
+        expect.stringMatching(/^ › All places +$/u),
+        expect.stringMatching(/^ {3}Sidebar +$/u),
+      ]);
       expect(list?.props).toMatchObject({
+        marginRight: 0,
         flexDirection: "column",
         border: ["right"],
         overflow: "hidden",
@@ -1461,6 +1469,15 @@ describe("v6 surfaces on the quota snapshot", () => {
           .length > 0,
     ).at(-1);
     expect(rangeList?.props.overflow).toBe("hidden");
+    // Like the window's other lines: the chosen range's › one column in, every label three; the
+    // content starts one column after the list's line.
+    expect(textLines(rangeList)).toEqual(
+      expect.arrayContaining([
+        expect.stringMatching(/^ {3}Today +$/u),
+        expect.stringMatching(/^ › 30 days +$/u),
+      ]),
+    );
+    expect(rangeList?.props.marginRight).toBe(1);
 
     // The range list has the keyboard: ↑ shows 7 days at once, ↓ 30 days again. No row is lit.
     expect(litUsageLines(usageTab())).toEqual([]);

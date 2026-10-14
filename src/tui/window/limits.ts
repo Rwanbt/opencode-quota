@@ -5,7 +5,9 @@
  * All rows share one grid: label │ bar │ percent │ reset │ pace, each column as wide as its
  * widest entry, the percent right-aligned. The bar has your bar shape (the thin ━─ line when bars
  * are off) with the even-use marker ┃ (`core/pace.ts`) and takes the room the other columns
- * leave, so the grid always spans the window. A provider's line has its name and plan; an error gets its own line under it.
+ * leave, so the grid always spans the window. A provider's line has its name and plan; an error
+ * gets its own line under it. Like the window's other tabs, a provider's line starts one column
+ * in, its rows and its error three.
  *
  * A narrower window first shortens "resets in 2h 30m" to "2h", then the labels, and then puts
  * the reset and the pace on a line under the bar (on two lines when they don't fit together).
@@ -27,7 +29,10 @@ import {
 import { type Group, type RowSettings, type VisibleRow, visibleGroups } from "../../view/select.js";
 import type { Layout, Line, Segment } from "../../view/text.js";
 
-const INDENT = "  ";
+/** Before a provider's name. */
+const HEADING_INDENT = " ";
+/** Before a row's label, an error and the line that says no provider was found. */
+const INDENT = "   ";
 /** Between the label, the bar and the percent. */
 const GAP = "  ";
 /** Before the reset and before the pace. */
@@ -241,9 +246,10 @@ function clipped(line: Line, width: number): Line {
 
 /** The provider's line: its name and plan. */
 function providerLine(group: Group): Line {
+  const indent: Segment = { text: HEADING_INDENT, role: "label" };
   const name: Segment = { text: group.name, role: "provider", bold: true };
   const account: Segment[] = group.account ? [{ text: `  ${group.account}`, role: "account" }] : [];
-  return { id: group.id, segments: [name, ...account] };
+  return { id: group.id, segments: [indent, name, ...account] };
 }
 
 export function limitsLines(input: LimitsInput): Line[] {
@@ -260,7 +266,9 @@ export function limitsLines(input: LimitsInput): Line[] {
     return [
       {
         id: "",
-        segments: [{ text: "No quota providers found. The System tab says why.", role: "value" }],
+        segments: [
+          { text: `${INDENT}No quota providers found. The System tab says why.`, role: "value" },
+        ],
       },
     ];
   }
