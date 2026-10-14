@@ -435,15 +435,37 @@ describe("view text", () => {
   });
 
   it("keeps a space before a long reset time on a collapsed line", () => {
+    const line = (width: number) =>
+      collapsedLines({
+        groups: groups("collapsed", [CLAUDE]),
+        ...drawn,
+        words: words({ reset: "exact" }),
+        nowMs: NOW + 7 * MINUTE,
+        width,
+        window: {},
+      }).map(lineText);
+    expect([...line(60), ...line(37)]).toEqual([
+      "Claude    7d   █░░░░░░░░░  12% 3d 3h 53m",
+      // Narrow: the bar gives way, so the whole time still shows.
+      "Claude    7d   █░░░░░░  12% 3d 3h 53m",
+    ]);
+  });
+
+  it("fits a collapsed line with used percents, a space before the percent", () => {
     const lines = collapsedLines({
-      groups: groups("collapsed", [CLAUDE]),
+      groups: groups("collapsed", [CLAUDE, TWO_ACCOUNTS]),
       ...drawn,
-      words: words({ reset: "exact" }),
-      nowMs: NOW + 7 * MINUTE,
-      width: 60,
+      words: words({ percent: "used" }),
+      width: 37,
       window: {},
-    });
-    expect(lines.map(lineText)).toEqual(["Claude    7d   █░░░░░░░░░  12% 3d 3h 53m"]);
+    }).map(lineText);
+    expect(lines).toEqual([
+      "Claude    7d   ░░░░  88% used    3.2d",
+      // An error takes the reset's place, cut to the line.
+      "Copilot…  30d  ██░░  60% used  Timed…",
+      // A row without a reset time.
+      "Copilot…  30d  ████  10% used        ",
+    ]);
   });
 
   it("shows the error next to the rows kept from before, collapsed and on the status line", () => {

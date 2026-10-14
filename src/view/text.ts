@@ -293,8 +293,10 @@ export function collapsedTitle(groups: Group[]): string {
   return `▶ Quota (${providers}${errors ? `, ${errors} ${errors === 1 ? "error" : "errors"}` : ""})`;
 }
 
-/** A collapsed line's columns besides its bar: provider 10, row name 5, percent 5, reset 8. */
-const COLLAPSED_WITHOUT_BAR = 28;
+/** A collapsed line's provider (10) and row name (5) columns. */
+const COLLAPSED_NAMES = 15;
+/** The most cells a collapsed bar takes. */
+const COLLAPSED_BAR_MOST = 10;
 
 type CollapsedInput = {
   groups: Group[];
@@ -310,12 +312,31 @@ type CollapsedInput = {
 
 /**
  * §4.2: one line per provider with its preferred window. When the last check failed, the
- * error's words take the place of the reset time next to the rows kept from before.
+ * error's words take the place of the reset time next to the rows kept from before. The bar
+ * takes the room the names, the percent and the longest reset time leave, at most 10 cells.
  */
 export function collapsedLines(input: CollapsedInput): Line[] {
   const { layout, words, nowMs } = input;
-  const wanted = layout.barWidth === "fill" ? input.width - COLLAPSED_WITHOUT_BAR : layout.barWidth;
-  const barWidth = layout.bar === "none" ? 0 : Math.max(0, Math.min(wanted, 10));
+  const picks = input.groups.map((group) => ({
+    group,
+    picked: pickRow(group, input.window[group.providerId]),
+  }));
+  const withWord = words.percent === "used";
+  // The percent after a space: " 100%", or "  100% used" with its word.
+  const percentWidth = withWord ? 10 : 5;
+  // The reset as wide as the longest, at least "11h 59m".
+  const resetWidth = Math.max(
+    7,
+    ...picks.map(({ picked }) =>
+      picked?.row.percentRemaining === undefined
+        ? 0
+        : columnsOf(resetText(picked.row, nowMs, words)),
+    ),
+  );
+  const room = input.width - COLLAPSED_NAMES - percentWidth - 1 - resetWidth;
+  const wanted = layout.barWidth === "fill" ? COLLAPSED_BAR_MOST : layout.barWidth;
+  const barWidth =
+    layout.bar === "none" ? 0 : Math.max(0, Math.min(wanted, COLLAPSED_BAR_MOST, room));
   const providerLine = (group: Group, picked: VisibleRow | undefined): Line => {
     const percent = picked?.row.percentRemaining;
     const name: Segment = { text: `${fit(group.title, 9)} `, role: "provider", percent };
@@ -336,14 +357,14 @@ export function collapsedLines(input: CollapsedInput): Line[] {
           { text: `${fit(rowName(picked, group, words), 4)} `, role: "label", percent },
           ...barSegments(layout.bar, percent, barWidth),
           {
-            text: percentText(words, percent, words.percent === "used").padStart(5),
+            text: percentText(words, percent, withWord).padStart(percentWidth),
             role: "percent",
             percent,
           },
           error
             ? { ...error, text: `  ${error.text}` }
             : {
-                text: ` ${resetText(picked.row, nowMs, words).padStart(7)}`,
+                text: ` ${resetText(picked.row, nowMs, words).padStart(resetWidth)}`,
                 role: "reset",
                 percent,
               },
@@ -352,8 +373,7 @@ export function collapsedLines(input: CollapsedInput): Line[] {
       ),
     };
   };
-  return input.groups.flatMap((group) => {
-    const picked = pickRow(group, input.window[group.providerId]);
+  return picks.flatMap(({ group, picked }) => {
     const line = providerLine(group, picked);
     const runsOut = picked && runsOutText(input.runsOut, picked.row, nowMs, words);
     if (!runsOut) return [line];
