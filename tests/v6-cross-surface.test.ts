@@ -947,6 +947,12 @@ describe("v6 surfaces on the quota snapshot", () => {
         line: "Runs out in …",
       },
       {
+        page: "Status line",
+        toggle: "   [x] Show the quota line under the message box",
+        heading: " When it shows",
+        line: "Next to the sidebar",
+      },
+      {
         page: "Toast",
         toggle: "   [x] Show quota toasts",
         heading: " Preset",

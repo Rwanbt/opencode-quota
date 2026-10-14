@@ -365,12 +365,15 @@ export const FIELDS: readonly Field[] = [
     }),
     show: onOff("hide the line", "show it too"),
   },
+  switchField("statusLine.home", "At the bottom of Home", false, {
+    note: "even when the line under the message box is off",
+  }),
   listField("statusLine.detail", "Show", "auto", Object.keys(STATUS_DETAILS), SHOW.detail, {
     group: "What it shows",
   }),
   runsOutField("statusLine", "after the provider"),
   numberField("statusLine.width", "Width", 0, [0, 1000], [0, 40, 60, 80], SHOW.width, {
-    group: "Fine-tune",
+    group: "Width and scrolling",
   }),
   numberField(
     "statusLine.autoScrollSeconds",
@@ -380,11 +383,8 @@ export const FIELDS: readonly Field[] = [
     [0, 5, 10],
     SHOW.scroll,
   ),
-  switchField("statusLine.home", "At the bottom of Home", false, {
-    note: "even when the line under the message box is off",
-  }),
   listField("toast.afterReply", "After each reply", "low", REPLY_TOASTS, SHOW.afterReply, {
-    group: "Fine-tune",
+    group: "When it shows",
     ...TOAST,
   }),
   switchField("toast.afterQuestion", "After a question to you", false, TOAST),
@@ -545,7 +545,7 @@ export const PRESETS: Record<PresetName, Preset> = {
   toast: {
     tab: "toast",
     title: "When toasts show",
-    drives: "the 5 Fine-tune lines",
+    drives: "the 5 lines under When it shows",
     choices: {
       "only failures": toastChoice("off", false, false, "off"),
       quiet: toastChoice("off", false, true, "off"),
