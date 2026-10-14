@@ -43,13 +43,6 @@ export interface MaintainerAnnouncementsSummary {
 
 export const BUNDLED_MAINTAINER_ANNOUNCEMENTS: readonly MaintainerAnnouncement[] = [
   {
-    id: "opencode-2-feedback",
-    message: "OpenCode Quota 5.0 runs on OpenCode 2. Ideas for the next version? Tell us!",
-    url: "https://github.com/slkiser/opencode-quota/issues/293",
-    startsAt: "2026-09-25T00:00:00.000Z",
-    endsAt: "2026-11-25T00:00:00.000Z",
-  },
-  {
     id: "opencode-ecosystem-listing-thumbs-up",
     message: "Help OpenCode list this plugin: add a thumbs-up to issue #38281.",
     url: "https://github.com/anomalyco/opencode/issues/38281",

@@ -761,7 +761,7 @@ describe("server quota RPC", () => {
     const clock = vi.spyOn(Date, "now").mockReturnValue(nowMs);
     const { call } = await setupServer();
     await expect(call("notices", {})).resolves.toEqual({
-      homeLine: "Notice: 2 maintainer notices, see /quota_status.",
+      homeLine: "Notice: 1 maintainer notice, see /quota_status.",
     });
     clock.mockReturnValue(nowMs + 10 * 60_000);
     await expect(call("notices", {})).resolves.toEqual({ homeLine: "" });
@@ -781,7 +781,7 @@ describe("server quota RPC", () => {
       message: announcement.message,
       ...(announcement.url ? { url: announcement.url } : {}),
     }));
-    expect(expected).toHaveLength(2);
+    expect(expected).toHaveLength(1);
     const { call } = await setupServer();
     await expect(call("noticeList", {})).resolves.toEqual({ notices: expected });
   });
@@ -920,8 +920,6 @@ describe("server quota RPC", () => {
       "Notices",
       "- Help OpenCode list this plugin: add a thumbs-up to issue #38281.",
       "  https://github.com/anomalyco/opencode/issues/38281",
-      "- OpenCode Quota 5.0 runs on OpenCode 2. Ideas for the next version? Tell us!",
-      "  https://github.com/slkiser/opencode-quota/issues/293",
       "[End of OpenCode Quota report]",
     ]);
     expect(message.metadata.opencodeQuota?.command).toBe("quota");

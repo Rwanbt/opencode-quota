@@ -25,7 +25,7 @@ function evaluate(
 
 describe("maintainer announcements", () => {
   it("gives every bundled notice a valid end date", () => {
-    expect(BUNDLED_MAINTAINER_ANNOUNCEMENTS).toHaveLength(3);
+    expect(BUNDLED_MAINTAINER_ANNOUNCEMENTS).toHaveLength(2);
     for (const announcement of BUNDLED_MAINTAINER_ANNOUNCEMENTS) {
       expect(typeof announcement.endsAt).toBe("string");
       expect(Number.isFinite(Date.parse(announcement.endsAt))).toBe(true);
@@ -109,16 +109,15 @@ describe("maintainer announcements", () => {
     ["2026-07-22T12:00:00.000Z", "auto", []],
     ["2026-07-22T12:00:00.000Z", ["gemini-cli"], ["google-gemini-cli-org-only"]],
     ["2026-07-22T12:00:00.000Z", ["google-agy"], []],
-    ["2026-09-24T23:59:59.999Z", "auto", []],
-    ["2026-09-25T00:00:00.000Z", "auto", ["opencode-2-feedback"]],
+    ["2026-09-25T23:59:59.999Z", "auto", []],
+    ["2026-09-26T00:00:00.000Z", "auto", ["opencode-ecosystem-listing-thumbs-up"]],
     [
       "2026-10-15T12:00:00.000Z",
       ["google-gemini-cli"],
-      ["opencode-ecosystem-listing-thumbs-up", "opencode-2-feedback", "google-gemini-cli-org-only"],
+      ["opencode-ecosystem-listing-thumbs-up", "google-gemini-cli-org-only"],
     ],
-    ["2026-10-26T00:00:00.000Z", "auto", ["opencode-2-feedback"]],
-    ["2026-11-24T23:59:59.999Z", ["google-agy"], ["opencode-2-feedback"]],
-    ["2026-11-25T00:00:00.000Z", "auto", []],
+    ["2026-10-25T23:59:59.999Z", ["google-agy"], ["opencode-ecosystem-listing-thumbs-up"]],
+    ["2026-10-26T00:00:00.000Z", "auto", []],
     ["2026-12-31T23:59:59.999Z", ["google-gemini-cli"], ["google-gemini-cli-org-only"]],
     ["2027-01-01T00:00:00.000Z", ["google-gemini-cli"], []],
   ] as const)("shows the bundled notices active at %s for %o", (iso, enabledProviders, ids) => {
