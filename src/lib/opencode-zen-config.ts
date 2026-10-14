@@ -6,6 +6,11 @@ import { getOpenCodeDbPath } from "./opencode-storage.js";
 export interface OpenCodeZenConsoleAccount {
   /** Console base URL from the account row, e.g. https://opencode.ai/console */
   baseUrl: string;
+  /**
+   * Active account row id. OpenCode stores the Console user id here (the `id`
+   * from Console `GET /api/user` at login).
+   */
+  accountId: string;
   accessToken: string;
   activeOrgId: string;
 }
@@ -162,7 +167,7 @@ async function readAccount(): Promise<AccountRead> {
     return {
       resolved: {
         state: "configured",
-        account: { baseUrl, accessToken, activeOrgId },
+        account: { baseUrl, accountId: activeAccountId, accessToken, activeOrgId },
       },
       tokenExpiryMs: expiryMs,
     };

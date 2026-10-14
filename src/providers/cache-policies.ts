@@ -233,10 +233,11 @@ export const PROVIDER_CACHE_POLICIES = {
   opencode: resolvedCredentialPolicy("opencode", async () => {
     const resolved = await resolveOpenCodeZenAccountCached();
     if (resolved.state !== "configured") return null;
-    // Org ids can collide across self-hosted Console URLs, so the cache
-    // identity is the (org id, console URL) tuple.
+    // Member budgets are queried per account, so the identity is the org plus
+    // the account. The Console URL qualifies it because org ids can collide
+    // across self-hosted Console URLs.
     return {
-      credential: resolved.account.activeOrgId,
+      credential: JSON.stringify([resolved.account.activeOrgId, resolved.account.accountId]),
       principalKind: "stable-id",
       qualifiers: [resolved.account.baseUrl],
     };
