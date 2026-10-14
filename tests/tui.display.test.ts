@@ -11,6 +11,7 @@ import {
   resetTab,
   setIn,
   stepIn,
+  THEME_COLORS,
   typedColor,
   valueAt,
 } from "../src/tui/display.js";
@@ -67,6 +68,41 @@ describe("the Settings tabs' field table", () => {
     expect(valueAt(next, path)).toBe(expected);
     // The rest stays as it was.
     expect(setIn(next, path.split("."), valueAt(start, path))).toEqual(start);
+  });
+
+  it("turns every color grey but Almost out and errors with the Color preset, then back", () => {
+    const start = defaultDisplaySettings();
+    expect(choiceOf(start, "colors")).toBe("theme colors");
+    const grey = withPreset(start, "colors", 1);
+    expect(choiceOf(grey, "colors")).toBe("grey");
+    const shown = (settings: DisplaySettings) =>
+      Object.fromEntries(
+        Object.entries(THEME_COLORS).map(([role, theme]) => [
+          role,
+          (settings.colors as Record<string, unknown>)[role] ?? theme,
+        ]),
+      );
+    expect(shown(grey)).toEqual({
+      good: "muted",
+      warning: "muted",
+      low: "red",
+      empty: "muted",
+      title: "text",
+      provider: "muted",
+      account: "muted",
+      label: "muted",
+      // The percent follows the bar: grey, red when almost out.
+      percent: "bar",
+      reset: "muted",
+      value: "muted",
+      error: "red",
+      statusName: "muted",
+      separator: "muted",
+      arrows: "muted",
+    });
+    const back = withPreset(grey, "colors", 1);
+    expect(choiceOf(back, "colors")).toBe("theme colors");
+    expect(shown(back)).toEqual(shown(start));
   });
 
   it.each([

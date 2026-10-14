@@ -167,7 +167,7 @@ Each section has `show: true`, `runsOut` (`true` for `sidebar` and `toast`, `fal
 
 ### Colors
 
-Roles are `good`, `warning`, `low`, `empty`, `title`, `provider`, `account`, `label`, `percent`, `reset`, `value`, `error`, `statusName`, `separator`, and `arrows`. Each `colors.<role>` follows the theme when unset. Set a role to `text`, `muted`, `accent`, `green`, `yellow`, `red`, `blue`, `bar`, or a `#rrggbb` color. `bar` follows the row's level color.
+Roles are `good`, `warning`, `low`, `empty`, `title`, `provider`, `account`, `label`, `percent`, `reset`, `value`, `error`, `statusName`, `separator`, and `arrows`. Each `colors.<role>` follows the theme when unset. Set a role to `text`, `muted`, `accent`, `green`, `yellow`, `red`, `blue`, `bar`, or a `#rrggbb` color. `bar` follows the row's level color. The Colors tab's **Color preset** sets every role at once: `theme colors` unsets them all; `grey` sets `good`, `warning`, `provider`, `label` and `arrows` to `muted` and unsets the rest, so only the panel title is white and only almost-out limits and errors are red.
 
 | Setting | Default | Values |
 | --- | --- | --- |

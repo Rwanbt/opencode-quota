@@ -163,7 +163,7 @@ export function isSurfaceTab(tab: SettingsTab): tab is Surface {
 /** What a setting line holds; undefined only for a color that follows the theme, null for unset. */
 export type FieldValue = string | number | boolean | null | undefined;
 
-export type PresetName = "layout" | "toast" | "words";
+export type PresetName = "layout" | "toast" | "words" | "colors";
 
 /**
  * One setting line: ‹ › step through `values`; a color line also takes a typed "#rrggbb", a
@@ -531,6 +531,11 @@ function toastChoice(
   };
 }
 
+/** Every color line: `changes`' colors, the theme's for the rest. */
+function colorChoice(changes: Partial<Record<ColorRole, ColorChoice>>) {
+  return Object.fromEntries(COLOR_LINES.map(({ role }) => [`colors.${role}`, changes[role]]));
+}
+
 export const PRESETS: Record<PresetName, Preset> = {
   layout: {
     tab: "layout",
@@ -551,6 +556,22 @@ export const PRESETS: Record<PresetName, Preset> = {
       quiet: toastChoice("off", false, true, "off"),
       normal: toastChoice("low", false, true, "off"),
       "every reply": toastChoice("always", true, true, "all"),
+    },
+  },
+  colors: {
+    tab: "colors",
+    title: "Color preset",
+    drives: "every color line",
+    choices: {
+      "theme colors": colorChoice({}),
+      // The panel title in the text color, Almost out and errors in their red, the rest grey.
+      grey: colorChoice({
+        good: "muted",
+        warning: "muted",
+        provider: "muted",
+        label: "muted",
+        arrows: "muted",
+      }),
     },
   },
   words: {
