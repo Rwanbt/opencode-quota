@@ -3,7 +3,8 @@
  * the display settings say so: after compaction and when every provider fails by default;
  * after each reply, after a question, and on a limit reset only when turned on. A quota toast
  * shows its rows in the grouped or detailed layout (`toast.layout`), with bars in the sidebar's
- * bar shape; the host colors them where OpenCode can draw that (`toast-colors.tsx`).
+ * bar shape; the host colors them where OpenCode can draw that (`toast-colors.tsx`). It has no
+ * title: its rows say what it is.
  *
  * Reset notices that arrive together show as one toast. While a turn's toast is being made,
  * they wait and show after it, so the turn's toast does not replace them at once. When the TUI
@@ -17,11 +18,12 @@ import { type Line, lineText, toastLines } from "../view/text.js";
 import type { QuotaClient } from "./client.js";
 import type { DisplaySettings } from "./display.js";
 
+/** The title of quota's one-line toasts (a hint, a wrong range); quota toasts have none. */
 export const TOAST_TITLE = "OpenCode Quota";
 
 export type ToastOptions = {
   variant: "info" | "success" | "warning" | "error";
-  title: string;
+  title?: string;
   message: string;
   duration: number;
 };
@@ -164,7 +166,7 @@ export function createToasts(host: ToastHost): Toasts {
       const tokens = toastTokens(snapshot, display);
       const lines = layoutLines(groups, words, display, nowMs, width, tokens);
       const message = plainMessage(lines);
-      if (message) host.show({ variant: "info", title: TOAST_TITLE, message, duration }, lines);
+      if (message) host.show({ variant: "info", message, duration }, lines);
       return;
     }
     if (allFail && display.toast.whenAllFail && !allFailShown) {
@@ -172,7 +174,7 @@ export function createToasts(host: ToastHost): Toasts {
       const failing = groups.filter((group) => group.error);
       const lines = layoutLines(failing, words, display, nowMs, width);
       const message = plainMessage(lines);
-      if (message) host.show({ variant: "error", title: TOAST_TITLE, message, duration }, lines);
+      if (message) host.show({ variant: "error", message, duration }, lines);
     }
   }
 

@@ -294,7 +294,8 @@ describe("quota toasts", () => {
     expect(titles()).toEqual([]);
     answer(OK);
     await turn;
-    expect(titles()).toEqual(["OpenCode Quota", "Quota available"]);
+    // The quota toast has no title: its rows say what it is.
+    expect(titles()).toEqual([undefined, "Quota available"]);
   });
 
   it("drops the reset notices still waiting when the TUI leaves its server", async () => {

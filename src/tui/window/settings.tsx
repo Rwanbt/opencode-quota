@@ -47,7 +47,7 @@ import {
 import { foundProviderIds, isTicked, PROVIDERS_KEY, withTick } from "../server-settings.js";
 import type { SurfaceHost } from "../sidebar.js";
 import { namedColor, roleColor } from "../theme.js";
-import { plainMessage, quotaToastLines, TOAST_TITLE, type ToastHost } from "../toasts.js";
+import { plainMessage, quotaToastLines, type ToastHost } from "../toasts.js";
 import { draggedTo, movedBy, surfaceTree, type TreeProvider } from "./drag.js";
 import { Rail, railRoom } from "./rail.js";
 import type { WindowHost, WindowTheme } from "./shell.js";
@@ -650,7 +650,7 @@ export function createSettingsEditor(
     const message = plainMessage(lines);
     if (!message) return;
     const duration = settings.toast.seconds * 1000;
-    showToast({ variant: "info", title: TOAST_TITLE, message, duration }, lines);
+    showToast({ variant: "info", message, duration }, lines);
   }
 
   /**

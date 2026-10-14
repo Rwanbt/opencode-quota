@@ -628,7 +628,9 @@ describe("v6 surfaces on the quota snapshot", () => {
     tui.emit("session.execution.succeeded", { sessionID: "ses_1" });
     await vi.waitFor(() => expect(tui.toast).toHaveBeenCalledOnce());
     const toast = tui.toast.mock.calls[0]?.[0];
-    expect(toast).toMatchObject({ variant: "info", title: "OpenCode Quota" });
+    expect(toast).toMatchObject({ variant: "info" });
+    // No title: the rows say what it is.
+    expect(toast).not.toHaveProperty("title");
     expect(toast.message).toBe(
       [
         "Copilot (pro)",
