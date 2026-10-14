@@ -157,20 +157,21 @@ describe("quota toasts", () => {
       return show.mock.calls[0]?.[0].message;
     };
     expect({
-      grouped: await message("grouped", 30),
+      grouped: await message("grouped", 33),
       detailed: await message("detailed", 120),
-      narrow: await message("detailed", 30),
+      narrow: await message("detailed", 33),
     }).toEqual({
-      // A 30-column terminal leaves the toast 18 columns of text.
+      // A 33-column terminal leaves the toast 18 columns of text beside its close "x".
       grouped: "Claude\n  7d ██░  80% left",
-      detailed: `Claude\nWeekly\n${"█".repeat(35)}${"░".repeat(9)}  80% left`,
+      detailed: `Claude\nWeekly\n${"█".repeat(33)}${"░".repeat(8)}  80% left`,
       narrow: "Claude\nWeekly\n██████░░  80% left",
     });
   });
 
   it("fits a toast's text in OpenCode's toast: 60 columns at most, 6 fewer than the terminal", () => {
-    // Inside the toast: a border and 2 columns of padding on each side.
-    expect([toastRoom(200), toastRoom(66), toastRoom(50)]).toEqual([54, 54, 38]);
+    // Inside the toast: a border and 2 columns of padding on each side, then the close "x" 2
+    // columns after the text, as a quota toast has no title.
+    expect([toastRoom(200), toastRoom(66), toastRoom(50)]).toEqual([51, 51, 35]);
   });
 
   it("never asks or shows anything for a subagent session", async () => {

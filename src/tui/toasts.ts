@@ -54,12 +54,16 @@ export type Toasts = {
   cancel(): void;
 };
 
+/** What a toast without a title keeps right of its text: OpenCode's close "x", 2 columns in. */
+const CLOSE_ROOM = 3;
+
 /**
- * The columns of a toast's text: OpenCode's toast is at most 60 columns and 6 fewer than the
- * terminal, inside a border and 2 columns of padding on each side.
+ * The columns of a quota toast's text: OpenCode's toast is at most 60 columns and 6 fewer than
+ * the terminal, inside a border and 2 columns of padding on each side; a toast without a title
+ * has its close "x" beside the text.
  */
 export function toastRoom(terminalWidth: number): number {
-  return Math.min(60, terminalWidth - 6) - 6;
+  return Math.min(60, terminalWidth - 6) - 6 - CLOSE_ROOM;
 }
 
 /** `groups` in the toast layout the settings pick, as wide as the toast's text. */
