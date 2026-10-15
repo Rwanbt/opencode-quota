@@ -739,15 +739,21 @@ describe("server quota RPC", () => {
 
   it("adds the session's tokens to a session snapshot", async () => {
     useSettings({ words: { sessionTokens: "tree" } });
+    const models = [{ modelID: "gpt-5", input: 900, cacheRead: 300, cacheWrite: 0 }];
     mocks.fetchSessionTokensForDisplay.mockResolvedValue({
-      sessionTokens: { totalInput: 1200, totalCachedInput: 300, totalOutput: 80 },
+      sessionTokens: { totalInput: 1200, totalCachedInput: 300, totalOutput: 80, models },
     });
     const { call } = await setupServer();
 
     const session = (await call("snapshot", { sessionID: "session-1" })) as {
       snapshot: QuotaSnapshot;
     };
-    expect(session.snapshot.sessionTokens).toEqual({ input: 1200, cachedInput: 300, output: 80 });
+    expect(session.snapshot.sessionTokens).toStrictEqual({
+      input: 1200,
+      cachedInput: 300,
+      output: 80,
+      models,
+    });
     expect(mocks.fetchSessionTokensForDisplay).toHaveBeenCalledWith({
       sessionID: "session-1",
       scope: "tree",

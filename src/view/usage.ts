@@ -22,7 +22,14 @@ import {
   sliceColumns,
   truncateColumns,
 } from "./columns.js";
-import { formatShare, formatTokens, formatUsd } from "./format.js";
+import {
+  type CacheHit,
+  cacheHit,
+  formatShare,
+  formatTokens,
+  formatUsd,
+  LOW_CACHE_MARK,
+} from "./format.js";
 
 /** What the view counts: money at API prices, or processed tokens. */
 export type UsageMode = "cost" | "tokens";
@@ -38,7 +45,7 @@ type UsagePart = "input" | "cacheRead" | "cacheWrite" | "output";
  * What a span shows, so the TUI can color it:
  * - `title` the big total, `heading` a section name, `text` names, `value` the numbers that
  *   matter, `muted` labels, notes, padding and the chart's baseline, `warning` the share of
- *   tokens without a price;
+ *   tokens without a price and a low cache hit, `good` a cache hit that is not low;
  * - `bar` the part of a daily chart column that no provider's models account for;
  * - `provider:<n>` the provider's place in `report.providers` (most cost first), on its list
  *   line, on its models and on its part of each chart column, so a provider keeps one color
@@ -52,6 +59,7 @@ export type UsageRole =
   | "value"
   | "muted"
   | "warning"
+  | "good"
   | "bar"
   | `provider:${number}`
   | `part:${UsagePart}`;
@@ -97,6 +105,11 @@ const ROW_BAR_MIN_WIDTH = 8;
 const ROW_NAME_MAX_WIDTH = 40;
 /** At the end of each model row in the TUI: enter or a click opens the model's details. */
 const OPEN_MARK = " ▸";
+const CACHE_HEADER = "Cache";
+/** A model's Cache cell without input tokens or cache numbers. */
+const NO_CACHE_HIT = "—";
+/** The model breakdown drops its Cache column before its names get narrower than this. */
+const CACHE_NAME_MIN_WIDTH = 8;
 
 /** Shade marks, one per part, so the "by type" bar also reads without colors. */
 const PART_MARKS: Record<UsagePart, string> = {
@@ -607,7 +620,13 @@ function byTypeLines(
   return [[span(title, "heading")], bar, ...legend];
 }
 
-type BreakdownEntry = { name: string; dot: UsageRole | undefined; row: UsageRow };
+/** `cache` is a model's cache hit, undefined without one (and for days). */
+type BreakdownEntry = {
+  name: string;
+  dot: UsageRole | undefined;
+  row: UsageRow;
+  cache?: CacheHit;
+};
 
 function breakdownEntries(view: View): BreakdownEntry[] {
   const { report } = view;
@@ -628,6 +647,7 @@ function breakdownEntries(view: View): BreakdownEntry[] {
     name: modelName(report, row),
     dot: providerRole(report, row.providerID),
     row,
+    cache: cacheHit(row.tokensByType),
   }));
 }
 
@@ -649,7 +669,35 @@ export function breakdownModels(report: UsageReport, mode: UsageMode): UsageMode
 }
 
 /**
- * The breakdown table: #, Model or Day, then the mode's amount, Share and the other amount.
+ * The model breakdown's Cache column: each model's cache hit, right-aligned under "Cache", in
+ * the good color, or the warning color with " ⚠" after it when it is low; "—" without one.
+ */
+function cacheColumn(shown: BreakdownEntry[]): {
+  width: number;
+  spans: (entry: BreakdownEntry | undefined) => UsageLine;
+} {
+  const texts = shown.map((entry) => entry.cache?.text ?? NO_CACHE_HIT);
+  const percentWidth = Math.max(columnsOf(CACHE_HEADER), ...texts.map(columnsOf));
+  const lowAfter = ` ${LOW_CACHE_MARK}`;
+  const hang = shown.some((entry) => entry.cache?.low) ? columnsOf(lowAfter) : 0;
+  const spans = (entry: BreakdownEntry | undefined): UsageLine => {
+    if (!entry) {
+      const header = `  ${padStartColumns(CACHE_HEADER, percentWidth)}${" ".repeat(hang)}`;
+      return [span(header, "muted")];
+    }
+    const { cache } = entry;
+    let role: UsageRole = "muted";
+    if (cache) role = cache.low ? "warning" : "good";
+    const cell = span(`  ${padStartColumns(cache?.text ?? NO_CACHE_HIT, percentWidth)}`, role);
+    if (hang === 0) return [cell];
+    return [cell, cache?.low ? span(lowAfter, "warning") : span(" ".repeat(hang), "muted")];
+  };
+  return { width: 2 + percentWidth + hang, spans };
+}
+
+/**
+ * The breakdown table: #, Model or Day, then the mode's amount, Share and the other amount, and
+ * for models their cache hit (`cacheColumn`) while the names keep 8 columns or their full width.
  * `colored` (the TUI) puts a bar of each row's amount between the names and the numbers, the
  * biggest row's bar full, when there is room for it, and ends each model row with ▸.
  */
@@ -672,11 +720,16 @@ function breakdownLines(
   const numberWidth = String(shown.length).length;
   const dotWidth = view.breakdown === "model" ? columnsOf(DOT) : 0;
   const metricsWidth = widths.reduce((sum, metricWidth) => sum + metricWidth + 2, 0);
-  const fixed = numberWidth + 2 + dotWidth + metricsWidth;
   const nameWidest = Math.min(
     ROW_NAME_MAX_WIDTH,
     Math.max(4, ...shown.map((entry) => columnsOf(entry.name))),
   );
+  const withoutCache = numberWidth + 2 + dotWidth + metricsWidth;
+  const cache = cacheColumn(shown);
+  const withCache =
+    view.breakdown === "model" &&
+    width - withoutCache - cache.width >= Math.min(nameWidest, CACHE_NAME_MIN_WIDTH);
+  const fixed = withoutCache + (withCache ? cache.width : 0);
   const barRoom = width - fixed - nameWidest - 2;
   const barWidth = colored && barRoom >= ROW_BAR_MIN_WIDTH ? barRoom : 0;
   const nameWidth = barWidth > 0 ? nameWidest : Math.max(4, width - fixed);
@@ -702,6 +755,7 @@ function breakdownLines(
         "muted",
       ),
       ...metricSpans(view, metrics, widths, undefined),
+      ...(withCache ? cache.spans(undefined) : []),
       ...(mark ? [span(" ".repeat(columnsOf(mark)), "muted")] : []),
     ],
   ];
@@ -712,6 +766,7 @@ function breakdownLines(
       span(padEndColumns(truncateColumns(entry.name, nameWidth), nameWidth), "text"),
       ...barSpans(entry),
       ...metricSpans(view, metrics, widths, entry.row),
+      ...(withCache ? cache.spans(entry) : []),
       ...(mark ? [span(mark, "muted")] : []),
     ]);
   });

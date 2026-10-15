@@ -139,6 +139,8 @@ function roleColor(theme: UsageTheme, role: UsageRole): RGBA {
       return theme.text.muted;
     case "warning":
       return theme.text.feedback.warning.base;
+    case "good":
+      return theme.text.feedback.success.base;
     case "bar":
       return theme.hue.accent[500] ?? theme.text.base;
     default:

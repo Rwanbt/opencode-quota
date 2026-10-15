@@ -5,14 +5,17 @@
  */
 import { describeError } from "../core/errors.js";
 import { paceOf, paceText } from "../core/pace.js";
-import type { QuotaRow, SessionTokens, Words } from "../core/types.js";
+import type { QuotaRow, SessionModelInput, SessionTokens, Words } from "../core/types.js";
 import { WINDOWS } from "../core/windows.js";
 import { columnsOf } from "./columns.js";
 import {
   type BarShape,
   barParts,
+  type CacheHit,
+  cacheHit,
   evenUseCell,
   fit,
+  LOW_CACHE_MARK,
   percentText,
   percentWord,
   resetText,
@@ -250,6 +253,26 @@ function sessionLine(tokens: SessionTokens, width: number): Line {
   };
 }
 
+/**
+ * "⚠ low cache: 35% (claude-sonnet-5)" for the model with the lowest cache hit among those
+ * whose cache hit is low (`cacheHit`), its name cut to fit `width`; undefined when none is.
+ */
+function lowCacheLine(models: SessionModelInput[], width: number): Line | undefined {
+  let worst: { modelID: string; hit: CacheHit } | undefined;
+  for (const model of models) {
+    const hit = cacheHit(model);
+    if (!hit?.low) continue;
+    if (!worst || hit.share < worst.hit.share) worst = { modelID: model.modelID, hit };
+  }
+  if (!worst) return undefined;
+  const start = `${LOW_CACHE_MARK} low cache: ${worst.hit.text}`;
+  const nameRoom = width - columnsOf(start) - " ()".length;
+  const name = worst.modelID;
+  const text =
+    nameRoom >= 2 ? `${start} (${fit(name, Math.min(columnsOf(name), nameRoom))})` : start;
+  return { id: "session", segments: clip([{ text, role: "warning" }], width) };
+}
+
 /** The most cells a "fill" bar takes on the sidebar. */
 const SIDEBAR_BAR_MOST = 20;
 
@@ -322,6 +345,8 @@ export function sidebarLines(input: SidebarInput): Line[] {
   if (input.sessionTokens) {
     for (let gap = 0; gap < layout.providerGap; gap++) lines.push({ id: "", segments: [] });
     lines.push(sessionLine(input.sessionTokens, width));
+    const lowCache = lowCacheLine(input.sessionTokens.models ?? [], width);
+    if (lowCache) lines.push(lowCache);
   }
   return lines;
 }

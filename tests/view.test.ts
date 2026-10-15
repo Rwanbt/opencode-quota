@@ -4,6 +4,7 @@ import type {
   QuotaRow,
   QuotaSnapshot,
   QuotaWindow,
+  SessionModelInput,
   Words,
 } from "../src/core/types.js";
 import { ALL_PROVIDERS } from "../src/core/windows.js";
@@ -389,6 +390,68 @@ describe("view text", () => {
     const weekly = lines.find((line) => line.id === "anthropic.weekly");
     expect(weekly?.segments.find((segment) => segment.role === "bar")).toMatchObject({
       percent: 12,
+    });
+  });
+
+  describe("low cache line under Session", () => {
+    const K = 1_000;
+    /** A model's input tokens: new input, cache reads, cache writes. */
+    const model = (modelID: string, input: number, cacheRead: number, cacheWrite = 0) => ({
+      modelID,
+      input,
+      cacheRead,
+      cacheWrite,
+    });
+    const SONNET = model("claude-sonnet-5", 2_600 * K, 1_400 * K);
+    const linesAfterSession = (models: SessionModelInput[], width = 40) => {
+      const lines = sidebarLines({
+        groups: groups("sidebar", [CLAUDE]),
+        ...drawn,
+        width,
+        sessionTokens: { input: 1_420 * K, cachedInput: 0, output: 38 * K, models },
+      });
+      return lines.slice(lines.findIndex((line) => lineText(line).startsWith("Session")));
+    };
+
+    it.each([
+      {
+        name: "a model with 200K input tokens or more and under half of them cached",
+        models: [SONNET],
+        warning: "⚠ low cache: 35% (claude-sonnet-5)",
+      },
+      {
+        name: "exactly 200K input tokens, a quarter cached (cache writes count as input)",
+        models: [model("glm-5.3", 100 * K, 50 * K, 50 * K)],
+        warning: "⚠ low cache: 25% (glm-5.3)",
+      },
+      {
+        name: "the worst of several low models",
+        models: [model("gpt-5.6-sol", 150 * K, 1_350 * K), SONNET, model("o5", 800 * K, 200 * K)],
+        warning: "⚠ low cache: 20% (o5)",
+      },
+      { name: "under 200K input tokens", models: [model("haiku", 150 * K, 49 * K)] },
+      { name: "half the input cached", models: [model("haiku", 300 * K, 300 * K)] },
+      { name: "no cache numbers", models: [model("glm-5.3", 4_000 * K, 0)] },
+      { name: "no models", models: [] },
+    ])("$name", ({ models, warning }) => {
+      const lines = linesAfterSession(models);
+      expect(lines.map(lineText)).toEqual([
+        "Session  1.42M in · 38.0K out",
+        ...(warning ? [warning] : []),
+      ]);
+      if (warning) expect(lines[1]?.segments.map((segment) => segment.role)).toEqual(["warning"]);
+    });
+
+    it.each([
+      { width: 40, text: "⚠ low cache: 35% (claude-sonnet-5)" },
+      { width: 30, text: "⚠ low cache: 35% (claude-son…)" },
+      { width: 21, text: "⚠ low cache: 35% (c…)" },
+      { width: 20, text: "⚠ low cache: 35%" },
+      { width: 12, text: "⚠ low cache…" },
+    ])("cuts the model's name to fit $width columns", ({ width, text }) => {
+      const warning = linesAfterSession([SONNET], width)[1];
+      expect(lineText(warning!)).toBe(text);
+      expect(columnsOf(lineText(warning!))).toBeLessThanOrEqual(width);
     });
   });
 

@@ -2,7 +2,7 @@
  * The tokens a session used so far, for the quota snapshot: its own messages, or with
  * `scope: "tree"` its subagent sessions' messages too.
  */
-import type { Words } from "../core/types.js";
+import type { SessionModelInput, Words } from "../core/types.js";
 import {
   iterAssistantMessagesForSession,
   iterAssistantMessagesForSessions,
@@ -10,11 +10,15 @@ import {
   resolveSessionTree,
 } from "./opencode-storage.js";
 
-/** A session's new input, cache-read input and output tokens. */
+/**
+ * A session's new input, cache-read input and output tokens, and each model's input tokens by
+ * kind (one entry per provider and model, like the Usage tab's model rows).
+ */
 interface SessionTokensData {
   totalInput: number;
   totalCachedInput: number;
   totalOutput: number;
+  models: SessionModelInput[];
 }
 
 /**
@@ -26,12 +30,14 @@ function sumSessionTokens(messages: readonly OpenCodeMessage[]): SessionTokensDa
   let totalCachedInput = 0;
   let totalOutput = 0;
   const byModel = new Map<string, { input: number; output: number }>();
+  const inputByModel = new Map<string, SessionModelInput>();
 
   for (const message of messages) {
     const { tokens } = message;
     if (!tokens) continue;
     const input = typeof tokens.input === "number" ? tokens.input : 0;
     const cachedInput = typeof tokens.cache?.read === "number" ? tokens.cache.read : 0;
+    const cacheWrite = typeof tokens.cache?.write === "number" ? tokens.cache.write : 0;
     const output = typeof tokens.output === "number" ? tokens.output : 0;
     if (input + cachedInput === 0 && output === 0) continue;
 
@@ -43,10 +49,25 @@ function sumSessionTokens(messages: readonly OpenCodeMessage[]): SessionTokensDa
     model.input += input + cachedInput;
     model.output += output;
     byModel.set(modelID, model);
+
+    if (input + cachedInput + cacheWrite <= 0) continue;
+    const inputKey = `${message.providerID ?? "unknown"}\n${modelID}`;
+    const modelInput = inputByModel.get(inputKey) ?? {
+      modelID,
+      input: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+    };
+    modelInput.input += input;
+    modelInput.cacheRead += cachedInput;
+    modelInput.cacheWrite += cacheWrite;
+    inputByModel.set(inputKey, modelInput);
   }
 
   const used = [...byModel.values()].some((model) => model.input > 0 || model.output > 0);
-  return used ? { totalInput, totalCachedInput, totalOutput } : undefined;
+  return used
+    ? { totalInput, totalCachedInput, totalOutput, models: [...inputByModel.values()] }
+    : undefined;
 }
 
 /**

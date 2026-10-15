@@ -537,7 +537,12 @@ describe("v6 surfaces on the quota snapshot", () => {
       },
     });
     mocks.fetchSessionTokensForDisplay.mockResolvedValue({
-      sessionTokens: { totalInput: 1200, totalCachedInput: 300, totalOutput: 45 },
+      sessionTokens: {
+        totalInput: 1200,
+        totalCachedInput: 300,
+        totalOutput: 45,
+        models: [{ modelID: "gpt-5", input: 1200, cacheRead: 300, cacheWrite: 0 }],
+      },
     });
     const { quotaProvidersProvider } = await import("../src/providers/quota-providers.js");
     mocks.getProviders.mockReturnValue([
@@ -1294,11 +1299,18 @@ describe("v6 surfaces on the quota snapshot", () => {
         expect.stringMatching(/^\$\d+\.\d\d 1 session · API estimate Daily cost$/u),
         "Totals",
         "Cost by type",
-        "# Model Cost Share Tokens",
-        expect.stringMatching(/^1 ● claude-sonnet-4-5 ━+ \$\d+\.\d\d 100\.0% 4\.10M ▸$/u),
-        "2 ● mystery-1 no price 0% 500K ▸",
+        "# Model Cost Share Tokens Cache",
+        // Cache: 3M of the 4M input tokens came from the cache; output alone has no cache hit.
+        expect.stringMatching(/^1 ● claude-sonnet-4-5 ━+ \$\d+\.\d\d 100\.0% 4\.10M 75% ▸$/u),
+        "2 ● mystery-1 no price 0% 500K — ▸",
       ]),
     );
+    // A cache hit that is not low takes the theme's success color.
+    const cacheHit = findAll(
+      usageTab(),
+      (node) => node.type === "span" && node.props.children === "    75%",
+    );
+    expect(cacheHit.map((node) => node.props.style.fg)).toEqual(["green"]);
     // The share without a price is the content's last line.
     expect(tab.at(-2)).toBe("Unpriced tokens excluded: 10.9% (mystery-1)");
 

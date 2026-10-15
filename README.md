@@ -88,7 +88,7 @@ Type these in OpenCode. Add a range after `/quota_usage`, like `/quota_usage 30d
 | `/quota_status`        | Setup check: logins, providers, pricing, and notices                                                                          |
 | `/quota_settings`      | TUI: quota window, Settings tabs                                                                                              |
 
-In the terminal, `/quota_usage` opens the window's Usage tab on that range. ↑↓ pick a range in its list, → moves to the model rows, enter or a click opens a model's details. `c` cost, `t` tokens, `b` by model or day, `d` types the Between dates, `p` updates pricing from `models.dev`.
+In the terminal, `/quota_usage` opens the window's Usage tab on that range. The model table's Cache column is the share of each model's input tokens read from the cache, with ⚠ below 50% once the model read 200K input tokens. ↑↓ pick a range in its list, → moves to the model rows, enter or a click opens a model's details. `c` cost, `t` tokens, `b` by model or day, `d` types the Between dates, `p` updates pricing from `models.dev`.
 
 Moving from 4.x or 5.x? Your `/tokens_*` commands still work. See [Updating](docs/readme/updating.md#moving-from-5x).
 

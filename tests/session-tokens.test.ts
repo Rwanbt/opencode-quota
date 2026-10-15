@@ -23,12 +23,13 @@ function message(
   id: string,
   sessionID: string,
   tokens: SessionDatabaseMessage["tokens"],
+  modelID = "gpt-5",
 ): SessionDatabaseMessage {
   return {
     id,
     sessionID,
     providerID: "openai",
-    modelID: "gpt-5",
+    modelID,
     created: 1,
     completed: 2,
     tokens,
@@ -47,7 +48,7 @@ function writeHistory(): void {
     messages: [
       message("msg_1", "ses_root", { input: 10, output: 5, cacheRead: 4 }),
       message("msg_2", "ses_root", { input: 2, output: 3, cacheRead: 6 }),
-      message("msg_3", "ses_child", { input: 3, output: 2, cacheRead: 5 }),
+      message("msg_3", "ses_child", { input: 3, output: 2, cacheRead: 5, cacheWrite: 7 }, "o5"),
       message("msg_4", "ses_leaf", { input: 1, output: 1 }),
       message("msg_5", "ses_other", { input: 100, output: 100 }),
       message("msg_6", "ses_other", {}),
@@ -57,10 +58,29 @@ function writeHistory(): void {
 
 describe("fetchSessionTokensForDisplay", () => {
   it.each([
-    { scope: "current", sessionTokens: { totalInput: 12, totalCachedInput: 10, totalOutput: 8 } },
+    {
+      scope: "current",
+      sessionTokens: {
+        totalInput: 12,
+        totalCachedInput: 10,
+        totalOutput: 8,
+        models: [{ modelID: "gpt-5", input: 12, cacheRead: 10, cacheWrite: 0 }],
+      },
+    },
     // Each session of the tree once, even when parent links form a cycle.
-    { scope: "tree", sessionTokens: { totalInput: 16, totalCachedInput: 15, totalOutput: 11 } },
-  ] as const)("sums new and cached input apart for the $scope scope", async (item) => {
+    {
+      scope: "tree",
+      sessionTokens: {
+        totalInput: 16,
+        totalCachedInput: 15,
+        totalOutput: 11,
+        models: [
+          { modelID: "gpt-5", input: 13, cacheRead: 10, cacheWrite: 0 },
+          { modelID: "o5", input: 3, cacheRead: 5, cacheWrite: 7 },
+        ],
+      },
+    },
+  ] as const)("sums new and cached input apart, and each model's input, for the $scope scope", async (item) => {
     writeHistory();
 
     await expect(

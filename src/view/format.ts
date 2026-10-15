@@ -189,6 +189,41 @@ export function sessionTokensText(tokens: SessionTokens): string {
   return `${formatTokens(tokens.input)} in · ${formatTokens(tokens.output)} out`;
 }
 
+/** A model's cache hit can be low once it read this many input tokens. */
+const LOW_CACHE_MIN_INPUT_TOKENS = 200_000;
+/** A cache hit below this share is low. */
+const LOW_CACHE_HIT_BELOW = 0.5;
+/** Marks a low cache hit. */
+export const LOW_CACHE_MARK = "⚠";
+
+/** A model's input tokens by kind: new input, cache reads and cache writes. */
+export type InputTokens = { input: number; cacheRead: number; cacheWrite: number };
+
+/** The share of a model's input tokens read from the cache. */
+export type CacheHit = {
+  /** Cache reads ÷ all input tokens. */
+  share: number;
+  /** Whole percents, rounded down so a low cache hit never reads "50%": "35%". */
+  text: string;
+  /** At least 200K input tokens, and less than half of them read from the cache. */
+  low: boolean;
+};
+
+/**
+ * The cache hit of `tokens`; undefined without input tokens, or without cache reads and cache
+ * writes (the provider reports no cache numbers).
+ */
+export function cacheHit(tokens: InputTokens): CacheHit | undefined {
+  const allInput = tokens.input + tokens.cacheRead + tokens.cacheWrite;
+  if (allInput <= 0 || tokens.cacheRead + tokens.cacheWrite <= 0) return undefined;
+  const share = tokens.cacheRead / allInput;
+  return {
+    share,
+    text: `${Math.floor((tokens.cacheRead * 100) / allInput)}%`,
+    low: allInput >= LOW_CACHE_MIN_INPUT_TOKENS && share < LOW_CACHE_HIT_BELOW,
+  };
+}
+
 /**
  * `text` cut to `width` terminal columns with "…" ("Copilot…", not "Copilot …"), else padded
  * to it. Wide characters count two columns and are never split.

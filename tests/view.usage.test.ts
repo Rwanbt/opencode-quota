@@ -240,6 +240,49 @@ function wideNamesReport(): UsageReport {
   });
 }
 
+/**
+ * Models with and without cache numbers, most cost first: [provider, model, cost, tokens, and
+ * the input tokens by kind: new input, cache reads, cache writes].
+ */
+function cacheReport(): UsageReport {
+  const models: [string, string, number, number, number, number, number][] = [
+    ["openai", "gpt-5.6-sol", 4.44, 1.71 * M, 135_000, 1_365_000, 0],
+    ["anthropic", "claude-sonnet-5", 3.62, 4.48 * M, 2.6 * M, 1.4 * M, 0],
+    ["zai", "glm-5.3", 1.1, 1.07 * M, 1 * M, 0, 0],
+    ["openai", "gpt-5.6-mini", 1, 0.25 * M, 100_000, 20_000, 30_000],
+    ["openai", "o5", 0.5, 0.65 * M, 300_000, 300_000, 0],
+    ["openai", "o5-image", 0, 0.05 * M, 0, 0, 0],
+  ];
+  const report = buildReport({
+    sessions: 3,
+    providers: [
+      ["openai", 2, 5.94, 2.66 * M],
+      ["anthropic", 1, 3.62, 4.48 * M],
+      ["zai", 1, 1.1, 1.07 * M],
+    ],
+    models: models.map(([providerID, modelID, cost, tokens]) => [
+      providerID,
+      modelID,
+      cost,
+      tokens,
+    ]),
+    days: [[10.66, 8.21 * M]],
+    tokens: { cachedInput: 3.085 * M, uncachedInput: 4.165 * M, output: 0.96 * M },
+    costByType: { input: 6, cacheRead: 1, cacheWrite: 0.66, output: 3 },
+    cacheSavingsUsd: 0,
+  });
+  report.models.forEach((row, index) => {
+    const [, , , , input, cacheRead, cacheWrite] = models[index];
+    row.tokensByType = {
+      input,
+      cacheRead,
+      cacheWrite,
+      output: row.tokens - input - cacheRead - cacheWrite,
+    };
+  });
+  return report;
+}
+
 /** One provider, one model and these days ([cost, tokens], oldest first). */
 function daysReport(days: Amounts[], range?: UsageReport["range"], sessions = 1): UsageReport {
   const cost = days.reduce((sum, [dayCost]) => sum + dayCost, 0);
@@ -331,11 +374,11 @@ describe("usageView", () => {
 
   it("measures names in terminal columns and cuts them between characters", () => {
     const lines = from(
-      usageView(wideNamesReport(), { mode: "cost", breakdown: "model", width: 60 }),
+      usageView(wideNamesReport(), { mode: "cost", breakdown: "model", width: 67 }),
       "Breakdown",
     );
     const rows = lines.slice(1).map(textOf);
-    expect(rows.map(columnsIn)).toEqual([60, 60, 60]);
+    expect(rows.map(columnsIn)).toEqual([67, 67, 67]);
     expect(rows[1]).toMatch(/^1 {2}● 模型-超长的名字-专业版-二零二六 +\$2\.00 /u);
     const emojiName = lines[3].find((part) => part.role === "text")?.text ?? "";
     expect(emojiName).toMatch(/^(👍🏽)+… *$/u);
@@ -663,18 +706,19 @@ describe("usageView", () => {
     {
       name: "cost by model",
       options: { mode: "cost" as const, breakdown: "model" as const },
-      header: /^# {2}Model +Cost {2}Share {2}Tokens {2}$/,
+      // These models have no cache numbers: "—" under Cache.
+      header: /^# {2}Model +Cost {2}Share {2}Tokens {2}Cache {2}$/,
       rows: [
-        /^1 {2}● claude-opus-5-5 {3}━+ {2}\$4,410\.41 {2}81\.4% {3}12\.5B ▸$/u,
-        /^2 {2}● composer-2 {8}━+ +\$353\.05 {3}6\.5% {4}368M ▸$/u,
+        /^1 {2}● claude-opus-5-5 {3}━+ {2}\$4,410\.41 {2}81\.4% {3}12\.5B {6}— ▸$/u,
+        /^2 {2}● composer-2 {8}━+ +\$353\.05 {3}6\.5% {4}368M {6}— ▸$/u,
       ],
     },
     {
       name: "tokens by model",
       options: { mode: "tokens" as const, breakdown: "model" as const },
-      header: /^# {2}Model +Tokens {2}Share {7}Cost {2}$/,
+      header: /^# {2}Model +Tokens {2}Share {7}Cost {2}Cache {2}$/,
       rows: [
-        /^1 {2}● claude-opus-5-5 {3}━+ {3}12\.5B {2}93\.3% {2}\$4,410\.41 ▸$/u,
+        /^1 {2}● claude-opus-5-5 {3}━+ {3}12\.5B {2}93\.3% {2}\$4,410\.41 {6}— ▸$/u,
         /^2 {2}● composer-2 {8}━+ +368M/u,
       ],
     },
@@ -769,6 +813,70 @@ describe("usageView", () => {
     const notes = lines.filter((line) => line.some((part) => part.role === "warning"));
     expect(notes).toEqual(note ? [note] : []);
     if (note) expect(lines.at(-1)).toBe(notes[0]);
+  });
+
+  it("breakdown by model: each model's cache hit under Cache, a low one in the warning color with ⚠", () => {
+    const lines = section(
+      usageView(cacheReport(), { mode: "cost", breakdown: "model", width: 80 }),
+      "Breakdown",
+    );
+    const texts = lines.map(textOf);
+    // The ⚠ hangs after the percents, so they stay right-aligned under "Cache".
+    expect(texts[1]).toMatch(/ {2}Tokens {2}Cache {4}$/);
+    for (const text of texts.slice(1)) expect(text).toHaveLength(80);
+    const cacheCells = lines.slice(2).map((line) => line.slice(-3, -1));
+    expect(cacheCells).toEqual([
+      [
+        { text: "    91%", role: "good" },
+        { text: "  ", role: "muted" },
+      ],
+      [
+        { text: "    35%", role: "warning" },
+        { text: " ⚠", role: "warning" },
+      ],
+      // No cache numbers.
+      [
+        { text: "      —", role: "muted" },
+        { text: "  ", role: "muted" },
+      ],
+      // Under 200K input tokens.
+      [
+        { text: "    13%", role: "good" },
+        { text: "  ", role: "muted" },
+      ],
+      // Half of the input cached.
+      [
+        { text: "    50%", role: "good" },
+        { text: "  ", role: "muted" },
+      ],
+      // No input tokens.
+      [
+        { text: "      —", role: "muted" },
+        { text: "  ", role: "muted" },
+      ],
+    ]);
+  });
+
+  it.each([
+    { width: 80, cache: true, sonnet: "claude-sonnet-5" },
+    // The names still get 8 columns.
+    { width: 46, cache: true, sonnet: "claude-…" },
+    { width: 45, cache: false, sonnet: "claude-sonnet-5" },
+    { width: 40, cache: false, sonnet: "claude-son…" },
+  ])("drops the Cache column before names get shorter than 8 columns, and before Cost, Share and Tokens: $width", ({
+    width,
+    cache,
+    sonnet,
+  }) => {
+    const lines = section(
+      usageView(cacheReport(), { mode: "cost", breakdown: "model", width }),
+      "Breakdown",
+    ).map(textOf);
+    expect(lines[1]).toMatch(
+      cache ? /Cost {2}Share {2}Tokens {2}Cache {4}$/ : /Share {2}Tokens {2}$/,
+    );
+    expect(lines[3]).toContain(` ${sonnet} `);
+    for (const line of lines) expect(columnsIn(line)).toBeLessThanOrEqual(width);
   });
 
   it("says so in one line when the range has no usage", () => {

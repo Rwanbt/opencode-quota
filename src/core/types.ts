@@ -129,8 +129,22 @@ export type ResetNotice = {
   atMs: number;
 };
 
+/** One model's input tokens in a session: new input, cache reads and cache writes. */
+export type SessionModelInput = {
+  modelID: string;
+  input: number;
+  cacheRead: number;
+  cacheWrite: number;
+};
+
 /** Tokens a session used so far (with its subagents when the words say "tree"). */
-export type SessionTokens = { input: number; cachedInput: number; output: number };
+export type SessionTokens = {
+  input: number;
+  cachedInput: number;
+  output: number;
+  /** Each model with input tokens, for the sidebar's low cache line; absent when none had any. */
+  models?: SessionModelInput[];
+};
 
 /** "58% left", "58% remaining", "58%", or "42% used". */
 type PercentStyle = "left" | "remaining" | "bare" | "used";

@@ -228,6 +228,7 @@ export const QuotaToastPlugin = Plugin.define({
           input: sessionTokens.totalInput,
           cachedInput: sessionTokens.totalCachedInput,
           output: sessionTokens.totalOutput,
+          ...(sessionTokens.models.length > 0 ? { models: sessionTokens.models } : {}),
         },
       };
     };
