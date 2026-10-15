@@ -31,6 +31,8 @@ npx @slkiser/opencode-quota@4 init
 
 Upgrading from v3? Read the [v4 migration guide](docs/readme/v4-migration.md).
 
+`init` changes an existing `@slkiser/opencode-quota` or `@slkiser/opencode-quota@latest` entry to `@4`, because OpenCode Quota 5 needs OpenCode 2.
+
 After installation:
 
 1. Restart OpenCode.

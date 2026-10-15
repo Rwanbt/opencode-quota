@@ -163,8 +163,8 @@ describe("init installer planning and merge behavior", () => {
       tuiCommandDisplay: "inline",
     });
     expect(quotaConfig).not.toHaveProperty("tuiQuotaCommandDisplay");
-    expect(readFileSync(join(projectDir, "opencode.jsonc"), "utf8")).toContain(
-      "// OpenCode Quota: tuiCommandDisplay chooses whether native TUI command output appears in the session transcript or a local popup dialog.",
+    expect(readFileSync(join(projectDir, "opencode.jsonc"), "utf8")).not.toContain(
+      "tuiCommandDisplay",
     );
   });
 
@@ -190,33 +190,39 @@ describe("init installer planning and merge behavior", () => {
     expect(quotaRaw).not.toContain("//");
   });
 
-  it("writes Dialog selection and explanatory comments only to generated JSONC host configs", async () => {
+  it("writes the Dialog selection and its comment to the JSONC quota config, not the host configs", async () => {
     const projectDir = join(tempDir, "dialog-jsonc");
     mkdirSync(projectDir, { recursive: true });
-
-    const plan = await planInitInstaller({
-      cwd: projectDir,
-      selections: installerSelections({
-        configFormat: "jsonc",
-        quotaUi: ["sidebar"],
-        tuiCommandDisplay: "dialog",
-      }),
+    const selections = installerSelections({
+      configFormat: "jsonc",
+      quotaUi: ["sidebar"],
+      tuiCommandDisplay: "dialog",
     });
+
+    const plan = await planInitInstaller({ cwd: projectDir, selections });
     await applyInitInstallerPlan(plan);
 
     expect(plan.summaryLines).toContain("Command display: Popup dialog");
     const quotaPath = join(projectDir, "opencode-quota", "quota-toast.jsonc");
     expect(readJson(quotaPath).tuiCommandDisplay).toBe("dialog");
-    expect(readFileSync(quotaPath, "utf8")).toContain(
-      "// Quota presentation and reset-period choices.",
+    const quotaRaw = readFileSync(quotaPath, "utf8");
+    expect(quotaRaw).toContain("// Quota presentation and reset-period choices.");
+    expect(quotaRaw).toMatch(
+      /\/\/ TUI command output: "inline" in the session transcript, or "dialog" in a local popup\.\n\s*"tuiCommandDisplay": "dialog"/,
     );
 
-    for (const hostPath of [join(projectDir, "opencode.jsonc"), join(projectDir, "tui.jsonc")]) {
+    const hostPaths = [join(projectDir, "opencode.jsonc"), join(projectDir, "tui.jsonc")];
+    for (const hostPath of hostPaths) {
       const raw = readFileSync(hostPath, "utf8");
-      expect(raw).toContain(
-        "// OpenCode Quota: tuiCommandDisplay chooses whether native TUI command output appears in the session transcript or a local popup dialog.",
-      );
+      expect(raw).toContain("// OpenCode Quota: loads the");
+      expect(raw).not.toContain("tuiCommandDisplay");
       expect(() => parseJsonOrJsonc(raw, true)).not.toThrow();
+    }
+
+    await applyInitInstallerPlan(await planInitInstaller({ cwd: projectDir, selections }));
+    expect(readFileSync(quotaPath, "utf8").match(/TUI command output:/g)).toHaveLength(1);
+    for (const hostPath of hostPaths) {
+      expect(readFileSync(hostPath, "utf8").match(/OpenCode Quota: loads the/g)).toHaveLength(1);
     }
   });
 
@@ -310,7 +316,9 @@ describe("init installer planning and merge behavior", () => {
     expect(opencodeEdit?.addedPlugins).toEqual([]);
     expect(opencodeEdit?.addedKeys).toEqual([]);
     expect(opencodeEdit?.skippedValues).toEqual(
-      expect.arrayContaining(["plugin already includes @slkiser/opencode-quota@4"]),
+      expect.arrayContaining([
+        "plugin already includes file:///Users/test/Downloads/GitHub/opencode-quota/dist/index.js",
+      ]),
     );
     const quotaEdit = plan.edits.find((edit) => edit.kind === "quota");
     expect(quotaEdit?.addedKeys).toEqual(
@@ -326,7 +334,7 @@ describe("init installer planning and merge behavior", () => {
     );
     expect(tuiEdit?.addedPlugins).toEqual([]);
     expect(tuiEdit?.skippedValues).toContain(
-      "tui config already includes @slkiser/opencode-quota@4",
+      "tui config already includes file:///Users/test/Downloads/GitHub/opencode-quota/dist/tui.tsx",
     );
 
     await applyInitInstallerPlan(plan);
@@ -407,9 +415,115 @@ describe("init installer planning and merge behavior", () => {
     await applyInitInstallerPlan(plan);
 
     const tui = readJson(join(projectDir, "tui.json"));
-    expect(tui).toEqual({ plugin: ["@slkiser/opencode-quota"] });
+    expect(tui).toEqual({ plugin: ["@slkiser/opencode-quota@4"] });
     const quotaConfig = readJson(join(projectDir, "opencode-quota", "quota-toast.json"));
     expect(quotaConfig.tuiSidebarPanel).toEqual({ enabled: false });
+  });
+
+  it("pins entries that follow npm latest to @4, since OpenCode Quota 5 needs OpenCode 2", async () => {
+    const projectDir = join(tempDir, "project");
+    mkdirSync(projectDir, { recursive: true });
+    writeFileSync(
+      join(projectDir, "opencode.json"),
+      JSON.stringify({ plugin: ["other-plugin@1.0.0", "@slkiser/opencode-quota@latest"] }),
+      "utf8",
+    );
+    writeFileSync(
+      join(projectDir, "tui.json"),
+      JSON.stringify({ plugin: [["@slkiser/opencode-quota", { keep: true }]] }),
+      "utf8",
+    );
+
+    const plan = await planSelections({}, projectDir);
+    expect(plan.edits.find((edit) => edit.kind === "opencode")?.valueChanges).toEqual([
+      'plugin: "@slkiser/opencode-quota@latest" -> "@slkiser/opencode-quota@4" (OpenCode Quota 5 needs OpenCode 2)',
+    ]);
+    await applyInitInstallerPlan(plan);
+
+    expect(readJson(join(projectDir, "opencode.json")).plugin).toEqual([
+      "other-plugin@1.0.0",
+      "@slkiser/opencode-quota@4",
+    ]);
+    expect(readJson(join(projectDir, "tui.json")).plugin).toEqual([
+      ["@slkiser/opencode-quota@4", { keep: true }],
+    ]);
+    const secondPlan = await planSelections({}, projectDir);
+    expect(secondPlan.edits.every((edit) => edit.valueChanges.length === 0)).toBe(true);
+  });
+
+  it("prints only the pin line after pinning, and 'already includes @4' once per file on a rerun", async () => {
+    const projectDir = join(tempDir, "project");
+    mkdirSync(projectDir, { recursive: true });
+    for (const name of ["opencode.jsonc", "tui.jsonc"]) {
+      writeFileSync(
+        join(projectDir, name),
+        '{\n  "plugin": ["@slkiser/opencode-quota@latest"]\n}\n',
+        "utf8",
+      );
+    }
+
+    const plan = await planSelections({ quotaUi: ["sidebar"] }, projectDir);
+    const pinLine =
+      '    plugin: "@slkiser/opencode-quota@latest" -> "@slkiser/opencode-quota@4" (OpenCode Quota 5 needs OpenCode 2)';
+    expect(plan.summaryLines.filter((line) => line === pinLine)).toHaveLength(2);
+    expect(plan.summaryLines.filter((line) => line.includes("already includes"))).toEqual([]);
+    await applyInitInstallerPlan(plan);
+
+    const secondPlan = await planSelections({ quotaUi: ["sidebar"] }, projectDir);
+    expect(secondPlan.summaryLines.filter((line) => line.includes("already includes"))).toEqual([
+      "  = plugin already includes @slkiser/opencode-quota@4",
+      "  = tui config already includes @slkiser/opencode-quota@4",
+    ]);
+  });
+
+  it("names the quota entry that is really there in 'already includes'", async () => {
+    const projectDir = join(tempDir, "project");
+    mkdirSync(projectDir, { recursive: true });
+    for (const name of ["opencode.json", "tui.json"]) {
+      writeFileSync(
+        join(projectDir, name),
+        JSON.stringify({ plugin: ["@slkiser/opencode-quota@4.10.6"] }),
+        "utf8",
+      );
+    }
+
+    const plan = await planSelections({ quotaUi: ["sidebar"] }, projectDir);
+    expect(plan.edits.find((edit) => edit.kind === "opencode")?.skippedValues).toEqual([
+      "plugin already includes @slkiser/opencode-quota@4.10.6",
+    ]);
+    expect(plan.edits.find((edit) => edit.kind === "tui")?.skippedValues).toEqual([
+      "tui config already includes @slkiser/opencode-quota@4.10.6",
+    ]);
+  });
+
+  it("keeps the comments inside a plugin list when it pins an entry to @4", async () => {
+    const projectDir = join(tempDir, "project");
+    mkdirSync(projectDir, { recursive: true });
+    writeFileSync(
+      join(projectDir, "opencode.jsonc"),
+      `{
+  "plugin": [
+    // Keep this other plugin pinned
+    "other-plugin@1.0.0",
+    ["@slkiser/opencode-quota@latest", {
+      // Custom option explanation
+      "keep": true
+    }]
+  ]
+}
+`,
+      "utf8",
+    );
+
+    await applyInitInstallerPlan(await planSelections({}, projectDir));
+
+    const written = readFileSync(join(projectDir, "opencode.jsonc"), "utf8");
+    expect(written).toContain("// Keep this other plugin pinned");
+    expect(written).toContain("// Custom option explanation");
+    expect(readJson(join(projectDir, "opencode.jsonc")).plugin).toEqual([
+      "other-plugin@1.0.0",
+      ["@slkiser/opencode-quota@4", { keep: true }],
+    ]);
   });
 
   it("adds the tui plugin when tui config only references the server entrypoint", async () => {
