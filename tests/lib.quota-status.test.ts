@@ -798,6 +798,24 @@ describe("buildQuotaStatusReport", () => {
       absent: ["org_budget", "usr_secret"],
     },
     {
+      name: "Ollama Cloud's reset and period times, never its amounts",
+      provider: snapshot("ollama-cloud", {
+        checkedAtMs: NOW,
+        debug: [
+          { key: "included_period_from", value: "2026-09-15T09:30:00.000Z" },
+          { key: "included_period_until", value: "2026-10-15T09:30:00.000Z" },
+          { key: "session_resets_at", value: "2026-10-01T07:00:00.000Z" },
+          { key: "weekly_resets_at", value: "soon" },
+          { key: "purchased_balance_usd", value: "987.65" },
+        ],
+      }),
+      lines: [
+        "- included_period_from: 2026-09-15T09:30:00.000Z\n- included_period_until: 2026-10-15T09:30:00.000Z\n- session_resets_at: 2026-10-01T07:00:00.000Z",
+        "- weekly_resets_at: (invalid date)\n- 1 other detail not shown",
+      ],
+      absent: ["soon", "987.65"],
+    },
+    {
       name: "a provider not checked yet",
       provider: snapshot("xai"),
       lines: ["- state: not checked", "- rows: 0"],

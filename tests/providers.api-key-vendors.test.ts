@@ -150,12 +150,11 @@ describe("every API-key vendor", () => {
       errorLines: ["Synthetic: Synthetic API error 401: Unauthorized"],
     },
     {
-      // Ollama takes the key as is, without "Bearer".
       id: "ollama-cloud",
-      requests: ["GET https://ollama.com/api/usage"],
+      requests: ["GET https://ollama.com/api/balance"],
       authHeader: "authorization",
-      auth: KEY,
-      errorLines: ["Ollama Cloud: Ollama Cloud usage API error 401: Unauthorized"],
+      auth: `Bearer ${KEY}`,
+      errorLines: ["Ollama Cloud: Ollama Cloud balance API error 401: Unauthorized"],
     },
     {
       id: "deepseek",
@@ -289,41 +288,161 @@ describeVendor("synthetic", [
   },
 ]);
 
+/** The credit-plan example of https://docs.ollama.com/api/balance. */
+const OLLAMA_CREDIT_PLAN = {
+  included: {
+    balance_usd: 72.5,
+    allowance_usd: 100,
+    period: { from: "2026-09-15T09:30:00Z", until: "2026-10-15T09:30:00Z" },
+  },
+  purchased: { balance_usd: 25 },
+};
+
+/** The legacy-plan example of https://docs.ollama.com/api/balance. */
+const OLLAMA_LEGACY_PLAN = {
+  included: {
+    session: { remaining_percent: 75, resets_at: "2026-10-01T07:00:00Z" },
+    weekly: { remaining_percent: 40, resets_at: "2026-10-05T00:00:00Z" },
+  },
+  purchased: { balance_usd: 25 },
+};
+
+const OLLAMA_PURCHASED_ROW = ["ollama-cloud.purchased", null, "Purchased", null, "25 USD", null];
+const OLLAMA_NO_DATA = "Ollama Cloud: Ollama Cloud returned no limits or balance";
+
 describeVendor("ollama-cloud", [
   {
-    name: "shows the session and weekly windows",
-    reply: {
-      limits: {
-        session: { usage: 0.25, models: [{ name: "glm-5.3-flash", request_count: 57 }] },
-        weekly: { usage: 0.405 },
-      },
-    },
+    name: "shows a credit plan's included credits for the period, and purchased credits",
+    reply: OLLAMA_CREDIT_PLAN,
     rows: [
-      ["ollama-cloud.session", null, "Session", "session", 75, null],
-      ["ollama-cloud.weekly", null, "Weekly", "week", 59.5, null],
+      [
+        "ollama-cloud.monthly",
+        null,
+        "Monthly",
+        "month",
+        "72.5 (27.5 USD of 100 USD)",
+        "2026-10-15T09:30:00.000Z",
+      ],
+      OLLAMA_PURCHASED_ROW,
     ],
   },
   {
-    // The monthly-pool plan of issue #289.
-    name: "shows a monthly-only pool",
-    reply: { activity: { cost: "0.00000", models: [] }, limits: { monthly: { usage: 0.043 } } },
-    rows: [["ollama-cloud.monthly", null, "Monthly", "month", 95.7, null]],
+    name: "shows a legacy plan's session and weekly limits with their resets",
+    reply: OLLAMA_LEGACY_PLAN,
+    rows: [
+      ["ollama-cloud.session", null, "Session", "session", 75, "2026-10-01T07:00:00.000Z"],
+      ["ollama-cloud.weekly", null, "Weekly", "week", 40, "2026-10-05T00:00:00.000Z"],
+      OLLAMA_PURCHASED_ROW,
+    ],
   },
   {
-    name: "keeps a valid window next to an invalid one and reports the invalid one",
-    reply: { limits: { session: { usage: 0.2 }, weekly: { usage: 1.5 } } },
-    rows: [["ollama-cloud.session", null, "Session", "session", 80, null]],
+    name: "hides $0 purchased credits next to other rows",
+    reply: { ...OLLAMA_LEGACY_PLAN, purchased: { balance_usd: 0 } },
+    rows: [
+      ["ollama-cloud.session", null, "Session", "session", 75, "2026-10-01T07:00:00.000Z"],
+      ["ollama-cloud.weekly", null, "Weekly", "week", 40, "2026-10-05T00:00:00.000Z"],
+    ],
+  },
+  {
+    name: "clamps included credits above the allowance to 100%",
+    reply: { ...OLLAMA_CREDIT_PLAN, included: { balance_usd: 150, allowance_usd: 100 } },
+    rows: [
+      ["ollama-cloud.monthly", null, "Monthly", "month", "100 (0 USD of 100 USD)", null],
+      OLLAMA_PURCHASED_ROW,
+    ],
+  },
+  {
+    name: "clamps a negative included balance to 0%",
+    reply: { ...OLLAMA_CREDIT_PLAN, included: { balance_usd: -5, allowance_usd: 100 } },
+    rows: [
+      ["ollama-cloud.monthly", null, "Monthly", "month", "0 (100 USD of 100 USD)", null],
+      OLLAMA_PURCHASED_ROW,
+    ],
+  },
+  {
+    name: "shows only purchased credits, even $0, when there is no included allowance",
+    reply: {
+      included: { balance_usd: 0, allowance_usd: 0, period: OLLAMA_CREDIT_PLAN.included.period },
+      purchased: { balance_usd: 0 },
+    },
+    rows: [["ollama-cloud.purchased", null, "Purchased", null, "0 USD", null]],
+  },
+  {
+    name: "keeps a limit without a reset when resets_at is not a time",
+    reply: {
+      included: { session: { remaining_percent: 0, resets_at: "soon" } },
+      purchased: { balance_usd: 0 },
+    },
+    rows: [["ollama-cloud.session", null, "Session", "session", 0, null]],
+  },
+  {
+    name: "keeps valid fields next to invalid ones and reports the invalid ones",
+    reply: {
+      included: {
+        session: { remaining_percent: 20, resets_at: "2026-10-01T07:00:00Z" },
+        weekly: { remaining_percent: 150 },
+      },
+      purchased: { balance_usd: "25" },
+    },
+    rows: [["ollama-cloud.session", null, "Session", "session", 20, "2026-10-01T07:00:00.000Z"]],
     error: "bad_response",
-    errorLines: ["Ollama Cloud: Weekly: ignored invalid usage fraction"],
+    errorLines: [
+      "Ollama Cloud: Weekly: ignored invalid remaining percent",
+      "Ollama Cloud: Purchased credits: ignored invalid balance",
+    ],
   },
   {
-    name: "shows no data when no window has a usable fraction",
-    reply: { limits: { session: { usage: -1 }, weekly: { usage: "0.5" }, monthly: { usage: 2 } } },
+    name: "reports an included shape it does not know as a bad response",
+    reply: { included: { monthly: {} }, purchased: { balance_usd: 25 } },
+    rows: [OLLAMA_PURCHASED_ROW],
+    error: "bad_response",
+    errorLines: ["Ollama Cloud: Included: invalid, expected credits or session and weekly limits"],
+  },
+  {
+    name: "shows no data for a plan without an included allowance or purchased credits",
+    reply: { included: { balance_usd: 0, allowance_usd: 0 } },
     rows: [],
     error: "no_data",
-    errorLines: ["Ollama Cloud: Ollama Cloud usage API returned no usable usage data"],
+    errorLines: [OLLAMA_NO_DATA],
+  },
+  {
+    name: "shows no data for an empty reply",
+    reply: {},
+    rows: [],
+    error: "no_data",
+    errorLines: [OLLAMA_NO_DATA],
+  },
+  {
+    name: "shows no data for the retired /api/usage reply",
+    reply: { limits: { session: { usage: 0.25 }, weekly: { usage: 0.4 } } },
+    rows: [],
+    error: "no_data",
+    errorLines: [OLLAMA_NO_DATA],
   },
 ]);
+
+it("dates Ollama Cloud's monthly row from the included period", async () => {
+  setKey("ollama-cloud");
+  fakeHttp(() => OLLAMA_CREDIT_PLAN);
+
+  const fetched = await fetchRows(ollamaCloudProvider);
+
+  expect(fetched.rows[0]).toMatchObject({
+    id: "ollama-cloud.monthly",
+    windowStartedAt: "2026-09-15T09:30:00.000Z",
+    resetsAt: "2026-10-15T09:30:00.000Z",
+    remaining: { decimal: "72.5" },
+  });
+  expect(fetched.debug).toEqual(
+    expect.arrayContaining([
+      { key: "included_balance_usd", value: "72.5" },
+      { key: "included_allowance_usd", value: "100" },
+      { key: "included_period_from", value: "2026-09-15T09:30:00.000Z" },
+      { key: "included_period_until", value: "2026-10-15T09:30:00.000Z" },
+      { key: "purchased_balance_usd", value: "25" },
+    ]),
+  );
+});
 
 describeVendor("deepseek", [
   {

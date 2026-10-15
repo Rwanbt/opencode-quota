@@ -81,7 +81,7 @@ export const PROVIDER_ROW_KEYS: Readonly<Record<CanonicalQuotaProviderId, readon
   xiaomi: ["monthly_tokens", "total_balance", "cash_balance", "gift_balance"],
   "opencode-go": ["five_hour", "weekly", "monthly"],
   opencode: ["monthly", "balance", "auto_reload"],
-  "ollama-cloud": ["session", "weekly", "monthly"],
+  "ollama-cloud": ["session", "weekly", "monthly", "purchased"],
   "quota-providers": ["custom.*.*"],
 };
 

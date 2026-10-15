@@ -1146,6 +1146,15 @@ const DEBUG_DETAILS: Readonly<Partial<Record<CanonicalQuotaProviderId, DebugRule
     opencode_go_state: oneOf("not_subscribed"),
     selected_windows: listOf(["rolling", "weekly", "monthly"]),
   },
+  "ollama-cloud": {
+    ...each(
+      time,
+      "included_period_from",
+      "included_period_until",
+      "session_resets_at",
+      "weekly_resets_at",
+    ),
+  },
   opencode: {
     console_auth_state: oneOf(...CONSOLE_AUTH_STATES),
     budget_source: oneOf("member_budget", "credit_limit"),

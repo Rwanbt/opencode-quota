@@ -1,17 +1,48 @@
+import type { Amount } from "../core/types.js";
 import { API_KEY_VENDORS, hasApiKey } from "../lib/api-key-resolver.js";
 import type { QuotaProvider, QuotaProviderContext } from "../lib/entries.js";
 import { queryOllamaCloudQuota } from "../lib/ollama-cloud.js";
 import { modelProviderMatchesRuntimeId } from "../lib/provider-model-matching.js";
-import { failedAccount, MONTHLY, type ProviderFetchResult, quotaRow, WEEKLY } from "./contract.js";
+import type { OllamaCloudIncludedCredits } from "../lib/types.js";
+import { accountingDecimalFromNumber } from "./accounting-decimal.js";
+import {
+  failedAccount,
+  MONTHLY,
+  type ProviderFetchResult,
+  type ProviderRow,
+  quotaRow,
+  WEEKLY,
+} from "./contract.js";
 import { apiKeyVendorDetails, statusDetailsFromRecord } from "./result-helpers.js";
 
 const LABEL = "Ollama Cloud";
 const SESSION = { key: "session", label: "Session", window: "session" } as const;
-const OLLAMA_CLOUD_WINDOWS = [
-  ["session", SESSION],
-  ["weekly", WEEKLY],
-  ["monthly", MONTHLY],
-] as const;
+const NO_DATA = "Ollama Cloud returned no limits or balance";
+
+function usd(value: number): Amount {
+  return { decimal: accountingDecimalFromNumber(value), unit: { kind: "currency", code: "USD" } };
+}
+
+/** A credit plan's included credits: the share left this monthly period, with its USD. */
+function includedCreditsRow(
+  included: OllamaCloudIncludedCredits,
+  percentRemaining: number,
+): ProviderRow {
+  const remainingUsd = Math.max(0, included.balanceUsd);
+  return {
+    ...MONTHLY,
+    type: "quota",
+    method: "remote_api",
+    authority: "locally_derived",
+    prominence: "primary",
+    percentRemaining,
+    used: usd(Math.max(0, included.allowanceUsd - remainingUsd)),
+    limit: usd(included.allowanceUsd),
+    remaining: usd(remainingUsd),
+    ...(included.resetTimeIso ? { resetsAt: included.resetTimeIso } : {}),
+    ...(included.periodStartIso ? { windowStartedAt: included.periodStartIso } : {}),
+  };
+}
 
 export const ollamaCloudProvider: QuotaProvider = {
   id: "ollama-cloud",
@@ -35,24 +66,61 @@ export const ollamaCloudProvider: QuotaProvider = {
       return { attempted: true, accounts: [failedAccount(LABEL, result.error)], debug: keyDetails };
     }
 
-    const rows = OLLAMA_CLOUD_WINDOWS.flatMap(([field, slot]) => {
-      const window = result[field];
-      return window ? [quotaRow({ ...slot, percentRemaining: window.percentRemaining })] : [];
-    });
+    const { session, weekly, includedCredits: included, purchasedUsd } = result;
+    const rows: ProviderRow[] = [];
+    if (session) {
+      rows.push(
+        quotaRow({
+          ...SESSION,
+          percentRemaining: session.percentRemaining,
+          resetsAt: session.resetTimeIso,
+        }),
+      );
+    }
+    if (weekly) {
+      rows.push(
+        quotaRow({
+          ...WEEKLY,
+          percentRemaining: weekly.percentRemaining,
+          resetsAt: weekly.resetTimeIso,
+        }),
+      );
+    }
+    // A plan with no included allowance has no share to show.
+    if (included?.percentRemaining !== undefined) {
+      rows.push(includedCreditsRow(included, included.percentRemaining));
+    }
+    // Purchased credits show when there are some, or when they are all Ollama returned.
+    if (purchasedUsd !== undefined && (purchasedUsd > 0 || rows.length === 0)) {
+      rows.push({
+        key: "purchased",
+        label: "Purchased",
+        type: "balance",
+        method: "remote_api",
+        authority: "provider_reported",
+        prominence: "primary",
+        amount: usd(purchasedUsd),
+      });
+    }
+
     const rowErrors = result.rowErrors ?? [];
+    const errors = [...rowErrors, ...(rows.length === 0 ? [NO_DATA] : [])];
     return {
       attempted: true,
-      accounts: [{ name: LABEL, rows, errors: rowErrors.map((message) => ({ message })) }],
+      accounts: [{ name: LABEL, rows, errors: errors.map((message) => ({ message })) }],
       debug: [
         ...keyDetails,
-        ...statusDetailsFromRecord(
-          Object.fromEntries(
-            OLLAMA_CLOUD_WINDOWS.map(([field]) => [
-              `${field}_usage_fraction`,
-              result[field]?.usageFraction.toString(),
-            ]),
-          ),
-        ),
+        ...statusDetailsFromRecord({
+          included_balance_usd: included?.balanceUsd.toString(),
+          included_allowance_usd: included?.allowanceUsd.toString(),
+          included_period_from: included?.periodStartIso,
+          included_period_until: included?.resetTimeIso,
+          session_remaining_percent: session?.percentRemaining.toString(),
+          session_resets_at: session?.resetTimeIso,
+          weekly_remaining_percent: weekly?.percentRemaining.toString(),
+          weekly_resets_at: weekly?.resetTimeIso,
+          purchased_balance_usd: purchasedUsd?.toString(),
+        }),
         ...rowErrors.map((message, index) => ({ key: `live_error_${index + 1}`, value: message })),
       ],
     };
