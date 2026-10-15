@@ -337,7 +337,9 @@ describe("rowsFromProviderResult", () => {
       hidden: "smith",
     },
   ])("hides $name before it cuts a long detail", ({ home, value, cutUnhidden, shown, hidden }) => {
+    // os.homedir() reads HOME, and USERPROFILE on Windows.
     vi.stubEnv("HOME", home);
+    vi.stubEnv("USERPROFILE", home);
     // Unhidden, the cut at 300 characters would keep `cutUnhidden`: part of the value.
     const filler = "1234567.".repeat(40).slice(0, 300 - " | ".length - cutUnhidden.length);
     const result = contractRows("anthropic", {
@@ -528,7 +530,9 @@ describe("rowsFromProviderResult: the custom providers", () => {
   });
 
   it("keeps each custom definition's check under its whole name and hides the home folder", () => {
+    // os.homedir() reads HOME, and USERPROFILE on Windows.
     vi.stubEnv("HOME", "/Users/alice");
+    vi.stubEnv("USERPROFILE", "/Users/alice");
     const result = customRows(
       gateway({ id: "production-gateway-us", label: "Team" }),
       [],

@@ -28,6 +28,9 @@ function at(dayOffset: number, hours: number, minutes = 0, seconds = 0, ms = 0):
 
 const NOW = at(0, 12);
 
+/** The time zone `NOW` and the other times made at load are in; the DST tests switch away. */
+const LOCAL_TIME_ZONE = Intl.DateTimeFormat().resolvedOptions().timeZone;
+
 let root = "";
 
 beforeEach(async () => {
@@ -258,6 +261,12 @@ describe("usage report ranges", () => {
     const HOUR_MS = 60 * 60 * 1000;
     beforeEach(() => {
       vi.stubEnv("TZ", "America/New_York");
+    });
+    // Unstubbing deletes TZ again. On Windows, Node then keeps New York time instead of going
+    // back to the system zone, and the later tests would mix it with `NOW`. So each test
+    // switches back by name first.
+    afterEach(() => {
+      vi.stubEnv("TZ", LOCAL_TIME_ZONE);
     });
 
     it("counts 24h as 24 real hours over the short day clocks spring forward", async () => {

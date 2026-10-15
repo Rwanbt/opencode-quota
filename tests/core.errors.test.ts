@@ -130,7 +130,9 @@ describe("classifyError", () => {
     { value: "alice.smith@example.com", shown: "[email]", hidden: "smith" },
     { value: "/Users/alice/.config/opencode/x.json", shown: "~/.config", hidden: "ali" },
   ])("hides $hidden before it cuts a long detail", ({ value, shown, hidden }) => {
+    // os.homedir() reads HOME, and USERPROFILE on Windows.
     vi.stubEnv("HOME", "/Users/alice");
+    vi.stubEnv("USERPROFILE", "/Users/alice");
     // Unhidden, the cut at 300 characters would keep the first 16 characters of `value`.
     const filler = "1234567.".repeat(40).slice(0, 300 - " ".length - 16);
     const { detail } = classifyError(`${filler} ${value}`, NOW_MS);
