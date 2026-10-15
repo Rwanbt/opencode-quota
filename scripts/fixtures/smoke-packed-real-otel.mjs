@@ -50,6 +50,8 @@ function quotaSnapshot(providers) {
     })),
     resetNotices: [],
     generatedAtMs: Date.now(),
+    serverId: "packed-smoke",
+    revision: 1,
   };
 }
 
@@ -115,7 +117,7 @@ async function runHappyPath() {
     ]);
     // The export file and the gauges come from the same snapshot.
     const exported = buildQuotaExportFromSnapshot(snapshot);
-    assert.equal(exported.version, 2);
+    assert.equal(exported.version, 3);
     assert.equal(exported.providers["private-alpha"].status, "ok");
     assert.equal(exported.providers["private-beta"].status, "ok");
     assert.equal(exported.providers["private-alpha"].entries[0].percentRemaining, 60);
@@ -292,8 +294,9 @@ async function runFailingInfrastructure() {
  * real provider (only its quota request is faked), for the packed CLI's `show --json`.
  */
 async function runSeedProductionOpenRouter() {
-  const { createCliQuotaClient, resolveCliRoots } = await packageImport("lib/cli-show.js");
+  const { createCliQuotaClient } = await packageImport("lib/cli-show.js");
   const { loadSettings } = await packageImport("settings/index.js");
+  const { PROVIDER_IDS } = await packageImport("settings/schema.js");
   const { loadProviderSource } = await packageImport("core/provider-source.js");
   const { createQuotaStore } = await packageImport("core/store.js");
   const { snapshotFilePath } = await packageImport("core/persist.js");
@@ -301,40 +304,39 @@ async function runSeedProductionOpenRouter() {
   const secret = process.env.OPENROUTER_API_KEY;
   assert.ok(secret);
 
-  const roots = resolveCliRoots(process.cwd());
-  const loaded = await loadSettings({ projectDir: roots.workspaceRoot });
+  // The smoke folder is not in a git repository, so the terminal command uses it as is.
+  const workspaceRoot = process.cwd();
+  const loaded = await loadSettings({ projectDir: workspaceRoot });
+  // Only OpenRouter is checked, as with `show --provider openrouter`.
   const settings = {
     ...loaded.settings,
-    providers: { ...loaded.settings.providers, enabled: ["openrouter"] },
+    providers: {
+      ...loaded.settings.providers,
+      off: PROVIDER_IDS.filter((id) => id !== "openrouter"),
+    },
   };
   const host = {
     client: createCliQuotaClient({
-      configRootDir: roots.configRoot,
+      configRootDir: workspaceRoot,
       anthropicBinaryPath: settings.providers.anthropic.binaryPath,
     }),
-    workspaceRoot: roots.workspaceRoot,
+    workspaceRoot,
     settings: () => ({ ...loaded, settings }),
   };
   const provider = getProviders().find(({ id }) => id === "openrouter");
   assert.ok(provider);
   assert.equal(provider.cachePolicy?.kind, "resolved-auth");
-  provider.fetch = async () => ({
-    attempted: true,
-    entries: [
-      {
-        name: "Packed production OpenRouter",
-        label: "Month:",
-        percentRemaining: 67,
-        accounting: {
-          resultType: "quota",
-          acquisitionMethod: "remote_api",
-          ownership: "maintained",
-          authority: "provider_reported",
-        },
-      },
-    ],
-    errors: [],
-  });
+
+  // OpenRouter's key endpoint answers a key with a $100 limit and $67 left.
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    assert.equal(String(url), "https://openrouter.ai/api/v1/key");
+    assert.equal(new Headers(init?.headers).get("authorization"), `Bearer ${secret}`);
+    return new Response(JSON.stringify({ data: { usage: 33, limit: 100, limit_remaining: 67 } }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
 
   const store = createQuotaStore({
     source: () => loadProviderSource(host),
@@ -345,7 +347,12 @@ async function runSeedProductionOpenRouter() {
     snapshot = await store.refresh({ reason: "manual" });
   } finally {
     await store.dispose();
+    globalThis.fetch = realFetch;
   }
+  assert.deepEqual(
+    snapshot.providers.map(({ providerId }) => providerId),
+    ["openrouter"],
+  );
   const exported = buildQuotaExportFromSnapshot(snapshot);
   assert.equal(exported.providers.openrouter.status, "ok");
   assert.equal(exported.providers.openrouter.entries[0].percentRemaining, 67);
