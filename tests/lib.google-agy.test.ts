@@ -167,7 +167,7 @@ const FLAVORS = [
     configProvider: "google-agy",
     quotaUrl: "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary",
     quotaHeaders: {
-      "User-Agent": "antigravity/cli/1.3.2 darwin/amd64",
+      "User-Agent": "antigravity/cli/1.3.5 darwin/amd64",
       "x-activity-request-id": expect.stringMatching(/^[0-9a-f-]{36}$/),
     },
     quotaResponse: summaryResponse(),

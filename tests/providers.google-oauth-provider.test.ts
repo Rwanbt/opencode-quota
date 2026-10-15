@@ -179,6 +179,40 @@ describe.each(PROVIDERS)("$name provider", ({ name, integrationId, provider, lib
   });
 });
 
+describe("Google AGY database login", () => {
+  it("gives each model family and window of one login its own row id and label", async () => {
+    mocks.readCredentialRows.mockResolvedValueOnce([
+      {
+        id: "work-id",
+        integrationId: "google-agy",
+        label: "Work",
+        active: true,
+        value: { type: "oauth", refresh: "one|project" },
+      },
+    ]);
+    const bucket = { accountIndex: 0, percentRemaining: 70 };
+    mocks.agy.query.mockResolvedValueOnce({
+      success: true,
+      buckets: [
+        { ...bucket, family: "Gemini Models", window: "weekly", windowLabel: "Weekly" },
+        { ...bucket, family: "Gemini Models", window: "five_hour", windowLabel: "5h" },
+        { ...bucket, family: "Claude and GPT models", window: "weekly", windowLabel: "Weekly" },
+        { ...bucket, family: "Claude and GPT models", window: "five_hour", windowLabel: "5h" },
+      ],
+    });
+
+    const fetched = await fetchRows(googleAgyProvider);
+
+    expect(fetched.rows.map((row) => [row.id, row.label, row.account])).toEqual([
+      ["google-agy.gemini.weekly", "Gemini Weekly", "Work"],
+      ["google-agy.gemini.five_hour", "Gemini 5h", "Work"],
+      ["google-agy.claude_gpt.weekly", "Claude/GPT Weekly", "Work"],
+      ["google-agy.claude_gpt.five_hour", "Claude/GPT 5h", "Work"],
+    ]);
+    expect(fetched.rowLogins).toEqual(["work-id", "work-id", "work-id", "work-id"]);
+  });
+});
+
 describe.each(PROVIDERS)("$name account labels", ({ provider, lib, bucket }) => {
   it.each([
     [
