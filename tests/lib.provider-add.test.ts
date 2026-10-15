@@ -219,6 +219,52 @@ describe("provider add global config workflow", () => {
     expect(definitions[0]?.label).toBe("Updated First");
   });
 
+  it("removes the old API key variable when an update leaves it blank", async () => {
+    const dir = await configDir();
+    const path = join(dir, "opencode.jsonc");
+    await writeFile(
+      path,
+      JSON.stringify({
+        experimental: {
+          quotaToast: {
+            quotaProviders: [
+              {
+                id: "gateway",
+                mode: "remote-api",
+                url: "https://gateway.example/quota",
+                format: "quota-v1",
+                apiKeyEnv: "OLD_KEY",
+              },
+            ],
+          },
+        },
+      }),
+      "utf8",
+    );
+
+    const plan = await planProviderAdd({
+      definition: {
+        id: "gateway",
+        mode: "remote-api",
+        url: "https://gateway.example/quota",
+        format: "quota-v1",
+      },
+      configDir: dir,
+    });
+    await applyProviderAddPlan(plan);
+
+    const parsed = parseConfigDocument(await readFile(path, "utf8"), "jsonc", path);
+    const definitions = (
+      (parsed.experimental as Record<string, unknown>).quotaToast as Record<string, unknown>
+    ).quotaProviders as Array<Record<string, unknown>>;
+    expect(definitions).toHaveLength(1);
+    expect(definitions[0]).toMatchObject({
+      id: "gateway",
+      url: "https://gateway.example/quota",
+    });
+    expect(definitions[0]).not.toHaveProperty("apiKeyEnv");
+  });
+
   it("preserves existing strict JSON without adding comments", async () => {
     const dir = await configDir();
     const path = join(dir, "opencode.json");
