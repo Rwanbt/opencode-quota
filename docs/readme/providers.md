@@ -28,7 +28,7 @@ Most providers work automatically. `Automatic` means OpenCode Quota reuses the c
 | Google AGY         | [Needs setup](#google-agy-quick-setup) | Remote API         | Quota              |
 | Kilo Gateway       | Automatic                              | Remote API         | Quota and balance  |
 | NanoGPT            | Automatic                              | Remote API         | Quota and balance  |
-| Ollama Cloud       | Automatic                              | Remote API         | Quota and usage    |
+| Ollama Cloud       | Automatic                              | Remote API         | Quota and balance  |
 | OpenAI             | Automatic                              | Remote API         | Quota              |
 | OpenCode Go        | Automatic                              | Remote API         | Quota              |
 | OpenCode Zen       | [Needs setup](#opencode-zen)           | Remote API         | Budget and balance |
@@ -584,7 +584,7 @@ Per-API-key costs remain unsupported until Xiaomi exposes endpoint and schema ev
 
 ### Ollama Cloud
 
-Ollama Cloud calls `https://ollama.com/api/usage` and reports session, weekly, or monthly usage fractions (newer plans report only a monthly usage pool). The API-key response does not include quota reset timestamps or per-model request rows. Create an Ollama API key, then set:
+Ollama Cloud calls `https://ollama.com/api/balance`. Credit plans show a **Monthly** row (included credits left, with the period's reset time); legacy plans show **Session** and **Weekly** rows with their reset times. **Purchased** shows unexpired purchased credits in USD when there are some, or when Ollama returns nothing else. The API gives no per-model rows. Create an Ollama API key, then set:
 
 ```bash
 export OLLAMA_API_KEY="your-api-key"
