@@ -220,9 +220,12 @@ function pageId(tab: SettingsTab): string {
   return `quota-layout-page-${tab}`;
 }
 
-function windowChoices(provider: ProviderSnapshot): WindowChoice[] {
+/** The windows ‹ › steps through: those of the provider's rows not hidden on the page. */
+function windowChoices(provider: ProviderSnapshot, hidden: readonly string[]): WindowChoice[] {
   const windows = provider.rows.flatMap((row) =>
-    row.window && row.percentRemaining !== undefined ? [row.window] : [],
+    row.window && row.percentRemaining !== undefined && !hidden.includes(row.id)
+      ? [row.window]
+      : [],
   );
   const unique = [...new Set(windows)];
   return unique.length > 1 ? ["lowest", ...unique] : [];
@@ -822,6 +825,11 @@ export function createSettingsEditor(
     const words = () => snapshot()?.words ?? DEFAULT_WORDS;
     /** The picked windows of Collapsed or Status line. */
     const windows = () => shown()[props.tab === "statusLine" ? "statusLine" : "collapsed"].window;
+    /** The providers and rows hidden on this page. */
+    const hiddenIds = (): readonly string[] => {
+      const current = surface();
+      return current ? shown().surfaces[current].hidden : [];
+    };
     const tree = (): TreeProvider[] => {
       const current = surface();
       const loaded = snapshot();
@@ -880,7 +888,7 @@ export function createSettingsEditor(
 
     function cycleWindow(providerId: string, delta: number): void {
       const provider = tree().find((item) => item.provider.providerId === providerId)?.provider;
-      const choices = provider ? windowChoices(provider) : [];
+      const choices = provider ? windowChoices(provider, hiddenIds()) : [];
       if (choices.length === 0) return;
       const inherited = inheritedWindow(windows(), choices);
       const next = stepIn(choices, windows()[providerId] ?? inherited, delta);
@@ -1125,15 +1133,16 @@ export function createSettingsEditor(
           return describeError(provider.error, provider.label, Date.now());
         }
         if (withRows()) return "";
+        const rows = provider.rows.filter((item) => !hiddenIds().includes(item.id));
         const picked = pickRow(
-          { rows: provider.rows.map((item) => ({ row: item, label: item.label, named: false })) },
+          { rows: rows.map((item) => ({ row: item, label: item.label, named: false })) },
           windowFor(windows(), provider.providerId),
         );
         return picked ? summary(picked.row) : "";
       };
       const choices = () => {
         const provider = entry()?.provider;
-        return !line.row && !withRows() && provider ? windowChoices(provider) : [];
+        return !line.row && !withRows() && provider ? windowChoices(provider, hiddenIds()) : [];
       };
       /** Rows sit 4 columns further right, so their names get 4 fewer; the details line up. */
       const labelWidth = line.row ? 24 : 28;

@@ -365,7 +365,15 @@ export function createQuotaWindow(
   /** c on Limits: every provider's limits as Web and Desktop /quota write them. */
   function copyLimits(sessionID: string): void {
     const snapshot = host.quota.snapshot(sessionID);
-    if (!snapshot) return;
+    if (!snapshot) {
+      api.ui.toast.show({
+        variant: "info",
+        title: "Limits",
+        message: "Quota is still loading.",
+        duration: 4_000,
+      });
+      return;
+    }
     copyWithToast(quotaLimitsText(snapshot, Date.now()), "Limits", {
       copied: "Copied the limits report",
       failed: "This terminal doesn't allow copying.",

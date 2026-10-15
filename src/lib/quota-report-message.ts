@@ -6,6 +6,7 @@
 import type { QuotaSnapshot } from "../core/types.js";
 import type { UsageReport } from "../core/usage.js";
 import type { Notice } from "../rpc.js";
+import { DEFAULT_WORDS } from "../view/format.js";
 import { quickLookText } from "../view/quick-look.js";
 import type { RowSettings, SurfaceRows } from "../view/select.js";
 import { sanitizeDisplayText } from "./display-sanitize.js";
@@ -48,10 +49,17 @@ const NO_DISPLAY_CHOICES: RowSettings = {
 
 /**
  * The limits of every provider as the /quota report of Web and Desktop writes them, without its
- * usage and notices: what the TUI's Limits tab copies.
+ * usage and notices: what the TUI's Limits tab copies. Like that tab, it ignores
+ * `onlyCurrentModel`.
  */
 export function quotaLimitsText(snapshot: QuotaSnapshot, nowMs: number): string {
-  const text = quickLookText({ snapshot, usage: undefined, settings: NO_DISPLAY_CHOICES, nowMs });
+  const words = { ...(snapshot.words ?? DEFAULT_WORDS), onlyCurrentModel: false };
+  const text = quickLookText({
+    snapshot: { ...snapshot, words },
+    usage: undefined,
+    settings: NO_DISPLAY_CHOICES,
+    nowMs,
+  });
   return sanitizeDisplayText(text);
 }
 

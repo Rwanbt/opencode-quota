@@ -119,5 +119,7 @@ describe("quota report messages", () => {
       providers: [{ ...snapshot.providers[0], label: "Claude\u001b[31m" }],
     };
     expect(quotaLimitsText(escaped, nowMs)).toBe("Quota\n● Claude  5h 58% left · fable 90% left");
+    // Like the Limits tab, the copy lists every provider whatever the session's model is.
+    expect(quotaLimitsText(otherModel, nowMs)).toBe(quotaLimitsText(snapshot, nowMs));
   });
 });
