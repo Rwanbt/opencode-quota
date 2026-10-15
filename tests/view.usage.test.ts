@@ -839,9 +839,9 @@ describe("usageView", () => {
         { text: "      —", role: "muted" },
         { text: "  ", role: "muted" },
       ],
-      // Under 200K input tokens.
+      // Under 200K input tokens: too few to call it good or low.
       [
-        { text: "    13%", role: "good" },
+        { text: "    13%", role: "muted" },
         { text: "  ", role: "muted" },
       ],
       // Half of the input cached.

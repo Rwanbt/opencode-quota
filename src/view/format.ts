@@ -205,7 +205,9 @@ export type CacheHit = {
   share: number;
   /** Whole percents, rounded down so a low cache hit never reads "50%": "35%". */
   text: string;
-  /** At least 200K input tokens, and less than half of them read from the cache. */
+  /** At least 200K input tokens: enough to tell a good cache hit from a low one. */
+  judged: boolean;
+  /** Judged, and less than half of the input tokens read from the cache. */
   low: boolean;
 };
 
@@ -217,10 +219,12 @@ export function cacheHit(tokens: InputTokens): CacheHit | undefined {
   const allInput = tokens.input + tokens.cacheRead + tokens.cacheWrite;
   if (allInput <= 0 || tokens.cacheRead + tokens.cacheWrite <= 0) return undefined;
   const share = tokens.cacheRead / allInput;
+  const judged = allInput >= LOW_CACHE_MIN_INPUT_TOKENS;
   return {
     share,
     text: `${Math.floor((tokens.cacheRead * 100) / allInput)}%`,
-    low: allInput >= LOW_CACHE_MIN_INPUT_TOKENS && share < LOW_CACHE_HIT_BELOW,
+    judged,
+    low: judged && share < LOW_CACHE_HIT_BELOW,
   };
 }
 

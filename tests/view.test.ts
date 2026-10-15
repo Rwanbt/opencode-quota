@@ -453,6 +453,11 @@ describe("view text", () => {
       expect(lineText(warning!)).toBe(text);
       expect(columnsOf(lineText(warning!))).toBeLessThanOrEqual(width);
     });
+
+    it("cuts a wide-character name without a space before the closing parenthesis", () => {
+      const warning = linesAfterSession([model("模型名字", 2_600 * K, 1_400 * K)], 25)[1];
+      expect(lineText(warning!)).toBe("⚠ low cache: 35% (模型…)");
+    });
   });
 
   it("fills the sidebar's room with the bar, at most 20 cells, then drops it when narrow", () => {

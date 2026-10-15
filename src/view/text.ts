@@ -269,7 +269,9 @@ function lowCacheLine(models: SessionModelInput[], width: number): Line | undefi
   const nameRoom = width - columnsOf(start) - " ()".length;
   const name = worst.modelID;
   const text =
-    nameRoom >= 2 ? `${start} (${fit(name, Math.min(columnsOf(name), nameRoom))})` : start;
+    nameRoom >= 2
+      ? `${start} (${fit(name, Math.min(columnsOf(name), nameRoom)).trimEnd()})`
+      : start;
   return { id: "session", segments: clip([{ text, role: "warning" }], width) };
 }
 

@@ -670,7 +670,8 @@ export function breakdownModels(report: UsageReport, mode: UsageMode): UsageMode
 
 /**
  * The model breakdown's Cache column: each model's cache hit, right-aligned under "Cache", in
- * the good color, or the warning color with " ⚠" after it when it is low; "—" without one.
+ * the good color, or the warning color with " ⚠" after it when it is low, or muted before 200K
+ * input tokens; "—" without one.
  */
 function cacheColumn(shown: BreakdownEntry[]): {
   width: number;
@@ -687,7 +688,7 @@ function cacheColumn(shown: BreakdownEntry[]): {
     }
     const { cache } = entry;
     let role: UsageRole = "muted";
-    if (cache) role = cache.low ? "warning" : "good";
+    if (cache?.judged) role = cache.low ? "warning" : "good";
     const cell = span(`  ${padStartColumns(cache?.text ?? NO_CACHE_HIT, percentWidth)}`, role);
     if (hang === 0) return [cell];
     return [cell, cache?.low ? span(lowAfter, "warning") : span(" ".repeat(hang), "muted")];
