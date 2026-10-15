@@ -15,7 +15,7 @@ Node.js `^22.13.0 || >=23.4.0` and pnpm 11:
 
 ```sh
 corepack enable
-corepack prepare pnpm@11.0.0 --activate
+corepack prepare pnpm@11.7.0 --activate
 pnpm install
 ```
 
