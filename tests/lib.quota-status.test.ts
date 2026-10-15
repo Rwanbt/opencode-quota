@@ -1203,10 +1203,12 @@ describe("buildQuotaStatusReport", () => {
   it("shows only fixed words for a downloaded price list's own fields", async () => {
     const dir = join(root, ".cache", "opencode", "opencode-quota");
     mkdirSync(dir, { recursive: true });
+    // Made now, so it is never older than the shipped price list (the older one is not used).
+    const generatedAt = Date.now();
     writeFileSync(
       join(dir, "modelsdev-pricing.runtime.min.json"),
       JSON.stringify({
-        _meta: { source: `https://${SK_CANARY}.example`, generatedAt: NOW, units: SK_CANARY },
+        _meta: { source: `https://${SK_CANARY}.example`, generatedAt, units: SK_CANARY },
         providers: { [SK_CANARY]: { [SK_CANARY]: { input: 1, output: 2 } } },
       }),
     );
@@ -1215,7 +1217,7 @@ describe("buildQuotaStatusReport", () => {
     const text = section(await report(), "pricing_snapshot");
 
     expect(text).toContain(
-      `- pricing: source=downloaded generated_at=${NOW_ISO} units=(other units)`,
+      `- pricing: source=downloaded generated_at=${new Date(generatedAt).toISOString()} units=(other units)`,
     );
     expect(text).toMatch(/- price_list_providers: \d+\n/u);
     expect(text).not.toContain("secretcanary");
@@ -1229,7 +1231,8 @@ describe("buildQuotaStatusReport", () => {
       JSON.stringify({
         _meta: {
           source: "https://models.dev/api.json",
-          generatedAt: NOW,
+          // Made now, so it is the price list in use (never older than the shipped one).
+          generatedAt: Date.now(),
           units: "USD per 1M tokens",
         },
         providers: { lowercasecanary: { "lowercasecanary-model": { input: 1, output: 2 } } },
