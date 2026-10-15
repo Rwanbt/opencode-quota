@@ -65,6 +65,7 @@ import type { CredentialSourceDiagnostics, CredentialSourceKind } from "./openco
 import { getOpenCodeDbPath } from "./opencode-db-path.js";
 import { getOpencodeRuntimeDirs } from "./opencode-runtime-paths.js";
 import { getOpenCodeDbStats } from "./opencode-storage.js";
+import { MEMBER_BUDGET_NOTE } from "./opencode-zen.js";
 import {
   type CanonicalQuotaProviderId,
   getQuotaProviderDisplayLabel,
@@ -1147,7 +1148,8 @@ const DEBUG_DETAILS: Readonly<Partial<Record<CanonicalQuotaProviderId, DebugRule
   },
   opencode: {
     console_auth_state: oneOf(...CONSOLE_AUTH_STATES),
-    budget_source: oneOf("org_budget", "credit_limit"),
+    budget_source: oneOf("member_budget", "credit_limit"),
+    member_budget_note: oneOf(MEMBER_BUDGET_NOTE),
     auto_reload: bool,
   },
 };

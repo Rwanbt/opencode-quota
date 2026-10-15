@@ -777,6 +777,27 @@ describe("buildQuotaStatusReport", () => {
       absent: ["example.com", "secret-org", "ENOTFOUND", "never write"],
     },
     {
+      name: "Zen's budget source and the member budget note, never a source we do not write",
+      provider: snapshot("opencode", {
+        checkedAtMs: NOW,
+        debug: [
+          { key: "budget_source", value: "member_budget" },
+          { key: "budget_source", value: "org_budget" },
+          {
+            key: "member_budget_note",
+            value:
+              "member budgets found, but not all can be evaluated (model filters, per-model limits, or missing amounts); using the credit limit",
+          },
+          { key: "member_budget_note", value: "usr_secret has 3 budgets" },
+        ],
+      }),
+      lines: [
+        "- budget_source: member_budget\n- member_budget_note: member budgets found, but not all can be evaluated (model filters, per-model limits, or missing amounts); using the credit limit",
+        "- 2 other details not shown",
+      ],
+      absent: ["org_budget", "usr_secret"],
+    },
+    {
       name: "a provider not checked yet",
       provider: snapshot("xai"),
       lines: ["- state: not checked", "- rows: 0"],

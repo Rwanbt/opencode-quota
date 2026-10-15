@@ -7,6 +7,7 @@ import {
   resolveOpenCodeConsoleAuth,
 } from "../lib/opencode-console-auth.js";
 import {
+  MEMBER_BUDGET_NOTE,
   OPENCODE_ZEN_BILLING_UNITS_PER_DOLLAR,
   queryOpenCodeZenQuota,
 } from "../lib/opencode-zen.js";
@@ -130,10 +131,12 @@ export const opencodeZenProvider: QuotaProvider = {
 
     const hasMonthlyUsage =
       monthlyUsageUsd !== null && Number.isFinite(monthlyUsageUsd) && monthlyUsageUsd >= 0;
+    // A member budget of $0 is a real blocking limit; a $0 credit limit or setting is no limit.
+    const zeroBudgetActive = data.budgetSource === "member_budget" && effectiveMonthlyLimit === 0;
     const hasMonthlyBudget =
       effectiveMonthlyLimit !== null &&
       Number.isFinite(effectiveMonthlyLimit) &&
-      effectiveMonthlyLimit > 0 &&
+      (effectiveMonthlyLimit > 0 || zeroBudgetActive) &&
       hasMonthlyUsage;
     const rows: ProviderRow[] = [];
 
@@ -144,7 +147,10 @@ export const opencodeZenProvider: QuotaProvider = {
         ...ZEN_ROW,
         type: "budget",
         authority: "locally_derived",
-        percentRemaining: Math.min(100, (monthlyRemainingUsd / effectiveMonthlyLimit) * 100),
+        percentRemaining:
+          effectiveMonthlyLimit > 0
+            ? Math.min(100, (monthlyRemainingUsd / effectiveMonthlyLimit) * 100)
+            : 0,
         used: usd(monthlyUsageUsd),
         limit: usd(effectiveMonthlyLimit),
         remaining: usd(monthlyRemainingUsd),
@@ -191,6 +197,7 @@ export const opencodeZenProvider: QuotaProvider = {
           monthly_limit_usd: data.monthlyLimit === null ? "(none)" : usdText(data.monthlyLimit),
           monthly_usage_usd: monthlyUsageUsd === null ? "(unknown)" : usdText(monthlyUsageUsd),
           budget_source: data.budgetSource,
+          member_budget_note: data.memberBudgetsSkipped ? MEMBER_BUDGET_NOTE : undefined,
           auto_reload: data.reload === null ? "(unknown)" : String(data.reload),
           auto_reload_amount_raw: data.reloadAmount === null ? "(none)" : String(data.reloadAmount),
           auto_reload_trigger_raw:

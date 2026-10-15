@@ -246,7 +246,7 @@ Check the `opencode-go` section:
 <details>
 <summary><strong>OpenCode Zen</strong></summary>
 
-Check the `opencode` section (OpenCode Zen). `console_auth_state` shows whether OpenCode returned your Console sign-in, and `budget_source` shows whether the budget came from the org budget (`org_budget`) or the credit limit plus this month's usage (`credit_limit`). `live_fetch_error` means a Console route failed. The token, the Console's address, and the organization are never shown.
+Check the `opencode` section (OpenCode Zen). `console_auth_state` shows whether OpenCode returned your Console sign-in, and `budget_source` shows whether the budget came from your member budget (`member_budget`) or the credit limit plus this month's usage (`credit_limit`). `member_budget_note` appears when you have member budgets Zen can't evaluate, so it uses the credit limit. `live_fetch_error` means a Console route failed. The token, the Console's address, and the organization are never shown.
 
 | Symptom                                                           | Fix |
 | ----------------------------------------------------------------- | --- |
