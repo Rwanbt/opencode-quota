@@ -157,7 +157,7 @@ Run `npx @slkiser/opencode-quota@4 --help` for command options. See [External in
 | Google AGY         | [Needs setup](docs/readme/providers.md#google-agy-quick-setup) | Remote API         | Quota              |
 | Kilo Gateway       | Automatic                                                      | Remote API         | Quota and balance  |
 | NanoGPT            | Automatic                                                      | Remote API         | Quota and balance  |
-| Ollama Cloud       | Automatic                                                      | Remote API         | Quota and usage    |
+| Ollama Cloud       | Automatic                                                      | Remote API         | Quota and balance  |
 | OpenAI             | Automatic                                                      | Remote API         | Quota              |
 | OpenCode Go        | Automatic                                                      | Remote API         | Quota              |
 | OpenCode Zen       | [Needs setup](docs/readme/providers.md#opencode-zen)           | Remote API         | Budget and balance |

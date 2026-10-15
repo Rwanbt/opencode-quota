@@ -142,6 +142,7 @@ describe("OpenCode Zen Console account resolution", () => {
       state: "configured",
       account: {
         baseUrl: "https://opencode.ai/console",
+        accountId: "acc_1",
         accessToken: "st_secret-token",
         activeOrgId: "org_1",
       },
@@ -358,6 +359,7 @@ describe("OpenCode Zen Console account resolution", () => {
       state: "configured",
       account: {
         baseUrl: expectedBase,
+        accountId: "acc_1",
         accessToken: "st_secret-token",
         activeOrgId: "org_1",
       },
@@ -390,6 +392,7 @@ describe("OpenCode Zen Console account resolution", () => {
         state: "configured",
         account: {
           baseUrl: "https://opencode.ai/console",
+          accountId: "acc_1",
           accessToken: "st_rotated-token",
           activeOrgId: "org_1",
         },
@@ -423,6 +426,7 @@ describe("OpenCode Zen Console account resolution", () => {
         state: "configured",
         account: {
           baseUrl: "https://opencode.ai/console",
+          accountId: "acc_1",
           accessToken: "st_secret-token",
           activeOrgId: "org_1",
         },
@@ -440,6 +444,7 @@ describe("OpenCode Zen Console account resolution", () => {
         state: "configured",
         account: {
           baseUrl: "https://opencode.ai/console",
+          accountId: "acc_1",
           accessToken: "st_rotated-token",
           activeOrgId: "org_1",
         },
@@ -470,6 +475,7 @@ describe("OpenCode Zen Console account resolution", () => {
         state: "configured",
         account: {
           baseUrl: "https://opencode.ai/console",
+          accountId: "acc_1",
           accessToken: "st_fresh-token",
           activeOrgId: "org_1",
         },

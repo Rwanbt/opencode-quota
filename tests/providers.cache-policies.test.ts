@@ -117,6 +117,7 @@ describe("provider cache policies", () => {
       state: "configured",
       account: {
         baseUrl: "https://opencode.ai/console",
+        accountId: "acc_1",
         accessToken: "st_secret-token",
         activeOrgId: "wrk_shared",
       },
@@ -127,6 +128,7 @@ describe("provider cache policies", () => {
       state: "configured",
       account: {
         baseUrl: "https://console.self-hosted.example",
+        accountId: "acc_1",
         accessToken: "st_self-hosted-token",
         activeOrgId: "wrk_shared",
       },
@@ -138,13 +140,56 @@ describe("provider cache policies", () => {
     expect(cloudIdentity).not.toBe(selfHostedIdentity);
     expect(cachePolicyMocks.deriveIdentity).toHaveBeenCalledWith({
       providerId: "opencode",
-      principal: { kind: "stable-id", value: "wrk_shared" },
+      principal: { kind: "stable-id", value: JSON.stringify(["wrk_shared", "acc_1"]) },
       qualifiers: ["https://opencode.ai/console"],
     });
     expect(cachePolicyMocks.deriveIdentity).toHaveBeenCalledWith({
       providerId: "opencode",
-      principal: { kind: "stable-id", value: "wrk_shared" },
+      principal: { kind: "stable-id", value: JSON.stringify(["wrk_shared", "acc_1"]) },
       qualifiers: ["https://console.self-hosted.example"],
+    });
+  });
+
+  it("derives distinct OpenCode Zen identities for two accounts in the same org", async () => {
+    const policy = PROVIDER_CACHE_POLICIES.opencode;
+    if (policy.kind !== "resolved-auth") throw new Error("Expected a resolved-auth policy");
+
+    const ctx = { config: {} } as never;
+    const cacheContext = {} as never;
+    cachePolicyMocks.resolveZenAccount.mockResolvedValue({
+      state: "configured",
+      account: {
+        baseUrl: "https://opencode.ai/console",
+        accountId: "acc_a",
+        accessToken: "st_secret-token-1",
+        activeOrgId: "wrk_shared",
+      },
+    });
+    const identityA = await policy.resolveIdentity(ctx, cacheContext);
+
+    cachePolicyMocks.resolveZenAccount.mockResolvedValue({
+      state: "configured",
+      account: {
+        baseUrl: "https://opencode.ai/console",
+        accountId: "acc_b",
+        accessToken: "st_secret-token-2",
+        activeOrgId: "wrk_shared",
+      },
+    });
+    const identityB = await policy.resolveIdentity(ctx, cacheContext);
+
+    expect(identityA).not.toBeNull();
+    expect(identityB).not.toBeNull();
+    expect(identityA).not.toBe(identityB);
+    expect(cachePolicyMocks.deriveIdentity).toHaveBeenCalledWith({
+      providerId: "opencode",
+      principal: { kind: "stable-id", value: JSON.stringify(["wrk_shared", "acc_a"]) },
+      qualifiers: ["https://opencode.ai/console"],
+    });
+    expect(cachePolicyMocks.deriveIdentity).toHaveBeenCalledWith({
+      providerId: "opencode",
+      principal: { kind: "stable-id", value: JSON.stringify(["wrk_shared", "acc_b"]) },
+      qualifiers: ["https://opencode.ai/console"],
     });
   });
 
