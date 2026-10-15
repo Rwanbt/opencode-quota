@@ -28,6 +28,7 @@ import {
   type WindowChoice,
 } from "../src/view/select.js";
 import {
+  barSegments,
   bigStatusLine,
   collapsedLines,
   collapsedTitle,
@@ -493,6 +494,114 @@ describe("view text", () => {
     it("gives the big bar the window for all providers too", () => {
       const input = { ...statusInput([OPENAI]), window: { [ALL_PROVIDERS]: "five_hour" } };
       expect(lineText(bigStatusLine(input)!)).toBe("OpenAI 5h ███████░░░ 65% left");
+    });
+  });
+
+  describe("even-use mark", () => {
+    /** Half of the 5-hour window has passed with 70% left: even use would leave 50%. */
+    const PACED = provider("openai", "OpenAI", [
+      row("openai.five_hour", {
+        label: "5h",
+        window: "five_hour",
+        percentRemaining: 70,
+        resetsAt: at(150 * MINUTE),
+      }),
+      // Without a reset time the pace is unknown: no mark.
+      row("openai.weekly", { label: "Weekly", window: "week", percentRemaining: 40 }),
+    ]);
+    const on = { ...display.layout, evenUse: true };
+    const sidebar = (layout: typeof on) =>
+      sidebarLines({ groups: groups("sidebar", [PACED, ZEN]), ...drawn, layout, width: 40 }).map(
+        lineText,
+      );
+
+    it("is off by default", () => {
+      expect(display.layout.evenUse).toBe(false);
+      expect(sidebar(display.layout).join("\n")).not.toContain("┃");
+    });
+
+    it("takes the place of the cell where even use would be in the sidebar's bars", () => {
+      expect(sidebar(on)).toEqual([
+        "OpenAI",
+        " 5h ██████████┃███░░░░░░  70% 2h 30m",
+        // No reset time, so no mark; a balance has no bar.
+        " 7d ████████░░░░░░░░░░░░  40%       ",
+        "",
+        "OpenCode Zen",
+        " Balance  $1,240.50 left",
+      ]);
+      // The bar keeps its width.
+      expect(sidebar(on).map(columnsOf)).toEqual(sidebar(display.layout).map(columnsOf));
+    });
+
+    it("is in the bars of the collapsed panel, the status line, the big bar and both toasts", () => {
+      const status: StatusInput = { ...statusInput([PACED]), layout: on };
+      const toastOn = (layout: ToastLayout) =>
+        toast(layout, 40, [PACED], { evenUse: true, runsOut: false });
+      expect({
+        collapsed: collapsedLines({
+          groups: groups("collapsed", [PACED]),
+          ...drawn,
+          layout: on,
+          width: 40,
+          window: { openai: "five_hour" },
+        }).map(lineText),
+        status: lineText(
+          statusLayout({ ...status, window: { openai: "five_hour" } }, 200, 0, "full").shown[0]!,
+        ),
+        big: lineText(bigStatusLine({ ...status, window: { openai: "five_hour" } })!),
+        grouped: toastOn("grouped"),
+        detailed: toastOn("detailed"),
+      }).toEqual({
+        collapsed: ["OpenAI    5h   █████┃█░░░  70%  2h 30m"],
+        status: "OpenAI ███┃░ 70% 2h 30m",
+        big: "OpenAI 5h █████┃█░░░ 70% left · 2h 30m",
+        grouped: [
+          "OpenAI",
+          "  5h █████████┃██░░░░░  70% left  2h 30m",
+          "  7d ███████░░░░░░░░░░  40% left",
+        ],
+        detailed: [
+          "OpenAI",
+          "5h                                2h 30m",
+          "███████████████┃█████░░░░░░░░░  70% left",
+          "7d",
+          "████████████░░░░░░░░░░░░░░░░░░  40% left",
+        ],
+      });
+    });
+
+    it.each([
+      "blocks",
+      "shades",
+      "line",
+      "squares",
+      "dots",
+    ] as const)("draws the mark in a %s bar, which keeps its width", (shape) => {
+      const [full] = barParts(shape, 100, 1);
+      const [, empty] = barParts(shape, 0, 1);
+      expect(barSegments(shape, 70, 20, 50)).toEqual([
+        { text: full.repeat(10), role: "bar", percent: 70 },
+        { text: "┃", role: "label" },
+        { text: full.repeat(3), role: "bar", percent: 70 },
+        { text: empty.repeat(6), role: "empty", percent: 70 },
+      ]);
+    });
+
+    it.each([
+      { name: "no bar", shape: "none", width: 20, text: "" },
+      { name: "a bar under 3 cells", shape: "blocks", width: 2, text: "█░" },
+      { name: "the narrowest bar with a mark", shape: "blocks", width: 3, text: "██┃" },
+      {
+        name: "a mark past the bar's end",
+        shape: "blocks",
+        width: 10,
+        evenLeft: 100,
+        text: "███████░░┃",
+      },
+    ] as const)("draws $name", ({ shape, width, text, ...rest }) => {
+      const evenLeft = "evenLeft" in rest ? rest.evenLeft : 50;
+      expect(lineText({ id: "bar", segments: barSegments(shape, 70, width, evenLeft) })).toBe(text);
     });
   });
 

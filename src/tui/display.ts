@@ -419,6 +419,9 @@ export const FIELDS: readonly Field[] = [
     valid: (value) => value === "fill" || isWhole(value, 1, 30),
     ...LAYOUT,
   }),
+  switchField("layout.evenUse", "Even-use mark", false, {
+    note: "┃ in each bar where even use would be, like on the Limits tab",
+  }),
   numberField("layout.indent", "Row indent", 1, [0, 4], [0, 1, 2, 3], SHOW.indent, {
     group: "Spacing",
     ...LAYOUT,

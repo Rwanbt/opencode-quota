@@ -11,6 +11,7 @@ import { columnsOf } from "./columns.js";
 import {
   type BarShape,
   barParts,
+  evenUseCell,
   fit,
   percentText,
   percentWord,
@@ -51,6 +52,8 @@ export type Layout = {
   bar: BarShape;
   /** Bar cells, or "fill": the room the other columns leave, up to each place's most. */
   barWidth: number | "fill";
+  /** The ┃ mark where even use would be, in each bar (`barSegments`). */
+  evenUse: boolean;
   indent: number;
   /** The most columns a row name takes; the name column fits the names next to a bar. */
   labelWidth: number;
@@ -74,12 +77,51 @@ function valueRowStart(indent: number, name: string, most: number, barColumn: nu
   return `${text}${" ".repeat(gap >= 1 ? gap : 2)}`;
 }
 
-function barSegments(shape: BarShape, percent: number, width: number): Segment[] {
+/** Where even use would be, the ┃ mark in a bar. */
+const EVEN_USE_MARK = "┃";
+/** A bar's cells at the least for the even-use mark; a shorter bar has none. */
+const EVEN_USE_MIN_CELLS = 3;
+
+/**
+ * A bar in two parts: the part left in its level color, then the used part. With `evenLeft`, the
+ * percent even use would leave now (`core/pace.ts`), the ┃ mark takes the place of the cell where
+ * even use would be, in the row labels' color; a bar under 3 cells gets no mark.
+ */
+export function barSegments(
+  shape: BarShape,
+  percent: number,
+  width: number,
+  evenLeft?: number,
+): Segment[] {
   const [filled, empty] = barParts(shape, percent, width);
-  return [
+  const bar: Segment[] = [
     { text: filled, role: "bar", percent },
     { text: empty, role: "empty", percent },
   ];
+  if (evenLeft === undefined || shape === "none" || width < EVEN_USE_MIN_CELLS) return bar;
+  const mark = evenUseCell(evenLeft, width);
+  const marked: Segment[] = [];
+  let start = 0;
+  for (const segment of bar) {
+    const cells = [...segment.text];
+    const at = mark - start;
+    start += cells.length;
+    if (at < 0 || at >= cells.length) {
+      marked.push(segment);
+      continue;
+    }
+    marked.push(
+      { ...segment, text: cells.slice(0, at).join("") },
+      { text: EVEN_USE_MARK, role: "label" },
+      { ...segment, text: cells.slice(at + 1).join("") },
+    );
+  }
+  return marked.filter((segment) => segment.text !== "");
+}
+
+/** Where even use would be for a row's bar, when the place draws the mark and the row has a pace. */
+function evenLeftOf(on: boolean | undefined, row: QuotaRow, nowMs: number): number | undefined {
+  return on ? paceOf(row, nowMs)?.evenLeft : undefined;
 }
 
 /** The words for a group's last error ("Sign in again"); undefined when its last check worked. */
@@ -256,7 +298,7 @@ export function sidebarLines(input: SidebarInput): Line[] {
       id: row.id,
       segments: [
         { text: labelText, role: "label", percent },
-        ...barSegments(layout.bar, percent, barWidth),
+        ...barSegments(layout.bar, percent, barWidth, evenLeftOf(layout.evenUse, row, nowMs)),
         { text: percentText(words, percent, false).padStart(5), role: "percent", percent },
         { text: resetText(row, nowMs, words).padStart(resetWidth), role: "reset", percent },
       ],
@@ -355,7 +397,12 @@ export function collapsedLines(input: CollapsedInput): Line[] {
         [
           name,
           { text: `${fit(rowName(picked, group, words), 4)} `, role: "label", percent },
-          ...barSegments(layout.bar, percent, barWidth),
+          ...barSegments(
+            layout.bar,
+            percent,
+            barWidth,
+            evenLeftOf(layout.evenUse, picked.row, nowMs),
+          ),
           {
             text: percentText(words, percent, withWord).padStart(percentWidth),
             role: "percent",
@@ -439,7 +486,12 @@ function statusSegment(input: StatusInput, group: Group, level: StatusLevel): Li
       ...(withBar
         ? [
             { text: " ", role: "separator" as const },
-            ...barSegments(layout.bar, percent, STATUS_BAR_WIDTH),
+            ...barSegments(
+              layout.bar,
+              percent,
+              STATUS_BAR_WIDTH,
+              evenLeftOf(layout.evenUse, picked.row, nowMs),
+            ),
           ]
         : []),
       {
@@ -544,7 +596,12 @@ export function bigStatusLine(input: StatusInput, width?: number): Line | undefi
       role: "statusName",
       percent,
     },
-    ...barSegments(input.layout.bar, percent, 10),
+    ...barSegments(
+      input.layout.bar,
+      percent,
+      10,
+      evenLeftOf(input.layout.evenUse, picked.row, input.nowMs),
+    ),
     { text: ` ${percentText(input.words, percent, true)}`, role: "percent", percent },
     ...(after ? [after] : []),
     ...(runsOut ? [{ text: ` · ${runsOut}`, role: "warning" as const }] : []),
@@ -597,6 +654,8 @@ export type ToastInput = {
   nowMs: number;
   layout: ToastLayout;
   bar: BarShape;
+  /** The ┃ mark where even use would be, in each bar (`layout.evenUse`). */
+  evenUse?: boolean;
   /** Columns of text inside the toast (`toastRoom`); no line is wider. */
   room: number;
   /** A "runs out in 2h" line under each row that runs out before its reset. */
@@ -685,7 +744,9 @@ function groupedToastLines(input: ToastInput): Line[] {
     const reset = resetText(row, nowMs, words);
     const segments: Segment[] = [
       { text: name, role: "label", percent },
-      ...(withBar ? barSegments(input.bar, percent, barWidth) : []),
+      ...(withBar
+        ? barSegments(input.bar, percent, barWidth, evenLeftOf(input.evenUse, row, nowMs))
+        : []),
       {
         text: `${withBar ? " " : ""}${word ? `${number} ${word}` : number}`,
         role: "percent",
@@ -748,7 +809,7 @@ function detailedToastLines(input: ToastInput): Line[] {
     const bar: Segment[] =
       barWidth >= TOAST_BAR_MIN
         ? [
-            ...barSegments(input.bar, percent, barWidth),
+            ...barSegments(input.bar, percent, barWidth, evenLeftOf(input.evenUse, row, nowMs)),
             { text: `  ${percentWords}`, role: "percent", percent },
           ]
         : [{ text: percentWords.padStart(room), role: "percent", percent }];

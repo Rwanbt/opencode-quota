@@ -98,6 +98,7 @@ const EXPECTED = {
   layout: {
     bar: "blocks",
     barWidth: "fill",
+    evenUse: false,
     indent: 1,
     labelWidth: 8,
     providerGap: 1,

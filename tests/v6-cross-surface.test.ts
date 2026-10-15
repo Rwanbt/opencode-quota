@@ -1061,6 +1061,7 @@ describe("v6 surfaces on the quota snapshot", () => {
         "preset.layout",
         "layout.bar",
         "layout.barWidth",
+        "layout.evenUse",
         "layout.indent",
         "layout.labelWidth",
         "layout.providerGap",

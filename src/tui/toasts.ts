@@ -81,6 +81,7 @@ function layoutLines(
     nowMs,
     layout: display.toast.layout,
     bar: display.layout.bar,
+    evenUse: display.layout.evenUse,
     room: toastRoom(terminalWidth),
     runsOut: display.runsOut.toast,
     ...(sessionTokens ? { sessionTokens } : {}),

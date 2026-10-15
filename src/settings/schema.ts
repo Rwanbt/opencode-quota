@@ -130,6 +130,8 @@ export const SETTINGS_SCHEMA = {
   "layout.bar": choice(["blocks", "shades", "line", "squares", "dots", "none"], "blocks"),
   /** "fill": the room the other columns leave, up to each place's most. */
   "layout.barWidth": { ...whole(1, 30), word: "fill", default: "fill" },
+  /** The ┃ mark where even use would be, in every place's bars (the Limits tab always has it). */
+  "layout.evenUse": bool(false),
   "layout.indent": { ...whole(0, 4), default: 1 },
   "layout.labelWidth": { ...whole(3, 20), default: 8 },
   "layout.providerGap": { ...whole(0, 2), default: 1 },

@@ -179,6 +179,24 @@ describe("quota toasts", () => {
     });
   });
 
+  it("draws the even-use mark in the toast's bar only with Even-use mark on", async () => {
+    // Half of the week has passed with 80% left: even use would leave 50%.
+    const answer = snapshot([provider("Claude", 80)]);
+    answer.providers[0]!.rows[0]!.resetsAt = new Date(NOW + 84 * 60 * 60_000).toISOString();
+    const message = async (evenUse: boolean) => {
+      const { toasts, show } = startToasts(answer, (display) => {
+        display.layout.evenUse = evenUse;
+      });
+      await toasts.afterTurn("compaction", "ses_1");
+      return show.mock.calls[0]?.[0].message;
+    };
+    expect({ off: await message(false), on: await message(true) }).toEqual({
+      off: "Claude\n  7d ████████████████░░░░  80% left  3.5d",
+      // The ┃ takes the place of the bar's middle cell; the bar keeps its 20 cells.
+      on: "Claude\n  7d ██████████┃█████░░░░  80% left  3.5d",
+    });
+  });
+
   it("fits a toast's text in OpenCode's toast: 60 columns at most, 6 fewer than the terminal", () => {
     // Inside the toast: a border and 2 columns of padding on each side, then the close "x" 2
     // columns after the text, as a quota toast has no title.

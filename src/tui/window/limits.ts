@@ -19,16 +19,14 @@ import type { QuotaSnapshot, Words } from "../../core/types.js";
 import { columnsOf, padEndColumns, padStartColumns, sliceColumns } from "../../view/columns.js";
 import {
   type BarShape,
-  barParts,
   DEFAULT_WORDS,
-  evenUseCell,
   fit,
   percentText,
   resetText,
   rowValueText,
 } from "../../view/format.js";
 import { type Group, type RowSettings, type VisibleRow, visibleGroups } from "../../view/select.js";
-import type { Layout, Line, Segment } from "../../view/text.js";
+import { barSegments, type Layout, type Line, type Segment } from "../../view/text.js";
 
 /** Before a provider's name. */
 const HEADING_INDENT = " ";
@@ -80,28 +78,6 @@ export type LimitsInput = {
   /** Columns inside the window. */
   width: number;
 };
-
-/** A bar with the even-use marker ┃ in place of one of its cells. */
-function markedBar(
-  shape: BarShape,
-  percent: number,
-  width: number,
-  evenLeft: number | undefined,
-): Segment[] {
-  const [filled, empty] = barParts(shape, percent, width);
-  const cells: Segment[] = [
-    ...[...filled].map((text): Segment => ({ text, role: "bar", percent })),
-    ...[...empty].map((text): Segment => ({ text, role: "empty", percent })),
-  ];
-  if (evenLeft !== undefined) cells[evenUseCell(evenLeft, width)] = { text: "┃", role: "label" };
-  const segments: Segment[] = [];
-  for (const cell of cells) {
-    const last = segments[segments.length - 1];
-    if (last && last.role === cell.role) last.text += cell.text;
-    else segments.push({ ...cell });
-  }
-  return segments;
-}
 
 function rowTexts(item: VisibleRow, words: Words, nowMs: number): RowTexts {
   const percent = item.row.percentRemaining;
@@ -201,7 +177,7 @@ function rowLines(texts: RowTexts, grid: Grid, width: number, shape: BarShape): 
     const value = padStartColumns(fit(percentWords, room).trimEnd(), room);
     return [{ id, segments: [label, { text: value, role: "value" }] }];
   }
-  const bar = markedBar(shape, percent, grid.bar, texts.evenLeft);
+  const bar = barSegments(shape, percent, grid.bar, texts.evenLeft);
   const percentSegment: Segment = {
     text: `${GAP}${padStartColumns(percentWords, grid.percent)}`,
     role: "percent",
