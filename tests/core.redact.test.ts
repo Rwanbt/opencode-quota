@@ -9,21 +9,56 @@ import {
   secretValuesRedactor,
 } from "../src/core/redact.js";
 
-/** Every known key shape: hidden in text and agent answers, refused in agent tool input. */
+/**
+ * Every known key shape: hidden in text (`text`) and agent answers (`answer`, "[redacted]" when
+ * not given), and refused in agent tool input.
+ */
 const KEY_SHAPES = [
   { name: "an OpenAI key", secret: "sk-proj-abcdefghijklmnop1234" },
-  { name: "a Stripe test key", secret: "pk_test_0123456789abcdefFAKE" },
+  { name: "a Stripe test key", secret: "pk_test_Zx9QmT4vLr8K" },
   { name: "a GitHub token", secret: "ghp_0123456789abcdefABCDEF0123456789abcd" },
   { name: "a Google API key", secret: "AIzaFAKE-0123456789abcdefghijklmnopqr" },
-  { name: "an xAI key", secret: "xai-0123456789abcdefFAKE" },
+  { name: "an xAI key", secret: "xai-Zx9QmT4vLr8K" },
   { name: "a JWT", secret: "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2lnbmF0dXJlLXBhcnQx" },
   { name: "a Slack token", secret: "xoxb-1234567890-abcdefghij" },
   { name: "an AWS key id", secret: "AKIAIOSFODNN7EXAMPLE" },
   { name: "a Google OAuth token", secret: "ya29.a0AfH6SMBx3kQ9vR2pT7nW4cY8zD1eF5gH" },
   { name: "a Google refresh token", secret: "1//0gLm3QvR8sT2uV5wX7yZ9aB1cD3eF5gH" },
   { name: "a PEM key", secret: "-----BEGIN PRIVATE KEY-----\nMIIE\n-----END PRIVATE KEY-----" },
-  { name: "a bearer token", secret: "Bearer abcdefghijklmnop", shown: "Bearer [redacted]" },
-  { name: "a Basic credential", secret: "Basic dXNlcjpwYXNzd29yZA==", shown: "Basic [redacted]" },
+  { name: "a bearer token", secret: "Bearer abcdefghijklmnop", text: "Bearer [redacted]" },
+  {
+    name: "a Basic credential",
+    secret: "Basic dXNlcjpwYXNzd29yZA==",
+    text: "Basic [redacted]",
+    answer: "Basic [redacted]",
+  },
+];
+
+/**
+ * Text on the edge between a key and a name: what status text shows, whether the agent tools
+ * refuse it (in a name too), and what their answers show. Status text hides any word after an
+ * auth scheme and any key prefix; the agent tools, whose inputs hold names and row labels, count
+ * those only when they look like a key, and hide everything after "Bearer" up to the next space.
+ */
+const EDGE_CASES = [
+  { input: "Basic ajpqampq", text: "Basic [redacted]", refused: false },
+  { input: "Basic requests: 58/100", text: "Basic [redacted]: 58/100", refused: false },
+  { input: "Bearer a!b2c3d4", text: "Bearer a!b2c3d4", refused: true, answer: "[redacted]" },
+  {
+    input: "Bearer abcdefgh!ijklmnop",
+    text: "Bearer [redacted]!ijklmnop",
+    refused: true,
+    answer: "[redacted]",
+  },
+  { input: "pk-gateway-quota", text: "[redacted]", refused: false },
+  { input: "rk-gateway-quota", text: "[redacted]", refused: false },
+  { input: "sk-gateway-quota", text: "[redacted]", refused: false },
+  {
+    input: "https://pk-gateway-quota.example/v1/quota",
+    text: "https://[redacted].example/v1/quota",
+    refused: false,
+  },
+  { input: "monkeyJsonPaths", text: "monkeyJsonPaths", refused: false },
 ];
 
 /** No secret in these: text shows them as they are, and the agent tools take them. */
@@ -37,18 +72,30 @@ const NOT_SECRETS = [
   "xai-quota for xai/grok-4-fast-reasoning",
   "https://gateway.example/v1/quota?plan=pro",
   "v2.14.0-rc.1+build.20261010",
-  "Basic requests: 58/100",
   "resets 2026-11-01T00:00:00.000Z",
 ];
 
 describe("key shapes", () => {
   it.each(KEY_SHAPES)("hides $name in text and agent answers, and refuses it in a name", ({
     secret,
-    shown = "[redacted]",
+    text = "[redacted]",
+    answer = "[redacted]",
   }) => {
-    expect(safeDetail(`key ${secret} end`, 300)).toBe(`key ${shown} end`);
-    expect(secretValuesRedactor([])(`key ${secret} end`)).toBe(`key ${shown} end`);
+    expect(safeDetail(`key ${secret} end`, 300)).toBe(`key ${text} end`);
+    expect(secretValuesRedactor([])(`key ${secret} end`)).toBe(`key ${answer} end`);
     expect(looksSecret(secret, { isName: true })).toBe(true);
+  });
+
+  it.each(EDGE_CASES)("$input: text, agent refusal and answer", ({
+    input,
+    text,
+    refused,
+    answer = input,
+  }) => {
+    expect(safeDetail(input, 300)).toBe(text);
+    expect(looksSecret(input, { isName: false })).toBe(refused);
+    expect(looksSecret(input, { isName: true })).toBe(refused);
+    expect(secretValuesRedactor([])(input)).toBe(answer);
   });
 
   it.each(NOT_SECRETS)("shows and takes %s", (text) => {

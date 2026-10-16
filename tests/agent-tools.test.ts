@@ -346,14 +346,14 @@ describe("quota_settings_get", () => {
   });
 
   it("replaces each key shape in every answer, which stays valid JSON", async () => {
-    const label = 'pk_test_0123456789abcdefFAKE "and" Basic dXNlcjpwYXNzd29yZA==';
+    const label = 'pk_test_Zx9QmT4vLr8K "and" Basic dXNlcjpwYXNzd29yZA== "and" Bearer a!b2c3d4';
     writeSettings(JSON.stringify({ providers: { custom: [{ ...OTHER, label }] } }));
 
     // `call` parses the answer, so an answer that is not valid JSON fails here.
     const result = await call("quota_settings_get", {});
 
     expect(result.problemsInFile).toBeUndefined();
-    expect(shownLabels(result)).toEqual(['[redacted] "and" Basic [redacted]']);
+    expect(shownLabels(result)).toEqual(['[redacted] "and" Basic [redacted] "and" [redacted]']);
   });
 });
 
@@ -464,7 +464,7 @@ describe("quota_settings_set", () => {
 
 describe("quota_provider_add", () => {
   it.each([
-    ...["xai-0123456789abcdefFAKE", "Basic dXNlcjpwYXNzd29yZA=="].map((label) => ({
+    ...["xai-Zx9QmT4vLr8K", "Basic dXNlcjpwYXNzd29yZA==", "Bearer a!b2c3d4"].map((label) => ({
       name: label,
       definition: { ...GATEWAY, label },
       key: "definition.label",
@@ -520,7 +520,7 @@ describe("quota_provider_add", () => {
               metric: {
                 type: "value",
                 valueType: "balance",
-                value: { path: ["data", "AvailableBalanceUSD2024Total"] },
+                value: { path: ["data", "AvailableBalanceUSD2024Total", "monkeyJsonPaths"] },
               },
             },
           ],
@@ -532,10 +532,14 @@ describe("quota_provider_add", () => {
       definition: { ...GATEWAY, apiKeyEnv: "MY_X1X2X3X4X5X6X7X8X9X0_API_KEY" },
     },
     { name: "a UUID", definition: { ...GATEWAY, label: "123e4567-e89b-12d3-a456-426614174000" } },
+    {
+      name: "an id and URL host that start like a key",
+      definition: { ...GATEWAY, id: "pk-gateway-quota", url: "https://pk-gateway-quota.example/q" },
+    },
   ])("saves $name", async ({ definition }) => {
     const result = await call("quota_provider_add", { definition });
 
-    expect(result).toMatchObject({ ok: true, added: "my-gateway-quota" });
+    expect(result).toMatchObject({ ok: true, added: definition.id });
   });
 
   it.each([

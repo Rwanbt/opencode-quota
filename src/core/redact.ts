@@ -119,40 +119,50 @@ function redactNamedValues(text: string): string {
 const HEADER_VALUE =
   /\b((?:set-)?cookie|(?:proxy-)?authorization)(\s*[:=]\s*)(?:(?! \| )[^\r\n])*/giu;
 
-/**
- * Each credential after an auth scheme, outside a header too ("Bearer abc", "Basic abc"), as
- * "[redacted]"; the scheme word stays. A plain word after "Basic" is a name ("Basic requests").
- */
-function hideSchemeCredentials(text: string): string {
-  const credential = /\b(bearer|basic)\s+([A-Za-z0-9._~+/=-]{6,})/giu;
-  return text.replace(credential, (whole, scheme: string, value: string) =>
-    scheme.toLowerCase() === "basic" && /^[A-Z]?[a-z]+$/u.test(value)
-      ? whole
-      : `${scheme} ${REDACTED}`,
-  );
-}
+/** A credential after an auth scheme, outside a header too: "Bearer abc", "Basic abc". */
+const SCHEME_CREDENTIAL = /\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]{6,}/giu;
 
-/** Known key formats, found anywhere in a text; each is replaced whole. */
-const KEY_FORMATS: readonly RegExp[] = [
-  /\b(?:sk|pk|rk)[-_][A-Za-z0-9_-]{8,}/gu, // OpenAI, Anthropic, OpenRouter, Stripe
-  /\b(?:gh[pousr]_|github_pat_)[A-Za-z0-9_]{10,}/gu, // GitHub
-  /\bAIza[0-9A-Za-z_-]{20,}/gu, // Google API key
-  /\bxai-[A-Za-z0-9]{10,}/gu, // xAI
-  /eyJ[A-Za-z0-9_-]{8,}(?:\.[A-Za-z0-9_-]+)*/gu, // JWT
-  /\bxox[abprs]-[A-Za-z0-9-]{10,}/gu, // Slack
-  /\bAKIA[0-9A-Z]{16}\b/gu, // AWS
-  /\bya29\.[0-9A-Za-z_-]{20,}/gu, // Google OAuth access token
-  /\b1\/\/[0-9A-Za-z_-]{20,}/gu, // Google OAuth refresh token
+/**
+ * Known key formats, found anywhere in a text; each is replaced whole. Names and labels can take
+ * a `nameLike` format too ("pk-gateway-quota", "xai-production", "monkeyJsonPathsAndMore").
+ */
+const KEY_FORMATS: ReadonlyArray<{ pattern: RegExp; nameLike?: true }> = [
+  { pattern: /\b(?:sk|pk|rk)[-_][A-Za-z0-9_-]{8,}/gu, nameLike: true }, // OpenAI, Stripe
+  { pattern: /\b(?:gh[pousr]_|github_pat_)[A-Za-z0-9_]{10,}/gu }, // GitHub
+  { pattern: /\bAIza[0-9A-Za-z_-]{20,}/gu }, // Google API key
+  { pattern: /\bxai-[A-Za-z0-9]{10,}/gu, nameLike: true }, // xAI
+  { pattern: /eyJ[A-Za-z0-9_-]{10,}(?:\.[A-Za-z0-9_-]+)*/gu, nameLike: true }, // JWT
+  { pattern: /\bsk-[A-Za-z0-9_-]{16,}/gu }, // OpenAI, Anthropic, OpenRouter, DeepSeek
+  { pattern: /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}(?:\.[A-Za-z0-9_-]*)?/gu }, // JWT, 3 parts
+  { pattern: /\bxox[abprs]-[A-Za-z0-9-]{10,}/gu }, // Slack
+  { pattern: /\bAKIA[0-9A-Z]{16}\b/gu }, // AWS
+  { pattern: /\bya29\.[0-9A-Za-z_-]{20,}/gu }, // Google OAuth access token
+  { pattern: /\b1\/\/[0-9A-Za-z_-]{20,}/gu }, // Google OAuth refresh token
   // A PEM private key, to its end line or, cut short, to the end of the text.
-  /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/gu,
+  { pattern: /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/gu },
 ];
 
-/** `text` with every known key shape replaced: credentials after an auth scheme, key formats. */
-function hideKeyShapes(text: string): string {
-  return KEY_FORMATS.reduce(
-    (result, pattern) => result.replace(pattern, REDACTED),
-    hideSchemeCredentials(text),
+/** True when a match holds a run of 10+ letters and digits that looks random: a key, not a name. */
+function looksLikeKey(match: string): boolean {
+  return (match.match(/[A-Za-z0-9]{10,}/gu) ?? []).some(looksRandom);
+}
+
+/**
+ * `text` with each key shape the agent tools know replaced. Their inputs and answers hold names
+ * and row labels ("Basic requests"), so an auth scheme's credential and a `nameLike` format count
+ * only when they look like a key. "Bearer" hides everything up to the next space.
+ */
+function hideAgentKeyShapes(text: string): string {
+  let result = text.replace(/\bbearer\s+\S{8,}/giu, REDACTED);
+  result = result.replace(SCHEME_CREDENTIAL, (match, scheme: string) =>
+    looksLikeKey(match) ? `${scheme} ${REDACTED}` : match,
   );
+  for (const { pattern, nameLike } of KEY_FORMATS) {
+    result = result.replace(pattern, (match) =>
+      nameLike && !looksLikeKey(match) ? match : REDACTED,
+    );
+  }
+  return result;
 }
 
 /**
@@ -175,17 +185,19 @@ function hideOpaqueRun(run: string): string {
 
 /**
  * `text` with credential-looking parts replaced by "[redacted]": headers and auth schemes first
- * (a credential goes whole, with any `name=value` in it), then named values, then key shapes and
- * long opaque runs. Hiding auth schemes again finds nothing new: a hidden value starts with "[".
+ * (the scheme word stays), then named values, then every key format and long opaque runs.
  */
 function redactSecrets(text: string): string {
-  const headersHidden = hideSchemeCredentials(text.replace(HEADER_VALUE, `$1$2${REDACTED}`));
-  const shapesHidden = hideKeyShapes(redactNamedValues(headersHidden));
-  return shapesHidden.replace(/[A-Za-z0-9_-]{32,}/gu, hideOpaqueRun);
+  let result = text
+    .replace(HEADER_VALUE, `$1$2${REDACTED}`)
+    .replace(SCHEME_CREDENTIAL, `$1 ${REDACTED}`);
+  result = redactNamedValues(result);
+  for (const { pattern } of KEY_FORMATS) result = result.replace(pattern, REDACTED);
+  return result.replace(/[A-Za-z0-9_-]{32,}/gu, hideOpaqueRun);
 }
 
 /**
- * True when a run of 20+ letters and digits switches between letters, digits and case so often
+ * True when a run of letters and digits switches between letters, digits and case so often
  * that its pieces average under 3 characters: a random token, not words. A camelCase name such
  * as "AvailableBalanceUSD2024Total" splits into Available|Balance|USD|2024|Total and passes; a
  * hex or base62 key splits into pieces of 1-2 characters.
@@ -203,7 +215,7 @@ function looksRandom(run: string): boolean {
  * "Qwen3-Coder-480B-A35B-Instruct-2507", UUIDs and version strings pass.
  */
 export function looksSecret(text: string, { isName }: { isName: boolean }): boolean {
-  if (hideKeyShapes(text) !== text) return true;
+  if (hideAgentKeyShapes(text) !== text) return true;
   return (text.match(/[A-Za-z0-9]{20,}/gu) ?? []).some(
     (run) => looksRandom(run) || (!isName && run.length >= 24),
   );
@@ -213,7 +225,7 @@ export function looksSecret(text: string, { isName }: { isName: boolean }): bool
 const LONG_SECRET_LENGTH = 8;
 
 /**
- * Replaces, in one text, each of `secrets` and every known key shape. A secret under
+ * Replaces, in one text, each of `secrets` and each key shape the agent tools know. A secret under
  * LONG_SECRET_LENGTH counts only as a whole token (letters, digits, `_` and `-`).
  */
 export function secretValuesRedactor(secrets: readonly string[]): (text: string) => string {
@@ -226,7 +238,9 @@ export function secretValuesRedactor(secrets: readonly string[]): (text: string)
       return new RegExp(wholeToken ? `(?<![\\w-])${escaped}(?![\\w-])` : escaped, "g");
     });
   return (text) =>
-    hideKeyShapes(patterns.reduce((result, pattern) => result.replace(pattern, REDACTED), text));
+    hideAgentKeyShapes(
+      patterns.reduce((result, pattern) => result.replace(pattern, REDACTED), text),
+    );
 }
 
 /** A copy of a JSON value with `redact` applied to every string in it, property names too. */
