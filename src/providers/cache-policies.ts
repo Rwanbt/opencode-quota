@@ -144,7 +144,6 @@ export const PROVIDER_CACHE_POLICIES = {
     kind: "resolved-auth",
     resolveIdentity: () => resolveOpenRouterAuthIdentity(),
   },
-  kilo: apiKeyPolicy("kilo"),
   cursor: UNCACHED,
   "alibaba-token-plan": UNCACHED,
   "alibaba-coding-plan": resolvedCredentialPolicy("alibaba-coding-plan", async () => {
@@ -153,8 +152,6 @@ export const PROVIDER_CACHE_POLICIES = {
       ? { credential: resolved.apiKey, qualifiers: [resolved.tier] }
       : null;
   }),
-  synthetic: apiKeyPolicy("synthetic"),
-  chutes: apiKeyPolicy("chutes"),
   "google-gemini-cli": {
     kind: "resolved-auth",
     resolveIdentity: () => resolveGeminiCliAuthIdentity(),
@@ -165,7 +162,6 @@ export const PROVIDER_CACHE_POLICIES = {
   },
   zai: apiKeyLoginPolicy("zai"),
   zhipu: apiKeyLoginPolicy("zhipu"),
-  nanogpt: apiKeyPolicy("nanogpt"),
   "minimax-coding-plan": regionalKeyPolicy(
     "minimax-coding-plan",
     API_KEY_LOGIN_VENDORS["minimax-coding-plan"],

@@ -40,7 +40,7 @@ describe("credential redaction", () => {
     // A fact about a secret stays, with secrets inside it still redacted.
     ["api_key_source", "env", "env"],
     ["token_expires_at", "2026-11-01T00:00:00.000Z", "2026-11-01T00:00:00.000Z"],
-    ["apiKeyEnv", "CHUTES_API_KEY", "CHUTES_API_KEY"],
+    ["apiKeyEnv", "DEEPSEEK_API_KEY", "DEEPSEEK_API_KEY"],
     ["token_present", "true", "true"],
     ["cookie_configured", "yes", "yes"],
     ["token_source", "Bearer sk-live-CANARY0123456789", "Bearer [redacted]"],

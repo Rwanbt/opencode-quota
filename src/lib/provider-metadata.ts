@@ -54,12 +54,9 @@ export const PROVIDER_ROW_KEYS: Readonly<Record<CanonicalQuotaProviderId, readon
   // `status`: an OpenAI login without a ChatGPT plan ("unavailable for API key").
   openai: ["five_hour", "weekly", "monthly", "code_review", "status"],
   openrouter: ["key"],
-  kilo: ["pass_credits", "balance"],
   cursor: ["api", "auto_composer"],
   "alibaba-coding-plan": ["five_hour", "weekly", "monthly"],
   "alibaba-token-plan": ["five_hour", "weekly"],
-  synthetic: ["five_hour", "weekly"],
-  chutes: ["daily"],
   "google-gemini-cli": ["pro", "flash", "flash_lite", "model.*"],
   "google-agy": [
     "gemini.weekly",
@@ -71,7 +68,6 @@ export const PROVIDER_ROW_KEYS: Readonly<Record<CanonicalQuotaProviderId, readon
   ],
   zai: ["five_hour", "weekly", "mcp"],
   zhipu: ["five_hour", "weekly", "mcp"],
-  nanogpt: ["daily", "monthly", "balance.usd", "balance.nano"],
   "minimax-coding-plan": ["five_hour", "weekly"],
   "minimax-china-coding-plan": ["five_hour", "weekly"],
   "kimi-code-plan-global": ["weekly", "limit.*"],

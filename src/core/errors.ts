@@ -55,7 +55,7 @@ const RULES: ReadonlyArray<readonly [QuotaErrorCode, RegExp]> = [
   ],
   [
     "no_plan",
-    /not subscribed|subscription (?:not found|is not active)|no active .*subscription|not an active subscription/i,
+    /not subscribed|subscription (?:not found|is not active)|not an active subscription/i,
   ],
   [
     "login_expired",

@@ -1,5 +1,5 @@
 /**
- * The API-key vendors (Chutes, Synthetic, Ollama Cloud, DeepSeek, Kilo, NanoGPT, OpenRouter)
+ * The API-key vendors (Ollama Cloud, DeepSeek, OpenRouter)
  * through their public `fetch`, with a key in the environment and fake HTTP replies.
  * Kimi Code and MiniMax, which also need a key, share the "without a key" check.
  */
@@ -8,19 +8,15 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { QuotaProvider } from "../src/lib/entries.js";
 import { isCanonicalProviderAvailable } from "../src/lib/provider-availability.js";
-import { chutesProvider } from "../src/providers/chutes.js";
 import type { ProviderFetchResult } from "../src/providers/contract.js";
 import { deepseekProvider } from "../src/providers/deepseek.js";
-import { kiloProvider } from "../src/providers/kilo.js";
 import { kimiCodePlanCnProvider, kimiCodePlanGlobalProvider } from "../src/providers/kimi-code.js";
 import {
   minimaxChinaCodingPlanProvider,
   minimaxCodingPlanProvider,
 } from "../src/providers/minimax-coding-plan.js";
-import { nanoGptProvider } from "../src/providers/nanogpt.js";
 import { ollamaCloudProvider } from "../src/providers/ollama-cloud.js";
 import { openRouterProvider } from "../src/providers/openrouter.js";
-import { syntheticProvider } from "../src/providers/synthetic.js";
 import {
   fakeHttp,
   fetchRows,
@@ -35,12 +31,8 @@ vi.mock("../src/lib/provider-availability.js", async (importOriginal) => ({
 }));
 
 const VENDORS = {
-  chutes: { provider: chutesProvider, keyEnv: "CHUTES_API_KEY" },
-  synthetic: { provider: syntheticProvider, keyEnv: "SYNTHETIC_API_KEY" },
   "ollama-cloud": { provider: ollamaCloudProvider, keyEnv: "OLLAMA_API_KEY" },
   deepseek: { provider: deepseekProvider, keyEnv: "DEEPSEEK_API_KEY" },
-  kilo: { provider: kiloProvider, keyEnv: "KILO_API_KEY" },
-  nanogpt: { provider: nanoGptProvider, keyEnv: "NANOGPT_API_KEY" },
   openrouter: { provider: openRouterProvider, keyEnv: "OPENROUTER_API_KEY" },
 } as const;
 type VendorId = keyof typeof VENDORS;
@@ -63,15 +55,6 @@ function setKey(id: VendorId): void {
 
 /** A reply for every request, or a function of the URL that returns one. */
 type Reply = unknown;
-
-/** Answers each request with the reply of the first URL part it contains. */
-function byUrl(replies: Record<string, Reply>) {
-  return (url: string) => {
-    const part = Object.keys(replies).find((candidate) => url.includes(candidate));
-    if (part === undefined) throw new Error(`unexpected request ${url}`);
-    return replies[part];
-  };
-}
 
 /** A JSON reply with a JSON content type (OpenRouter checks it). */
 function jsonReply(body: unknown): Response {
@@ -136,20 +119,6 @@ describe("every API-key vendor", () => {
     errorLines: string[];
   }>([
     {
-      id: "chutes",
-      requests: ["GET https://api.chutes.ai/users/me/quota_usage/me"],
-      authHeader: "authorization",
-      auth: `Bearer ${KEY}`,
-      errorLines: ["Chutes: Chutes API error 401: Unauthorized"],
-    },
-    {
-      id: "synthetic",
-      requests: ["GET https://api.synthetic.new/v2/quotas"],
-      authHeader: "authorization",
-      auth: `Bearer ${KEY}`,
-      errorLines: ["Synthetic: Synthetic API error 401: Unauthorized"],
-    },
-    {
       id: "ollama-cloud",
       requests: ["GET https://ollama.com/api/balance"],
       authHeader: "authorization",
@@ -162,28 +131,6 @@ describe("every API-key vendor", () => {
       authHeader: "authorization",
       auth: `Bearer ${KEY}`,
       errorLines: ["DeepSeek: DeepSeek API error 401: Unauthorized"],
-    },
-    {
-      // A failed Kilo Pass request does not fall back to the balance.
-      id: "kilo",
-      requests: [
-        "GET https://app.kilo.ai/api/trpc/kiloPass.getState?batch=1&input=%7B%220%22%3Anull%7D",
-      ],
-      authHeader: "authorization",
-      auth: `Bearer ${KEY}`,
-      errorLines: ["Kilo Gateway: Kilo Gateway state API error 401: Unauthorized"],
-    },
-    {
-      id: "nanogpt",
-      requests: [
-        "GET https://nano-gpt.com/api/subscription/v1/usage",
-        "POST https://nano-gpt.com/api/check-balance",
-      ],
-      authHeader: "x-api-key",
-      auth: KEY,
-      errorLines: [
-        "NanoGPT: Usage: NanoGPT API error 401: Unauthorized; Balance: NanoGPT API error 401: Unauthorized",
-      ],
     },
     {
       id: "openrouter",
@@ -211,82 +158,6 @@ describe("every API-key vendor", () => {
     );
   });
 });
-
-describeVendor("chutes", [
-  {
-    name: "shows the daily quota left, resetting at the next UTC midnight",
-    reply: { quota: 1000, used: 250 },
-    rows: [["chutes.daily", null, "Daily", "day", 75, "2026-01-02T00:00:00.000Z"]],
-  },
-  {
-    name: "shows a zero quota as 0% left",
-    reply: { quota: 0, used: 0 },
-    rows: [["chutes.daily", null, "Daily", "day", 0, "2026-01-02T00:00:00.000Z"]],
-  },
-  {
-    name: "clamps usage above the quota to 0% left",
-    reply: { quota: 100, used: 150 },
-    rows: [["chutes.daily", null, "Daily", "day", 0, "2026-01-02T00:00:00.000Z"]],
-  },
-]);
-
-const SYNTHETIC_FIVE_HOUR = {
-  max: 100,
-  remaining: 74.5,
-  nextTickAt: "2026-01-20T18:12:03.000Z",
-};
-
-describeVendor("synthetic", [
-  {
-    name: "shows the 5h and weekly windows",
-    reply: {
-      rollingFiveHourLimit: SYNTHETIC_FIVE_HOUR,
-      weeklyTokenLimit: {
-        maxCredits: "$24.00",
-        remainingCredits: "$2.02",
-        nextRegenAt: "2026-01-27T18:12:03.000Z",
-        percentRemaining: 8.4552365,
-      },
-    },
-    rows: [
-      ["synthetic.five_hour", null, "5h", "five_hour", 75, "2026-01-20T18:12:03.000Z"],
-      ["synthetic.weekly", null, "Weekly", "week", 8, "2026-01-27T18:12:03.000Z"],
-    ],
-  },
-  {
-    name: "derives the weekly percent from the credits when the reported one is out of range",
-    reply: {
-      rollingFiveHourLimit: SYNTHETIC_FIVE_HOUR,
-      weeklyTokenLimit: {
-        maxCredits: "$24.00",
-        remainingCredits: "$6",
-        nextRegenAt: "not a date",
-        percentRemaining: 150,
-      },
-    },
-    rows: [
-      ["synthetic.five_hour", null, "5h", "five_hour", 75, "2026-01-20T18:12:03.000Z"],
-      ["synthetic.weekly", null, "Weekly", "week", 25, null],
-    ],
-  },
-  {
-    name: "rejects credits without a dollar sign",
-    reply: {
-      rollingFiveHourLimit: SYNTHETIC_FIVE_HOUR,
-      weeklyTokenLimit: { maxCredits: "24.00", remainingCredits: "$2.02", percentRemaining: 8 },
-    },
-    rows: [],
-    error: "bad_response",
-    errorLines: ["Synthetic: Synthetic API response missing weeklyTokenLimit quota window"],
-  },
-  {
-    name: "shows an empty reply as no data",
-    reply: {},
-    rows: [],
-    error: "no_data",
-    errorLines: ["Synthetic: Synthetic returned no quota data for this account."],
-  },
-]);
 
 /** The credit-plan example of https://docs.ollama.com/api/balance. */
 const OLLAMA_CREDIT_PLAN = {
@@ -513,200 +384,6 @@ describeVendor("deepseek", [
   },
 ]);
 
-const KILO_STATE = "kiloPass.getState";
-const KILO_BALANCE = "profile/balance";
-
-function kiloPassState(subscription: Record<string, unknown> | null) {
-  return [{ result: { data: { json: { subscription } } } }];
-}
-
-describeVendor("kilo", [
-  {
-    name: "shows the Kilo Pass credits left of base plus bonus",
-    reply: byUrl({
-      [KILO_STATE]: kiloPassState({
-        currentPeriodBaseCreditsUsd: 16,
-        currentPeriodUsageUsd: 5,
-        currentPeriodBonusCreditsUsd: 4,
-        nextBillingAt: "2099-02-01T00:00:00.000Z",
-      }),
-    }),
-    rows: [
-      [
-        "kilo.pass_credits",
-        null,
-        "Pass credits",
-        null,
-        "75 (5 USD of 20 USD)",
-        "2099-02-01T00:00:00.000Z",
-      ],
-    ],
-  },
-  {
-    name: "shows usage above the pass credits as 0% left",
-    reply: byUrl({
-      [KILO_STATE]: kiloPassState({ currentPeriodBaseCreditsUsd: 10, currentPeriodUsageUsd: 12 }),
-    }),
-    rows: [["kilo.pass_credits", null, "Pass credits", null, "0 (12 USD of 10 USD)", null]],
-  },
-  {
-    name: "shows the USD left when the pass has no credits",
-    reply: byUrl({
-      [KILO_STATE]: kiloPassState({ currentPeriodBaseCreditsUsd: 0, currentPeriodUsageUsd: 0 }),
-    }),
-    rows: [["kilo.pass_credits", null, "Pass credits", null, "0 USD", null]],
-  },
-  {
-    name: "falls back to the Gateway balance without an active pass",
-    reply: byUrl({ [KILO_STATE]: kiloPassState(null), [KILO_BALANCE]: { balance: 8.25 } }),
-    rows: [["kilo.balance", null, "Balance", null, "8.25 USD", null]],
-  },
-  {
-    name: "does not hide an invalid pass state behind the balance",
-    reply: byUrl({
-      [KILO_STATE]: kiloPassState({ currentPeriodBaseCreditsUsd: -1, currentPeriodUsageUsd: 0 }),
-    }),
-    rows: [],
-    error: "bad_response",
-    errorLines: [
-      "Kilo Gateway: Kilo Gateway state API returned invalid currentPeriodBaseCreditsUsd",
-    ],
-  },
-  {
-    name: "reports a failed balance fallback with the key redacted",
-    reply: byUrl({
-      [KILO_STATE]: kiloPassState(null),
-      [KILO_BALANCE]: new Response(`down ${KEY}\u001b[31m`, { status: 503 }),
-    }),
-    rows: [],
-    error: "no_plan",
-    errorLines: [
-      "Kilo Gateway: Kilo Gateway has no active Kilo Pass subscription; balance fallback failed: Kilo Gateway balance API error 503: down [redacted]",
-    ],
-  },
-]);
-
-const NANOGPT_USAGE = "subscription/v1/usage";
-const NANOGPT_BALANCE = "check-balance";
-
-describeVendor("nanogpt", [
-  {
-    name: "shows the daily and monthly requests and the USD balance",
-    reply: byUrl({
-      [NANOGPT_USAGE]: {
-        active: true,
-        state: "active",
-        limits: { daily: 5000, monthly: 60000 },
-        daily: { used: 50, remaining: 4950, percentUsed: 0.01, resetAt: 1_738_540_800_000 },
-        monthly: { used: 1000, remaining: 59000, resetAt: 1_739_404_800_000 },
-      },
-      [NANOGPT_BALANCE]: { usd_balance: "129.46956147", nano_balance: "26.71801147" },
-    }),
-    rows: [
-      [
-        "nanogpt.daily",
-        null,
-        "Daily",
-        "day",
-        "99 (50 request of 5000 request)",
-        "2025-02-03T00:00:00.000Z",
-      ],
-      [
-        "nanogpt.monthly",
-        null,
-        "Monthly",
-        "month",
-        "98 (1000 request of 60000 request)",
-        "2025-02-13T00:00:00.000Z",
-      ],
-      ["nanogpt.balance.usd", null, "Balance", null, "129.46956147 USD", null],
-    ],
-  },
-  {
-    name: "keeps the usage when the balance fails and reports a subscription in grace",
-    reply: byUrl({
-      [NANOGPT_USAGE]: {
-        active: false,
-        state: "grace",
-        limits: { daily: 100 },
-        daily: { used: 100, remaining: 0, resetAt: 1_735_776_000_000 },
-      },
-      [NANOGPT_BALANCE]: new Response("Unauthorized", { status: 401 }),
-    }),
-    rows: [
-      [
-        "nanogpt.daily",
-        null,
-        "Daily",
-        "day",
-        "0 (100 request of 100 request)",
-        "2025-01-02T00:00:00.000Z",
-      ],
-    ],
-    error: "login_expired",
-    errorLines: [
-      "NanoGPT Balance: NanoGPT API error 401: Unauthorized",
-      "NanoGPT: Subscription state: grace",
-    ],
-  },
-  {
-    name: "keeps a valid NANO balance when usage fails and the USD decimal is malformed",
-    reply: byUrl({
-      [NANOGPT_USAGE]: new Response("bad gateway", { status: 502 }),
-      [NANOGPT_BALANCE]: { usd_balance: "12junk", nano_balance: "26.71801147" },
-    }),
-    rows: [["nanogpt.balance.nano", null, "Balance", null, "26.71801147 NANO", null]],
-    error: "provider_error",
-    errorLines: [
-      "NanoGPT Usage: NanoGPT API error 502: bad gateway",
-      "NanoGPT Balance: NanoGPT balance response returned an invalid usd_balance decimal",
-    ],
-  },
-  {
-    // The limit is derived from used + remaining here, so the row does not report it.
-    name: "reports only the counts NanoGPT gave",
-    reply: byUrl({
-      [NANOGPT_USAGE]: { active: true, state: "active", daily: { used: 25, remaining: 75 } },
-      [NANOGPT_BALANCE]: { usd_balance: "12.50" },
-    }),
-    rows: [
-      ["nanogpt.daily", null, "Daily", "day", "75 (25 request of ?)", null],
-      ["nanogpt.balance.usd", null, "Balance", null, "12.50 USD", null],
-    ],
-  },
-  {
-    // An array window reads as one with no counts, so the limit alone gives the row.
-    name: "shows a window NanoGPT sent as an empty list from its limit",
-    reply: byUrl({
-      [NANOGPT_USAGE]: { active: true, state: "active", limits: { daily: 100 }, daily: [] },
-      [NANOGPT_BALANCE]: { usd_balance: "12.50" },
-    }),
-    rows: [
-      ["nanogpt.daily", null, "Daily", "day", "100 (? of 100 request)", null],
-      ["nanogpt.balance.usd", null, "Balance", null, "12.50 USD", null],
-    ],
-  },
-]);
-
-it("nanogpt shows a failure of both endpoints as one error", async () => {
-  setKey("nanogpt");
-  fakeHttp(
-    byUrl({
-      [NANOGPT_USAGE]: new Response("bad gateway", { status: 502 }),
-      [NANOGPT_BALANCE]: new Response("Unauthorized", { status: 401 }),
-    }),
-  );
-
-  const result = await nanoGptProvider.fetch({ config: { requestTimeoutMs: 5_000 } } as never);
-
-  expect((result as ProviderFetchResult).accounts.flatMap((account) => account.errors)).toEqual([
-    {
-      message:
-        "Usage: NanoGPT API error 502: bad gateway; Balance: NanoGPT API error 401: Unauthorized",
-    },
-  ]);
-});
-
 describeVendor("openrouter", [
   {
     name: "shows a key with a limit as the budget left",
@@ -742,21 +419,13 @@ describeVendor("openrouter", [
 ]);
 
 describe("availability and model matching", () => {
-  // Chutes, Synthetic and DeepSeek also count a configured OpenCode provider; the rest need a key.
+  // DeepSeek also counts a configured OpenCode provider; the rest need a key.
   it.each<[VendorId, boolean, boolean, boolean]>([
-    ["chutes", true, false, true],
-    ["chutes", false, true, true],
-    ["chutes", false, false, false],
-    ["synthetic", true, false, true],
-    ["synthetic", false, true, true],
     ["deepseek", true, false, true],
     ["deepseek", false, true, true],
+    ["deepseek", false, false, false],
     ["ollama-cloud", true, false, false],
     ["ollama-cloud", false, true, true],
-    ["kilo", true, false, false],
-    ["kilo", false, true, true],
-    ["nanogpt", true, false, false],
-    ["nanogpt", false, true, true],
     ["openrouter", true, false, false],
     ["openrouter", false, true, true],
   ])("%s with an OpenCode provider %s and a key %s is available: %s", async (id, configured, withKey, expected) => {
@@ -767,16 +436,10 @@ describe("availability and model matching", () => {
   });
 
   it.each<[VendorId, string, boolean]>([
-    ["chutes", "chutes/deepseek-ai/DeepSeek-V3", true],
-    ["synthetic", "synthetic/claude", true],
     ["deepseek", "deepseek/deepseek-chat", true],
     ["ollama-cloud", "ollama-cloud/gpt-oss:20b-cloud", true],
     ["ollama-cloud", "OLLAMA-CLOUD/gpt-oss:120b-cloud", true],
     ["ollama-cloud", "ollama/gpt-oss", false],
-    ["kilo", "kilo/anthropic/claude-sonnet-4", true],
-    ["kilo", "kilo-gateway/model", false],
-    ["nanogpt", "nanogpt/gpt-oss-120b", true],
-    ["nanogpt", "nano-gpt/gpt-5", true],
     ["openrouter", "openrouter/anthropic/claude", true],
     ...VENDOR_IDS.map((id): [VendorId, string, boolean] => [id, "openai/gpt-5", false]),
   ])("%s matches the model %s: %s", (id, model, expected) => {

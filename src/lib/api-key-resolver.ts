@@ -50,15 +50,8 @@ export interface ApiKeyLoginSpec extends ApiKeySpec {
 
 /** Vendors whose stored login is used only when it is a usable API key. */
 export const API_KEY_VENDORS = {
-  chutes: { envVars: ["CHUTES_API_KEY"], providerKeys: ["chutes"] },
   deepseek: { envVars: ["DEEPSEEK_API_KEY"], providerKeys: ["deepseek"] },
-  kilo: { envVars: ["KILO_API_KEY"], providerKeys: ["kilo"] },
-  nanogpt: {
-    envVars: ["NANOGPT_API_KEY", "NANO_GPT_API_KEY"],
-    providerKeys: ["nanogpt", "nano-gpt"],
-  },
   "ollama-cloud": { envVars: ["OLLAMA_API_KEY"], providerKeys: ["ollama-cloud"] },
-  synthetic: { envVars: ["SYNTHETIC_API_KEY"], providerKeys: ["synthetic"] },
 } as const satisfies Record<string, ApiKeySpec>;
 
 /** Vendors that report a broken stored login (wrong type, empty key, unreadable) as an error. */

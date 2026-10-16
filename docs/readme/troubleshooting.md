@@ -167,12 +167,11 @@ Check the `alibaba-token-plan` section (separate from Alibaba Coding Plan).
 </details>
 
 <details>
-<summary><strong>API-key providers (MiniMax, Kimi, Chutes AI, Synthetic, Z.ai, Zhipu, NanoGPT, DeepSeek, OpenRouter)</strong></summary>
+<summary><strong>API-key providers (MiniMax, Kimi, Z.ai, Zhipu, DeepSeek, OpenRouter)</strong></summary>
 
 - Check the provider's API-key section in `/quota_status` (for example `kimi-code-plan-global:`, `kimi-code-plan-cn:`, or `openrouter:`), which also shows the live check's result, for example `Sign in again (login_expired)` after HTTP 401.
 - Put keys in environment variables or trusted user/global config, never in the project's `opencode.json`. Variable names and rules: [API keys](providers.md#api-keys).
 - Kimi keys go only to their own region's host: see [Kimi Code](providers.md#kimi-code).
-- Synthetic shows `Nothing reported`: the quota endpoint returned HTTP 200 `{}`. This is not a bad API key or a Clerk/browser problem, and no 5h or Weekly rows are invented. `/quota_status` shows it as `Nothing reported (no_data)`.
 
 </details>
 

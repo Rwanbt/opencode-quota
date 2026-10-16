@@ -513,10 +513,7 @@ describe("view text", () => {
     const COPILOT = provider("copilot", "Copilot", [
       row("copilot.allowance", { label: "Plan", window: "month", percentRemaining: 70 }),
     ]);
-    const CHUTES = provider("chutes", "Chutes", [
-      row("chutes.daily", { label: "Daily", window: "day", percentRemaining: 90 }),
-    ]);
-    const providers = [OPENAI, CLAUDE, COPILOT, CHUTES];
+    const providers = [OPENAI, CLAUDE, COPILOT];
     /** Each provider's shown row on the collapsed panel and the status line, for `window`. */
     const shown = (window: Record<string, WindowChoice>) => ({
       collapsed: collapsedLines({
@@ -534,26 +531,26 @@ describe("view text", () => {
       {
         name: "without a pick, each provider's lowest",
         window: {},
-        rows: ["OpenAI    7d", "Claude    7d", "Copilot   30d", "Chutes    1d"],
-        percents: ["OpenAI 26%", "Claude 12%", "Copilot 70%", "Chutes 90%"],
+        rows: ["OpenAI    7d", "Claude    7d", "Copilot   30d"],
+        percents: ["OpenAI 26%", "Claude 12%", "Copilot 70%"],
       },
       {
         name: "the window for all providers where a provider has it, else its lowest",
         window: { [ALL_PROVIDERS]: "five_hour" },
-        rows: ["OpenAI    5h", "Claude    5h", "Copilot   30d", "Chutes    1d"],
-        percents: ["OpenAI 65%", "Claude 58%", "Copilot 70%", "Chutes 90%"],
+        rows: ["OpenAI    5h", "Claude    5h", "Copilot   30d"],
+        percents: ["OpenAI 65%", "Claude 58%", "Copilot 70%"],
       },
       {
         name: "a provider's own pick over the one for all providers",
         window: { [ALL_PROVIDERS]: "five_hour", anthropic: "week" },
-        rows: ["OpenAI    5h", "Claude    7d", "Copilot   30d", "Chutes    1d"],
-        percents: ["OpenAI 65%", "Claude 12%", "Copilot 70%", "Chutes 90%"],
+        rows: ["OpenAI    5h", "Claude    7d", "Copilot   30d"],
+        percents: ["OpenAI 65%", "Claude 12%", "Copilot 70%"],
       },
       {
         name: "a provider's own lowest over the one for all providers",
         window: { [ALL_PROVIDERS]: "five_hour", openai: "lowest" },
-        rows: ["OpenAI    7d", "Claude    5h", "Copilot   30d", "Chutes    1d"],
-        percents: ["OpenAI 26%", "Claude 58%", "Copilot 70%", "Chutes 90%"],
+        rows: ["OpenAI    7d", "Claude    5h", "Copilot   30d"],
+        percents: ["OpenAI 26%", "Claude 58%", "Copilot 70%"],
       },
     ] as const)("shows $name", ({ window, rows, percents }) => {
       expect(shown(window)).toEqual({ collapsed: rows, statusLine: percents });

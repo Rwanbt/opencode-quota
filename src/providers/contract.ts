@@ -43,7 +43,6 @@ export function keySlug(text: string): string {
 export const FIVE_HOUR = { key: "five_hour", label: "5h", window: "five_hour" } as const;
 export const WEEKLY = { key: "weekly", label: "Weekly", window: "week" } as const;
 export const MONTHLY = { key: "monthly", label: "Monthly", window: "month" } as const;
-export const DAILY = { key: "daily", label: "Daily", window: "day" } as const;
 
 /** A remote, provider-reported quota row with the percent left: most providers' row. */
 export function quotaRow(fields: {

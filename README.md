@@ -114,18 +114,14 @@ OpenAI ChatGPT quota needs a Codex login (`/connect` → OpenAI → **Codex brow
 | Provider           | Auth/setup                                                     | Data from          | Reports            |
 | ------------------ | -------------------------------------------------------------- | ------------------ | ------------------ |
 | Anthropic (Claude) | [Needs setup](docs/readme/providers.md#anthropic-claude)       | Local CLI/OAuth    | Quota              |
-| Chutes AI          | Automatic                                                      | Remote API         | Quota              |
 | Cursor             | [Needs setup](docs/readme/providers.md#cursor)                 | Local estimate     | Budget and spend   |
 | GitHub Copilot     | Automatic                                                      | Remote API         | Budget and usage   |
 | Google AGY         | [Needs setup](docs/readme/providers.md#google-agy-quick-setup) | Remote API         | Quota              |
-| Kilo Gateway       | Automatic                                                      | Remote API         | Quota and balance  |
-| NanoGPT            | Automatic                                                      | Remote API         | Quota and balance  |
 | Ollama Cloud       | Automatic                                                      | Remote API         | Quota and balance  |
 | OpenAI             | Automatic                                                      | Remote API         | Quota              |
 | OpenCode Go        | Automatic                                                      | Remote API         | Quota              |
 | OpenCode Zen       | Automatic                                                      | Remote API         | Budget and balance |
 | OpenRouter         | Automatic                                                      | Remote API         | Budget and spend   |
-| Synthetic          | Automatic                                                      | Remote API         | Quota              |
 | xAI SuperGrok      | Automatic                                                      | Remote API         | Quota              |
 
 </details>
@@ -136,16 +132,13 @@ OpenAI ChatGPT quota needs a Codex login (`/connect` → OpenAI → **Codex brow
 | Provider                | Auth/setup                                                     | Data from          | Reports            |
 | ----------------------- | -------------------------------------------------------------- | ------------------ | ------------------ |
 | Anthropic (Claude)      | [Needs setup](docs/readme/providers.md#anthropic-claude)       | Local CLI/OAuth    | Quota              |
-| Chutes AI               | Automatic                                                      | Remote API         | Quota              |
 | Cursor                  | [Needs setup](docs/readme/providers.md#cursor)                 | Local estimate     | Budget and spend   |
 | Gemini CLI              | [Needs setup](docs/readme/providers.md#gemini-cli)             | Remote API         | Quota              |
 | GitHub Copilot          | [Needs setup](docs/readme/providers.md#github-copilot)         | Remote API         | Budget and usage   |
 | Google AGY              | [Needs setup](docs/readme/providers.md#google-agy-quick-setup) | Remote API         | Quota              |
-| NanoGPT                 | Automatic                                                      | Remote API         | Quota and balance  |
 | OpenAI                  | Automatic                                                      | Remote API         | Quota              |
 | OpenCode Zen            | Automatic                                                      | Remote API         | Budget and balance |
 | OpenRouter              | Automatic                                                      | Remote API         | Budget and spend   |
-| Synthetic               | Automatic                                                      | Remote API         | Quota              |
 | xAI SuperGrok           | Automatic                                                      | Remote API         | Quota              |
 
 Gemini CLI works only with Gemini Code Assist Standard or Enterprise (organization) accounts. Personal Google users should use Google AGY.

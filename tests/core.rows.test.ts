@@ -194,19 +194,19 @@ describe("rowsFromProviderResult", () => {
   });
 
   it("reports a provider that could not even try as not set up", () => {
-    expect(contractRows("chutes", NOT_SET_UP)).toEqual({
+    expect(contractRows("deepseek", NOT_SET_UP)).toEqual({
       rows: [],
       error: { code: "not_configured" },
       debug: [],
     });
-    expect(contractRows("chutes", answer())).toEqual({ rows: [], debug: [] });
+    expect(contractRows("deepseek", answer())).toEqual({ rows: [], debug: [] });
   });
 
   it("scrubs control characters from provider text", () => {
     const [row] = contractRows(
-      "kilo",
+      "openrouter",
       answer({
-        name: "Kilo Gateway (Evil\u001b[31m)",
+        name: "OpenRouter (Evil\u001b[31m)",
         rows: [textRow("balance", "Evil\u001b[31m Note", "red\u001b[0m text\nnext")],
       }),
     ).rows;
@@ -235,8 +235,8 @@ describe("rowsFromProviderResult", () => {
       `${secrets[6]}`,
     ].join(" | ");
     const result = contractRows(
-      "chutes",
-      failedCheck("Chutes", [message], [{ key: "request", value: message }]),
+      "deepseek",
+      failedCheck("DeepSeek", [message], [{ key: "request", value: message }]),
     );
     const text = JSON.stringify(result);
     for (const secret of secrets) expect(text).not.toContain(secret);
@@ -251,9 +251,9 @@ describe("rowsFromProviderResult", () => {
       "client_secret='CANARY single quoted'",
     ].join(" | ");
     const result = contractRows(
-      "chutes",
+      "deepseek",
       failedCheck(
-        "Chutes",
+        "DeepSeek",
         [message],
         [
           { key: "session_token", value: "CANARYsplit" },
@@ -585,7 +585,7 @@ describe("accountFromGroup", () => {
     ["kimi-code-plan-cn", "[Kimi Code (CN) Work]", "Work"],
     ["xiaomi", "Xiaomi MiMo: standard_monthly", "standard_monthly"],
     ["quota-providers", "Team Gateway (active)", "Team Gateway"],
-    ["chutes", undefined, undefined],
+    ["deepseek", undefined, undefined],
   ] as const)("%s %s → %s", (providerId, group, account) => {
     expect(accountFromGroup(providerId, group)).toBe(account);
   });

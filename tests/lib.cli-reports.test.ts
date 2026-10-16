@@ -54,7 +54,7 @@ describe("CLI reports", () => {
   let savedConfigDir: string | undefined;
 
   /** A provider whose check answers with one account. */
-  function fakeProvider(account: Parameters<typeof answer>[0], id = "synthetic") {
+  function fakeProvider(account: Parameters<typeof answer>[0], id = "zai") {
     return {
       id,
       cachePolicy: { kind: "account-neutral" as const },
@@ -127,18 +127,18 @@ describe("CLI reports", () => {
   describe("buildCliShowText", () => {
     it("renders a compact quota glance and returns zero when quota rows are available", async () => {
       const provider = fakeProvider({
-        name: "Synthetic",
+        name: "Z.ai",
         rows: [percentRow("weekly", "Weekly", 75)],
       });
       mockProviders.push(provider);
       writeSettings({
-        providers: { off: CONFIG_PROVIDER_IDS.filter((id) => !["synthetic"].includes(id)) },
+        providers: { off: CONFIG_PROVIDER_IDS.filter((id) => !["zai"].includes(id)) },
       });
 
       const report = await buildCliShowText(await hostFor());
 
       expect(report.exitCode).toBe(0);
-      expect(report.stdout).toContain("Synthetic Weekly");
+      expect(report.stdout).toContain("Z.ai Weekly");
       expect(report.stdout).toContain("75%");
       expect(report.stdout.endsWith("\n")).toBe(true);
       expect(report.stderr).toBe("");
@@ -150,7 +150,7 @@ describe("CLI reports", () => {
       vi.setSystemTime(new Date("2026-01-15T10:00:00.000Z"));
       mockProviders.push(
         fakeProvider({
-          name: "Synthetic",
+          name: "Z.ai",
           rows: [
             percentRow("weekly", "Weekly", 81, {
               window: "week",
@@ -161,14 +161,14 @@ describe("CLI reports", () => {
       );
       writeSettings({
         words: { percent: "used" },
-        providers: { off: CONFIG_PROVIDER_IDS.filter((id) => !["synthetic"].includes(id)) },
+        providers: { off: CONFIG_PROVIDER_IDS.filter((id) => !["zai"].includes(id)) },
       });
 
       const report = await buildCliShowText(await hostFor());
 
       expect(report).toEqual({
         exitCode: 0,
-        stdout: "Synthetic Weekly    19% used      2.2d\n",
+        stdout: "Z.ai Weekly         19% used      2.2d\n",
         stderr: "",
       });
     });
@@ -243,12 +243,12 @@ describe("CLI reports", () => {
   describe("buildCliShowJson", () => {
     it("outputs valid JSON with the quota OpenCode saved last", async () => {
       const provider = fakeProvider({
-        name: "Synthetic",
+        name: "Z.ai",
         rows: [percentRow("weekly", "Weekly", 75)],
       });
       mockProviders.push(provider);
       writeSettings({
-        providers: { off: CONFIG_PROVIDER_IDS.filter((id) => !["synthetic"].includes(id)) },
+        providers: { off: CONFIG_PROVIDER_IDS.filter((id) => !["zai"].includes(id)) },
       });
 
       await saveSnapshot();
@@ -264,30 +264,30 @@ describe("CLI reports", () => {
       expect(parsed).toHaveProperty("exportedAt");
       expect(parsed).toHaveProperty("fromCache", true);
       expect(parsed).toHaveProperty("cacheAgeSeconds");
-      expect(parsed.providers).toHaveProperty("synthetic");
-      expect(parsed.providers.synthetic.status).toBe("ok");
-      expect(parsed.providers.synthetic.entries[0].name).toBe("Synthetic Weekly");
-      expect(parsed.providers.synthetic.entries[0].percentRemaining).toBe(75);
-      expect(parsed.providers.synthetic.entries[0].renderType).toBe("percent");
-      expect(parsed.providers.synthetic.entries[0]).not.toHaveProperty("unlimited");
+      expect(parsed.providers).toHaveProperty("zai");
+      expect(parsed.providers.zai.status).toBe("ok");
+      expect(parsed.providers.zai.entries[0].name).toBe("Z.ai Weekly");
+      expect(parsed.providers.zai.entries[0].percentRemaining).toBe(75);
+      expect(parsed.providers.zai.entries[0].renderType).toBe("percent");
+      expect(parsed.providers.zai.entries[0]).not.toHaveProperty("unlimited");
       expect(provider.fetch).toHaveBeenCalledTimes(1); // only OpenCode's store asked it
     });
 
     it("asks no provider and returns unavailable when nothing was saved", async () => {
       const provider = fakeProvider({
-        name: "Synthetic",
+        name: "Z.ai",
         rows: [percentRow("weekly", "Weekly", 100)],
       });
       mockProviders.push(provider);
       writeSettings({
-        providers: { off: CONFIG_PROVIDER_IDS.filter((id) => !["synthetic"].includes(id)) },
+        providers: { off: CONFIG_PROVIDER_IDS.filter((id) => !["zai"].includes(id)) },
       });
 
       const report = await buildCliShowJson({ host: await hostFor() });
 
       expect(report.exitCode).toBe(0);
       expect(report.stderr).toBe("");
-      expect(JSON.parse(report.stdout).providers.synthetic.status).toBe("unavailable");
+      expect(JSON.parse(report.stdout).providers.zai.status).toBe("unavailable");
       expect(provider.fetch).not.toHaveBeenCalled();
     });
 
@@ -304,14 +304,14 @@ describe("CLI reports", () => {
       mockProviders.push(
         fakeProvider(
           {
-            name: "Kilo Gateway",
-            rows: [balance, percentRow("pass_credits", "Pass credits", percentRemaining)],
+            name: "OpenCode Zen",
+            rows: [balance, percentRow("monthly", "Monthly", percentRemaining)],
           },
-          "kilo",
+          "opencode",
         ),
       );
       writeSettings({
-        providers: { off: CONFIG_PROVIDER_IDS.filter((id) => !["kilo"].includes(id)) },
+        providers: { off: CONFIG_PROVIDER_IDS.filter((id) => !["opencode"].includes(id)) },
       });
 
       await saveSnapshot();
@@ -322,10 +322,10 @@ describe("CLI reports", () => {
 
     it("--threshold exits 2 when no provider is ok", async () => {
       mockProviders.push(
-        fakeProvider({ name: "Synthetic", rows: [percentRow("weekly", "Weekly", 100)] }),
+        fakeProvider({ name: "Z.ai", rows: [percentRow("weekly", "Weekly", 100)] }),
       );
       writeSettings({
-        providers: { off: CONFIG_PROVIDER_IDS.filter((id) => !["synthetic"].includes(id)) },
+        providers: { off: CONFIG_PROVIDER_IDS.filter((id) => !["zai"].includes(id)) },
       });
 
       const report = await buildCliShowJson({ host: await hostFor(), threshold: 10 });
@@ -334,11 +334,9 @@ describe("CLI reports", () => {
     });
 
     it("--threshold exits 2 when saved ok providers have no percentRemaining values", async () => {
-      mockProviders.push(
-        fakeProvider({ name: "Synthetic", rows: [textRow("usage", "Usage", "$42")] }),
-      );
+      mockProviders.push(fakeProvider({ name: "Z.ai", rows: [textRow("usage", "Usage", "$42")] }));
       writeSettings({
-        providers: { off: CONFIG_PROVIDER_IDS.filter((id) => !["synthetic"].includes(id)) },
+        providers: { off: CONFIG_PROVIDER_IDS.filter((id) => !["zai"].includes(id)) },
       });
 
       await saveSnapshot();
@@ -350,23 +348,23 @@ describe("CLI reports", () => {
     it("--threshold exits 2 for partial saved results instead of passing incomplete data", async () => {
       mockProviders.push(
         fakeProvider({
-          name: "Synthetic",
+          name: "Z.ai",
           rows: [percentRow("five_hour", "5h", 80)],
           errors: ["quota endpoint unavailable"],
         }),
       );
       writeSettings({
-        providers: { off: CONFIG_PROVIDER_IDS.filter((id) => !["synthetic"].includes(id)) },
+        providers: { off: CONFIG_PROVIDER_IDS.filter((id) => !["zai"].includes(id)) },
       });
 
       await saveSnapshot();
       const report = await buildCliShowJson({ host: await hostFor(), threshold: 50 });
 
       expect(report.exitCode).toBe(2);
-      expect(JSON.parse(report.stdout).providers.synthetic).toMatchObject({
+      expect(JSON.parse(report.stdout).providers.zai).toMatchObject({
         status: "partial",
         entries: [expect.objectContaining({ percentRemaining: 80 })],
-        errors: [{ label: "Synthetic", message: "Nothing reported" }],
+        errors: [{ label: "Z.ai", message: "Nothing reported" }],
       });
     });
 
@@ -377,11 +375,11 @@ describe("CLI reports", () => {
       );
       mockProviders.push(
         copilotProvider,
-        fakeProvider({ name: "Synthetic", rows: [percentRow("weekly", "Weekly", 50)] }),
+        fakeProvider({ name: "Z.ai", rows: [percentRow("weekly", "Weekly", 50)] }),
       );
       writeSettings({
         providers: {
-          off: CONFIG_PROVIDER_IDS.filter((id) => !["copilot", "synthetic"].includes(id)),
+          off: CONFIG_PROVIDER_IDS.filter((id) => !["copilot", "zai"].includes(id)),
         },
       });
       await saveSnapshot();
@@ -399,18 +397,18 @@ describe("CLI reports", () => {
   });
 
   describe("buildCliStatus", () => {
-    /** Synthetic, enabled; its check answers with `rows` and `errors`. */
-    function useSynthetic(rows: ReturnType<typeof percentRow>[], errors: string[] = []): void {
-      mockProviders.push(fakeProvider({ name: "Synthetic", rows, errors }));
+    /** Z.ai, enabled; its check answers with `rows` and `errors`. */
+    function useZai(rows: ReturnType<typeof percentRow>[], errors: string[] = []): void {
+      mockProviders.push(fakeProvider({ name: "Z.ai", rows, errors }));
       writeSettings({
-        providers: { off: CONFIG_PROVIDER_IDS.filter((id) => !["synthetic"].includes(id)) },
+        providers: { off: CONFIG_PROVIDER_IDS.filter((id) => !["zai"].includes(id)) },
       });
     }
     const WEEKLY = percentRow("weekly", "Weekly", 75);
     const FAILED = "quota endpoint unavailable";
 
     it("prints a plain-text Quota Status report and returns zero", async () => {
-      useSynthetic([WEEKLY]);
+      useZai([WEEKLY]);
 
       const report = await buildCliStatus({ host: await hostFor(), json: false });
 
@@ -418,9 +416,9 @@ describe("CLI reports", () => {
       expect(report.stderr).toBe("");
       expect(report.stdout).toMatch(/^# Quota Status/u);
       expect(report.stdout).toContain(
-        `- providers.off: ${CONFIG_PROVIDER_IDS.filter((id) => id !== "synthetic").join(" | ")}`,
+        `- providers.off: ${CONFIG_PROVIDER_IDS.filter((id) => id !== "zai").join(" | ")}`,
       );
-      expect(report.stdout).toContain("\nsynthetic:\n- state: ok");
+      expect(report.stdout).toContain("\nzai:\n- state: ok");
       expect(report.stdout.endsWith("\n")).toBe(true);
       expect(buildStatusReportData).toHaveBeenCalledWith(
         expect.objectContaining({ providerFilterId: undefined }),
@@ -428,7 +426,7 @@ describe("CLI reports", () => {
     });
 
     it("emits a structured JSON payload and returns zero when live probes exist", async () => {
-      useSynthetic([WEEKLY]);
+      useZai([WEEKLY]);
 
       const report = await buildCliStatus({ host: await hostFor(), json: true });
 
@@ -437,20 +435,20 @@ describe("CLI reports", () => {
       const parsed = JSON.parse(report.stdout);
       expect(parsed).toHaveProperty("version", "6");
       expect(parsed).toHaveProperty("generatedAt");
-      expect(parsed.config).toMatchObject({ enabledProviders: ["synthetic"] });
-      expect(parsed.providers).toEqual([{ id: "synthetic", enabled: true, available: true }]);
+      expect(parsed.config).toMatchObject({ enabledProviders: ["zai"] });
+      expect(parsed.providers).toEqual([{ id: "zai", enabled: true, available: true }]);
       expect(parsed).toHaveProperty("pricing");
-      expect(parsed.liveProbes).toEqual([{ id: "synthetic", ok: true }]);
+      expect(parsed.liveProbes).toEqual([{ id: "zai", ok: true }]);
     });
 
     it.each([
       ["nothing was checked", [], []],
       ["a failed check made no rows", [], [FAILED]],
     ])("exits 2 with JSON when %s", async (_case, rows, errors) => {
-      if (errors.length > 0) useSynthetic(rows, errors);
+      if (errors.length > 0) useZai(rows, errors);
       else
         writeSettings({
-          providers: { off: CONFIG_PROVIDER_IDS.filter((id) => !["synthetic"].includes(id)) },
+          providers: { off: CONFIG_PROVIDER_IDS.filter((id) => !["zai"].includes(id)) },
         });
 
       const report = await buildCliStatus({ host: await hostFor(), json: true });
@@ -459,31 +457,31 @@ describe("CLI reports", () => {
       expect(report.stderr).toBe("");
       // JSON still prints on exit 2.
       expect(JSON.parse(report.stdout).liveProbes).toEqual(
-        errors.length > 0 ? [{ id: "synthetic", ok: false }] : [],
+        errors.length > 0 ? [{ id: "zai", ok: false }] : [],
       );
     });
 
     it("succeeds with JSON when a partial probe produced quota entries", async () => {
-      useSynthetic([WEEKLY], [FAILED]);
+      useZai([WEEKLY], [FAILED]);
 
       const report = await buildCliStatus({ host: await hostFor(), json: true });
 
       expect(report.exitCode).toBe(0);
-      expect(JSON.parse(report.stdout).liveProbes).toEqual([{ id: "synthetic", ok: false }]);
+      expect(JSON.parse(report.stdout).liveProbes).toEqual([{ id: "zai", ok: false }]);
     });
 
     it("forwards the provider filter and still emits JSON", async () => {
-      useSynthetic([WEEKLY]);
+      useZai([WEEKLY]);
 
       const report = await buildCliStatus({
         host: await hostFor(),
-        providerId: "synthetic",
+        providerId: "zai",
         json: true,
       });
 
       expect(report.exitCode).toBe(0);
       expect(buildStatusReportData).toHaveBeenCalledWith(
-        expect.objectContaining({ providerFilterId: "synthetic" }),
+        expect.objectContaining({ providerFilterId: "zai" }),
       );
       const parsed = JSON.parse(report.stdout);
       expect(parsed.providers).toHaveLength(1);

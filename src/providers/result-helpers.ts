@@ -53,17 +53,6 @@ export async function apiKeyVendorDetails(vendor: ApiKeySpec): Promise<DebugDeta
   return simpleApiKeyStatusDetails(diagnostics);
 }
 
-/** One `api_key_diagnostics` line: configured, the key's source and the paths checked. */
-export async function apiKeyDiagnosticsDetail(vendor: ApiKeySpec): Promise<DebugDetail[]> {
-  const diagnostics = await getApiKeyDiagnostics(vendor).catch(() => ({
-    configured: false,
-    source: null,
-    checkedPaths: [],
-  }));
-  const detail = `configured=${diagnostics.configured ? "true" : "false"}${diagnostics.source ? ` source=${diagnostics.source}` : ""}${diagnostics.checkedPaths.length > 0 ? ` checked=${diagnostics.checkedPaths.join(" | ")}` : ""}`;
-  return [{ key: "api_key_diagnostics", value: detail }];
-}
-
 export function apiKeyStatusDetails(diagnostics: {
   state: string;
   source: string | null;

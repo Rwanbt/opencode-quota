@@ -195,17 +195,13 @@ describe("resolveQuotaResetRetryDelayMs", () => {
 
   it("waits for the used-up window of the retried model's provider only", async () => {
     const zai = usedUpZai();
-    const synthetic = makeProvider(
-      "synthetic",
-      [window("Weekly", 0, at(10 * MINUTE_MS))],
-      () => false,
-    );
+    const openai = makeProvider("openai", [window("Weekly", 0, at(10 * MINUTE_MS))], () => false);
     // waitForQuotaReset is on by default.
-    useProviders([zai, synthetic]);
+    useProviders([zai, openai]);
 
     await expect(resolve(limitEvent)).resolves.toBe(WAIT_FOR_ZAI);
     expect(zai.fetch).toHaveBeenCalledTimes(1);
-    expect(synthetic.fetch).not.toHaveBeenCalled();
+    expect(openai.fetch).not.toHaveBeenCalled();
   });
 
   it("asks the provider for fresh quota on every limit error, whatever the interval", async () => {

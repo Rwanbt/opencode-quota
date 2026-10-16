@@ -12,7 +12,7 @@ describe("quota provider boundary", () => {
     const quotaProviders = getProviders().map((p) => p.id);
     expect(Object.keys(QUOTA_PROVIDER_CATALOG)).toEqual(registrationIds);
     expect(quotaProviders).toEqual(registrationIds);
-    expect(quotaProviders).toContain("synthetic");
+    expect(quotaProviders).toContain("deepseek");
     expect(quotaProviders).toContain("xiaomi");
     expect(Object.keys(PROVIDER_ROW_KEYS).sort()).toEqual([...quotaProviders].sort());
   });

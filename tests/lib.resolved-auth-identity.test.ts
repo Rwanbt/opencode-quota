@@ -105,7 +105,7 @@ describe("resolved-auth identity", () => {
       const values = await Promise.all(
         Array.from({ length: 12 }, () =>
           identity.deriveResolvedAuthIdentity({
-            providerId: "synthetic",
+            providerId: "deepseek",
             principal: { kind: "credential", value: "shared-secret" },
           }),
         ),

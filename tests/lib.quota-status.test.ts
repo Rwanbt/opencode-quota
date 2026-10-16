@@ -31,9 +31,9 @@ import {
   type QuotaStatusReportParams,
 } from "../src/lib/quota-status.js";
 import { getPackageVersion } from "../src/lib/version.js";
-import { chutesProvider } from "../src/providers/chutes.js";
 import type { ProviderFetchResult } from "../src/providers/contract.js";
-import { syntheticProvider } from "../src/providers/synthetic.js";
+import { deepseekProvider } from "../src/providers/deepseek.js";
+import { ollamaCloudProvider } from "../src/providers/ollama-cloud.js";
 import {
   defaultSettings,
   loadSettings,
@@ -226,15 +226,15 @@ const KNOWN_WORD_SECRETS = [
 /** The report's own fixed words: its keys, states, codes and the words of its sentences. */
 const REPORT_WORDS: readonly string[] = `
   - enabled path keys Couldn Local Provider Rate a account account_count active age_ms and api_host
-  api_key_checked_paths api_key_diagnostics api_key_source are arg at auth_selected_path
-  auth_source auth_state auto auto_refresh_days billing_cycle_start_day binary_path bundled
+  api_key_checked_paths api_key_source are arg at auth_selected_path
+  auth_source auth_state auto auto_refresh_days billing_cycle_start_day billing_period binary_path bundled
   bundled_only check checked_at checked_commands checked_paths cli_version code config_source
   configured conversion conversion_converted conversion_dropped conversion_invalid
   conversion_notes converted credential_source currency current_model custom_provider
   cycle_reset_at data date debug details downloaded dropped enabledProviders enterprise env
   error exists experimental expired failures false file files found from future generated_at
   github global history home_frequency host http http_error http_status id in integration
-  internal invalid jsonc_used_over_json left limited line list list_error live_error_usage
+  internal invalid jsonc_used_over_json left limited line list list_error
   local_state_path local_tool matchesCurrentModel max_age_ms memory
   missing models more network no none not not_read number oauth_configured of ok on
   opencode-integration-api opencode_db opencode_dirs opencode_provider other out outcome part
@@ -247,7 +247,7 @@ const REPORT_WORDS: readonly string[] = `
   written yes yet ~
   environment origin os runtime bun node opencode-quota quota_status status TUI Plugin tab CLI
   channel version changed_from_defaults setting settings entry entries color separator null shipped
-  error_kind local_state_version subscription_state unknown_cursor_models
+  error_kind local_state_version unknown_cursor_models
   notices price_list_providers selection_note built-in is used prices ignored valid so one lists
   session has model dropped_row timeout login_expired not_configured bad_response no_data no_plan
   repeated object wrong value id label type method authority prominence account window
@@ -756,21 +756,20 @@ describe("buildQuotaStatusReport", () => {
     },
     {
       name: "live errors as their kind, and why rows were dropped, never their own words or ids",
-      provider: snapshot("nanogpt", {
+      provider: snapshot("ollama-cloud", {
         checkedAtMs: NOW,
         debug: [
-          { key: "live_error_usage", value: "NanoGPT usage HTTP 429 for me@example.com" },
           { key: "live_fetch_error", value: "fetch failed: getaddrinfo ENOTFOUND" },
           { key: "live_error_1", value: "timed out after 8000ms" },
-          { key: "dropped_row", value: "nanogpt.secret-org: no value" },
-          { key: "dropped_row", value: "nanogpt.daily: invalid window" },
-          { key: "dropped_row", value: "nanogpt.daily: something we never write" },
+          { key: "live_error_2", value: "usage HTTP 429 for me@example.com" },
+          { key: "dropped_row", value: "ollama-cloud.secret-org: no value" },
+          { key: "dropped_row", value: "ollama-cloud.weekly: invalid window" },
+          { key: "dropped_row", value: "ollama-cloud.weekly: something we never write" },
         ],
       }),
       lines: [
-        "- live_error_usage: rate_limited, http 429",
         "- live_fetch_error: network",
-        "- live_error_1: timeout",
+        "- live_error_1: timeout\n- live_error_2: rate_limited, http 429",
         "- dropped_row: no value\n- dropped_row: invalid window",
         "- 1 other detail not shown",
       ],
@@ -1324,7 +1323,6 @@ describe("buildQuotaStatusReport", () => {
       "1.2.3",
       RESET,
       "env:ZAI_API_KEY",
-      "env:NANOGPT_API_KEY",
       "opencode.db",
       join(root, ".config", "opencode", "opencode.json"),
       "yes found=openai,codex",
@@ -1348,7 +1346,6 @@ describe("buildQuotaStatusReport", () => {
       "billing_period",
       "opencode_provider",
       "oauth_configured",
-      "api_key_diagnostics",
       "selected_windows",
       "token_expires_at",
       "cycle_reset_at",
@@ -1357,8 +1354,6 @@ describe("buildQuotaStatusReport", () => {
       "billing_cycle_start_day",
       "local_state_version",
       "local_state_path",
-      "subscription_state",
-      "live_error_usage",
       "config_source",
       "auth_selected_path",
       "error",
@@ -1667,15 +1662,6 @@ describe("buildQuotaStatusReport", () => {
               },
             ],
           }),
-          snapshot("synthetic", {
-            debug: [
-              {
-                key: "api_key_diagnostics",
-                value:
-                  "configured=true source=opencode.json checked=~/.config/opencode/opencode.json",
-              },
-            ],
-          }),
         ],
       },
       title: "",
@@ -1683,7 +1669,6 @@ describe("buildQuotaStatusReport", () => {
         "- auth_state: configured\n- api_key_configured: true\n- api_key_source: env:ZAI_API_KEY",
         "- api_key_checked_paths: env:ZAI_API_KEY | ~/.config/opencode/opencode.json",
         "- api_key_credential_database_paths: ~/.local/share/opencode/opencode.db",
-        "- api_key_diagnostics: configured=true source=opencode.json checked=~/.config/opencode/opencode.json",
       ],
     },
     {
@@ -1758,7 +1743,7 @@ describe("buildQuotaStatusReport", () => {
       ],
     },
     {
-      name: "a Copilot organization, enterprise, GHE host and month, and NanoGPT's subscription, in fixed words",
+      name: "a Copilot organization, enterprise, GHE host and month, in fixed words",
       overrides: {
         providers: [
           snapshot("copilot", {
@@ -1769,22 +1754,14 @@ describe("buildQuotaStatusReport", () => {
               { key: "billing_period", value: "2026-10" },
             ],
           }),
-          snapshot("nanogpt", {
-            debug: [
-              { key: "subscription_state", value: "grace" },
-              { key: "live_error_usage", value: "HTTP 500 for alice" },
-              { key: "live_error_balance", value: "timeout" },
-            ],
-          }),
         ],
       },
       title: "",
       lines: [
         "- pat_organization: set\n- pat_enterprise: set\n- api_host: github enterprise (custom host)",
         "- billing_period: 2026-10",
-        "- subscription_state: grace\n- live_error_usage: provider_error, http 500\n- live_error_balance: timeout",
       ],
-      absent: ["acme", "alice"],
+      absent: ["acme"],
     },
     {
       name: "numbers and times only in their range, and env variables only of their provider",
@@ -1807,10 +1784,10 @@ describe("buildQuotaStatusReport", () => {
             ],
             debug: [{ key: "token_expires_at", value: "2100-01-01T00:00:00.000Z" }],
           }),
-          snapshot("nanogpt", {
+          snapshot("deepseek", {
             debug: [
               { key: "api_key_source", value: "env:ZAI_API_KEY" },
-              { key: "api_key_checked_paths", value: "env:NANOGPT_API_KEY | env:ZAI_API_KEY" },
+              { key: "api_key_checked_paths", value: "env:DEEPSEEK_API_KEY | env:ZAI_API_KEY" },
             ],
           }),
         ],
@@ -1824,7 +1801,7 @@ describe("buildQuotaStatusReport", () => {
         "- state: partial: Rate limited (rate_limited)",
         "  - openai.five_hour: percent (out of range), 988T/1.23K USD, resets (invalid date)",
         "- token_expires_at: (invalid date)",
-        "- api_key_source: env:(other)\n- api_key_checked_paths: env:NANOGPT_API_KEY | env:(other)",
+        "- api_key_source: env:(other)\n- api_key_checked_paths: env:DEEPSEEK_API_KEY | env:(other)",
       ],
       absent: ["98765", "ZAI_API_KEY"],
     },
@@ -2276,15 +2253,15 @@ describe("buildStatusReportData", () => {
     };
   }
 
-  const synthetic = () =>
-    fakeProvider("synthetic", true, {
+  const zai = () =>
+    fakeProvider("zai", true, {
       ...answer({
-        name: "Synthetic",
+        name: "Z.ai",
         rows: [percentRow("five_hour", "5h", 84, { window: "five_hour", resetsAt: RESET })],
         errors: [`Weekly HTTP 503 Bearer ${SECRET}`],
       }),
       debug: [
-        { key: "api_key_source", value: "env:SYNTHETIC_API_KEY" },
+        { key: "api_key_source", value: "env:ZAI_API_KEY" },
         { key: "access_token", value: SECRET },
       ],
     });
@@ -2334,7 +2311,7 @@ describe("buildStatusReportData", () => {
       join(settingsDir, "settings.jsonc"),
       JSON.stringify({
         providers: {
-          off: [...PROVIDER_IDS.filter((id) => id !== "synthetic"), garbage(), garbage()],
+          off: [...PROVIDER_IDS.filter((id) => id !== "zai"), garbage(), garbage()],
         },
       }),
     );
@@ -2354,7 +2331,7 @@ describe("buildStatusReportData", () => {
     );
     __resetPricingSnapshotForTests();
     registry.providers = [
-      fakeProvider("synthetic", true, {
+      fakeProvider("zai", true, {
         ...answer({
           name: garbage(),
           rows: [
@@ -2396,26 +2373,24 @@ describe("buildStatusReportData", () => {
       for (const token of hex) expect(output).not.toContain(token);
     }
     expect(data.payload.config.settingsPath).toBe("(custom path)/settings.jsonc");
-    expect(data.payload.config.enabledProviders).toContain("synthetic");
+    expect(data.payload.config.enabledProviders).toContain("zai");
   });
 
   it("checks every enabled provider through a store and shows what it returned, secrets hidden", async () => {
-    const syntheticProvider = synthetic();
+    const zaiProvider = zai();
     const openai = fakeProvider("openai", false);
-    registry.providers = [syntheticProvider, openai];
+    registry.providers = [zaiProvider, openai];
 
     const { data, text, onDetectedProviderIds } = await statusData();
 
-    const syntheticSection = section(text, "synthetic");
-    expect(syntheticSection).toContain(
-      "- state: partial: Provider error 503 (provider_error, http 503)",
+    const zaiSection = section(text, "zai");
+    expect(zaiSection).toContain("- state: partial: Provider error 503 (provider_error, http 503)");
+    expect(zaiSection).toContain(
+      `- rows: 1\n  - zai.five_hour: window=five_hour, 84% left, resets ${RESET}`,
     );
-    expect(syntheticSection).toContain(
-      `- rows: 1\n  - synthetic.five_hour: window=five_hour, 84% left, resets ${RESET}`,
-    );
-    expect(syntheticSection).toContain("- api_key_source: env:SYNTHETIC_API_KEY");
+    expect(zaiSection).toContain("- api_key_source: env:ZAI_API_KEY");
     // The error message as its kind and status; the access token not at all.
-    expect(syntheticSection).toContain(
+    expect(zaiSection).toContain(
       "- error_kind: provider_error, http 503\n- 1 other detail not shown",
     );
     expect(text).not.toContain(SECRET);
@@ -2424,11 +2399,11 @@ describe("buildStatusReportData", () => {
     expect(section(text, "openai")).toContain("- state: unavailable\n");
     expect(section(text, "openai")).toMatch(/- opencode_provider: no looked_for=openai\b/u);
     expect(section(text, "pricing_snapshot")).toContain("- unpriced_30d: (no usage)");
-    expect(syntheticProvider.fetch).toHaveBeenCalledOnce();
+    expect(zaiProvider.fetch).toHaveBeenCalledOnce();
     expect(openai.fetch).not.toHaveBeenCalled();
-    expect(onDetectedProviderIds).toHaveBeenCalledWith(["synthetic"]);
-    expect(data.payload?.liveProbes).toEqual([{ id: "synthetic", ok: false }]);
-    expect(data.payload?.providers.map((provider) => provider.id)).toEqual(["synthetic", "openai"]);
+    expect(onDetectedProviderIds).toHaveBeenCalledWith(["zai"]);
+    expect(data.payload?.liveProbes).toEqual([{ id: "zai", ok: false }]);
+    expect(data.payload?.providers.map((provider) => provider.id)).toEqual(["zai", "openai"]);
     expect(data.payload?.config.settingsPath).toBe(
       "~/.config/opencode/opencode-quota/settings.jsonc",
     );
@@ -2439,13 +2414,13 @@ describe("buildStatusReportData", () => {
   });
 
   it("shows the real API-key setup details of providers without a key", async () => {
-    vi.stubEnv("CHUTES_API_KEY", "");
-    vi.stubEnv("SYNTHETIC_API_KEY", "");
-    registry.providers = [chutesProvider, syntheticProvider];
+    vi.stubEnv("DEEPSEEK_API_KEY", "");
+    vi.stubEnv("OLLAMA_API_KEY", "");
+    registry.providers = [deepseekProvider, ollamaCloudProvider];
 
     const { text } = await statusData();
 
-    for (const id of ["chutes", "synthetic"]) {
+    for (const id of ["deepseek", "ollama-cloud"]) {
       expect(section(text, id)).toContain("- state: unavailable\n");
       expect(section(text, id)).toContain("- api_key_configured: false\n- api_key_source: (none)");
     }
@@ -2453,12 +2428,8 @@ describe("buildStatusReportData", () => {
 
   /** Every provider that reads an API key or a key file: each shows where it looked. */
   const KEY_PROVIDERS = [
-    "chutes",
     "deepseek",
-    "kilo",
-    "nanogpt",
     "ollama-cloud",
-    "synthetic",
     "zai",
     "zhipu",
     "opencode-go",
@@ -2521,42 +2492,42 @@ describe("buildStatusReportData", () => {
   it("uses the plugin's availability rule everywhere, and runs no provider that is turned off", async () => {
     // Like the custom providers: available only when every model is checked, as v6 does.
     const custom = fakeProvider("quota-providers", (ctx) => !ctx.config.onlyCurrentModel);
-    const chutes = fakeProvider("chutes", true);
-    registry.providers = [custom, chutes];
+    const deepseek = fakeProvider("deepseek", true);
+    registry.providers = [custom, deepseek];
     writeV5Settings({ enabledProviders: ["quota-providers"], onlyCurrentModel: true });
 
     const { data, text } = await statusData();
 
     expect(section(text, "providers")).toBe(
-      "providers:\n- quota-providers: enabled available\n- chutes: disabled available",
+      "providers:\n- quota-providers: enabled available\n- deepseek: disabled available",
     );
     expect(section(text, "quota-providers")).toContain(
       "- state: error: Nothing reported (no_data)\n",
     );
     expect(custom.fetch).toHaveBeenCalledOnce();
-    expect(section(text, "chutes")).toBe("chutes:\n- state: disabled");
-    expect(chutes.fetch).not.toHaveBeenCalled();
+    expect(section(text, "deepseek")).toBe("deepseek:\n- state: disabled");
+    expect(deepseek.fetch).not.toHaveBeenCalled();
     expect(data.payload?.liveProbes).toEqual([{ id: "quota-providers", ok: false }]);
   });
 
   it("checks and shows only the provider asked for", async () => {
-    const syntheticProvider = synthetic();
-    const chutes = fakeProvider("chutes", true);
-    registry.providers = [syntheticProvider, chutes];
+    const zaiProvider = zai();
+    const deepseek = fakeProvider("deepseek", true);
+    registry.providers = [zaiProvider, deepseek];
 
-    const { data, text } = await statusData({ providerFilterId: "chutes" });
+    const { data, text } = await statusData({ providerFilterId: "deepseek" });
 
-    expect(text).toContain("\nchutes:\n- state: error: Nothing reported (no_data)");
-    expect(text).not.toContain("\nsynthetic:\n");
-    expect(syntheticProvider.fetch).not.toHaveBeenCalled();
-    expect(data.payload?.providers.map((provider) => provider.id)).toEqual(["chutes"]);
-    expect(data.payload?.liveProbes).toEqual([{ id: "chutes", ok: false }]);
+    expect(text).toContain("\ndeepseek:\n- state: error: Nothing reported (no_data)");
+    expect(text).not.toContain("\nzai:\n");
+    expect(zaiProvider.fetch).not.toHaveBeenCalled();
+    expect(data.payload?.providers.map((provider) => provider.id)).toEqual(["deepseek"]);
+    expect(data.payload?.liveProbes).toEqual([{ id: "deepseek", ok: false }]);
     expect(data.hasComparableProviderData).toBe(false);
   });
 
   it("converts the v5 settings in memory until settings.jsonc exists", async () => {
-    registry.providers = [synthetic()];
-    writeV5Settings({ enabledProviders: ["synthetic"] });
+    registry.providers = [zai()];
+    writeV5Settings({ enabledProviders: ["zai"] });
 
     const before = section((await statusData()).text, "settings");
 
@@ -2564,7 +2535,7 @@ describe("buildStatusReportData", () => {
       "- settings_file: ~/.config/opencode/opencode-quota/settings.jsonc (missing; the v5 settings are converted in memory)",
     );
     expect(before).toContain(
-      `- providers.off: ${PROVIDER_IDS.filter((id) => id !== "synthetic").join(" | ")}`,
+      `- providers.off: ${PROVIDER_IDS.filter((id) => id !== "zai").join(" | ")}`,
     );
     expect(before).toMatch(
       /- conversion: from ~\/\.config\/opencode\/opencode-quota\/quota-toast\.json \(\d+ converted, \d+ dropped, \d+ invalid\); converted in memory/u,

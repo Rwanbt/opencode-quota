@@ -1007,8 +1007,6 @@ const API_KEY_DETAILS: DebugRules = {
   auth_state: oneOf("none", "configured", "invalid"),
   auth_error: present,
 };
-/** Synthetic and Chutes write their key lookup as one value. */
-const KEY_SUMMARY: DebugRule = fields({ configured: bool, source: keySource, checked: pathList });
 const GOOGLE_DETAILS: DebugRules = {
   auth_state: oneOf("missing", "present", "invalid"),
   auth_source: oneOf(...AGY_AUTH_KEYS, ...GEMINI_CLI_AUTH_KEYS),
@@ -1086,7 +1084,6 @@ const DEBUG_DETAILS: Readonly<Partial<Record<CanonicalQuotaProviderId, DebugRule
     token_status: oneOf("api key", "failed", "expired", "valid"),
     token_expires_at: time,
   },
-  kilo: { accounting_mode: oneOf("kilo_pass", "gateway_balance"), reset_at: time },
   cursor: {
     plan: oneOf("Pro", "Pro Plus", "Ultra", "none"),
     billing_cycle_start_day: (value, context) =>
@@ -1119,16 +1116,8 @@ const DEBUG_DETAILS: Readonly<Partial<Record<CanonicalQuotaProviderId, DebugRule
     windows: listOf(["5h", "weekly"]),
     failure_kind: oneOf(...Object.keys(ALIBABA_TOKEN_PLAN_ERRORS)),
   },
-  synthetic: { api_key_diagnostics: KEY_SUMMARY },
-  chutes: { api_key_diagnostics: KEY_SUMMARY },
   "google-gemini-cli": GOOGLE_DETAILS,
   "google-agy": GOOGLE_DETAILS,
-  nanogpt: {
-    ...each(bool, "subscription_active", "enforce_daily_limit"),
-    subscription_state: oneOf("active", "grace", "inactive"),
-    ...each(time, "billing_period_end", "grace_until"),
-    ...each(errorKindOf, "live_error_usage", "live_error_balance"),
-  },
   "minimax-coding-plan": { api_endpoint: oneOf("international", "china") },
   "minimax-china-coding-plan": { api_endpoint: oneOf("international", "china") },
   "kimi-code-plan-global": { api_endpoint: oneOf("global", "cn") },

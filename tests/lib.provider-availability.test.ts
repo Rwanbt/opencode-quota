@@ -45,7 +45,7 @@ describe("provider availability", () => {
     ["alibaba-token-plan", "alibaba", false],
     ["alibaba-token-plan", "alibaba-coding-plan", false],
     ["alibaba-token-plan", "alibaba-token-plan", true],
-    ["synthetic", "synthetic", true],
+    ["deepseek", "deepseek", true],
     ["google-gemini-cli", "google-gemini-cli", true],
     ["google-gemini-cli", "gemini-cli", true],
     ["google-gemini-cli", "gemini", true],

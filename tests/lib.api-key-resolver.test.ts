@@ -66,15 +66,8 @@ const DB_PATHS = ["/tmp/opencode.db"];
 // tables, so a wrong env var, config alias, or login id in a table fails here.
 // Order is precedence: the first env var, config alias, and login id wins.
 const EXPECTED_API_KEY_VENDORS: Record<string, ApiKeySpec> = {
-  chutes: { envVars: ["CHUTES_API_KEY"], providerKeys: ["chutes"] },
   deepseek: { envVars: ["DEEPSEEK_API_KEY"], providerKeys: ["deepseek"] },
-  kilo: { envVars: ["KILO_API_KEY"], providerKeys: ["kilo"] },
-  nanogpt: {
-    envVars: ["NANOGPT_API_KEY", "NANO_GPT_API_KEY"],
-    providerKeys: ["nanogpt", "nano-gpt"],
-  },
   "ollama-cloud": { envVars: ["OLLAMA_API_KEY"], providerKeys: ["ollama-cloud"] },
-  synthetic: { envVars: ["SYNTHETIC_API_KEY"], providerKeys: ["synthetic"] },
 };
 const EXPECTED_API_KEY_LOGIN_VENDORS: Record<string, ApiKeyLoginSpec> = {
   zai: {

@@ -266,7 +266,19 @@ export const PROVIDER_IDS: readonly string[] = Object.keys(QUOTA_PROVIDER_CATALO
   id === "quota-providers" ? "custom" : id,
 );
 
-/** A provider id or one of its aliases ("nano-gpt", "quota-providers") as `providers.off` stores it. */
+/**
+ * Built-in provider ids of 4.x and 5.x that this version does not have. `providers.off` and the
+ * v5 conversion drop them without an issue, so settings from then still load clean.
+ */
+const FORMER_PROVIDER_IDS: ReadonlySet<string> = new Set([
+  "chutes",
+  "kilo",
+  "nanogpt",
+  "nano-gpt",
+  "synthetic",
+]);
+
+/** A provider id or one of its aliases ("claude", "quota-providers") as `providers.off` stores it. */
 function canonicalProviderId(id: string): string | undefined {
   const normalized = normalizeQuotaProviderId(id);
   const canonical = normalized === "quota-providers" ? "custom" : normalized;
@@ -349,9 +361,11 @@ function checkProviders(key: string, value: unknown): CheckedSetting {
   const unknown: string[] = [];
   value.forEach((item, index) => {
     const id = typeof item === "string" ? canonicalProviderId(item) : undefined;
+    const former =
+      typeof item === "string" && FORMER_PROVIDER_IDS.has(normalizeQuotaProviderId(item));
     // Anything but a string is named by its position, so no name inside it is repeated.
     if (id) known.push(id);
-    else unknown.push(typeof item === "string" ? item : `item ${index + 1}`);
+    else if (!former) unknown.push(typeof item === "string" ? item : `item ${index + 1}`);
   });
   if (unknown.length === 0) return { value: [...new Set(known)], issues: [] };
   const message = `unknown provider id(s): ${unknown.join(", ")}; valid: ${PROVIDER_IDS.join(", ")}`;

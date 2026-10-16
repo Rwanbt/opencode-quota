@@ -130,10 +130,17 @@ const ROWS: Array<{
   { v5: { waitForQuotaReset: false }, server: { "providers.checking.waitForQuotaReset": false } },
   { v5: { debug: true }, dropped: ["debug"] },
   {
-    v5: { enabledProviders: ["nano-gpt", "quota-providers", "copilot"] },
+    v5: { enabledProviders: ["claude", "quota-providers", "copilot"] },
     server: {
-      "providers.off": PROVIDER_IDS.filter((id) => !["nanogpt", "custom", "copilot"].includes(id)),
+      "providers.off": PROVIDER_IDS.filter(
+        (id) => !["anthropic", "custom", "copilot"].includes(id),
+      ),
     },
+  },
+  // Built-in providers of 4.x and 5.x that this version does not have.
+  {
+    v5: { enabledProviders: ["chutes", "kilo", "nanogpt", "nano-gpt", "synthetic", "copilot"] },
+    server: { "providers.off": PROVIDER_IDS.filter((id) => id !== "copilot") },
   },
   {
     v5: { quotaProviders: VALID_QUOTA_PROVIDER_INPUTS },

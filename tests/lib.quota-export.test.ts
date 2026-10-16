@@ -340,14 +340,14 @@ describe("the export of each provider's last check", () => {
 
   it("returns status unavailable for a provider that is not set up or never checked", () => {
     const exportData = exportAfter({
-      chutes: {
+      deepseek: {
         checkedAtMs: Date.now(),
         fetched: { rows: [], error: { code: "not_configured" }, debug: [] },
       },
       ghost: undefined,
     });
 
-    expect(exportData.providers.chutes).toEqual({ status: "unavailable" });
+    expect(exportData.providers.deepseek).toEqual({ status: "unavailable" });
     expect(exportData.providers.ghost).toEqual({ status: "unavailable" });
     expect(exportData.cacheAgeSeconds).toBe(0);
   });

@@ -247,9 +247,9 @@ describe("quota window: Status", () => {
   });
 
   it("breaks a long id list between ids, lined up after its key", () => {
-    const text = "- providers.off: anthropic | kilo | google-gemini-cli | kimi-code-plan-global";
+    const text = "- providers.off: anthropic | xai | google-gemini-cli | kimi-code-plan-global";
     expect(statusLines(text, 44).map((line) => line.text)).toEqual([
-      "- providers.off: anthropic | kilo |",
+      "- providers.off: anthropic | xai |",
       "                 google-gemini-cli |",
       "                 kimi-code-plan-global",
     ]);

@@ -84,15 +84,13 @@ import { buildStatusReportData } from "../src/lib/quota-dialog-commands.js";
 import { loadSettings } from "../src/settings/index.js";
 import { writeCredentialDatabase } from "./helpers/credential-database.js";
 
-/** The Synthetic provider; its check answers with one 75% weekly row. */
-function synthetic() {
+/** The Z.ai provider; its check answers with one 75% weekly row. */
+function zai() {
   return {
-    id: "synthetic",
+    id: "zai",
     cachePolicy: { kind: "account-neutral" as const },
     isAvailable: vi.fn().mockResolvedValue(true),
-    fetch: vi.fn(async () =>
-      answer({ name: "Synthetic", rows: [percentRow("weekly", "Weekly", 75)] }),
-    ),
+    fetch: vi.fn(async () => answer({ name: "Z.ai", rows: [percentRow("weekly", "Weekly", 75)] })),
   };
 }
 
@@ -150,7 +148,7 @@ beforeEach(() => {
   vi.mocked(buildStatusReportData).mockClear();
   __resetPricingSnapshotForTests();
   writeSettings({
-    providers: { off: CONFIG_PROVIDER_IDS.filter((id) => !["synthetic"].includes(id)) },
+    providers: { off: CONFIG_PROVIDER_IDS.filter((id) => !["zai"].includes(id)) },
   });
 });
 
@@ -216,7 +214,7 @@ describe("show and status arguments", () => {
     "show",
     "status",
   ] as const)("%s rejects an unknown provider before checking any provider", async (command) => {
-    const provider = synthetic();
+    const provider = zai();
     mockProviders.push(provider);
 
     const result = await run(command, ["--provider", "not-a-provider"]);
@@ -248,12 +246,12 @@ describe.each(["show", "status"] as const)("%s report frame", (command) => {
   it("checks the providers with the price list and refresh age the settings choose", async () => {
     writeSettings({
       providers: {
-        off: CONFIG_PROVIDER_IDS.filter((id) => !["synthetic"].includes(id)),
+        off: CONFIG_PROVIDER_IDS.filter((id) => !["zai"].includes(id)),
         pricing: { source: "bundled", autoRefreshDays: 3 },
       },
     });
     const seen: Array<{ source: string; maxAgeMs: number }> = [];
-    const provider = synthetic();
+    const provider = zai();
     provider.fetch.mockImplementation(async () => {
       seen.push({
         source: getPricingSnapshotSelection(),
@@ -274,21 +272,21 @@ describe("runCliShowCommand", () => {
     const databasePath = join(tempDir, "opencode.db");
     writeCredentialDatabase(databasePath, [
       {
-        id: "cred_synthetic",
-        integrationId: "synthetic",
+        id: "cred_zai",
+        integrationId: "zai",
         active: 1,
         updated: 1,
-        value: { type: "key", key: "synthetic-key" },
+        value: { type: "key", key: "zai-key" },
       },
     ]);
     const databaseBefore = readFileSync(databasePath);
     let rowsDuringRun: unknown;
     let sourceDuringRun: unknown;
-    const provider = synthetic();
+    const provider = zai();
     provider.fetch.mockImplementation(async () => {
-      rowsDuringRun = await readCredentialRows(["synthetic"]);
+      rowsDuringRun = await readCredentialRows(["zai"]);
       sourceDuringRun = getCredentialSourceDiagnostics();
-      return answer({ name: "Synthetic", rows: [percentRow("weekly", "Weekly", 75)] });
+      return answer({ name: "Z.ai", rows: [percentRow("weekly", "Weekly", 75)] });
     });
     mockProviders.push(provider);
 
@@ -298,11 +296,11 @@ describe("runCliShowCommand", () => {
     expect(result.stderr).toBe("");
     expect(rowsDuringRun).toEqual([
       {
-        id: "cred_synthetic",
-        integrationId: "synthetic",
+        id: "cred_zai",
+        integrationId: "zai",
         label: "default",
         active: true,
-        value: { type: "api", key: "synthetic-key" },
+        value: { type: "api", key: "zai-key" },
       },
     ]);
     expect(sourceDuringRun).toMatchObject({ state: "bound", kind: "sqlite" });
@@ -371,19 +369,19 @@ describe("runCliShowCommand", () => {
   });
 
   it("--json prints the saved quota as JSON and passes --threshold on", async () => {
-    const provider = synthetic();
+    const provider = zai();
     mockProviders.push(provider);
 
     const json = await run("show", ["--json"]);
     expect(json.code).toBe(0);
-    expect(JSON.parse(json.stdout).providers.synthetic.status).toBe("unavailable");
+    expect(JSON.parse(json.stdout).providers.zai.status).toBe("unavailable");
     // Nothing saved yet, so no provider is ok.
     expect((await run("show", ["--json", "--threshold", "10"])).code).toBe(2);
     expect(provider.fetch).not.toHaveBeenCalled();
   });
 
   it("--json outputs the quota OpenCode saved last", async () => {
-    const provider = synthetic();
+    const provider = zai();
     mockProviders.push(provider);
 
     // OpenCode's store checks the providers and saves the snapshot.
@@ -410,18 +408,18 @@ describe("runCliShowCommand", () => {
     expect(parsed).toHaveProperty("exportedAt");
     expect(parsed).toHaveProperty("fromCache", true);
     expect(parsed).toHaveProperty("cacheAgeSeconds");
-    expect(parsed.providers.synthetic.status).toBe("ok");
-    expect(parsed.providers.synthetic.entries[0].name).toBe("Synthetic Weekly");
-    expect(parsed.providers.synthetic.entries[0].percentRemaining).toBe(75);
-    expect(parsed.providers.synthetic.entries[0].renderType).toBe("percent");
-    expect(parsed.providers.synthetic.entries[0]).not.toHaveProperty("unlimited");
+    expect(parsed.providers.zai.status).toBe("ok");
+    expect(parsed.providers.zai.entries[0].name).toBe("Z.ai Weekly");
+    expect(parsed.providers.zai.entries[0].percentRemaining).toBe(75);
+    expect(parsed.providers.zai.entries[0].renderType).toBe("percent");
+    expect(parsed.providers.zai.entries[0]).not.toHaveProperty("unlimited");
     expect(provider.fetch).toHaveBeenCalledTimes(1); // only OpenCode's store asked it
   });
 });
 
 describe("runCliStatusCommand", () => {
   it("prints the text report, or JSON with --json", async () => {
-    mockProviders.push(synthetic());
+    mockProviders.push(zai());
 
     const text = await run("status", []);
     expect(text.code).toBe(0);
@@ -433,10 +431,10 @@ describe("runCliStatusCommand", () => {
   });
 
   it.each([
-    [["--provider", "synthetic"], "synthetic"],
+    [["--provider", "zai"], "zai"],
     [["--provider", "  CLAUDE  "], "anthropic"],
   ])("%j filters the report to %s", async (argv, providerFilterId) => {
-    mockProviders.push(synthetic());
+    mockProviders.push(zai());
     const result = await run("status", argv);
 
     expect(result.code).toBe(0);
@@ -447,12 +445,12 @@ describe("runCliStatusCommand", () => {
   });
 
   it("--provider --json forwards the provider filter and still emits JSON", async () => {
-    mockProviders.push(synthetic());
-    const result = await run("status", ["--json", "--provider", "synthetic"]);
+    mockProviders.push(zai());
+    const result = await run("status", ["--json", "--provider", "zai"]);
 
     expect(result.code).toBe(0);
     expect(buildStatusReportData).toHaveBeenCalledWith(
-      expect.objectContaining({ providerFilterId: "synthetic" }),
+      expect.objectContaining({ providerFilterId: "zai" }),
     );
     const parsed = JSON.parse(result.stdout);
     expect(parsed.providers).toHaveLength(1);
@@ -461,7 +459,7 @@ describe("runCliStatusCommand", () => {
 
   it("builds the report with the database login source bound and unbinds it afterwards", async () => {
     let sourceDuringRun: unknown;
-    const provider = synthetic();
+    const provider = zai();
     provider.fetch.mockImplementation(async () => {
       sourceDuringRun = getCredentialSourceDiagnostics();
       return answer();

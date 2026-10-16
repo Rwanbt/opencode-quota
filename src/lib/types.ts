@@ -353,30 +353,6 @@ export type CopilotResult =
   | null;
 export type GeminiCliResult = GeminiCliQuotaResult | QuotaError | null;
 export type ZaiResult = ZaiQuotaResult | QuotaError | null;
-export type ChutesResult =
-  | {
-      success: true;
-      percentRemaining: number;
-      resetTimeIso?: string;
-    }
-  | QuotaError
-  | null;
-export interface SyntheticQuotaWindow {
-  limit: number;
-  used: number;
-  percentRemaining: number;
-  resetTimeIso?: string;
-}
-export type SyntheticResult =
-  | {
-      success: true;
-      windows: {
-        fiveHour: SyntheticQuotaWindow;
-        weekly: SyntheticQuotaWindow;
-      };
-    }
-  | QuotaError
-  | null;
 
 /** Session or weekly limit of a legacy plan from the Ollama Cloud balance API */
 export interface OllamaCloudWindow {

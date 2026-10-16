@@ -19,18 +19,14 @@ Most providers work automatically. `Automatic` means OpenCode Quota reuses the l
 | Provider           | Auth/setup                             | Data from          | Reports            |
 | ------------------ | -------------------------------------- | ------------------ | ------------------ |
 | Anthropic (Claude) | [Needs setup](#anthropic-claude)       | Local CLI/OAuth    | Quota              |
-| Chutes AI          | Automatic                              | Remote API         | Quota              |
 | Cursor             | [Needs setup](#cursor)                 | Local estimate     | Budget and spend   |
 | GitHub Copilot     | Automatic                              | Remote API         | Budget and usage   |
 | Google AGY         | [Needs setup](#google-agy-quick-setup) | Remote API         | Quota              |
-| Kilo Gateway       | Automatic                              | Remote API         | Quota and balance  |
-| NanoGPT            | Automatic                              | Remote API         | Quota and balance  |
 | Ollama Cloud       | Automatic                              | Remote API         | Quota and balance  |
 | OpenAI             | Automatic                              | Remote API         | Quota              |
 | OpenCode Go        | Automatic                              | Remote API         | Quota              |
 | OpenCode Zen       | Automatic                              | Remote API         | Budget and balance |
 | OpenRouter         | Automatic                              | Remote API         | Budget and spend   |
-| Synthetic          | Automatic                              | Remote API         | Quota              |
 | xAI                | Automatic                              | Remote API         | Quota              |
 
 </details>
@@ -41,16 +37,13 @@ Most providers work automatically. `Automatic` means OpenCode Quota reuses the l
 | Provider                | Auth/setup                             | Data from          | Reports            |
 | ----------------------- | -------------------------------------- | ------------------ | ------------------ |
 | Anthropic (Claude)      | [Needs setup](#anthropic-claude)       | Local CLI/OAuth    | Quota              |
-| Chutes AI               | Automatic                              | Remote API         | Quota              |
 | Cursor                  | [Needs setup](#cursor)                 | Local estimate     | Budget and spend   |
 | Gemini CLI              | [Needs setup](#gemini-cli)             | Remote API         | Quota              |
 | GitHub Copilot          | [Needs setup](#github-copilot)         | Remote API         | Budget and usage   |
 | Google AGY              | [Needs setup](#google-agy-quick-setup) | Remote API         | Quota              |
-| NanoGPT                 | Automatic                              | Remote API         | Quota and balance  |
 | OpenAI                  | Automatic                              | Remote API         | Quota              |
 | OpenCode Zen            | Automatic                              | Remote API         | Budget and balance |
 | OpenRouter              | Automatic                              | Remote API         | Budget and spend   |
-| Synthetic               | Automatic                              | Remote API         | Quota              |
 | xAI                     | Automatic                              | Remote API         | Quota              |
 
 These tables show which plans a vendor sells. Except for Copilot organization/enterprise billing, each integration reports one signed-in account, seat, API key, or workspace.
@@ -95,11 +88,13 @@ These show only your own member API key's usage, not the whole organization's.
 ### How rows are shown
 
 - `Quota` covers quota and rate-limit windows; both export as `quota`.
-- OpenCode Zen, NanoGPT, Xiaomi MiMo, Kilo Gateway, DeepSeek, and Cursor keep quota, rate limit, budget, usage, spend, credits, and balance as separate rows. A balance is not remaining allowance, and spend is not a budget percentage.
+- OpenCode Zen, Xiaomi MiMo, DeepSeek, and Cursor keep quota, rate limit, budget, usage, spend, credits, and balance as separate rows. A balance is not remaining allowance, and spend is not a budget percentage.
 - Money shows USD with a `$` prefix, such as `$12.50`, and other currencies with an uppercase currency code after the amount, such as `8.25 CNY`. OpenCode Quota never converts, combines, or picks a preferred currency.
 - `words.detail: "detailed"` adds supplementary balance, status, and spend rows. See [All settings](configuration.md#all-settings).
 
 ## Custom providers
+
+Providers OpenCode Quota doesn't include (for example Chutes AI, NanoGPT, Synthetic, Kilo Gateway) can be added as a custom provider: ask your agent with the prompt below.
 
 Custom providers can report quota, rate limit, usage, spend, budget, balance, or status. Ask your agent to add a custom provider: paste this into OpenCode and replace `<provider>`:
 
@@ -283,17 +278,13 @@ These providers read an API key from, in order: an environment variable, then tr
 | Provider                | Environment variables (first match wins)              | Notes |
 | ----------------------- | ----------------------------------------------------- | ----- |
 | Alibaba Coding Plan     | `ALIBABA_CODING_PLAN_API_KEY`, `ALIBABA_API_KEY`       | |
-| Chutes AI               | `CHUTES_API_KEY`                                       | |
 | DeepSeek                | `DEEPSEEK_API_KEY`                                     | See [DeepSeek](#deepseek). |
-| Kilo Gateway            | `KILO_API_KEY`                                         | See [Kilo Gateway](#kilo-gateway). |
 | Kimi Code / Kimi Code (CN) | See [Kimi Code](#kimi-code)                         | Each region has its own keys. |
 | MiniMax Token Plan      | `MINIMAX_CODING_PLAN_API_KEY`, `MINIMAX_API_KEY`       | International endpoint. Runtime/config ids like `minimax` and `minimax-coding-plan` use this provider. |
 | MiniMax Token Plan (CN) | `MINIMAX_CHINA_CODING_PLAN_API_KEY`                    | Config under `minimax-china-coding-plan`, `minimax-cn-coding-plan`, `minimax-cn`, or `minimax-china`. Runtime id `minimax-cn-coding-plan` uses this provider. |
-| NanoGPT                 | `NANOGPT_API_KEY`, `NANO_GPT_API_KEY`                  | |
 | Ollama Cloud            | `OLLAMA_API_KEY`                                       | See [Ollama Cloud](#ollama-cloud). |
 | OpenCode Go             | `OPENCODE_API_KEY`                                     | Has its own order; see [OpenCode Go](#opencode-go). |
 | OpenRouter              | `OPENROUTER_API_KEY`                                   | See [OpenRouter](#openrouter). |
-| Synthetic               | `SYNTHETIC_API_KEY`                                    | |
 | Z.ai Coding Plan        | `ZAI_API_KEY`, `ZAI_CODING_PLAN_API_KEY`               | A malformed fallback login shows as an auth error. |
 | Zhipu Coding Plan       | `ZHIPU_API_KEY`, `ZHIPU_CODING_PLAN_API_KEY`           | A malformed fallback login shows as an auth error. |
 
@@ -476,27 +467,6 @@ Shows your on-demand account balance from `GET https://api.deepseek.com/user/bal
 - With no valid total balance, it shows the API's availability status. A malformed number becomes a partial-data issue, not zero.
 - Key: `DEEPSEEK_API_KEY`, or `provider.deepseek.options.apiKey` in trusted user/global config (for example `"{env:DEEPSEEK_API_KEY}"`). See [API keys](#api-keys).
 - Remove `deepseek` from `providers.off` if it is switched off.
-
-<a id="nanogpt"></a>
-
-### NanoGPT
-
-- **Daily quota** and **Monthly quota** percentages, with used, limit, and remaining requests when available.
-- The balance is its own row: USD when available, otherwise a valid NANO balance. USD and NANO are never combined.
-- Subscription and balance requests work independently, so one failing leaves the other rows visible with a partial-data issue.
-
-<a id="kilo-gateway"></a>
-
-### Kilo Gateway
-
-Create an API key in your Kilo personal profile, then set `KILO_API_KEY` (or use trusted user/global `provider.kilo.options.apiKey`, or a `kilo` API-key login saved in OpenCode 2). The provider id is `kilo`; remove `kilo` from `providers.off` if it is switched off.
-
-It checks the `kiloPass.getState` endpoint first, then shows:
-
-- **Active Kilo Pass with credits:** one **Credits** percentage with used, limit, and remaining USD, plus the reset when available.
-- **Active pass with zero credits:** one **Remaining credits** USD value, with the reset.
-- **No active pass:** one **Total balance** USD row, with no invented usage, percentage, or reset.
-- Base, usage, bonus, remaining, overage, and reset source values stay in `/quota_status`.
 
 <a id="kimi-code"></a>
 

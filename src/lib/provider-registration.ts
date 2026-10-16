@@ -33,12 +33,6 @@ export const QUOTA_PROVIDER_REGISTRATION_SOURCE = [
     synonyms: [],
   },
   {
-    id: "kilo",
-    label: "Kilo Gateway",
-    runtimeIds: ["kilo"],
-    synonyms: [],
-  },
-  {
     id: "cursor",
     label: "Cursor",
     runtimeIds: ["cursor", "cursor-acp"],
@@ -56,18 +50,6 @@ export const QUOTA_PROVIDER_REGISTRATION_SOURCE = [
     id: "alibaba-token-plan",
     label: "Alibaba Personal Token Plan",
     runtimeIds: ["alibaba-token-plan"],
-    synonyms: [],
-  },
-  {
-    id: "synthetic",
-    label: "Synthetic",
-    runtimeIds: ["synthetic"],
-    synonyms: [],
-  },
-  {
-    id: "chutes",
-    label: "Chutes",
-    runtimeIds: ["chutes", "chutes-ai"],
     synonyms: [],
   },
   {
@@ -93,12 +75,6 @@ export const QUOTA_PROVIDER_REGISTRATION_SOURCE = [
     label: "Zhipu",
     runtimeIds: ["zhipu", "glm-coding-plan", "zhipu-coding-plan", "zhipuai-coding-plan"],
     synonyms: ["glm-coding-plan", "zhipu-coding-plan", "zhipuai-coding-plan"],
-  },
-  {
-    id: "nanogpt",
-    label: "NanoGPT",
-    runtimeIds: ["nanogpt", "nano-gpt"],
-    synonyms: ["nano-gpt"],
   },
   {
     id: "minimax-coding-plan",

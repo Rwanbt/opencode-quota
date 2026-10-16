@@ -107,7 +107,7 @@ describe("loadSettings", () => {
 {
   "version": 6,
   /* words */ "words": { "percent": "used", "reset": "short", },
-  "providers": { "checking": { "requestTimeoutMs": 9000 }, "off": ["nano-gpt", "quota-providers"], "cursor": { "includedApiUsd": 20 } },
+  "providers": { "checking": { "requestTimeoutMs": 9000 }, "off": ["claude", "quota-providers"], "cursor": { "includedApiUsd": 20 } },
 }
 `);
 
@@ -115,7 +115,7 @@ describe("loadSettings", () => {
 
     expect(loaded.issues).toEqual([]);
     expect(loaded.settings.words).toMatchObject({ percent: "used", reset: "short" });
-    expect(loaded.settings.providers.off).toEqual(["nanogpt", "custom"]);
+    expect(loaded.settings.providers.off).toEqual(["anthropic", "custom"]);
     expect(loaded.settings.providers.cursor.includedApiUsd).toBe(20);
     // A key the file does not set has its default.
     expect(loaded.settings.toast.layout).toBe("grouped");
@@ -177,6 +177,38 @@ describe("loadSettings", () => {
 
     expect(loaded.settings.providers.off).toEqual(["copilot"]);
     expect(loaded.issues[0]?.message).toMatch(/^unknown provider id\(s\): nope; valid: .*copilot/);
+  });
+
+  // Built-in providers of 4.x and 5.x that this version does not have.
+  it.each([
+    "chutes",
+    "kilo",
+    "nanogpt",
+    "nano-gpt",
+    "synthetic",
+  ])("loads and saves settings naming the former provider %s without an issue", async (id) => {
+    const row = `${id}.daily`;
+    writeSettings(
+      JSON.stringify({
+        providers: { off: [id, "copilot"] },
+        sidebar: {
+          hidden: [row],
+          providerOrder: [id, "copilot"],
+          rowOrder: { [id]: [row] },
+          names: { [row]: "Mine" },
+        },
+        collapsed: { window: { [id]: "day" } },
+      }),
+    );
+
+    const loaded = await loadSettings();
+    const saved = await saveSettings({ providers: { off: [id, "openai"] } });
+
+    expect(loaded.issues).toEqual([]);
+    expect(loaded.settings.providers.off).toEqual(["copilot"]);
+    expect(loaded.settings.sidebar.names).toEqual({ [row]: "Mine" });
+    expect(saved).toMatchObject({ ok: true, issues: [] });
+    expect((await loadSettings()).settings.providers.off).toEqual(["openai"]);
   });
 
   it("reports unknown keys with the valid ones, and a group that is not an object", async () => {

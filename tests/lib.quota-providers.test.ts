@@ -171,6 +171,20 @@ describe("quotaProviders schema", () => {
     }
   });
 
+  // Built-in providers of 4.x and 5.x that this version does not have.
+  it.each([
+    "chutes",
+    "kilo",
+    "nanogpt",
+    "nano-gpt",
+    "synthetic",
+  ])("accepts a custom provider with the id %s", (id) => {
+    const accepted = validateQuotaProviders([quotaProvider({ id })]);
+
+    expect(accepted.issues).toEqual([]);
+    expect(accepted.value?.[0]).toMatchObject({ id, providerId: id });
+  });
+
   it("trims printable Unicode labels and permits duplicates", () => {
     const accepted = validateQuotaProviders([
       quotaProvider({ id: "one", label: "  Café 🚀  " }),
