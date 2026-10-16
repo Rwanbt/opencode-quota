@@ -437,14 +437,17 @@ async function refresh(force: boolean): Promise<RefreshResult> {
 
 /**
  * Starts a models.dev download when the list is due for one (see `refresh`) and waits for it at
- * most 0.75 s; a slower download goes on in the background.
+ * most 0.75 s; a slower download goes on in the background. The wait's timer ends with the wait,
+ * so it never keeps the process running.
  */
 export async function refreshPricesIfDue(): Promise<void> {
   const refreshed = refreshOnce(false).catch(() => undefined);
-  await Promise.race([
-    refreshed,
-    new Promise<void>((resolve) => setTimeout(resolve, REFRESH_WAIT_MS)),
-  ]);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const waited = new Promise<void>((resolve) => {
+    timer = setTimeout(resolve, REFRESH_WAIT_MS);
+  });
+  await Promise.race([refreshed, waited]);
+  clearTimeout(timer);
 }
 
 /**

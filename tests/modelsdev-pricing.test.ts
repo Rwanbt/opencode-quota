@@ -170,6 +170,8 @@ describe("refreshPricesIfDue", () => {
       refreshState: null,
     });
     expect(fetch).toHaveBeenCalledTimes(due ? 1 : 0);
+    // No timer is left to keep a CLI run going once the check is over.
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it("never downloads with the settings on the shipped list", async () => {
