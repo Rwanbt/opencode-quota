@@ -12,7 +12,7 @@
       "!!dist",
       "!!node_modules",
       "!!package-artifacts",
-      "!!references/upstream-plugins",
+      "!!scripts/upstream-plugins",
       "!!src/data/modelsdev-pricing.min.json"
     ]
   },
@@ -43,7 +43,7 @@
       "includes": [
         "tests/**/*.test.ts",
         "tests/fixtures/**/*.ts",
-        "contributing/provider-template/**/*.test.ts",
+        ".github/provider-template/**/*.test.ts",
         "vitest.config.ts"
       ],
       "linter": {

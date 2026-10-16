@@ -24,9 +24,7 @@ opencode.json
 tui.json
 
 # Local scratch & AI Slop
-references/*
-!references/upstream-plugins/
-!references/upstream-plugins/**
+/references/
 .git.backup-*/
 docs/*
 !docs/readme/

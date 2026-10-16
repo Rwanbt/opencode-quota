@@ -35,7 +35,7 @@ const V5_SURFACES = [
 
 describe("contribution guidance", () => {
   const prTemplate = read(".github/pull_request_template.md");
-  const contributing = read("CONTRIBUTING.md");
+  const contributing = read(".github/CONTRIBUTING.md");
 
   it("places Before-and-after evidence after OpenCode Validation and before Quality Checklist", () => {
     const openCodeValidation = headingIndex(prTemplate, "OpenCode Validation");

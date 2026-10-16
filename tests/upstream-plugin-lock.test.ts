@@ -19,21 +19,21 @@ vi.mock("../scripts/lib/upstream-plugin-paths.mjs", () => ({
     return testState.repoRoot;
   },
   get upstreamPluginReferenceRoot() {
-    return `${testState.repoRoot}/references/upstream-plugins`;
+    return `${testState.repoRoot}/scripts/upstream-plugins`;
   },
   get upstreamPluginLockPath() {
-    return `${testState.repoRoot}/references/upstream-plugins/lock.json`;
+    return `${testState.repoRoot}/scripts/upstream-plugins/lock.json`;
   },
 }));
 
 describe("upstream-plugin-lock", () => {
   beforeEach(async () => {
     testState.repoRoot = await mkdtemp(path.join(os.tmpdir(), "opencode-quota-lock-test-"));
-    await mkdir(path.join(testState.repoRoot, "references", "upstream-plugins"), {
+    await mkdir(path.join(testState.repoRoot, "scripts", "upstream-plugins"), {
       recursive: true,
     });
     await writeFile(
-      path.join(testState.repoRoot, "references", "upstream-plugins", "lock.json"),
+      path.join(testState.repoRoot, "scripts", "upstream-plugins", "lock.json"),
       `${JSON.stringify(
         {
           plugins: {
@@ -41,7 +41,7 @@ describe("upstream-plugin-lock", () => {
               npmUrl: "https://www.npmjs.com/package/opencode-gemini-auth/v/1.0.0",
               packageName: "opencode-gemini-auth",
               publishedAt: "2026-03-01T00:00:00.000Z",
-              referenceDir: "references/upstream-plugins/opencode-gemini-auth",
+              referenceDir: "scripts/upstream-plugins/opencode-gemini-auth",
               repo: "jenslys/opencode-gemini-auth",
               version: "1.0.0",
             },
@@ -60,12 +60,12 @@ describe("upstream-plugin-lock", () => {
   });
 
   it("reads the committed lock when synchronized metadata remains uncommitted", async () => {
-    const lockPath = path.join(testState.repoRoot, "references", "upstream-plugins", "lock.json");
+    const lockPath = path.join(testState.repoRoot, "scripts", "upstream-plugins", "lock.json");
     const previousEntry = {
       npmUrl: "https://www.npmjs.com/package/%40old-scope/cursor-opencode-provider/v/0.4.3",
       packageName: "@old-scope/cursor-opencode-provider",
       publishedAt: "2026-04-08T14:04:58.057Z",
-      referenceDir: "references/upstream-plugins/cursor-opencode-provider",
+      referenceDir: "scripts/upstream-plugins/cursor-opencode-provider",
       repo: "old-owner/cursor-opencode-provider",
       version: "0.4.3",
     };
@@ -75,7 +75,7 @@ describe("upstream-plugin-lock", () => {
       "utf8",
     );
     await execFileAsync("git", ["init"], { cwd: testState.repoRoot, env: isolatedGitEnv() });
-    await execFileAsync("git", ["add", "references/upstream-plugins/lock.json"], {
+    await execFileAsync("git", ["add", "scripts/upstream-plugins/lock.json"], {
       cwd: testState.repoRoot,
       env: isolatedGitEnv(),
     });
@@ -141,7 +141,7 @@ describe("upstream-plugin-lock", () => {
           npmUrl: "https://www.npmjs.com/package/cursor-opencode-provider/v/2.0.0",
           packageName: "cursor-opencode-provider",
           publishedAt: "2026-03-20T00:00:00.000Z",
-          referenceDir: "references/upstream-plugins/cursor-opencode-provider",
+          referenceDir: "scripts/upstream-plugins/cursor-opencode-provider",
           repo: "oakimov/cursor-opencode-provider",
           version: "2.0.0",
         },
@@ -149,14 +149,14 @@ describe("upstream-plugin-lock", () => {
           npmUrl: "https://www.npmjs.com/package/opencode-gemini-auth/v/2.0.0",
           packageName: "opencode-gemini-auth",
           publishedAt: "2026-03-20T00:00:00.000Z",
-          referenceDir: "references/upstream-plugins/opencode-gemini-auth",
+          referenceDir: "scripts/upstream-plugins/opencode-gemini-auth",
           repo: "jenslys/opencode-gemini-auth",
           version: "2.0.0",
         },
       },
     });
 
-    const lockPath = path.join(testState.repoRoot, "references", "upstream-plugins", "lock.json");
+    const lockPath = path.join(testState.repoRoot, "scripts", "upstream-plugins", "lock.json");
     await expect(readFile(lockPath, "utf8")).resolves.toContain(`"version": "2.0.0"`);
     await expect(readFile(lockPath, "utf8")).resolves.toContain(
       `"packageName": "cursor-opencode-provider"`,
