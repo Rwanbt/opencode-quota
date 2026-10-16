@@ -77,8 +77,12 @@ type GlmReply = { success: true; rows: ProviderRow[] } | QuotaError;
 
 const MCP = { key: "mcp", label: "MCP", window: "mcp" } as const;
 
-/** The percent left: from exact credit values when a credit limit has them, else reported. */
+/**
+ * The percent left: from exact credit values when a credit limit has them, else reported. The
+ * reported one is read first, so a malformed `percentage` fails the reply either way.
+ */
 function percentRemaining(limit: GlmLimit): number {
+  const reported = clampPercent(100 - limit.percentage);
   if (
     limit.type === "CREDIT_LIMIT" &&
     typeof limit.usage === "number" &&
@@ -90,7 +94,7 @@ function percentRemaining(limit: GlmLimit): number {
   ) {
     return clampPercent(((limit.usage - limit.currentValue) / limit.usage) * 100);
   }
-  return clampPercent(100 - limit.percentage);
+  return reported;
 }
 
 /** The 5h, weekly and MCP rows of the reply's limits; a later limit of a window wins. */

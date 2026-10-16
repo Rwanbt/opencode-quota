@@ -118,6 +118,13 @@ describe.each(VENDORS)("$label coding plan", (vendor) => {
       `${vendor.label} API error 500: {"msg":"down"}`,
     ],
     ["limits that are not a list", limitsReply({}), "Invalid quota data"],
+    [
+      "a credit limit whose percentage is no number",
+      limitsReply([
+        { ...credit({ usage: 100, currentValue: 10 }), percentage: { toString: null } },
+      ]),
+      "Cannot convert object to primitive value",
+    ],
   ])("with %s shows no rows and its error", async (_name, reply, error) => {
     const { fetched } = await fetchWithKey(reply);
 
