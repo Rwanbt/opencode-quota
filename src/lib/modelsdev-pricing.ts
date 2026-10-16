@@ -103,7 +103,8 @@ const REFRESH_RESULTS = new Set([
 /** The bound settings, oldest first; the last one still bound is followed. */
 const SETTINGS_BINDINGS: Array<{ current: () => PricingSettings }> = [];
 let LOADED: LoadedList | null = null;
-let REFRESH_IN_FLIGHT: Promise<RefreshResult> | null = null;
+/** The refresh that runs now, and whether it was forced. */
+let REFRESH_IN_FLIGHT: { force: boolean; result: Promise<RefreshResult> } | null = null;
 let PROCESS_REFRESH_CHECKED = false;
 let BUNDLED_IDS: Pick<PriceListDescription, "bundledProviderIds" | "bundledModelIds"> | null = null;
 
@@ -340,12 +341,21 @@ async function fetchModelsDev(state: PricingRefreshStateV1): Promise<ModelsDevFe
   });
 }
 
-/** One refresh at a time: a call while one runs gets that one's result. */
-function refreshOnce(force: boolean): Promise<RefreshResult> {
-  REFRESH_IN_FLIGHT ??= refresh(force).finally(() => {
-    REFRESH_IN_FLIGHT = null;
-  });
-  return REFRESH_IN_FLIGHT;
+/**
+ * One refresh at a time: a call while one runs gets that one's result. A forced call never takes
+ * an automatic one's result: it waits for that one to end, then downloads.
+ */
+async function refreshOnce(force: boolean): Promise<RefreshResult> {
+  while (force && REFRESH_IN_FLIGHT && !REFRESH_IN_FLIGHT.force) {
+    await REFRESH_IN_FLIGHT.result.catch(() => undefined);
+  }
+  REFRESH_IN_FLIGHT ??= {
+    force,
+    result: refresh(force).finally(() => {
+      REFRESH_IN_FLIGHT = null;
+    }),
+  };
+  return REFRESH_IN_FLIGHT.result;
 }
 
 /**

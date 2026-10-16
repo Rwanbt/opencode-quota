@@ -342,4 +342,19 @@ describe("downloadPrices", () => {
       expect((await readDownloaded()).providers.openai["gpt-4o-mini"].input).toBe(0.222);
     }
   });
+
+  it("downloads after an automatic check that runs when asked, not taking its answer", async () => {
+    const { pricing, fetch } = await start({ source: "auto", autoRefreshDays: 7 });
+    fetch.mockResolvedValue(modelsDevReply({ input: 0.222 }));
+
+    const check = pricing.refreshPricesIfDue();
+    await expect(pricing.downloadPrices()).resolves.toEqual({
+      ok: true,
+      message: "Downloaded new prices from models.dev.",
+    });
+    await check;
+
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(pricing.lookupCost("openai", "gpt-4o-mini")?.input).toBe(0.222);
+  });
 });
