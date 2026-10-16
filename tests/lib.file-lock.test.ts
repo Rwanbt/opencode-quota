@@ -125,51 +125,52 @@ const writers: Writer[] = [
 ];
 
 describe("the file lock's fence", () => {
-  it.each(
-    writers,
-  )("$name: a waiter that stalled before taking over an abandoned lock never loses an update", async (writer) => {
-    const file = writer.file();
-    const lock = `${file}.lock`;
-    mkdirSync(dirname(file), { recursive: true });
-    writer.start();
-    steps.targetName = basename(file);
-    // An abandoned lock: no owner named, and old.
-    writeFileSync(lock, "");
-    utimesSync(lock, 0, 0);
+  it.each(writers)(
+    "$name: a waiter that stalled before taking over an abandoned lock never loses an update",
+    async (writer) => {
+      const file = writer.file();
+      const lock = `${file}.lock`;
+      mkdirSync(dirname(file), { recursive: true });
+      writer.start();
+      steps.targetName = basename(file);
+      // An abandoned lock: no owner named, and old.
+      writeFileSync(lock, "");
+      utimesSync(lock, 0, 0);
 
-    // B sees the abandoned lock and stalls right before its takeover rename.
-    const bStalls = steps.pause();
-    steps.beforeTakeover = bStalls;
-    const b = writer.write("b");
-    await bStalls.reached;
+      // B sees the abandoned lock and stalls right before its takeover rename.
+      const bStalls = steps.pause();
+      steps.beforeTakeover = bStalls;
+      const b = writer.write("b");
+      await bStalls.reached;
 
-    // A takes the abandoned lock over itself, enters, reads the file, and stalls before its
-    // commit.
-    const aStalls = steps.pause();
-    steps.beforeTempWrite = aStalls;
-    const a = writer.write("a");
-    await aStalls.reached;
-    expect(readFileSync(lock, "utf8")).toContain(String(process.pid));
+      // A takes the abandoned lock over itself, enters, reads the file, and stalls before its
+      // commit.
+      const aStalls = steps.pause();
+      steps.beforeTempWrite = aStalls;
+      const a = writer.write("a");
+      await aStalls.reached;
+      expect(readFileSync(lock, "utf8")).toContain(String(process.pid));
 
-    // B's stale rename now moves A's live lock. In that gap C enters, writes and leaves.
-    let c: Promise<unknown> | undefined;
-    steps.afterTakeover = async () => {
-      c = writer.write("c");
+      // B's stale rename now moves A's live lock. In that gap C enters, writes and leaves.
+      let c: Promise<unknown> | undefined;
+      steps.afterTakeover = async () => {
+        c = writer.write("c");
+        await c;
+      };
+      bStalls.go();
+      await vi.waitFor(() => expect(c).toBeDefined());
       await c;
-    };
-    bStalls.go();
-    await vi.waitFor(() => expect(c).toBeDefined());
-    await c;
 
-    // A's commit finds its lock gone: it writes nothing and redoes its work after B.
-    aStalls.go();
-    await Promise.all([a, b]);
+      // A's commit finds its lock gone: it writes nothing and redoes its work after B.
+      aStalls.go();
+      await Promise.all([a, b]);
 
-    await expect(writer.written()).resolves.toMatchObject(writer.expected as object);
-    // One commit per writer: A's round that lost its lock committed nothing.
-    expect(steps.commits).toBe(3);
-    expect(existsSync(lock)).toBe(false);
-    const leftovers = readdirSync(dirname(file)).filter((name) => /\.(stale|tmp)-/.test(name));
-    expect(leftovers).toEqual([]);
-  });
+      await expect(writer.written()).resolves.toMatchObject(writer.expected as object);
+      // One commit per writer: A's round that lost its lock committed nothing.
+      expect(steps.commits).toBe(3);
+      expect(existsSync(lock)).toBe(false);
+      const leftovers = readdirSync(dirname(file)).filter((name) => /\.(stale|tmp)-/.test(name));
+      expect(leftovers).toEqual([]);
+    },
+  );
 });

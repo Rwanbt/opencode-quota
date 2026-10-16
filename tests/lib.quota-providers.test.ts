@@ -169,18 +169,15 @@ describe("quotaProviders schema", () => {
   });
 
   // Built-in providers of 4.x and 5.x that this version does not have.
-  it.each([
-    "chutes",
-    "kilo",
-    "nanogpt",
-    "nano-gpt",
-    "synthetic",
-  ])("accepts a custom provider with the id %s", (id) => {
-    const accepted = validateQuotaProviders([quotaProvider({ id })]);
+  it.each(["chutes", "kilo", "nanogpt", "nano-gpt", "synthetic"])(
+    "accepts a custom provider with the id %s",
+    (id) => {
+      const accepted = validateQuotaProviders([quotaProvider({ id })]);
 
-    expect(accepted.issues).toEqual([]);
-    expect(accepted.value?.[0]).toMatchObject({ id, providerId: id });
-  });
+      expect(accepted.issues).toEqual([]);
+      expect(accepted.value?.[0]).toMatchObject({ id, providerId: id });
+    },
+  );
 
   it("trims printable Unicode labels and permits duplicates", () => {
     const accepted = validateQuotaProviders([
@@ -608,27 +605,30 @@ describe("quotaProviders schema", () => {
     ["Cf", "‮"],
     ["Zl", " "],
     ["Zp", " "],
-  ])("rejects Unicode %s characters in every json-v1 static display field", (_category, character) => {
-    const cases = [
-      [usage({ name: `Us${character}age` }), `${M0}.name`],
-      [usage({ label: `Us${character}ed:` }), `${M0}.label`],
-      [usage({ unit: `to${character}kens`, unitPosition: "suffix" }), `${M0}.unit`],
-      [
-        {
-          resultType: "status",
-          name: "Status",
-          metric: { type: "status", value: { literal: `Re${character}ady` } },
-        },
-        `${M0}.metric.value.literal`,
-      ],
-    ] as const;
+  ])(
+    "rejects Unicode %s characters in every json-v1 static display field",
+    (_category, character) => {
+      const cases = [
+        [usage({ name: `Us${character}age` }), `${M0}.name`],
+        [usage({ label: `Us${character}ed:` }), `${M0}.label`],
+        [usage({ unit: `to${character}kens`, unitPosition: "suffix" }), `${M0}.unit`],
+        [
+          {
+            resultType: "status",
+            name: "Status",
+            metric: { type: "status", value: { literal: `Re${character}ady` } },
+          },
+          `${M0}.metric.value.literal`,
+        ],
+      ] as const;
 
-    for (const [mapping, key] of cases) {
-      const result = validateQuotaProviders([jsonV1(mapping)]);
-      expect(result.value).toBeUndefined();
-      expect(result.issues).toContainEqual(expect.objectContaining({ key }));
-    }
-  });
+      for (const [mapping, key] of cases) {
+        const result = validateQuotaProviders([jsonV1(mapping)]);
+        expect(result.value).toBeUndefined();
+        expect(result.issues).toContainEqual(expect.objectContaining({ key }));
+      }
+    },
+  );
 
   it("rejects a provider-prefixed json-v1 entry name above 160 code points", () => {
     const result = validateQuotaProviders([

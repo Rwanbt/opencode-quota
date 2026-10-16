@@ -30,7 +30,7 @@
   ],
   "scripts": {
     "build": "node scripts/clean-dist.mjs && tsc && node scripts/copy-data.mjs && node scripts/prepare-tui-dist.mjs",
-    "check": "vp check --no-fmt",
+    "check": "vp check",
     "format": "vp fmt",
     "lint": "vp lint",
     "pack:release-package": "node scripts/pack-release-package.mjs",

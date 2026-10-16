@@ -223,12 +223,7 @@ function wideNamesReport(): UsageReport {
     providers: [["测试云", 2, 3, 3 * M]],
     models: [
       ["测试云", "模型-超长的名字-专业版-二零二六", 2, 2 * M],
-      [
-        "测试云",
-        "👍🏽👍🏽👍🏽👍🏽👍🏽👍🏽👍🏽👍🏽👍🏽👍🏽👍🏽👍🏽👍🏽👍🏽👍🏽👍🏽👍🏽👍🏽👍🏽👍🏽👍🏽👍🏽",
-        1,
-        1 * M,
-      ],
+      ["测试云", "👍🏽👍🏽👍🏽👍🏽👍🏽👍🏽👍🏽👍🏽👍🏽👍🏽👍🏽👍🏽👍🏽👍🏽👍🏽👍🏽👍🏽👍🏽👍🏽👍🏽👍🏽👍🏽", 1, 1 * M],
     ],
     days: [
       [1, 1 * M],
@@ -388,14 +383,14 @@ describe("usageView", () => {
     { width: 64, beside: false },
     { width: 80, beside: true },
     { width: 160, beside: true },
-  ])("puts the chart beside the total when it gets 32 columns there ($width: $beside)", ({
-    width,
-    beside,
-  }) => {
-    const totalLine = render(t3Report(), { mode: "cost", breakdown: "model", width })[0];
-    expect(totalLine.startsWith("$5,415.41  636 sessions · API estimate")).toBe(true);
-    expect(/Daily cost|Cost per \d+ days/.test(totalLine)).toBe(beside);
-  });
+  ])(
+    "puts the chart beside the total when it gets 32 columns there ($width: $beside)",
+    ({ width, beside }) => {
+      const totalLine = render(t3Report(), { mode: "cost", breakdown: "model", width })[0];
+      expect(totalLine.startsWith("$5,415.41  636 sessions · API estimate")).toBe(true);
+      expect(/Daily cost|Cost per \d+ days/.test(totalLine)).toBe(beside);
+    },
+  );
 
   it.each([
     {
@@ -419,23 +414,26 @@ describe("usageView", () => {
       header: /^Provider +Tokens {2}Share {7}Cost$/,
       anthropic: /^● Anthropic +12\.9B {2}96\.3% {2}\$5,011\.00$/,
     },
-  ])("$mode mode: the total, then the providers as a table, the mode's amount first", (expected) => {
-    const lines = usageView(t3Report(), { mode: expected.mode, breakdown: "model", width: 64 });
-    expect(lines.slice(0, expected.total.length)).toEqual(expected.total);
-    const [header, anthropic] = from(lines, "Provider");
-    expect(textOf(header)).toMatch(expected.header);
-    expect(textOf(anthropic)).toMatch(expected.anthropic);
-    expect(textOf(anthropic)).toHaveLength(textOf(header).length);
-    expect(anthropic.map((part) => part.role)).toEqual([
-      "provider:0",
-      "text",
-      "value",
-      "muted",
-      "text",
-    ]);
-    // Each provider keeps its place in the report as its color slot.
-    expect(from(lines, "OpenCode Zen")[0][0]).toEqual({ text: "● ", role: "provider:3" });
-  });
+  ])(
+    "$mode mode: the total, then the providers as a table, the mode's amount first",
+    (expected) => {
+      const lines = usageView(t3Report(), { mode: expected.mode, breakdown: "model", width: 64 });
+      expect(lines.slice(0, expected.total.length)).toEqual(expected.total);
+      const [header, anthropic] = from(lines, "Provider");
+      expect(textOf(header)).toMatch(expected.header);
+      expect(textOf(anthropic)).toMatch(expected.anthropic);
+      expect(textOf(anthropic)).toHaveLength(textOf(header).length);
+      expect(anthropic.map((part) => part.role)).toEqual([
+        "provider:0",
+        "text",
+        "value",
+        "muted",
+        "text",
+      ]);
+      // Each provider keeps its place in the report as its color slot.
+      expect(from(lines, "OpenCode Zen")[0][0]).toEqual({ text: "● ", role: "provider:3" });
+    },
+  );
 
   it("drops the other amount from a narrow provider table before names get short", () => {
     const header = (width: number) => {
@@ -671,36 +669,34 @@ describe("usageView", () => {
       },
       legend: "━━ Input 4.00M   ━━ Cache read 13.2B   ━━ Cache write 142M   ━━ Output 50.0M",
     },
-  ])("$title: one thin bar across the view in proportion, a space between parts, then a legend", ({
-    mode,
-    title,
-    parts,
-    legend,
-  }) => {
-    const lines = t3From(title, { mode, width: 110 });
-    const bar = lines[1];
-    expect(textOf(bar)).toHaveLength(110);
-    const shown = bar.filter((part) => part.role !== "muted");
-    expect(shown.map((part) => part.role)).toEqual(Object.keys(parts));
-    expect(bar.filter((part) => part.role === "muted").map((part) => part.text)).toEqual([
-      " ",
-      " ",
-      " ",
-    ]);
-    const total = Object.values(parts).reduce((sum, amount) => sum + amount, 0);
-    for (const part of shown) {
-      expect(part.text).toMatch(/^━+$/u);
-      const exact = (parts[part.role as keyof typeof parts] / total) * 107;
-      // A part above 0 always shows, even when it would round to nothing: the widest part
-      // gives up a cell for each such part.
-      const givenUp = shown.length - 1;
-      expect(part.text.length).toBeGreaterThanOrEqual(Math.max(1, Math.floor(exact) - givenUp));
-      expect(part.text.length).toBeLessThanOrEqual(Math.ceil(exact) + 1);
-    }
-    expect(textOf(lines[2])).toBe(legend);
-    expect(lines[3]).toEqual([]);
-    expect(lines[2][0]).toEqual({ text: "━━", role: "part:input" });
-  });
+  ])(
+    "$title: one thin bar across the view in proportion, a space between parts, then a legend",
+    ({ mode, title, parts, legend }) => {
+      const lines = t3From(title, { mode, width: 110 });
+      const bar = lines[1];
+      expect(textOf(bar)).toHaveLength(110);
+      const shown = bar.filter((part) => part.role !== "muted");
+      expect(shown.map((part) => part.role)).toEqual(Object.keys(parts));
+      expect(bar.filter((part) => part.role === "muted").map((part) => part.text)).toEqual([
+        " ",
+        " ",
+        " ",
+      ]);
+      const total = Object.values(parts).reduce((sum, amount) => sum + amount, 0);
+      for (const part of shown) {
+        expect(part.text).toMatch(/^━+$/u);
+        const exact = (parts[part.role as keyof typeof parts] / total) * 107;
+        // A part above 0 always shows, even when it would round to nothing: the widest part
+        // gives up a cell for each such part.
+        const givenUp = shown.length - 1;
+        expect(part.text.length).toBeGreaterThanOrEqual(Math.max(1, Math.floor(exact) - givenUp));
+        expect(part.text.length).toBeLessThanOrEqual(Math.ceil(exact) + 1);
+      }
+      expect(textOf(lines[2])).toBe(legend);
+      expect(lines[3]).toEqual([]);
+      expect(lines[2][0]).toEqual({ text: "━━", role: "part:input" });
+    },
+  );
 
   it.each([
     {
@@ -728,17 +724,16 @@ describe("usageView", () => {
       header: /^ # {2}Day +Cost {2}Share {2}Tokens$/,
       rows: [/^ 1 {2}Sat, Oct 10 {2}━+ +\$903\.35 {2}16\.7% {3}2\.48B$/u, /^ 2 {2}Fri, Oct 9 /],
     },
-  ])("breakdown, $name: a bar of each amount, right-aligned numbers, the mode's amount first", ({
-    options,
-    header,
-    rows,
-  }) => {
-    const lines = t3Section("Breakdown", options);
-    const texts = lines.map(textOf);
-    expect(texts[1]).toMatch(header);
-    for (const [index, row] of rows.entries()) expect(texts[index + 2]).toMatch(row);
-    for (const text of texts.slice(1)) expect(text).toHaveLength(80);
-  });
+  ])(
+    "breakdown, $name: a bar of each amount, right-aligned numbers, the mode's amount first",
+    ({ options, header, rows }) => {
+      const lines = t3Section("Breakdown", options);
+      const texts = lines.map(textOf);
+      expect(texts[1]).toMatch(header);
+      for (const [index, row] of rows.entries()) expect(texts[index + 2]).toMatch(row);
+      for (const text of texts.slice(1)) expect(text).toHaveLength(80);
+    },
+  );
 
   it("breakdown bars: the biggest amount's bar is full, the others in proportion", () => {
     const lines = t3Section("Breakdown").slice(2);
@@ -863,21 +858,20 @@ describe("usageView", () => {
     { width: 46, cache: true, sonnet: "claude-…" },
     { width: 45, cache: false, sonnet: "claude-sonnet-5" },
     { width: 40, cache: false, sonnet: "claude-son…" },
-  ])("drops the Cache column before names get shorter than 8 columns, and before Cost, Share and Tokens: $width", ({
-    width,
-    cache,
-    sonnet,
-  }) => {
-    const lines = section(
-      usageView(cacheReport(), { mode: "cost", breakdown: "model", width }),
-      "Breakdown",
-    ).map(textOf);
-    expect(lines[1]).toMatch(
-      cache ? /Cost {2}Share {2}Tokens {2}Cache {4}$/ : /Share {2}Tokens {2}$/,
-    );
-    expect(lines[3]).toContain(` ${sonnet} `);
-    for (const line of lines) expect(columnsIn(line)).toBeLessThanOrEqual(width);
-  });
+  ])(
+    "drops the Cache column before names get shorter than 8 columns, and before Cost, Share and Tokens: $width",
+    ({ width, cache, sonnet }) => {
+      const lines = section(
+        usageView(cacheReport(), { mode: "cost", breakdown: "model", width }),
+        "Breakdown",
+      ).map(textOf);
+      expect(lines[1]).toMatch(
+        cache ? /Cost {2}Share {2}Tokens {2}Cache {4}$/ : /Share {2}Tokens {2}$/,
+      );
+      expect(lines[3]).toContain(` ${sonnet} `);
+      for (const line of lines) expect(columnsIn(line)).toBeLessThanOrEqual(width);
+    },
+  );
 
   it("says so in one line when the range has no usage", () => {
     expect(usageView(EMPTY_REPORT, { mode: "cost", breakdown: "model", width: 80 })).toEqual([
@@ -1039,22 +1033,22 @@ describe("modelDetailView", () => {
 });
 
 describe("breakdownModels", () => {
-  it.each([
-    "cost",
-    "tokens",
-  ] as const)("names the last lines of the %s model breakdown, in order", (mode) => {
-    const report = t3Report();
-    const models = breakdownModels(report, mode);
-    const lines = usageView(report, { mode, breakdown: "model", width: 80 });
+  it.each(["cost", "tokens"] as const)(
+    "names the last lines of the %s model breakdown, in order",
+    (mode) => {
+      const report = t3Report();
+      const models = breakdownModels(report, mode);
+      const lines = usageView(report, { mode, breakdown: "model", width: 80 });
 
-    const header = lines.findIndex((line) => /^# {2}Model/.test(textOf(line)));
-    const rows = lines.slice(header + 1, header + 1 + models.length);
-    expect(lines[header + 1 + models.length]).toEqual([]);
-    for (const [index, row] of rows.entries()) {
-      const model = models[index];
-      const provider = report.providers.findIndex((item) => item.providerID === model.providerID);
-      expect(textOf(row)).toContain(model.modelID);
-      expect(row).toContainEqual({ text: "● ", role: `provider:${provider}` });
-    }
-  });
+      const header = lines.findIndex((line) => /^# {2}Model/.test(textOf(line)));
+      const rows = lines.slice(header + 1, header + 1 + models.length);
+      expect(lines[header + 1 + models.length]).toEqual([]);
+      for (const [index, row] of rows.entries()) {
+        const model = models[index];
+        const provider = report.providers.findIndex((item) => item.providerID === model.providerID);
+        expect(textOf(row)).toContain(model.modelID);
+        expect(row).toContainEqual({ text: "● ", role: `provider:${provider}` });
+      }
+    },
+  );
 });

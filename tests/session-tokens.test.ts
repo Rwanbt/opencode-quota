@@ -80,13 +80,16 @@ describe("fetchSessionTokensForDisplay", () => {
         ],
       },
     },
-  ] as const)("sums new and cached input apart, and each model's input, for the $scope scope", async (item) => {
-    writeHistory();
+  ] as const)(
+    "sums new and cached input apart, and each model's input, for the $scope scope",
+    async (item) => {
+      writeHistory();
 
-    await expect(
-      fetchSessionTokensForDisplay({ sessionID: "ses_root", scope: item.scope }),
-    ).resolves.toEqual({ sessionTokens: item.sessionTokens });
-  });
+      await expect(
+        fetchSessionTokensForDisplay({ sessionID: "ses_root", scope: item.scope }),
+      ).resolves.toEqual({ sessionTokens: item.sessionTokens });
+    },
+  );
 
   it("has no tokens without a session, for an unknown session, or without a database", async () => {
     await expect(

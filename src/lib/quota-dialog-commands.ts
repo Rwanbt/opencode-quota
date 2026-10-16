@@ -225,15 +225,13 @@ async function checkKnownProviders(
 
   const setupSnapshots = checks
     .filter((check) => !check.available && turnedOn(check.provider.id))
-    .map(
-      async ({ provider }): Promise<ProviderSnapshot> => ({
-        providerId: provider.id,
-        label: getQuotaProviderDisplayLabel(provider.id),
-        rows: [],
-        refreshing: false,
-        debug: await localSetupDetails(provider.id, ctx),
-      }),
-    );
+    .map(async ({ provider }): Promise<ProviderSnapshot> => ({
+      providerId: provider.id,
+      label: getQuotaProviderDisplayLabel(provider.id),
+      rows: [],
+      refreshing: false,
+      debug: await localSetupDetails(provider.id, ctx),
+    }));
   const store = createQuotaStore({ source: async () => source, file: null });
   try {
     const knownIds = new Set(known.map((provider) => provider.id));

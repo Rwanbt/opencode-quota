@@ -308,13 +308,13 @@ describe("convertV5, which v5 files", () => {
     expect(existsSync(settingsPath())).toBe(false);
   });
 
-  it.each([
-    undefined,
-    "auto",
-  ])("converts a missing or auto v5 provider choice to no exclusions: %s", async (enabledProviders) => {
-    writeV5(enabledProviders === undefined ? {} : { enabledProviders });
-    expect((await convertV5())?.settings.providers.off).toEqual([]);
-  });
+  it.each([undefined, "auto"])(
+    "converts a missing or auto v5 provider choice to no exclusions: %s",
+    async (enabledProviders) => {
+      writeV5(enabledProviders === undefined ? {} : { enabledProviders });
+      expect((await convertV5())?.settings.providers.off).toEqual([]);
+    },
+  );
 
   it("switches off every provider for a v5 list with only unknown ids", async () => {
     writeV5({ enabledProviders: ["unknown-provider"] });

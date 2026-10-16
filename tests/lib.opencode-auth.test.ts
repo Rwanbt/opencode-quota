@@ -126,16 +126,19 @@ describe("formatCredentialDisplayNames", () => {
     // A provider with only one login marks none of them, active or not.
     ["OpenAI", "OpenAI (Pro)", "Work", true, "[OpenAI Work] (Pro)"],
     ["OpenAI", "OpenAI (Pro)", "Work", false, "[OpenAI Work] (Pro)"],
-  ])("formats %s credential aliases as %s", (providerName, fallbackName, label, active, expected) => {
-    expect(
-      formatCredentialDisplayNames(providerName, [
-        {
-          row: { id: "credential", integrationId: providerName, label, active, value: {} },
-          fallbackName,
-        },
-      ]),
-    ).toEqual([expected]);
-  });
+  ])(
+    "formats %s credential aliases as %s",
+    (providerName, fallbackName, label, active, expected) => {
+      expect(
+        formatCredentialDisplayNames(providerName, [
+          {
+            row: { id: "credential", integrationId: providerName, label, active, value: {} },
+            fallbackName,
+          },
+        ]),
+      ).toEqual([expected]);
+    },
+  );
 
   it.each([
     {

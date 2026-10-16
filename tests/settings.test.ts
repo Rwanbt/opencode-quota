@@ -180,36 +180,33 @@ describe("loadSettings", () => {
   });
 
   // Built-in providers of 4.x and 5.x that this version does not have.
-  it.each([
-    "chutes",
-    "kilo",
-    "nanogpt",
-    "nano-gpt",
-    "synthetic",
-  ])("loads and saves settings naming the former provider %s without an issue", async (id) => {
-    const row = `${id}.daily`;
-    writeSettings(
-      JSON.stringify({
-        providers: { off: [id, "copilot"] },
-        sidebar: {
-          hidden: [row],
-          providerOrder: [id, "copilot"],
-          rowOrder: { [id]: [row] },
-          names: { [row]: "Mine" },
-        },
-        collapsed: { window: { [id]: "day" } },
-      }),
-    );
+  it.each(["chutes", "kilo", "nanogpt", "nano-gpt", "synthetic"])(
+    "loads and saves settings naming the former provider %s without an issue",
+    async (id) => {
+      const row = `${id}.daily`;
+      writeSettings(
+        JSON.stringify({
+          providers: { off: [id, "copilot"] },
+          sidebar: {
+            hidden: [row],
+            providerOrder: [id, "copilot"],
+            rowOrder: { [id]: [row] },
+            names: { [row]: "Mine" },
+          },
+          collapsed: { window: { [id]: "day" } },
+        }),
+      );
 
-    const loaded = await loadSettings();
-    const saved = await saveSettings({ providers: { off: [id, "openai"] } });
+      const loaded = await loadSettings();
+      const saved = await saveSettings({ providers: { off: [id, "openai"] } });
 
-    expect(loaded.issues).toEqual([]);
-    expect(loaded.settings.providers.off).toEqual(["copilot"]);
-    expect(loaded.settings.sidebar.names).toEqual({ [row]: "Mine" });
-    expect(saved).toMatchObject({ ok: true, issues: [] });
-    expect((await loadSettings()).settings.providers.off).toEqual(["openai"]);
-  });
+      expect(loaded.issues).toEqual([]);
+      expect(loaded.settings.providers.off).toEqual(["copilot"]);
+      expect(loaded.settings.sidebar.names).toEqual({ [row]: "Mine" });
+      expect(saved).toMatchObject({ ok: true, issues: [] });
+      expect((await loadSettings()).settings.providers.off).toEqual(["openai"]);
+    },
+  );
 
   it("reports unknown keys with the valid ones, and a group that is not an object", async () => {
     writeSettings('{ "wordz": {}, "words": { "percnt": "used" }, "providers": { "checking": 5 } }');

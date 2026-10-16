@@ -962,24 +962,22 @@ describe("v6 surfaces on the quota snapshot", () => {
         heading: " Preset",
         line: "When toasts show",
       },
-    ])("puts $page's first lines under a heading, and its switch under Enable/disable", async ({
-      page,
-      toggle,
-      heading,
-      line,
-    }) => {
-      const { tui, windowTree } = await openSettings("Layout", page);
-      try {
-        await vi.waitFor(() => expect(textLines(windowTree())).toContain(heading));
-        const lines = textLines(windowTree());
-        if (toggle) expect(lines[lines.indexOf(toggle) - 1]).toBe(" Enable/disable");
-        const at = lines.findIndex((text) => text.startsWith(`   ${line}`));
-        expect(at).toBeGreaterThan(0);
-        expect(lines[at - 1]).toBe(heading);
-      } finally {
-        await tui.dispose();
-      }
-    });
+    ])(
+      "puts $page's first lines under a heading, and its switch under Enable/disable",
+      async ({ page, toggle, heading, line }) => {
+        const { tui, windowTree } = await openSettings("Layout", page);
+        try {
+          await vi.waitFor(() => expect(textLines(windowTree())).toContain(heading));
+          const lines = textLines(windowTree());
+          if (toggle) expect(lines[lines.indexOf(toggle) - 1]).toBe(" Enable/disable");
+          const at = lines.findIndex((text) => text.startsWith(`   ${line}`));
+          expect(at).toBeGreaterThan(0);
+          expect(lines[at - 1]).toBe(heading);
+        } finally {
+          await tui.dispose();
+        }
+      },
+    );
 
     it("closes with unsaved changes only after Save or Discard", async () => {
       const { tui, windowTree } = await openSettings("Layout", "All places");

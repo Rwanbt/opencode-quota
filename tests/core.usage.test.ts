@@ -416,15 +416,18 @@ describe("usage report sessions", () => {
         tokens: 1 + 2,
         sessions: 1,
       },
-    ])("counts a fork's copies only in its parent: $query.range $query.sessionID (fork adds work: $forkAddsWork)", async (item) => {
-      writeHistory(forkHistory(item.forkAddsWork), forkSessions);
+    ])(
+      "counts a fork's copies only in its parent: $query.range $query.sessionID (fork adds work: $forkAddsWork)",
+      async (item) => {
+        writeHistory(forkHistory(item.forkAddsWork), forkSessions);
 
-      const report = await usageReport(item.query, NOW);
+        const report = await usageReport(item.query, NOW);
 
-      expect(report.totals.tokens.processed).toBe(item.tokens);
-      expect(report.totals.sessions).toBe(item.sessions);
-      expect(report.totals.costUsd).toBeCloseTo((item.tokens * 10) / M, 10);
-    });
+        expect(report.totals.tokens.processed).toBe(item.tokens);
+        expect(report.totals.sessions).toBe(item.sessions);
+        expect(report.totals.costUsd).toBeCloseTo((item.tokens * 10) / M, 10);
+      },
+    );
   });
 });
 

@@ -114,7 +114,7 @@ describe("package manifest compatibility", () => {
       ["scripts", "format", "vp fmt"],
       ["scripts", "format:check", undefined],
       ["scripts", "lint", "vp lint"],
-      ["scripts", "check", "vp check --no-fmt"],
+      ["scripts", "check", "vp check"],
       ["scripts", "verify:v4-formatting", undefined],
       ["devDependencies", "lefthook", "2.0.15"],
       ["devDependencies", "husky", undefined],
@@ -162,7 +162,7 @@ describe("package manifest compatibility", () => {
     expect(lefthookConfig["pre-commit"]?.commands).toEqual({
       check: {
         glob: "**/*.{js,cjs,mjs,jsx,ts,tsx,json,jsonc,css}",
-        run: "pnpm exec vp check --fix --no-fmt --no-error-on-unmatched-pattern {staged_files}",
+        run: "pnpm exec vp check --fix --no-error-on-unmatched-pattern {staged_files}",
         stage_fixed: true,
       },
     });
@@ -274,13 +274,14 @@ describe("package manifest compatibility", () => {
       ],
       [],
     ],
-  ])("keeps %s", async (_name, path, has: Array<string | RegExp>, lacks: Array<
-    string | RegExp
-  >) => {
-    const source = await text(path);
-    for (const pattern of has) expect(source).toMatch(pattern);
-    for (const pattern of lacks) expect(source).not.toMatch(pattern);
-  });
+  ])(
+    "keeps %s",
+    async (_name, path, has: Array<string | RegExp>, lacks: Array<string | RegExp>) => {
+      const source = await text(path);
+      for (const pattern of has) expect(source).toMatch(pattern);
+      for (const pattern of lacks) expect(source).not.toMatch(pattern);
+    },
+  );
 
   it("smokes the packed package after installing it, then installs the metrics SDK", () => {
     const tarballInstall = packedSmoke.indexOf(

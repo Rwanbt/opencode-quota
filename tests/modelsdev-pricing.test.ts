@@ -154,25 +154,24 @@ describe("refreshPricesIfDue", () => {
     { days: 7, maxAgeDays: 7, due: false },
     { days: 1, maxAgeDays: 1, due: true },
     { days: 0, maxAgeDays: 3, due: true }, // not a positive number: 3 days
-  ])("downloads a 4-day-old list after $days configured days: $due", async ({
-    days,
-    maxAgeDays,
-    due,
-  }) => {
-    const { pricing, fetch, paths } = await start({ source: "auto", autoRefreshDays: days });
-    const before = await pricing.describePriceList();
+  ])(
+    "downloads a 4-day-old list after $days configured days: $due",
+    async ({ days, maxAgeDays, due }) => {
+      const { pricing, fetch, paths } = await start({ source: "auto", autoRefreshDays: days });
+      const before = await pricing.describePriceList();
 
-    await pricing.refreshPricesIfDue();
+      await pricing.refreshPricesIfDue();
 
-    expect(before).toMatchObject({
-      health: { ageMs: 4 * DAY_MS, maxAgeMs: maxAgeDays * DAY_MS, stale: due },
-      paths,
-      refreshState: null,
-    });
-    expect(fetch).toHaveBeenCalledTimes(due ? 1 : 0);
-    // No timer is left to keep a CLI run going once the check is over.
-    expect(vi.getTimerCount()).toBe(0);
-  });
+      expect(before).toMatchObject({
+        health: { ageMs: 4 * DAY_MS, maxAgeMs: maxAgeDays * DAY_MS, stale: due },
+        paths,
+        refreshState: null,
+      });
+      expect(fetch).toHaveBeenCalledTimes(due ? 1 : 0);
+      // No timer is left to keep a CLI run going once the check is over.
+      expect(vi.getTimerCount()).toBe(0);
+    },
+  );
 
   it("never downloads with the settings on the shipped list", async () => {
     const { pricing, fetch } = await start({ source: "bundled", autoRefreshDays: 1 });

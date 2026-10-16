@@ -238,38 +238,38 @@ describe("quota toasts", () => {
         ].join("\n"),
       ],
     },
-  ] as const)("shows new reset notices once, in one toast, with the $setting setting", ({
-    setting,
-    expected,
-  }) => {
-    const notice = (id: string, fields: Partial<ResetNotice>): ResetNotice => ({
-      id,
-      rowId: "claude.weekly",
-      providerId: "claude",
-      label: "Weekly",
-      window: "week",
-      percentRemaining: 100,
-      atMs: NOW,
-      ...fields,
-    });
-    const notices = [
-      notice("weekly", { account: "work" }),
-      notice("five-hour", {
-        rowId: "claude.five_hour",
-        label: "5h",
-        window: "five_hour",
-        percentRemaining: 96.6,
-      }),
-      // A reset from before this TUI started was news to the TUI that saw it then.
-      notice("old", { atMs: NOW - 1 }),
-    ];
-    const { toasts, show } = startToasts(undefined, (display) => {
-      display.toast.resetNotice = setting;
-    });
-    toasts.showResetNotices(snapshot([provider("Claude", 100)], notices));
-    toasts.showResetNotices(snapshot([provider("Claude", 100)], notices));
-    expect(show.mock.calls.map(([toast]) => toast.message)).toEqual(expected);
-  });
+  ] as const)(
+    "shows new reset notices once, in one toast, with the $setting setting",
+    ({ setting, expected }) => {
+      const notice = (id: string, fields: Partial<ResetNotice>): ResetNotice => ({
+        id,
+        rowId: "claude.weekly",
+        providerId: "claude",
+        label: "Weekly",
+        window: "week",
+        percentRemaining: 100,
+        atMs: NOW,
+        ...fields,
+      });
+      const notices = [
+        notice("weekly", { account: "work" }),
+        notice("five-hour", {
+          rowId: "claude.five_hour",
+          label: "5h",
+          window: "five_hour",
+          percentRemaining: 96.6,
+        }),
+        // A reset from before this TUI started was news to the TUI that saw it then.
+        notice("old", { atMs: NOW - 1 }),
+      ];
+      const { toasts, show } = startToasts(undefined, (display) => {
+        display.toast.resetNotice = setting;
+      });
+      toasts.showResetNotices(snapshot([provider("Claude", 100)], notices));
+      toasts.showResetNotices(snapshot([provider("Claude", 100)], notices));
+      expect(show.mock.calls.map(([toast]) => toast.message)).toEqual(expected);
+    },
+  );
 
   /** Reset notices turned on, and a compaction turn whose refresh the test answers. */
   function turnWaitingForQuota() {
@@ -689,16 +689,15 @@ describe("colored toasts of the TUI plugin", () => {
       .map((child) => (typeof child === "string" ? child : child.props.children))
       .join("");
 
-  it.each([
-    "2.0.28",
-    "2.1.0",
-    undefined,
-  ])("colors the quota toast on OpenCode %s, with the plain message's text", async (version) => {
-    const colored = await afterCompaction(version);
-    expect(colored).toHaveLength(1);
-    expect(typeof colored[0]).not.toBe("string");
-    expect(drawn(colored[0])).toBe(PLAIN);
-  });
+  it.each(["2.0.28", "2.1.0", undefined])(
+    "colors the quota toast on OpenCode %s, with the plain message's text",
+    async (version) => {
+      const colored = await afterCompaction(version);
+      expect(colored).toHaveLength(1);
+      expect(typeof colored[0]).not.toBe("string");
+      expect(drawn(colored[0])).toBe(PLAIN);
+    },
+  );
 
   it("shows the plain toast when OpenCode's toast throws on the colored one", async () => {
     const messages = await afterCompaction("2.0.28", (toast) => {

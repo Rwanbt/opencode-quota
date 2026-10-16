@@ -113,21 +113,20 @@ describe("OpenCode JSON/JSONC config editor", () => {
   it.each([
     { existing: "opencode.jsonc", preferredFormat: "json", format: "jsonc" },
     { existing: "opencode.json", preferredFormat: "jsonc", format: "json" },
-  ] as const)("keeps the existing $existing file when $preferredFormat is preferred", ({
-    existing,
-    preferredFormat,
-    format,
-  }) => {
-    const dir = makeTempDir();
-    const path = join(dir, existing);
-    writeFileSync(path, '{"plugin":["other"]}\n', "utf8");
+  ] as const)(
+    "keeps the existing $existing file when $preferredFormat is preferred",
+    ({ existing, preferredFormat, format }) => {
+      const dir = makeTempDir();
+      const path = join(dir, existing);
+      writeFileSync(path, '{"plugin":["other"]}\n', "utf8");
 
-    expect(resolveEditableConfigPath({ dir, kind: "opencode", preferredFormat })).toEqual({
-      path,
-      format,
-      existed: true,
-    });
-  });
+      expect(resolveEditableConfigPath({ dir, kind: "opencode", preferredFormat })).toEqual({
+        path,
+        format,
+        existed: true,
+      });
+    },
+  );
 
   it("creates a missing config as a regular strict-JSON file without comments", async () => {
     const dir = makeTempDir();

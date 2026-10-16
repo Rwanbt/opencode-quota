@@ -857,61 +857,63 @@ describe("buildQuotaStatusReport", () => {
       text: "\\\\?\\C:\\Users\\CANARYname\\x | \\\\.\\C:\\Users\\CANARYname\\y",
       home: WINDOWS_HOME_CANARY,
     },
-  ])("never shows free text from a provider or a login: $name", async ({
-    text,
-    home = HOME_CANARY,
-  }) => {
-    const free = (key: string) => ({ key, value: text });
-    const output = await report({
-      homeDir: home,
-      currentModel: text,
-      providers: [
-        snapshot("anthropic", {
-          checkedAtMs: NOW,
-          rows: [row("anthropic.five_hour", { account: text, label: text, text, flag: true })],
-          error: { code: "provider_error", status: 503, detail: text },
-          debug: [
-            ...["error", "note", "live_fetch_error", "auth_error", "message", "request"].map(free),
-            ...["console_org", "console_server", "username_filter", "cli_version"].map(free),
-            // Allowed keys: shown only through their rule.
-            ...["auth_status", "binary_path", "checked_commands"].map(free),
-            { key: "custom_team_check", value: `outcome=success checked_paths=${text}` },
-          ],
-        }),
-        snapshot("alibaba-token-plan", {
-          checkedAtMs: NOW,
-          error: { code: "local_tool", tool: text, missing: true, detail: text },
-        }),
-      ],
-      credentialSource: {
-        state: "bound",
-        kind: "opencode-integration-api",
-        lastListError: { at: NOW, detail: text },
-        failures: [
-          {
-            integrationId: text,
-            connectionId: "cred_1",
-            label: text,
-            category: "refresh_failed",
-            detail: text,
-            at: NOW,
-          },
+  ])(
+    "never shows free text from a provider or a login: $name",
+    async ({ text, home = HOME_CANARY }) => {
+      const free = (key: string) => ({ key, value: text });
+      const output = await report({
+        homeDir: home,
+        currentModel: text,
+        providers: [
+          snapshot("anthropic", {
+            checkedAtMs: NOW,
+            rows: [row("anthropic.five_hour", { account: text, label: text, text, flag: true })],
+            error: { code: "provider_error", status: 503, detail: text },
+            debug: [
+              ...["error", "note", "live_fetch_error", "auth_error", "message", "request"].map(
+                free,
+              ),
+              ...["console_org", "console_server", "username_filter", "cli_version"].map(free),
+              // Allowed keys: shown only through their rule.
+              ...["auth_status", "binary_path", "checked_commands"].map(free),
+              { key: "custom_team_check", value: `outcome=success checked_paths=${text}` },
+            ],
+          }),
+          snapshot("alibaba-token-plan", {
+            checkedAtMs: NOW,
+            error: { code: "local_tool", tool: text, missing: true, detail: text },
+          }),
         ],
-      },
-      usage: {
-        totals: { tokens: { processed: 1_000 }, unpricedShare: 1 },
-        models: [{ providerID: "deepseek", modelID: text, priced: false, unpricedTokens: 1_000 }],
-      } as unknown as UsageReport,
-    });
+        credentialSource: {
+          state: "bound",
+          kind: "opencode-integration-api",
+          lastListError: { at: NOW, detail: text },
+          failures: [
+            {
+              integrationId: text,
+              connectionId: "cred_1",
+              label: text,
+              category: "refresh_failed",
+              detail: text,
+              at: NOW,
+            },
+          ],
+        },
+        usage: {
+          totals: { tokens: { processed: 1_000 }, unpricedShare: 1 },
+          models: [{ providerID: "deepseek", modelID: text, priced: false, unpricedTokens: 1_000 }],
+        } as unknown as UsageReport,
+      });
 
-    expect(output).not.toContain("CANARY");
-    expect(output).not.toContain("\u001b");
-    expect(section(output, "anthropic")).toMatch(/- \d+ other details not shown/u);
-    expect(section(output, "anthropic")).toContain("  - anthropic.five_hour (account 1): yes");
-    expect(section(output, "alibaba-token-plan")).toContain(
-      "- state: error: Local tool not found (local_tool)",
-    );
-  });
+      expect(output).not.toContain("CANARY");
+      expect(output).not.toContain("\u001b");
+      expect(section(output, "anthropic")).toMatch(/- \d+ other details not shown/u);
+      expect(section(output, "anthropic")).toContain("  - anthropic.five_hour (account 1): yes");
+      expect(section(output, "alibaba-token-plan")).toContain(
+        "- state: error: Local tool not found (local_tool)",
+      );
+    },
+  );
 
   const HEX_CANARY = "0123456789abcdef0123456789abcdef01234567";
   const SK_CANARY = "sk-secretcanary0123456789";
@@ -1495,32 +1497,26 @@ describe("buildQuotaStatusReport", () => {
     return `# Quota Status (opencode-quota v${version})`;
   }
 
-  it.each([
-    { seed: 1 },
-    { seed: 2 },
-    { seed: 3 },
-    { seed: 4 },
-    { seed: 5 },
-    { seed: 6 },
-  ])("prints only words of its own vocabulary, and numbers and times in their field's form (seed $seed)", async ({
-    seed,
-  }) => {
-    const { params: fuzzed, hex } = fuzzedParams(seed);
+  it.each([{ seed: 1 }, { seed: 2 }, { seed: 3 }, { seed: 4 }, { seed: 5 }, { seed: 6 }])(
+    "prints only words of its own vocabulary, and numbers and times in their field's form (seed $seed)",
+    async ({ seed }) => {
+      const { params: fuzzed, hex } = fuzzedParams(seed);
 
-    const output = await buildQuotaStatusReport(fuzzed);
+      const output = await buildQuotaStatusReport(fuzzed);
 
-    const [heading, ...lines] = output.split("\n");
-    expect(heading).toBe(await headingLine());
-    expect.soft(vocabularyProblems(lines, reportVocabulary(), NUMBER_LINES)).toEqual([]);
-    expect.soft(envProblems(output)).toEqual([]);
-    expect(output.toLowerCase()).not.toContain("zq");
-    expect(output.replaceAll(",", "")).not.toContain(DIGITS.slice(0, 8));
-    for (const token of hex) expect(output).not.toContain(token);
-    // The report still has its facts: known model, row ids, custom numbers.
-    expect(output).toContain(`- current_model: `);
-    expect(output).toContain(`  - openai/${KNOWN_MODEL}: 3.00K tokens`);
-    expect(output).toContain("- providers.custom: custom 3 (remote-api, 2 models)");
-  });
+      const [heading, ...lines] = output.split("\n");
+      expect(heading).toBe(await headingLine());
+      expect.soft(vocabularyProblems(lines, reportVocabulary(), NUMBER_LINES)).toEqual([]);
+      expect.soft(envProblems(output)).toEqual([]);
+      expect(output.toLowerCase()).not.toContain("zq");
+      expect(output.replaceAll(",", "")).not.toContain(DIGITS.slice(0, 8));
+      for (const token of hex) expect(output).not.toContain(token);
+      // The report still has its facts: known model, row ids, custom numbers.
+      expect(output).toContain(`- current_model: `);
+      expect(output).toContain(`  - openai/${KNOWN_MODEL}: 3.00K tokens`);
+      expect(output).toContain("- providers.custom: custom 3 (remote-api, 2 models)");
+    },
+  );
 
   it.each([
     {
@@ -1803,19 +1799,17 @@ describe("buildQuotaStatusReport", () => {
     title: string;
     lines: string[];
     absent?: string[];
-  }>)("still shows the facts a maintainer needs: $name", async ({
-    overrides,
-    title,
-    lines,
-    absent = [],
-  }) => {
-    const output = await report(overrides);
-    const text = title ? section(output, title) : output;
+  }>)(
+    "still shows the facts a maintainer needs: $name",
+    async ({ overrides, title, lines, absent = [] }) => {
+      const output = await report(overrides);
+      const text = title ? section(output, title) : output;
 
-    for (const line of lines) expect(text).toContain(line);
-    for (const word of absent) expect(text).not.toContain(word);
-    expect(text).not.toContain("other detail");
-  });
+      for (const line of lines) expect(text).toContain(line);
+      for (const word of absent) expect(text).not.toContain(word);
+      expect(text).not.toContain("other detail");
+    },
+  );
 
   it.each([
     {
@@ -2213,16 +2207,18 @@ describe("buildQuotaStatusReport", () => {
       ],
       absent: ["anthropic/claude", "codex-mini-latest", "model-x"],
     },
-  ])("lists the last 30 days' models without a price: $name", async ({
-    usage,
-    lines,
-    absent = [],
-  }) => {
-    const text = section(await report({ usage: usage as UsageReport | null }), "pricing_snapshot");
+  ])(
+    "lists the last 30 days' models without a price: $name",
+    async ({ usage, lines, absent = [] }) => {
+      const text = section(
+        await report({ usage: usage as UsageReport | null }),
+        "pricing_snapshot",
+      );
 
-    for (const line of lines) expect(text).toContain(line);
-    for (const line of absent) expect(text).not.toContain(line);
-  });
+      for (const line of lines) expect(text).toContain(line);
+      for (const line of absent) expect(text).not.toContain(line);
+    },
+  );
 });
 
 describe("buildStatusReportData", () => {
@@ -2282,87 +2278,84 @@ describe("buildStatusReportData", () => {
     String.raw`pricing\.snapshot\.generatedAt: ${TIME}`,
   ].map((form) => new RegExp(`^(?:${form})$`, "u"));
 
-  it.each([
-    { seed: 11 },
-    { seed: 12 },
-    { seed: 13 },
-  ])("prints only its own vocabulary in the text and in `status --json` (seed $seed)", async ({
-    seed,
-  }) => {
-    const { pick, word, garbage, hex } = garbageSource(seed);
-    const configHome = join(root, word());
-    const cacheHome = join(root, pick([word(), ".cache"]));
-    vi.stubEnv("XDG_CONFIG_HOME", configHome);
-    vi.stubEnv("XDG_CACHE_HOME", cacheHome);
-    const settingsDir = join(configHome, "opencode", "opencode-quota");
-    mkdirSync(settingsDir, { recursive: true });
-    writeFileSync(
-      join(settingsDir, "settings.jsonc"),
-      JSON.stringify({
-        providers: {
-          off: [...PROVIDER_IDS.filter((id) => id !== "zai"), garbage(), garbage()],
-        },
-      }),
-    );
-    const pricingDir = join(cacheHome, "opencode", "opencode-quota");
-    mkdirSync(pricingDir, { recursive: true });
-    // Made now, so the list is never 3 days old and the report never tries a price download.
-    writeFileSync(
-      join(pricingDir, "modelsdev-pricing.runtime.min.json"),
-      JSON.stringify({
-        _meta: {
-          source: garbage(),
-          generatedAt: pick([Date.now(), Number(DIGITS)]),
-          units: garbage(),
-        },
-        providers: { [garbage()]: { [garbage()]: { input: 1, output: 2 } } },
-      }),
-    );
-    registry.providers = [
-      fakeProvider("zai", true, {
-        ...answer({
-          name: garbage(),
-          rows: [
-            percentRow("five_hour", garbage(), pick([84, Number(DIGITS)]), {
-              resetsAt: pick([RESET, ...DATE_LIKE]),
-            }),
-          ],
-          errors: [garbage()],
+  it.each([{ seed: 11 }, { seed: 12 }, { seed: 13 }])(
+    "prints only its own vocabulary in the text and in `status --json` (seed $seed)",
+    async ({ seed }) => {
+      const { pick, word, garbage, hex } = garbageSource(seed);
+      const configHome = join(root, word());
+      const cacheHome = join(root, pick([word(), ".cache"]));
+      vi.stubEnv("XDG_CONFIG_HOME", configHome);
+      vi.stubEnv("XDG_CACHE_HOME", cacheHome);
+      const settingsDir = join(configHome, "opencode", "opencode-quota");
+      mkdirSync(settingsDir, { recursive: true });
+      writeFileSync(
+        join(settingsDir, "settings.jsonc"),
+        JSON.stringify({
+          providers: {
+            off: [...PROVIDER_IDS.filter((id) => id !== "zai"), garbage(), garbage()],
+          },
         }),
-        debug: [
-          { key: "api_key_source", value: garbage() },
-          { key: "api_key_checked_paths", value: garbage() },
-          { key: garbage(), value: garbage() },
-        ],
-      }),
-    ];
+      );
+      const pricingDir = join(cacheHome, "opencode", "opencode-quota");
+      mkdirSync(pricingDir, { recursive: true });
+      // Made now, so the list is never 3 days old and the report never tries a price download.
+      writeFileSync(
+        join(pricingDir, "modelsdev-pricing.runtime.min.json"),
+        JSON.stringify({
+          _meta: {
+            source: garbage(),
+            generatedAt: pick([Date.now(), Number(DIGITS)]),
+            units: garbage(),
+          },
+          providers: { [garbage()]: { [garbage()]: { input: 1, output: 2 } } },
+        }),
+      );
+      registry.providers = [
+        fakeProvider("zai", true, {
+          ...answer({
+            name: garbage(),
+            rows: [
+              percentRow("five_hour", garbage(), pick([84, Number(DIGITS)]), {
+                resetsAt: pick([RESET, ...DATE_LIKE]),
+              }),
+            ],
+            errors: [garbage()],
+          }),
+          debug: [
+            { key: "api_key_source", value: garbage() },
+            { key: "api_key_checked_paths", value: garbage() },
+            { key: garbage(), value: garbage() },
+          ],
+        }),
+      ];
 
-    const { data, text } = await statusData();
+      const { data, text } = await statusData();
 
-    const json = JSON.stringify(data.payload);
-    const leaves = jsonLines(JSON.parse(json));
-    const [, ...lines] = text.split("\n");
-    const vocabulary = reportVocabulary();
-    expect.soft(vocabularyProblems(lines, vocabulary, NUMBER_LINES)).toEqual([]);
-    expect.soft(envProblems(text)).toEqual([]);
-    const values = leaves.map((line) => line.slice(line.indexOf(": ") + 2));
-    expect(vocabularyProblems(values, vocabulary, [/^\S+$/u])).toEqual([]);
-    expect(
-      leaves.filter(
-        (line) =>
-          /\d/u.test(line.slice(line.indexOf(": "))) &&
-          !JSON_NUMBER_LINES.some((form) => form.test(line)),
-      ),
-    ).toEqual([]);
-    for (const output of [text, json]) {
-      expect(output.toLowerCase()).not.toContain("zq");
-      expect(output.replaceAll(",", "")).not.toContain(DIGITS.slice(0, 8));
-      expect(output).not.toContain(root);
-      for (const token of hex) expect(output).not.toContain(token);
-    }
-    expect(data.payload.config.settingsPath).toBe("(custom path)/settings.jsonc");
-    expect(data.payload.config.enabledProviders).toContain("zai");
-  });
+      const json = JSON.stringify(data.payload);
+      const leaves = jsonLines(JSON.parse(json));
+      const [, ...lines] = text.split("\n");
+      const vocabulary = reportVocabulary();
+      expect.soft(vocabularyProblems(lines, vocabulary, NUMBER_LINES)).toEqual([]);
+      expect.soft(envProblems(text)).toEqual([]);
+      const values = leaves.map((line) => line.slice(line.indexOf(": ") + 2));
+      expect(vocabularyProblems(values, vocabulary, [/^\S+$/u])).toEqual([]);
+      expect(
+        leaves.filter(
+          (line) =>
+            /\d/u.test(line.slice(line.indexOf(": "))) &&
+            !JSON_NUMBER_LINES.some((form) => form.test(line)),
+        ),
+      ).toEqual([]);
+      for (const output of [text, json]) {
+        expect(output.toLowerCase()).not.toContain("zq");
+        expect(output.replaceAll(",", "")).not.toContain(DIGITS.slice(0, 8));
+        expect(output).not.toContain(root);
+        for (const token of hex) expect(output).not.toContain(token);
+      }
+      expect(data.payload.config.settingsPath).toBe("(custom path)/settings.jsonc");
+      expect(data.payload.config.enabledProviders).toContain("zai");
+    },
+  );
 
   it("checks every enabled provider through a store and shows what it returned, secrets hidden", async () => {
     const zaiProvider = zai();

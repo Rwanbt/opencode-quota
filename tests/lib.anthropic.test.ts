@@ -257,18 +257,18 @@ describe("usage response parsing", () => {
     { utilization: 37.8, percentRemaining: 62 },
     { utilization: 0, percentRemaining: 100 },
     { utilization: 100, percentRemaining: 0 },
-  ])("parses enabled extra usage at $utilization% as remaining quota", ({
-    utilization,
-    percentRemaining,
-  }) => {
-    const result = parseOAuthUsageResponse({
-      five_hour: { utilization: 57 },
-      seven_day: { utilization: 12 },
-      extra_usage: { is_enabled: true, utilization },
-    });
+  ])(
+    "parses enabled extra usage at $utilization% as remaining quota",
+    ({ utilization, percentRemaining }) => {
+      const result = parseOAuthUsageResponse({
+        five_hour: { utilization: 57 },
+        seven_day: { utilization: 12 },
+        extra_usage: { is_enabled: true, utilization },
+      });
 
-    expect(result?.extra_usage).toEqual({ percentRemaining });
-  });
+      expect(result?.extra_usage).toEqual({ percentRemaining });
+    },
+  );
 
   it.each([
     { extra_usage: undefined },
@@ -497,26 +497,29 @@ describe("Claude CLI probe", () => {
       [],
       "Claude CLI (`/Applications/Claude Code.app/Contents/MacOS/claude`) is not installed or not on PATH.",
     ],
-  ] as const)("reports a missing Claude CLI for %s", async (_label, platform, binaryPath, checkedCommand, installFoldersChecked, message) => {
-    setProcessPlatform(platform);
-    mockExecSequence([CLI_MISSING]);
+  ] as const)(
+    "reports a missing Claude CLI for %s",
+    async (_label, platform, binaryPath, checkedCommand, installFoldersChecked, message) => {
+      setProcessPlatform(platform);
+      mockExecSequence([CLI_MISSING]);
 
-    const diagnostics = await getAnthropicDiagnostics({ binaryPath });
+      const diagnostics = await getAnthropicDiagnostics({ binaryPath });
 
-    expect(fsMocks.existsSync.mock.calls.map(([path]) => path)).toEqual(installFoldersChecked);
-    expect(diagnostics).toEqual({
-      installed: false,
-      version: null,
-      authStatus: "unknown",
-      quotaSupported: false,
-      quotaSource: "none",
-      binaryPath: null,
-      checkedCommands: [checkedCommand],
-      message,
-    });
-    await expect(hasAnthropicCredentialsConfigured({ binaryPath })).resolves.toBe(false);
-    await expect(queryAnthropicQuota({ binaryPath })).resolves.toBeNull();
-  });
+      expect(fsMocks.existsSync.mock.calls.map(([path]) => path)).toEqual(installFoldersChecked);
+      expect(diagnostics).toEqual({
+        installed: false,
+        version: null,
+        authStatus: "unknown",
+        quotaSupported: false,
+        quotaSource: "none",
+        binaryPath: null,
+        checkedCommands: [checkedCommand],
+        message,
+      });
+      await expect(hasAnthropicCredentialsConfigured({ binaryPath })).resolves.toBe(false);
+      await expect(queryAnthropicQuota({ binaryPath })).resolves.toBeNull();
+    },
+  );
 
   it("reports unauthenticated Claude CLI status without reading OAuth credentials", async () => {
     mockExecSequence([
@@ -855,26 +858,29 @@ describe("OAuth credential sources", () => {
       JSON.stringify({ claudeAiOauth: { accessToken: 123 } }),
       ["Claude OAuth access token missing"],
     ],
-  ] as const)("explains missing quota when Claude CLI is signed in but there is %s", async (_label, platform, keychainSteps, credentialsFile, expectedDetails) => {
-    setProcessPlatform(platform);
-    mockExecSequence([CLI_VERSION, CLI_AUTHENTICATED, ...keychainSteps]);
-    if (credentialsFile instanceof Error) readFileMock.mockRejectedValue(credentialsFile);
-    else readFileMock.mockResolvedValue(credentialsFile);
+  ] as const)(
+    "explains missing quota when Claude CLI is signed in but there is %s",
+    async (_label, platform, keychainSteps, credentialsFile, expectedDetails) => {
+      setProcessPlatform(platform);
+      mockExecSequence([CLI_VERSION, CLI_AUTHENTICATED, ...keychainSteps]);
+      if (credentialsFile instanceof Error) readFileMock.mockRejectedValue(credentialsFile);
+      else readFileMock.mockResolvedValue(credentialsFile);
 
-    const diagnostics = await getAnthropicDiagnostics();
-    expect(diagnostics.installed).toBe(true);
-    expect(diagnostics.authStatus).toBe("authenticated");
-    expect(diagnostics.quotaSupported).toBe(false);
-    expect(diagnostics.quotaSource).toBe("none");
-    expect(diagnostics.message).toContain(NO_QUOTA_MESSAGE);
-    for (const detail of expectedDetails) expect(diagnostics.message).toContain(detail);
+      const diagnostics = await getAnthropicDiagnostics();
+      expect(diagnostics.installed).toBe(true);
+      expect(diagnostics.authStatus).toBe("authenticated");
+      expect(diagnostics.quotaSupported).toBe(false);
+      expect(diagnostics.quotaSource).toBe("none");
+      expect(diagnostics.message).toContain(NO_QUOTA_MESSAGE);
+      for (const detail of expectedDetails) expect(diagnostics.message).toContain(detail);
 
-    await expect(queryAnthropicQuota()).resolves.toEqual({
-      success: false,
-      error: diagnostics.message,
-    });
-    expect(fetchWithTimeoutMock).not.toHaveBeenCalled();
-  });
+      await expect(queryAnthropicQuota()).resolves.toEqual({
+        success: false,
+        error: diagnostics.message,
+      });
+      expect(fetchWithTimeoutMock).not.toHaveBeenCalled();
+    },
+  );
 });
 
 describe("OAuth usage request", () => {
@@ -976,25 +982,28 @@ describe("OAuth usage request", () => {
       "retry in 25s.",
     ],
     ["times out", true, "45", "body stalled", "retry in 40s."],
-  ])("establishes a cooldown when the 429 response body %s", async (_label, bodyReadTimesOut, retryAfter, firstMessage, suppressedMessage) => {
-    useFakeNow();
-    setUpCredentialsFileFallback(2);
-    const response = mockResponse(429, "rate limited", retryAfter);
-    vi.mocked(response.text).mockRejectedValue(new Error("body stalled"));
-    fetchWithTimeoutMock.mockImplementationOnce(async (_url, options) => {
-      const controller = new AbortController();
-      if (bodyReadTimesOut) controller.abort();
-      return await options.consume(response, controller.signal);
-    });
+  ])(
+    "establishes a cooldown when the 429 response body %s",
+    async (_label, bodyReadTimesOut, retryAfter, firstMessage, suppressedMessage) => {
+      useFakeNow();
+      setUpCredentialsFileFallback(2);
+      const response = mockResponse(429, "rate limited", retryAfter);
+      vi.mocked(response.text).mockRejectedValue(new Error("body stalled"));
+      fetchWithTimeoutMock.mockImplementationOnce(async (_url, options) => {
+        const controller = new AbortController();
+        if (bodyReadTimesOut) controller.abort();
+        return await options.consume(response, controller.signal);
+      });
 
-    const first = await getAnthropicDiagnostics();
-    expect(first.message).toContain(firstMessage);
+      const first = await getAnthropicDiagnostics();
+      expect(first.message).toContain(firstMessage);
 
-    await vi.advanceTimersByTimeAsync(5_001);
-    const suppressed = await getAnthropicDiagnostics();
-    expect(suppressed.message).toContain(suppressedMessage);
-    expect(fetchWithTimeoutMock).toHaveBeenCalledTimes(1);
-  });
+      await vi.advanceTimersByTimeAsync(5_001);
+      const suppressed = await getAnthropicDiagnostics();
+      expect(suppressed.message).toContain(suppressedMessage);
+      expect(fetchWithTimeoutMock).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it("increases fallback backoff for consecutive 429 responses", async () => {
     useFakeNow();

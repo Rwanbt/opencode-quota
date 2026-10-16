@@ -154,19 +154,18 @@ describe.each(companions)("$packageName companion credentials", (companion) => {
     });
   });
 
-  it.each([
-    "export const",
-    "const",
-    "var",
-  ] as const)("parses a %s declaration in the source constants file", async (declaration) => {
-    const constantsPath = join(tempDir, "constants.ts");
-    writeCredentials(constantsPath, declaration);
-    const resolver = await load((specifier) => {
-      if (specifier === sourceSpecifier) return constantsPath;
-      throw moduleNotFound();
-    });
-    await expectConfigured(resolver, constantsPath);
-  });
+  it.each(["export const", "const", "var"] as const)(
+    "parses a %s declaration in the source constants file",
+    async (declaration) => {
+      const constantsPath = join(tempDir, "constants.ts");
+      writeCredentials(constantsPath, declaration);
+      const resolver = await load((specifier) => {
+        if (specifier === sourceSpecifier) return constantsPath;
+        throw moduleNotFound();
+      });
+      await expectConfigured(resolver, constantsPath);
+    },
+  );
 
   it("classifies package export blocks as installed but invalid", async () => {
     const resolver = await load((specifier) => {

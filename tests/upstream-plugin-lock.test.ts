@@ -107,12 +107,10 @@ describe("upstream-plugin-lock", () => {
       "utf8",
     );
 
-    const { readCommittedUpstreamPluginLock, readUpstreamPluginLock } = await import(
-      "../scripts/lib/upstream-plugin-lock.mjs"
-    );
-    const { buildChangedPluginSummaries } = await import(
-      "../scripts/lib/upstream-plugin-review.mjs"
-    );
+    const { readCommittedUpstreamPluginLock, readUpstreamPluginLock } =
+      await import("../scripts/lib/upstream-plugin-lock.mjs");
+    const { buildChangedPluginSummaries } =
+      await import("../scripts/lib/upstream-plugin-review.mjs");
     // readCommittedUpstreamPluginLock runs `git show` with the inherited process.env.
     stubIsolatedGitEnv();
     const committedLock = await readCommittedUpstreamPluginLock({

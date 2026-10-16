@@ -278,24 +278,24 @@ describe("quota store", () => {
     expect(copilot.fetch).toHaveBeenCalledTimes(3);
   });
 
-  it.each([
-    true,
-    false,
-  ])("after a settings change (recheck %s), shows a new snapshot and checks a failed provider again only for a recheck", async (recheck) => {
-    const copilot = fakeProvider();
-    copilot.fetch.mockRejectedValueOnce(new Error("Request timeout after 5s"));
-    const store = makeStore([copilot.provider]);
-    await store.refresh({ reason: "manual" });
-    const seen: QuotaSnapshot[] = [];
-    store.subscribe((snapshot) => seen.push(snapshot));
+  it.each([true, false])(
+    "after a settings change (recheck %s), shows a new snapshot and checks a failed provider again only for a recheck",
+    async (recheck) => {
+      const copilot = fakeProvider();
+      copilot.fetch.mockRejectedValueOnce(new Error("Request timeout after 5s"));
+      const store = makeStore([copilot.provider]);
+      await store.refresh({ reason: "manual" });
+      const seen: QuotaSnapshot[] = [];
+      store.subscribe((snapshot) => seen.push(snapshot));
 
-    store.settingsChanged({ recheck });
+      store.settingsChanged({ recheck });
 
-    // A recheck answers with fresh rows; otherwise the failure and its backoff stay.
-    await vi.waitFor(() => expect(seen.map((one) => !only(one).error)).toContain(recheck));
-    await store.dispose();
-    expect(copilot.fetch).toHaveBeenCalledTimes(recheck ? 2 : 1);
-  });
+      // A recheck answers with fresh rows; otherwise the failure and its backoff stay.
+      await vi.waitFor(() => expect(seen.map((one) => !only(one).error)).toContain(recheck));
+      await store.dispose();
+      expect(copilot.fetch).toHaveBeenCalledTimes(recheck ? 2 : 1);
+    },
+  );
 
   it("records an empty answer as nothing reported", async () => {
     const copilot = fakeProvider();
@@ -637,9 +637,10 @@ describe("quota store", () => {
 
   it("never answers a refresh with the old login's rows after a login change", async () => {
     const copilot = fakeProvider();
-    const identity = vi.fn(
-      async (): Promise<ProviderIdentity> => ({ key: "alice", persist: true }),
-    );
+    const identity = vi.fn(async (): Promise<ProviderIdentity> => ({
+      key: "alice",
+      persist: true,
+    }));
     copilot.provider.identity = identity;
     const store = makeStore([copilot.provider]);
     await store.refresh({ reason: "manual" });

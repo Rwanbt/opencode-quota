@@ -381,39 +381,40 @@ describe("quota window shell", () => {
   it.each([
     { order: "OpenCode's listener first", windowListenerFirst: false },
     { order: "the window's listener first", windowListenerFirst: true },
-  ])("takes the keyboard back when a resize gives it to the message box ($order)", async ({
-    windowListenerFirst,
-  }) => {
-    const host = fakeHost();
-    const messageBox = host.box();
-    messageBox.focus();
-    // Across the sidebar's breakpoint, OpenCode gives the keyboard to its message box.
-    const openCodeListener = () => messageBox.focus();
-    if (!windowListenerFirst) host.resizeListeners.push(openCodeListener);
-    host.quotaWindow.open("limits");
-    const view = draw(host.quotaWindow);
-    const windowBox = host.box();
-    mount(view.tree, windowBox);
-    if (windowListenerFirst) host.resizeListeners.push(openCodeListener);
-    await vi.advanceTimersByTimeAsync(50);
-    expect(host.keyboard.current).toBe(windowBox);
+  ])(
+    "takes the keyboard back when a resize gives it to the message box ($order)",
+    async ({ windowListenerFirst }) => {
+      const host = fakeHost();
+      const messageBox = host.box();
+      messageBox.focus();
+      // Across the sidebar's breakpoint, OpenCode gives the keyboard to its message box.
+      const openCodeListener = () => messageBox.focus();
+      if (!windowListenerFirst) host.resizeListeners.push(openCodeListener);
+      host.quotaWindow.open("limits");
+      const view = draw(host.quotaWindow);
+      const windowBox = host.box();
+      mount(view.tree, windowBox);
+      if (windowListenerFirst) host.resizeListeners.push(openCodeListener);
+      await vi.advanceTimersByTimeAsync(50);
+      expect(host.keyboard.current).toBe(windowBox);
 
-    // Narrower, then wider again: Esc and Tab still reach the window.
-    for (const _direction of ["narrower", "wider"]) {
+      // Narrower, then wider again: Esc and Tab still reach the window.
+      for (const _direction of ["narrower", "wider"]) {
+        host.resize();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(host.keyboard.current).toBe(windowBox);
+      }
+
+      // A click on the message box takes the keyboard on purpose, and a resize leaves it there.
+      messageBox.focus();
+      await vi.advanceTimersByTimeAsync(0);
       host.resize();
       await vi.advanceTimersByTimeAsync(0);
-      expect(host.keyboard.current).toBe(windowBox);
-    }
-
-    // A click on the message box takes the keyboard on purpose, and a resize leaves it there.
-    messageBox.focus();
-    await vi.advanceTimersByTimeAsync(0);
-    host.resize();
-    await vi.advanceTimersByTimeAsync(0);
-    expect(host.keyboard.current).toBe(messageBox);
-    view.dispose();
-    expect(host.resizeListeners).toEqual([openCodeListener]);
-  });
+      expect(host.keyboard.current).toBe(messageBox);
+      view.dispose();
+      expect(host.resizeListeners).toEqual([openCodeListener]);
+    },
+  );
 
   it("keeps the keyboard when OpenCode draws the window again, unless something took it", async () => {
     const host = fakeHost();

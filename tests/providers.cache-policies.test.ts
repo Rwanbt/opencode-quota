@@ -158,30 +158,38 @@ describe("provider cache policies", () => {
       { kind: "stable-id", value: "acc_1" },
     ],
     [{ accessToken: "st_secret-token" }, { kind: "credential", value: "st_secret-token" }],
-  ])("uses the account, then the token, when the Console sign-in has no org (%j)", async (credential, principal) => {
-    const policy = PROVIDER_CACHE_POLICIES.opencode;
-    if (policy?.kind !== "resolved-auth") throw new Error("Expected a resolved-auth policy");
+  ])(
+    "uses the account, then the token, when the Console sign-in has no org (%j)",
+    async (credential, principal) => {
+      const policy = PROVIDER_CACHE_POLICIES.opencode;
+      if (policy?.kind !== "resolved-auth") throw new Error("Expected a resolved-auth policy");
 
-    cachePolicyMocks.resolveConsoleAuth.mockResolvedValue({ state: "configured", credential });
-    await policy.resolveIdentity({ config: {} } as never, {} as never);
+      cachePolicyMocks.resolveConsoleAuth.mockResolvedValue({ state: "configured", credential });
+      await policy.resolveIdentity({ config: {} } as never, {} as never);
 
-    expect(cachePolicyMocks.deriveIdentity).toHaveBeenCalledWith({
-      providerId: "opencode",
-      principal,
-      qualifiers: ["https://opencode.ai/console"],
-    });
-  });
+      expect(cachePolicyMocks.deriveIdentity).toHaveBeenCalledWith({
+        providerId: "opencode",
+        principal,
+        qualifiers: ["https://opencode.ai/console"],
+      });
+    },
+  );
 
   it.each([
     { state: "none" },
     { state: "expired", credential: { accessToken: "st_secret-token", orgId: "wrk_shared" } },
     { state: "invalid", error: "refresh_failed: boom" },
-  ])("returns no OpenCode Zen identity without a configured Console sign-in (%j)", async (resolution) => {
-    const policy = PROVIDER_CACHE_POLICIES.opencode;
-    if (policy?.kind !== "resolved-auth") throw new Error("Expected a resolved-auth policy");
+  ])(
+    "returns no OpenCode Zen identity without a configured Console sign-in (%j)",
+    async (resolution) => {
+      const policy = PROVIDER_CACHE_POLICIES.opencode;
+      if (policy?.kind !== "resolved-auth") throw new Error("Expected a resolved-auth policy");
 
-    cachePolicyMocks.resolveConsoleAuth.mockResolvedValue(resolution);
-    await expect(policy.resolveIdentity({ config: {} } as never, {} as never)).resolves.toBeNull();
-    expect(cachePolicyMocks.deriveIdentity).not.toHaveBeenCalled();
-  });
+      cachePolicyMocks.resolveConsoleAuth.mockResolvedValue(resolution);
+      await expect(
+        policy.resolveIdentity({ config: {} } as never, {} as never),
+      ).resolves.toBeNull();
+      expect(cachePolicyMocks.deriveIdentity).not.toHaveBeenCalled();
+    },
+  );
 });

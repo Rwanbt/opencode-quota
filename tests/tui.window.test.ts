@@ -163,13 +163,13 @@ describe("quota window: Limits", () => {
     { width: 90, cells: 31 },
     { width: 110, cells: 51 },
     { width: 300, cells: 80 },
-  ])("gives the bar the room the other columns leave, at most 80 cells ($width wide)", ({
-    width,
-    cells,
-  }) => {
-    const fable = limits([CLAUDE], width).find((line) => line.includes("Fable"));
-    expect(fable?.match(/[█░]+/u)?.[0]).toHaveLength(cells);
-  });
+  ])(
+    "gives the bar the room the other columns leave, at most 80 cells ($width wide)",
+    ({ width, cells }) => {
+      const fable = limits([CLAUDE], width).find((line) => line.includes("Fable"));
+      expect(fable?.match(/[█░]+/u)?.[0]).toHaveLength(cells);
+    },
+  );
 
   it("shortens the reset to its first unit before the bar gets too short (80 columns)", () => {
     // 80 columns leave 72 inside the window: the session's padding, the border and the padding.
@@ -197,21 +197,22 @@ describe("quota window: Limits", () => {
     ]);
   });
 
-  it.each([
-    24, 30, 36, 44, 56, 64, 72, 80, 96, 120, 160, 240,
-  ])("keeps every line inside a window %i wide", (width) => {
-    const long = provider("copilot", "Copilot", [
-      row("copilot.premium", {
-        label: "Premium interactions",
-        window: "month",
-        percentRemaining: 80,
-        resetsAt: at(30_000),
-      }),
-    ]);
-    for (const line of limits([CLAUDE, ZEN, long], width)) {
-      expect(line.length).toBeLessThanOrEqual(width);
-    }
-  });
+  it.each([24, 30, 36, 44, 56, 64, 72, 80, 96, 120, 160, 240])(
+    "keeps every line inside a window %i wide",
+    (width) => {
+      const long = provider("copilot", "Copilot", [
+        row("copilot.premium", {
+          label: "Premium interactions",
+          window: "month",
+          percentRemaining: 80,
+          resetsAt: at(30_000),
+        }),
+      ]);
+      for (const line of limits([CLAUDE, ZEN, long], width)) {
+        expect(line.length).toBeLessThanOrEqual(width);
+      }
+    },
+  );
 
   it("puts a provider's error on its own line under its name", () => {
     const failed = provider("anthropic", "Claude", [], { error: { code: "login_expired" } });
@@ -286,17 +287,16 @@ describe("quota window: tab bar", () => {
     { active: 3, first: 2, last: 4 },
     { active: 4, first: 3, last: 5 },
     { active: 6, first: 4, last: 6 },
-  ])("shows tabs $first to $last around tab $active when they don't all fit", ({
-    active,
-    first,
-    last,
-  }) => {
-    expect(tabStrip(TITLES, SETTINGS_FROM, active, 40)).toEqual({
-      first,
-      last,
-      settingsLabel: false,
-    });
-  });
+  ])(
+    "shows tabs $first to $last around tab $active when they don't all fit",
+    ({ active, first, last }) => {
+      expect(tabStrip(TITLES, SETTINGS_FROM, active, 40)).toEqual({
+        first,
+        last,
+        settingsLabel: false,
+      });
+    },
+  );
 });
 
 describe("quota window: the lists left of the body", () => {

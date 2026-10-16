@@ -405,25 +405,28 @@ describe("OpenCode Zen provider", () => {
     ["a rule the policy does not have", [{ limit: 40, spent: 2, rule: { id: "rule_gone" } }]],
     ["missing amounts", [{ limit: null, spent: null }]],
     ["a missing spend", [{ limit: 40 }]],
-  ])("uses the credit limit without an error for a member budget with %s", async (_name, budgets) => {
-    world.storeLogins([consoleLogin()]);
-    consoleHttp({ ...CREDIT_LIMIT, [MEMBER_ROUTE]: member(budgets) });
+  ])(
+    "uses the credit limit without an error for a member budget with %s",
+    async (_name, budgets) => {
+      world.storeLogins([consoleLogin()]);
+      consoleHttp({ ...CREDIT_LIMIT, [MEMBER_ROUTE]: member(budgets) });
 
-    const fetched = await fetchRows(opencodeZenProvider);
+      const fetched = await fetchRows(opencodeZenProvider);
 
-    expect(rowSummary(fetched.rows)).toEqual([CREDIT_LIMIT_ROW, BALANCE_ROW, RELOAD_OFF_ROW]);
-    expect(fetched.error).toBeUndefined();
-    expect(fetched.debug).toEqual(
-      expect.arrayContaining([
-        { key: "budget_source", value: "credit_limit" },
-        {
-          key: "member_budget_note",
-          value:
-            "member budgets found, but not all can be evaluated (model filters, per-model limits, or missing amounts); using the credit limit",
-        },
-      ]),
-    );
-  });
+      expect(rowSummary(fetched.rows)).toEqual([CREDIT_LIMIT_ROW, BALANCE_ROW, RELOAD_OFF_ROW]);
+      expect(fetched.error).toBeUndefined();
+      expect(fetched.debug).toEqual(
+        expect.arrayContaining([
+          { key: "budget_source", value: "credit_limit" },
+          {
+            key: "member_budget_note",
+            value:
+              "member budgets found, but not all can be evaluated (model filters, per-model limits, or missing amounts); using the credit limit",
+          },
+        ]),
+      );
+    },
+  );
 
   it("uses the credit limit quietly for a member without budgets", async () => {
     world.storeLogins([consoleLogin()]);

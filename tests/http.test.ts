@@ -20,25 +20,25 @@ describe("fetchWithTimeout", () => {
   it.each([
     { name: "an explicit timeout", timeoutMs: 12_000, seconds: 12 },
     { name: "the default timeout for provider requests", timeoutMs: undefined, seconds: 5 },
-  ])("times out before headers after $name, with a static message free of the URL", async ({
-    timeoutMs,
-    seconds,
-  }) => {
-    vi.useFakeTimers();
-    vi.stubGlobal("fetch", createPendingFetch());
+  ])(
+    "times out before headers after $name, with a static message free of the URL",
+    async ({ timeoutMs, seconds }) => {
+      vi.useFakeTimers();
+      vi.stubGlobal("fetch", createPendingFetch());
 
-    const request = fetchWithTimeout("https://example.test/quota?token=secret-canary", {
-      request: {},
-      ...(timeoutMs === undefined ? {} : { timeoutMs }),
-      consume: (response) => response.json(),
-    });
-    const message = new RegExp(`^Request timeout after ${seconds}s$`);
-    const assertion = expect(request).rejects.toThrow(message);
+      const request = fetchWithTimeout("https://example.test/quota?token=secret-canary", {
+        request: {},
+        ...(timeoutMs === undefined ? {} : { timeoutMs }),
+        consume: (response) => response.json(),
+      });
+      const message = new RegExp(`^Request timeout after ${seconds}s$`);
+      const assertion = expect(request).rejects.toThrow(message);
 
-    await vi.advanceTimersByTimeAsync(seconds * 1000);
-    await assertion;
-    await expect(request).rejects.not.toThrow("secret-canary");
-  });
+      await vi.advanceTimersByTimeAsync(seconds * 1000);
+      await assertion;
+      await expect(request).rejects.not.toThrow("secret-canary");
+    },
+  );
 
   it("times out while consuming a stalled response body", async () => {
     vi.useFakeTimers();

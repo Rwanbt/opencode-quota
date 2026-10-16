@@ -105,37 +105,37 @@ describe("provider source logins", () => {
   it.each([
     { runtimeId: "minimax", expected: [] },
     { runtimeId: "minimax-china-coding-plan", expected: ["minimax-china-coding-plan"] },
-  ])("discovers and matches MiniMax China with default settings for $runtimeId", async ({
-    runtimeId,
-    expected,
-  }) => {
-    vi.stubEnv("MINIMAX_CHINA_CODING_PLAN_API_KEY", "china-key");
-    registry.providers = [minimaxChinaCodingPlanProvider];
-    const loaded = {
-      path: "settings.jsonc",
-      exists: true,
-      settings: defaultSettings(),
-      issues: [],
-      fromFile: [],
-      notRead: [],
-    };
-    const host = {
-      client: {
-        config: { providers: async () => ({ data: { providers: [{ id: runtimeId }] } }) },
-      },
-      workspaceRoot: runtime.root,
-      settings: () => loaded,
-    };
+  ])(
+    "discovers and matches MiniMax China with default settings for $runtimeId",
+    async ({ runtimeId, expected }) => {
+      vi.stubEnv("MINIMAX_CHINA_CODING_PLAN_API_KEY", "china-key");
+      registry.providers = [minimaxChinaCodingPlanProvider];
+      const loaded = {
+        path: "settings.jsonc",
+        exists: true,
+        settings: defaultSettings(),
+        issues: [],
+        fromFile: [],
+        notRead: [],
+      };
+      const host = {
+        client: {
+          config: { providers: async () => ({ data: { providers: [{ id: runtimeId }] } }) },
+        },
+        workspaceRoot: runtime.root,
+        settings: () => loaded,
+      };
 
-    const source = await loadProviderSource(host);
+      const source = await loadProviderSource(host);
 
-    expect(loaded.settings.providers.off).toEqual([]);
-    expect(source.providers.map(({ id }) => id)).toEqual(expected);
-    expect(source.providerIdsForModel?.({ id: "MiniMax-M2.7", providerID: runtimeId })).toEqual(
-      expected,
-    );
-    expect(source.providerIdsForModel?.({ id: `${runtimeId}/MiniMax-M2.7` })).toEqual(expected);
-  });
+      expect(loaded.settings.providers.off).toEqual([]);
+      expect(source.providers.map(({ id }) => id)).toEqual(expected);
+      expect(source.providerIdsForModel?.({ id: "MiniMax-M2.7", providerID: runtimeId })).toEqual(
+        expected,
+      );
+      expect(source.providerIdsForModel?.({ id: `${runtimeId}/MiniMax-M2.7` })).toEqual(expected);
+    },
+  );
 
   it.runIf(POSIX_IDENTITY_STORAGE)(
     "keys logins with the install's protected key, so a saved login can't be matched to an email",

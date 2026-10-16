@@ -637,9 +637,8 @@ describe("server quota RPC", () => {
   it("lists the active notices without read state or settings", async () => {
     const nowMs = Date.parse("2026-10-10T12:00:00.000Z");
     vi.spyOn(Date, "now").mockReturnValue(nowMs);
-    const { getMaintainerAnnouncementsSummary } = await import(
-      "../src/lib/maintainer-announcements.js"
-    );
+    const { getMaintainerAnnouncementsSummary } =
+      await import("../src/lib/maintainer-announcements.js");
     const expected = getMaintainerAnnouncementsSummary({
       enabledProviders: ["copilot"],
       nowMs,
@@ -849,37 +848,39 @@ describe("server quota RPC", () => {
         repair: () => Promise.reject(new Error("disk full")),
         warns: true,
       },
-    ])("adds the detected providers of the quota_status tool to the project with $name", async ({
-      repair,
-      warns,
-    }) => {
-      mocks.reconcileDetectedProvidersInGlobalConfig.mockImplementationOnce(repair);
-      const dialogModule = await import("../src/lib/quota-dialog-commands.js");
-      vi.spyOn(dialogModule, "buildQuotaDialogCommandOutput").mockImplementation(async (params) => {
-        await params.onDetectedProviderIds?.(["openai"]);
-        return { output: "OpenAI quota" };
-      });
-      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-      const projectDirectory = `${TEST_RUNTIME_ROOT}/project`;
-      const { tools } = await setupServer({ directory: projectDirectory });
-      const tool = tools.find((item) => item.name === "quota_status");
-
-      expect(await tool?.execute({}, { sessionID: "session-auto-provider" })).toEqual({
-        content: "OpenAI quota",
-      });
-      expect(mocks.reconcileDetectedProvidersInGlobalConfig).toHaveBeenCalledWith({
-        configRootDir: projectDirectory,
-        detectedProviderIds: ["openai"],
-      });
-      if (warns) {
-        expect(warn).toHaveBeenCalledWith(
-          "Failed to add detected providers to global OpenCode config",
-          expect.any(Error),
+    ])(
+      "adds the detected providers of the quota_status tool to the project with $name",
+      async ({ repair, warns }) => {
+        mocks.reconcileDetectedProvidersInGlobalConfig.mockImplementationOnce(repair);
+        const dialogModule = await import("../src/lib/quota-dialog-commands.js");
+        vi.spyOn(dialogModule, "buildQuotaDialogCommandOutput").mockImplementation(
+          async (params) => {
+            await params.onDetectedProviderIds?.(["openai"]);
+            return { output: "OpenAI quota" };
+          },
         );
-      } else {
-        expect(warn).not.toHaveBeenCalled();
-      }
-    });
+        const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+        const projectDirectory = `${TEST_RUNTIME_ROOT}/project`;
+        const { tools } = await setupServer({ directory: projectDirectory });
+        const tool = tools.find((item) => item.name === "quota_status");
+
+        expect(await tool?.execute({}, { sessionID: "session-auto-provider" })).toEqual({
+          content: "OpenAI quota",
+        });
+        expect(mocks.reconcileDetectedProvidersInGlobalConfig).toHaveBeenCalledWith({
+          configRootDir: projectDirectory,
+          detectedProviderIds: ["openai"],
+        });
+        if (warns) {
+          expect(warn).toHaveBeenCalledWith(
+            "Failed to add detected providers to global OpenCode config",
+            expect.any(Error),
+          );
+        } else {
+          expect(warn).not.toHaveBeenCalled();
+        }
+      },
+    );
 
     it("waits before asking a failed provider again; a manual refresh asks at once", async () => {
       useQuotaSettings({
@@ -928,26 +929,25 @@ describe("server quota RPC", () => {
     it.each([
       { words: { percent: "used" }, shows: "5h 19% used", hides: "left" },
       { words: { percent: "bare" }, shows: "5h 81%", hides: "left" },
-    ])("shows /quota in the percent words the settings choose: $words", async ({
-      words,
-      shows,
-      hides,
-    }) => {
-      useQuotaSettings({
-        words,
-        providers: { off: CONFIG_PROVIDER_IDS.filter((id) => !["openai"].includes(id)) },
-      });
-      const fetch = vi
-        .fn()
-        .mockResolvedValue(answer({ name: "OpenAI", rows: [percentRow("five_hour", "5h", 81)] }));
-      mocks.getProviders.mockReturnValue([provider("openai", fetch)]);
-      const { quota } = await setupServer();
+    ])(
+      "shows /quota in the percent words the settings choose: $words",
+      async ({ words, shows, hides }) => {
+        useQuotaSettings({
+          words,
+          providers: { off: CONFIG_PROVIDER_IDS.filter((id) => !["openai"].includes(id)) },
+        });
+        const fetch = vi
+          .fn()
+          .mockResolvedValue(answer({ name: "OpenAI", rows: [percentRow("five_hour", "5h", 81)] }));
+        mocks.getProviders.mockReturnValue([provider("openai", fetch)]);
+        const { quota } = await setupServer();
 
-      const output = await quota();
+        const output = await quota();
 
-      expect(output).toContain(shows);
-      expect(output).not.toContain(hides);
-    });
+        expect(output).toContain(shows);
+        expect(output).not.toContain(hides);
+      },
+    );
 
     it.each([
       {

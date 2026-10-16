@@ -164,7 +164,7 @@ export function tabStrip(
     room;
   let first = active;
   let last = active;
-  for (let grew = true; grew; ) {
+  for (let grew = true; grew;) {
     grew = false;
     if (last < end && fits(first, last + 1)) {
       last += 1;

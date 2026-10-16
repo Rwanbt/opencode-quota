@@ -2,7 +2,7 @@ pre-commit:
   commands:
     check:
       glob: "**/*.{js,cjs,mjs,jsx,ts,tsx,json,jsonc,css}"
-      run: pnpm exec vp check --fix --no-fmt --no-error-on-unmatched-pattern {staged_files}
+      run: pnpm exec vp check --fix --no-error-on-unmatched-pattern {staged_files}
       stage_fixed: true
 
 pre-push:
