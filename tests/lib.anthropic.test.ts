@@ -1122,7 +1122,7 @@ describe("anthropicLoginsIdentity", () => {
       providerId: "anthropic:opencode-auth",
       principal: { kind: "credential", value: "opencode-access-secret" },
     });
-    expect(resolved).not.toContain("opencode-access-secret");
+    expect(JSON.stringify(resolved)).not.toContain("opencode-access-secret");
     expect(execFileMock).not.toHaveBeenCalled();
   });
 

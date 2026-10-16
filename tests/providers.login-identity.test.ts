@@ -1,7 +1,7 @@
 /**
- * Who a provider is signed in as covers every login it checks: a login added or switched shows at
- * the next check after a login change, instead of waiting out the check interval. Through the
- * store, with the real providers, a temp `opencode.db` and fake HTTP.
+ * Who a provider is signed in as covers every login it checks: a login added, switched or
+ * swapped shows at the next check after a login change, instead of waiting out the check
+ * interval. Through the store, with the real providers, a temp `opencode.db` and fake HTTP.
  */
 
 import { join } from "node:path";
@@ -129,7 +129,7 @@ const VENDORS: Vendor[] = [
       updated,
       value: {
         type: "oauth",
-        refresh: `refresh-${id}|project-${id}`,
+        refresh: `refresh-${token}|project-${token}`,
         access: token,
         expires: Date.now() + 3_600_000,
       },
@@ -180,7 +180,8 @@ function storeFor(providerId: string) {
 }
 
 describe.each(VENDORS)("$providerId login list", (vendor) => {
-  it("checks a login added after the last check at the next login change", async () => {
+  /** The tokens of the requests made so far. */
+  function recordTokens(): string[] {
     const tokens: string[] = [];
     fakeHttp((url, init) => {
       const token = vendor.token(init);
@@ -188,6 +189,11 @@ describe.each(VENDORS)("$providerId login list", (vendor) => {
       return vendor.reply(url);
     });
     vendor.setup?.();
+    return tokens;
+  }
+
+  it("checks a login added after the last check at the next login change", async () => {
+    const tokens = recordTokens();
     world.storeLogins([vendor.login("work", "token-work", 2)]);
     const store = storeFor(vendor.providerId);
 
@@ -208,4 +214,39 @@ describe.each(VENDORS)("$providerId login list", (vendor) => {
       expect.stringContaining("home"),
     ]);
   });
+
+  it("checks again when two logins swap their tokens", async () => {
+    const tokens = recordTokens();
+    world.storeLogins([vendor.login("work", "token-a", 2), vendor.login("home", "token-b", 1)]);
+    const store = storeFor(vendor.providerId);
+    await store.refresh({ reason: "manual" });
+    tokens.length = 0;
+
+    world.storeLogins([vendor.login("work", "token-b", 2), vendor.login("home", "token-a", 1)]);
+    store.invalidateIdentity();
+    await store.refresh({ reason: "poll" });
+    await store.dispose();
+
+    expect(tokens).toEqual(expect.arrayContaining(["token-a", "token-b"]));
+  });
+});
+
+it("checks again when a config key is removed and a stored login holds the same key", async () => {
+  const apiKey = (key?: string) =>
+    world.writeConfigFile(
+      "opencode.json",
+      JSON.stringify({ providers: { deepseek: { settings: { apiKey: key } } } }),
+    );
+  fakeHttp(() => ({ balance_infos: [{ currency: "USD", total_balance: "1.00" }] }));
+  apiKey("same-key");
+  world.storeLogins([keyLogin("work", "deepseek", "same-key", { label: "work" })]);
+  const store = storeFor("deepseek");
+  const fromConfig = await store.refresh({ reason: "manual" });
+
+  apiKey(undefined);
+  store.invalidateIdentity();
+  const fromLogin = await store.refresh({ reason: "poll" });
+  await store.dispose();
+
+  expect([accounts(fromConfig), accounts(fromLogin)]).toEqual([[undefined], ["work"]]);
 });

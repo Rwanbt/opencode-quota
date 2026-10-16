@@ -58,31 +58,31 @@ function resolvedCredentialPolicy(
 }
 
 /**
- * Every key the vendor checks: the env or config key, else each stored key login. A key bound to
- * one regional `endpoint` has the endpoint in its identity.
+ * Every key the vendor checks: the env or config key with where it was found, else each stored
+ * key login. A key bound to one regional `endpoint` has the endpoint in its identity.
  */
 function vendorKeysPolicy(
   providerId: CanonicalQuotaProviderId & keyof typeof API_KEY_VENDORS,
   endpoint?: string,
 ): QuotaProviderCachePolicy {
   const spec: ApiKeyLoginSpec = API_KEY_VENDORS[providerId];
-  const keyIdentity = (key: string) =>
+  const keyIdentity = (key: string, source?: string) =>
     deriveResolvedAuthIdentity({
       providerId,
       principal: { kind: "credential", value: key },
-      qualifiers: endpoint ? [endpoint] : undefined,
+      qualifiers: [...(endpoint ? [endpoint] : []), ...(source ? [source] : [])],
     });
   return {
     kind: "resolved-auth",
     async resolveIdentity() {
       const keys = await readVendorKeys(spec);
-      if (keys.envOrConfig) return keyIdentity(keys.envOrConfig.key);
+      if (keys.envOrConfig) return keyIdentity(keys.envOrConfig.key, keys.envOrConfig.source);
       return loginListIdentity(
         providerId,
         await Promise.all(
           keys.logins.map(async ({ row, auth }) => ({
+            row,
             identity: auth.state === "configured" ? await keyIdentity(auth.apiKey) : null,
-            active: row.active,
           })),
         ),
       );

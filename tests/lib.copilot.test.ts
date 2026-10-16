@@ -28,7 +28,11 @@ vi.mock("fs", async (importOriginal) => ({
   readFileSync: mocks.readFileSync,
 }));
 vi.mock("../src/lib/opencode-runtime-paths.js", () => ({
-  getOpencodeRuntimeDirs: () => ({ configDir: mocks.configDir }),
+  // The state folder is the test's temp one: it keeps the key the login list identity uses.
+  getOpencodeRuntimeDirs: () => ({
+    configDir: mocks.configDir,
+    stateDir: process.env.XDG_STATE_HOME,
+  }),
 }));
 vi.mock("../src/lib/opencode-auth.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/lib/opencode-auth.js")>()),
@@ -209,7 +213,7 @@ describe("Copilot credential sources", () => {
       principal: { kind: "credential", value: "copilot-oauth-secret" },
       qualifiers: ["api=https://api.example.ghe.com"],
     });
-    expect(resolved).not.toContain("copilot-oauth-secret");
+    expect(JSON.stringify(resolved)).not.toContain("copilot-oauth-secret");
   });
 
   it("scopes PAT cache identity to the resolved billing target and UTC period", async () => {

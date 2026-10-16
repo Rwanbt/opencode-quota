@@ -1168,8 +1168,6 @@ export async function copilotLoginsIdentity(
   const checked = logins.oauth.filter((row) => selectCopilotAuth(credentialRowAuthData(row)).auth);
   return loginListIdentity(
     "copilot",
-    await Promise.all(
-      checked.map(async (row) => ({ identity: await oauthIdentity(row), active: row.active })),
-    ),
+    await Promise.all(checked.map(async (row) => ({ row, identity: await oauthIdentity(row) }))),
   );
 }

@@ -309,8 +309,9 @@ describe("Gemini CLI rows", () => {
     expect(fetched.rows[0]?.resetsAt).toBe("2026-01-01T12:00:00Z");
   });
 
-  it("shows a login OpenCode could not return as an error, next to working ones", async () => {
+  it("shows a login OpenCode could not return as an error next to working ones, and keeps the rows in memory only", async () => {
     installCompanion(PROVIDERS[1]);
+    PROVIDERS[1].companion.resolver.clearCacheForTests();
     const integration = createFakeIntegration([
       {
         integrationId: "google",
@@ -350,6 +351,11 @@ describe("Gemini CLI rows", () => {
       expect(errorDebug(fetched)).toEqual([
         "[Gemini CLI [email]] (active): Gemini CLI sign-in could not be refreshed: refresh_failed: HTTP 400. Run `opencode auth login google`.",
       ]);
+      const policy = PROVIDER_CACHE_POLICIES["google-gemini-cli"];
+      if (policy.kind !== "resolved-auth") throw new Error("expected a resolved-auth policy");
+      await expect(
+        policy.resolveIdentity({ config: {} } as never, {} as never),
+      ).resolves.toBeNull();
     } finally {
       unbind();
     }

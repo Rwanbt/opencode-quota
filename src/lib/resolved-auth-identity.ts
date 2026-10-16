@@ -220,23 +220,23 @@ export async function composeResolvedAuthIdentities(params: {
 }
 
 /**
- * Who a provider is signed in as across every login it checks, so adding, removing or switching
- * a login changes it. One login keeps its own identity; several give their identities in a
- * stable order plus the ones OpenCode uses. Null without logins, or when one of them can't be
- * told apart safely.
+ * Who a provider is signed in as across every login it checks: each login's connection with its
+ * own identity and whether OpenCode uses it, in a stable order. Adding, removing, switching or
+ * swapping a login changes it. Null without logins, or when one of them can't be told apart
+ * safely.
  */
 export async function loginListIdentity(
   providerId: string,
-  logins: ReadonlyArray<{ identity: ResolvedAuthIdentity | null; active?: boolean }>,
+  logins: ReadonlyArray<{
+    row: { id: string; active: boolean };
+    identity: ResolvedAuthIdentity | null;
+  }>,
 ): Promise<ResolvedAuthIdentity | null> {
-  const identities = logins.map((login) => login.identity);
-  if (identities.length === 0 || identities.includes(null)) return null;
-  if (identities.length === 1) return identities[0] ?? null;
-  return composeResolvedAuthIdentities({
-    providerId,
-    identities: (identities as ResolvedAuthIdentity[]).sort(),
-    qualifiers: logins.flatMap((login) => (login.active ? [login.identity as string] : [])).sort(),
-  });
+  if (logins.length === 0 || logins.some((login) => login.identity === null)) return null;
+  const members = logins
+    .map(({ row, identity }) => JSON.stringify([row.id, identity, row.active]))
+    .sort();
+  return keyedIdentity(["logins", providerId, members]);
 }
 
 export function __resetResolvedAuthIdentityForTests(): void {

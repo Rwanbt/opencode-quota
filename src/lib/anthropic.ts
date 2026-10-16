@@ -985,7 +985,7 @@ export async function anthropicLoginsIdentity(
                   principal: { kind: "credential", value: auth.accessToken },
                 })
               : null,
-          active: row.active,
+          row,
         })),
       ),
     );

@@ -166,7 +166,7 @@ describe("OpenAI login identity", () => {
       accountId: "account-stable-id",
     });
 
-    expect(identity).toBe("rai1_test-opaque-identity");
+    expect(identity).toMatch(/^rai1_/u);
     expect(mocks.deriveResolvedAuthIdentity).toHaveBeenCalledWith({
       providerId: "openai",
       principal: { kind: "stable-id", value: "account-stable-id" },

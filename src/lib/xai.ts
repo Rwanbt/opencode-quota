@@ -133,7 +133,7 @@ export async function xaiLoginsIdentity(
                 principal: { kind: "credential", value: auth.accessToken },
               })
             : null,
-        active: row.active,
+        row,
       })),
     ),
   );

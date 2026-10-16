@@ -72,12 +72,12 @@ describe("provider cache policies", () => {
     expect(cachePolicyMocks.deriveIdentity).toHaveBeenCalledWith({
       providerId: "kimi-code-plan-global",
       principal: { kind: "credential", value: "shared-kimi-secret" },
-      qualifiers: ["global"],
+      qualifiers: ["global", "env:KIMI_GLOBAL_API_KEY"],
     });
     expect(cachePolicyMocks.deriveIdentity).toHaveBeenCalledWith({
       providerId: "kimi-code-plan-cn",
       principal: { kind: "credential", value: "shared-kimi-secret" },
-      qualifiers: ["cn"],
+      qualifiers: ["cn", "env:KIMI_CN_API_KEY"],
     });
 
     vi.stubEnv("KIMI_CN_API_KEY", "changed-cn-secret");

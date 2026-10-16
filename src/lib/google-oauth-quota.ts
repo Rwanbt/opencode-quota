@@ -227,7 +227,8 @@ export async function hasGoogleQuotaRuntimeAvailable<Key extends GoogleAuthSourc
 
 /**
  * Who the flavor is signed in as: the account of every login, plus the companion plugin's
- * client. Null without a usable login or without the companion's client.
+ * client. Null without logins, with a login that has no account (one OpenCode could not return,
+ * for example), or without the companion's client.
  */
 export async function googleLoginsIdentity<Key extends GoogleAuthSourceKey>(
   flavor: GoogleAuthFlavor<Key>,
@@ -236,20 +237,24 @@ export async function googleLoginsIdentity<Key extends GoogleAuthSourceKey>(
   const credentials = await flavor.companion.resolveCredentials();
   if (credentials.state !== "configured") return null;
 
-  const accounts = logins.rows.flatMap((row) =>
-    resolveGoogleAccounts(flavor, credentialRowAuthData(row), logins.configuredProjectId).map(
-      (account) => ({ account, active: row.active }),
-    ),
-  );
   const accountIdentities = await Promise.all(
-    accounts.map(async ({ account, active }) => ({
-      identity: await deriveResolvedAuthIdentity({
-        providerId: flavor.providerId,
-        principal: { kind: "credential", value: account.refreshToken },
-        qualifiers: [account.projectId],
-      }),
-      active,
-    })),
+    logins.rows.flatMap((row) => {
+      const accounts = resolveGoogleAccounts(
+        flavor,
+        credentialRowAuthData(row),
+        logins.configuredProjectId,
+      );
+      return (accounts.length > 0 ? accounts : [null]).map(async (account) => ({
+        row,
+        identity: account
+          ? await deriveResolvedAuthIdentity({
+              providerId: flavor.providerId,
+              principal: { kind: "credential", value: account.refreshToken },
+              qualifiers: [account.projectId],
+            })
+          : null,
+      }));
+    }),
   );
   const [accountsIdentity, companionIdentity] = await Promise.all([
     loginListIdentity(flavor.providerId, accountIdentities),

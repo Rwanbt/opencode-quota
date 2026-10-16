@@ -211,7 +211,7 @@ export async function openaiLoginsIdentity(
     await Promise.all(
       logins.map(async ({ row, oauth }) => {
         if (row.resolveError !== undefined || oauth?.state === "failed") {
-          return { identity: null, active: row.active };
+          return { row, identity: null };
         }
         const principal = oauth
           ? oauth.accountId
@@ -219,8 +219,8 @@ export async function openaiLoginsIdentity(
             : { kind: "credential" as const, value: oauth.refreshToken ?? oauth.accessToken }
           : { kind: "stable-id" as const, value: `connection:${row.id}` };
         return {
+          row,
           identity: await deriveResolvedAuthIdentity({ providerId: "openai", principal }),
-          active: row.active,
         };
       }),
     ),
