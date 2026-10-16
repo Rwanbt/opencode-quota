@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { QuotaRow, QuotaWindow, Words } from "../src/core/types.js";
 import { DEFAULT_WORDS } from "../src/view/format.js";
 import { errorWords, type Place, rowFacts } from "../src/view/row-facts.js";

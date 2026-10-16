@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, afterEach, vi } from "vitest";
+import { afterAll, afterEach, vi } from "vite-plus/test";
 
 // Git hooks (for example the pre-push `pnpm verify`) export GIT_DIR, GIT_INDEX_FILE and similar
 // variables. A git command run by a test would inherit them and write to the real repository

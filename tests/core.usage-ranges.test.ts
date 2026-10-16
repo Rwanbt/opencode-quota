@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { OLD_USAGE_COMMANDS, parseUsageArguments, USAGE_RANGES } from "../src/core/usage-ranges.js";
 
 describe("usage ranges", () => {

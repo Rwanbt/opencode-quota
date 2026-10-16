@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { parse } from "jsonc-parser";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { quotaAgentTools } from "../src/agent-tools.js";
 import { bindCredentialSource, type CredentialRow } from "../src/lib/opencode-auth.js";
 import type { RemoteApiQuotaProviderDefinition } from "../src/lib/quota-providers.js";

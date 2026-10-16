@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { paceOf } from "../src/core/pace.js";
 import type { QuotaRow } from "../src/core/types.js";
 import { quotaRow } from "./helpers/fake-answers.js";

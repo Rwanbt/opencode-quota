@@ -11,7 +11,7 @@ Thanks for contributing! Please read this before you open an issue or PR.
 
 ## Setup
 
-Node.js `^22.13.0 || >=23.4.0` and pnpm 11:
+Node.js 22.18+, 24.11+ or 26+ (what Vite+ needs; the published plugin itself runs on `^22.13.0 || >=23.4.0`) and pnpm 11:
 
 ```sh
 corepack enable

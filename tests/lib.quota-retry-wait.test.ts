@@ -2,7 +2,7 @@ import { mkdtempSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import type { QuotaRetryEvent } from "../src/lib/quota-retry-wait.js";
 import type { ProviderRow } from "../src/providers/contract.js";

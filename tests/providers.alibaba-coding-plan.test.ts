@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { readAlibabaCodingPlanQuotaState } from "../src/lib/alibaba-coding-plan-local-quota.js";
 import { alibabaCodingPlanProvider } from "../src/providers/alibaba-coding-plan.js";

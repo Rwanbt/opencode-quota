@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { SHIPPED_PRICE_LIST as SHIPPED } from "./helpers/shipped-price-list.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;

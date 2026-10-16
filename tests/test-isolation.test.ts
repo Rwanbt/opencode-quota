@@ -1,6 +1,6 @@
 import { realpathSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 // tests/setup.ts keeps tests away from this machine's real OpenCode folders and the network.
 describe("test isolation", () => {

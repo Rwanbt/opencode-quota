@@ -4,7 +4,7 @@ import { access, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { parse } from "yaml";
 
 interface WorkflowStep {
@@ -115,6 +115,10 @@ describe("package manifest compatibility", () => {
       ["scripts", "format:check", undefined],
       ["scripts", "lint", "vp lint"],
       ["scripts", "check", "vp check"],
+      // Vite+ runs the tests too (Vitest 5 inside vite-plus); no separate Vitest.
+      ["devDependencies", "vitest", undefined],
+      ["scripts", "test", "vp test run"],
+      ["scripts", "test:watch", "vp test watch"],
       ["scripts", "verify:v4-formatting", undefined],
       ["devDependencies", "lefthook", "2.0.15"],
       ["devDependencies", "husky", undefined],
@@ -185,6 +189,7 @@ describe("package manifest compatibility", () => {
       "../.husky",
       "../.lintstagedrc",
       "../biome.json",
+      "../vitest.config.ts",
       ...staleCrof,
     ];
     for (const path of removed) {
@@ -215,8 +220,12 @@ describe("package manifest compatibility", () => {
         "minimumReleaseAgeStrict: true",
         "minimumReleaseAgeIgnoreMissingTime: false",
         "blockExoticSubdeps: true",
+        "vite@*: npm:@voidzero-dev/vite-plus-core@1.2.0",
       ],
-      [/peerDependencyRules|allowedVersions|ignoreMissing|strictPeerDependencies:\s*false/],
+      [
+        /peerDependencyRules|allowedVersions|ignoreMissing|strictPeerDependencies:\s*false/,
+        /minimumReleaseAgeExclude/,
+      ],
     ],
     ["the README", "../README.md", ["Node.js `22.13+` or `23.4+`"], ["OpenCode `>= 1.4.3`"]],
     ["the pack script", "../scripts/pack-release-package.mjs", [], ["HUSKY", "LEFTHOOK"]],

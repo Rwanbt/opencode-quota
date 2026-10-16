@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 const fsMocks = vi.hoisted(() => ({
   existsSync: vi.fn(() => true),

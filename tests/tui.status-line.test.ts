@@ -7,7 +7,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { convertV5 } from "../src/settings/index.js";
 import { displaySettings } from "../src/tui/display.js";
 import type { SurfaceHost } from "../src/tui/sidebar.js";

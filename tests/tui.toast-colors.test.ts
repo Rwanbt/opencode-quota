@@ -3,7 +3,7 @@
  * they are sent instead of the plain message. JSX builds plain `{ type, props }` nodes here.
  */
 import type { Owner } from "solid-js";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import type { ProviderSnapshot, QuotaRow } from "../src/core/types.js";
 import { defaultDisplaySettings } from "../src/tui/display.js";
 import type { Theme } from "../src/tui/theme.js";

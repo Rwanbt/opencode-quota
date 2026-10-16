@@ -1,5 +1,5 @@
 // The OpenAI provider through the real credential reader; only the network is faked.
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { rowsFromProviderResult } from "../src/core/rows.js";
 import {
   bindCredentialSource,

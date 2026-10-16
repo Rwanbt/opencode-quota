@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import tuiPlugin from "../src/tui/index.js";
 import { createFakeIntegration } from "./helpers/fake-integration.js";

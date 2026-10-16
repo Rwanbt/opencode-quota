@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vite-plus/test";
 import type { QuotaRpcSaveSettingsInput, QuotaRpcSettingsOutput } from "../src/rpc.js";
 import { checkSetting } from "../src/settings/index.js";
 import { CHANGED_SINCE_REVIEW } from "../src/settings/schema.js";

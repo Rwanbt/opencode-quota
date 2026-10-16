@@ -1,7 +1,7 @@
 // The provider flow shared by Google AGY and Gemini CLI (src/providers/google-oauth-provider.ts),
 // through the real providers with logins in a temp `opencode.db`, a fake companion plugin in
 // OpenCode's package cache, and fake HTTP.
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 
 import { agyCompanion, geminiCliCompanion } from "../src/lib/google-companion-credentials.js";
 import {

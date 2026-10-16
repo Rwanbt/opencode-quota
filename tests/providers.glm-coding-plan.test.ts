@@ -3,7 +3,7 @@
  * fake HTTP replies.
  */
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { zaiProvider, zhipuProvider } from "../src/providers/glm-coding-plan.js";
 import {

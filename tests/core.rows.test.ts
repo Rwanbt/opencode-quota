@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { accountFromGroup, rowsFromProviderResult } from "../src/core/rows.js";
 import type { DebugDetail, QuotaRow } from "../src/core/types.js";

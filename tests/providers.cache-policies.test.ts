@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 const cachePolicyMocks = vi.hoisted(() => ({
   deriveIdentity: vi.fn(async (params: unknown) => JSON.stringify(params)),

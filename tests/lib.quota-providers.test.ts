@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vite-plus/test";
 import { listProvidersForModelId } from "../src/lib/modelsdev-pricing.js";
 import {
   cloneQuotaProviders,

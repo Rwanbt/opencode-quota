@@ -47,8 +47,8 @@
     "verify:typescript-version": "node scripts/verify-typescript-version.mjs",
     "verify:v4-history": "node scripts/verify-v4-history.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run",
-    "test:watch": "vitest",
+    "test": "vp test run",
+    "test:watch": "vp test watch",
     "verify": "pnpm run check && pnpm run verify:typescript-version && pnpm run verify:v4-history && pnpm run build && pnpm test && pnpm run verify:package-contents",
     "prepublishOnly": "pnpm run build",
     "prepare": "lefthook install"
@@ -84,7 +84,6 @@
     "lefthook": "2.0.15",
     "typescript": "7.0.2",
     "vite-plus": "1.2.0",
-    "vitest": "^4.0.17",
     "yaml": "^2.8.3"
   },
   "dependencies": {

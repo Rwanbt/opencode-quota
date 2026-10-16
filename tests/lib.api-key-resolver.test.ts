@@ -1,6 +1,6 @@
 import { homedir } from "os";
 import { join } from "path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { createFakeIntegration } from "./helpers/fake-integration.js";
 
 const mocks = vi.hoisted(() => ({

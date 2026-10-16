@@ -4,7 +4,7 @@
  * when OpenCode draws the window again.
  */
 import { createRoot } from "solid-js";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import type { QuotaSnapshot } from "../src/core/types.js";
 import { quotaLimitsText } from "../src/lib/quota-report-message.js";
 import type {

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { rowsFromProviderResult } from "../src/core/rows.js";
 import type { Amount, QuotaRow } from "../src/core/types.js";
 import { getCopilotQuotaAuthDiagnostics, queryCopilotQuota } from "../src/lib/copilot.js";

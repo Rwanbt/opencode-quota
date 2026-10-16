@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { getProviders } from "../src/providers/registry.js";
 import { SHIPPED_PRICE_LIST } from "./helpers/shipped-price-list.js";

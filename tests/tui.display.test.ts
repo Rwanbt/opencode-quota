@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { checkSetting, SETTINGS_SCHEMA, type SettingRule } from "../src/settings/schema.js";
 import {
   type DisplaySettings,

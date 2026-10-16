@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vite-plus/test";
 import type { OpenCodeMessage } from "../src/lib/opencode-storage.js";
 import type { LocalEstimateQuotaProviderDefinition } from "../src/lib/quota-providers.js";
 import {
