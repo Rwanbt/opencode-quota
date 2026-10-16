@@ -2,7 +2,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { activePriceList } from "../src/lib/modelsdev-pricing.js";
 import { createLiveSettings } from "../src/settings/index.js";
 

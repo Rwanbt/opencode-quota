@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { matchesQuotaProviderCurrentSelection } from "../src/core/selection.js";
 import type { QuotaProviderDefinition } from "../src/lib/quota-providers.js";

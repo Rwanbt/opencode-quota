@@ -1,3 +1,4 @@
+import { usageRangeLabel } from "../core/usage-ranges.js";
 /**
  * The usage view: a `UsageReport` laid out like T3 Code's usage page, adapted to a terminal, as
  * lines of text spans. A span has a role ("title", "muted", "provider:0", ...) and no color, so
@@ -13,7 +14,6 @@
  * fits in `width` terminal columns.
  */
 import type { UsageByType, UsageModelRow, UsageReport, UsageRow } from "../core/usage.js";
-import { usageRangeLabel } from "../core/usage-ranges.js";
 import { getQuotaProviderDisplayLabel } from "../lib/provider-metadata.js";
 import {
   columnsOf,

@@ -3,6 +3,7 @@
  * stored in OpenCode, or of the login the Claude CLI or its credentials file holds.
  */
 
+import { readAnthropicLogins } from "../lib/anthropic-auth.js";
 import {
   type AnthropicQuotaResult,
   anthropicLoginsIdentity,
@@ -11,7 +12,6 @@ import {
   queryAnthropicQuota,
   queryAnthropicQuotaWithOAuth,
 } from "../lib/anthropic.js";
-import { readAnthropicLogins } from "../lib/anthropic-auth.js";
 import { sanitizeDisplayText } from "../lib/display-sanitize.js";
 import type { QuotaProvider, QuotaProviderContext } from "../lib/entries.js";
 import { isCanonicalProviderAvailable } from "../lib/provider-availability.js";

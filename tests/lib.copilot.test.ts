@@ -1,6 +1,6 @@
 import { join } from "node:path";
 
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import {
   copilotLoginsIdentity,
@@ -269,47 +269,50 @@ describe("Copilot credential sources", () => {
       organization: "acme",
       enterpriseUrl: "https://acme.ghe.com/path?token=pat-secret",
     },
-  ])("rejects invalid trusted billing config %o without reading or borrowing OAuth", async (config) => {
-    configure(config);
-    signIn({ enterpriseUrl: "oauth.ghe.com" });
-    const fetchMock = stubFetch();
+  ])(
+    "rejects invalid trusted billing config %o without reading or borrowing OAuth",
+    async (config) => {
+      configure(config);
+      signIn({ enterpriseUrl: "oauth.ghe.com" });
+      const fetchMock = stubFetch();
 
-    const error = await errorOf(query());
+      const error = await errorOf(query());
 
-    expect(error).toContain("Invalid copilot-quota-token.json");
-    expect(error).not.toContain("pat-secret");
-    await expect(identity()).resolves.toBeNull();
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
+      expect(error).toContain("Invalid copilot-quota-token.json");
+      expect(error).not.toContain("pat-secret");
+      await expect(identity()).resolves.toBeNull();
+      expect(fetchMock).not.toHaveBeenCalled();
+    },
+  );
 });
 
 describe("Copilot OAuth internal user quota", () => {
-  it.each([
-    { access: "oauth-token" },
-    { access: undefined, refresh: "oauth-token" },
-  ])("reuses OpenCode OAuth %o for GitHub.com personal quota", async (credential) => {
-    signIn(credential);
-    const fetchMock = stubFetch(() => json(copilotUser()));
+  it.each([{ access: "oauth-token" }, { access: undefined, refresh: "oauth-token" }])(
+    "reuses OpenCode OAuth %o for GitHub.com personal quota",
+    async (credential) => {
+      signIn(credential);
+      const fetchMock = stubFetch(() => json(copilotUser()));
 
-    await expect(query()).resolves.toEqual({
-      success: true,
-      mode: "user_quota",
-      unit: "premium_interactions",
-      used: 600.5,
-      authority: "locally_derived",
-      total: 1000,
-      percentRemaining: 40,
-      plan: "enterprise",
-      resetTimeIso: "2026-02-01T00:00:00.000Z",
-    });
-    const [url, init] = fetchMock.mock.calls[0] ?? [];
-    expect(url).toBe("https://api.github.com/copilot_internal/user");
-    expect(init?.headers).toMatchObject({
-      Authorization: "token oauth-token",
-      Accept: "application/json",
-      "Editor-Version": "vscode/1.96.2",
-    });
-  });
+      await expect(query()).resolves.toEqual({
+        success: true,
+        mode: "user_quota",
+        unit: "premium_interactions",
+        used: 600.5,
+        authority: "locally_derived",
+        total: 1000,
+        percentRemaining: 40,
+        plan: "enterprise",
+        resetTimeIso: "2026-02-01T00:00:00.000Z",
+      });
+      const [url, init] = fetchMock.mock.calls[0] ?? [];
+      expect(url).toBe("https://api.github.com/copilot_internal/user");
+      expect(init?.headers).toMatchObject({
+        Authorization: "token oauth-token",
+        Accept: "application/json",
+        "Editor-Version": "vscode/1.96.2",
+      });
+    },
+  );
 
   it.each<[string, Record<string, unknown>, unknown]>([
     [
@@ -415,16 +418,16 @@ describe("Copilot OAuth internal user quota", () => {
     await expect(query()).resolves.toEqual(expected);
   });
 
-  it.each([
-    "acme.ghe.com",
-    "https://acme.ghe.com",
-  ])("routes OpenCode OAuth through a validated GHE.com host: %s", async (enterpriseUrl) => {
-    signIn({ enterpriseUrl });
-    const fetchMock = stubFetch(() => json(copilotUser()));
+  it.each(["acme.ghe.com", "https://acme.ghe.com"])(
+    "routes OpenCode OAuth through a validated GHE.com host: %s",
+    async (enterpriseUrl) => {
+      signIn({ enterpriseUrl });
+      const fetchMock = stubFetch(() => json(copilotUser()));
 
-    await expect(query()).resolves.toMatchObject({ success: true });
-    expect(fetchMock.mock.calls[0]?.[0]).toBe("https://api.acme.ghe.com/copilot_internal/user");
-  });
+      await expect(query()).resolves.toMatchObject({ success: true });
+      expect(fetchMock.mock.calls[0]?.[0]).toBe("https://api.acme.ghe.com/copilot_internal/user");
+    },
+  );
 
   it.each([
     "http://acme.ghe.com",
@@ -457,34 +460,37 @@ describe("Copilot PAT billing reports", () => {
   it.each([
     ["max", "github_pat_personal"],
     ["pro", "ghu_user_token"],
-  ])("uses the personal AI Credit endpoint and 2026-03-10 headers for %s %s over OpenCode OAuth", async (tier, token) => {
-    configure({ token, tier, username: "alice" });
-    signIn({ enterpriseUrl: "oauth.ghe.com" });
-    const fetchMock = billingApi();
+  ])(
+    "uses the personal AI Credit endpoint and 2026-03-10 headers for %s %s over OpenCode OAuth",
+    async (tier, token) => {
+      configure({ token, tier, username: "alice" });
+      signIn({ enterpriseUrl: "oauth.ghe.com" });
+      const fetchMock = billingApi();
 
-    await expect(query()).resolves.toEqual({
-      success: true,
-      mode: "user_quota",
-      unit: "ai_credits",
-      period: { year: 2026, month: 1 },
-      used: 100,
-      includedUsed: 80,
-      billedUsed: 20,
-      billedAmountUsd: 0.2,
-      authority: "provider_reported",
-    });
-    const [target] = requestedUrls(fetchMock);
-    expect(target?.hostname).toBe("api.github.com");
-    expect(target?.pathname).toBe("/users/alice/settings/billing/ai_credit/usage");
-    expect(target?.searchParams.get("year")).toBe("2026");
-    expect(target?.searchParams.get("month")).toBe("1");
-    expect(target?.searchParams.get("product")).toBeNull();
-    expect(fetchMock.mock.calls[0]?.[1]?.headers).toMatchObject({
-      Accept: "application/vnd.github+json",
-      Authorization: `Bearer ${token}`,
-      "X-GitHub-Api-Version": "2026-03-10",
-    });
-  });
+      await expect(query()).resolves.toEqual({
+        success: true,
+        mode: "user_quota",
+        unit: "ai_credits",
+        period: { year: 2026, month: 1 },
+        used: 100,
+        includedUsed: 80,
+        billedUsed: 20,
+        billedAmountUsd: 0.2,
+        authority: "provider_reported",
+      });
+      const [target] = requestedUrls(fetchMock);
+      expect(target?.hostname).toBe("api.github.com");
+      expect(target?.pathname).toBe("/users/alice/settings/billing/ai_credit/usage");
+      expect(target?.searchParams.get("year")).toBe("2026");
+      expect(target?.searchParams.get("month")).toBe("1");
+      expect(target?.searchParams.get("product")).toBeNull();
+      expect(fetchMock.mock.calls[0]?.[1]?.headers).toMatchObject({
+        Accept: "application/vnd.github+json",
+        Authorization: `Bearer ${token}`,
+        "X-GitHub-Api-Version": "2026-03-10",
+      });
+    },
+  );
 
   it("resolves the personal username through the PAT's own GHE.com host", async () => {
     configure({ token: "ghp_classic", tier: "pro", enterpriseUrl: "personal.ghe.com" });
@@ -529,54 +535,55 @@ describe("Copilot PAT billing reports", () => {
       },
       "only available to Copilot Pro or Pro+",
     ],
-  ] as Array<
-    [Record<string, unknown>, string]
-  >)("rejects %o before any request", async (config, expected) => {
-    configure(config);
-    const fetchMock = stubFetch();
+  ] as Array<[Record<string, unknown>, string]>)(
+    "rejects %o before any request",
+    async (config, expected) => {
+      configure(config);
+      const fetchMock = stubFetch();
 
-    expect(await errorOf(query())).toContain(expected);
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
+      expect(await errorOf(query())).toContain(expected);
+      expect(fetchMock).not.toHaveBeenCalled();
+    },
+  );
 
-  it.each([
-    "github_pat_org",
-    "ghs_installation",
-  ])("uses organization AI Credit and budget endpoints for %s", async (token) => {
-    configure({ token, tier: "business", organization: "acme", username: "alice" });
-    const fetchMock = billingApi(
-      { ...aiUsage(), organization: "acme" },
-      aiCreditBudget("user", 1, { budget_entity_name: "alice" }),
-    );
+  it.each(["github_pat_org", "ghs_installation"])(
+    "uses organization AI Credit and budget endpoints for %s",
+    async (token) => {
+      configure({ token, tier: "business", organization: "acme", username: "alice" });
+      const fetchMock = billingApi(
+        { ...aiUsage(), organization: "acme" },
+        aiCreditBudget("user", 1, { budget_entity_name: "alice" }),
+      );
 
-    await expect(query()).resolves.toEqual({
-      success: true,
-      mode: "organization_usage",
-      organization: "acme",
-      username: "alice",
-      period: { year: 2026, month: 1 },
-      unit: "ai_credits",
-      used: 100,
-      authority: "provider_reported",
-      includedUsed: 80,
-      billedUsed: 20,
-      billedAmountUsd: 0.2,
-      budget: {
-        amountUsd: 1,
-        spentUsd: 0.2,
-        scope: "user",
-        percentRemaining: 80,
-        authority: "locally_derived",
-      },
-      warnings: undefined,
-    });
-    const [usageUrl, budgetUrl] = requestedUrls(fetchMock);
-    expect(usageUrl?.pathname).toBe("/organizations/acme/settings/billing/ai_credit/usage");
-    expect(usageUrl?.searchParams.get("user")).toBe("alice");
-    expect(budgetUrl?.pathname).toBe("/organizations/acme/settings/billing/budgets");
-    expect(budgetUrl?.searchParams.get("user")).toBe("alice");
-    expect(budgetUrl?.searchParams.get("per_page")).toBe("100");
-  });
+      await expect(query()).resolves.toEqual({
+        success: true,
+        mode: "organization_usage",
+        organization: "acme",
+        username: "alice",
+        period: { year: 2026, month: 1 },
+        unit: "ai_credits",
+        used: 100,
+        authority: "provider_reported",
+        includedUsed: 80,
+        billedUsed: 20,
+        billedAmountUsd: 0.2,
+        budget: {
+          amountUsd: 1,
+          spentUsd: 0.2,
+          scope: "user",
+          percentRemaining: 80,
+          authority: "locally_derived",
+        },
+        warnings: undefined,
+      });
+      const [usageUrl, budgetUrl] = requestedUrls(fetchMock);
+      expect(usageUrl?.pathname).toBe("/organizations/acme/settings/billing/ai_credit/usage");
+      expect(usageUrl?.searchParams.get("user")).toBe("alice");
+      expect(budgetUrl?.pathname).toBe("/organizations/acme/settings/billing/budgets");
+      expect(budgetUrl?.searchParams.get("user")).toBe("alice");
+      expect(budgetUrl?.searchParams.get("per_page")).toBe("100");
+    },
+  );
 
   it.each([
     [
@@ -587,19 +594,22 @@ describe("Copilot PAT billing reports", () => {
       { token: "ghp_classic", tier: "enterprise", enterprise: "octo" },
       { mode: "enterprise_usage", enterprise: "octo" },
     ],
-  ])("treats empty managed AI Credit usage %o as zero instead of an error", async (config, scope) => {
-    configure(config);
-    billingApi({ timePeriod: { year: 2026, month: 1 }, ...scope, usageItems: [] });
+  ])(
+    "treats empty managed AI Credit usage %o as zero instead of an error",
+    async (config, scope) => {
+      configure(config);
+      billingApi({ timePeriod: { year: 2026, month: 1 }, ...scope, usageItems: [] });
 
-    await expect(query()).resolves.toMatchObject({
-      success: true,
-      ...scope,
-      unit: "ai_credits",
-      used: 0,
-      includedUsed: 0,
-      billedUsed: 0,
-    });
-  });
+      await expect(query()).resolves.toMatchObject({
+        success: true,
+        ...scope,
+        unit: "ai_credits",
+        used: 0,
+        includedUsed: 0,
+        billedUsed: 0,
+      });
+    },
+  );
 
   it("keeps a zero-dollar budget value-only instead of inventing a percentage", async () => {
     configure({ token: "github_pat_org", tier: "business", organization: "acme" });
@@ -798,12 +808,15 @@ describe("Copilot HTTP failures", () => {
       "GitHub API error 403: Resource not accessible",
     ],
     [new Response("{", { status: 200 }), "malformed JSON"],
-  ])("surfaces auth, permission, rate-limit, and malformed-response failures: %#", async (response, expected) => {
-    configure({ token: "github_pat_personal", tier: "pro", username: "alice" });
-    stubFetch(() => response);
+  ])(
+    "surfaces auth, permission, rate-limit, and malformed-response failures: %#",
+    async (response, expected) => {
+      configure({ token: "github_pat_personal", tier: "pro", username: "alice" });
+      stubFetch(() => response);
 
-    expect(await errorOf(query())).toContain(expected);
-  });
+      expect(await errorOf(query())).toContain(expected);
+    },
+  );
 
   it.each([
     ["an OAuth internal-user body", "oauth-timeout-canary", 200],
@@ -845,27 +858,30 @@ describe("Copilot HTTP failures", () => {
       () => json({ message: "Resource not accessible by personal access token" }, { status: 403 }),
       "Resource not accessible by personal access token",
     ],
-  ])("keeps successful AI Credit usage and warns when the optional budget report %s", async (_name, budgetResponse, reason) => {
-    const patToken = "github_pat_budget_canary";
-    configure({ token: patToken, tier: "business", organization: "acme" });
-    stubFetch((url, init) =>
-      new URL(url).pathname.endsWith("/budgets") ? budgetResponse(init) : json(aiUsage()),
-    );
+  ])(
+    "keeps successful AI Credit usage and warns when the optional budget report %s",
+    async (_name, budgetResponse, reason) => {
+      const patToken = "github_pat_budget_canary";
+      configure({ token: patToken, tier: "business", organization: "acme" });
+      stubFetch((url, init) =>
+        new URL(url).pathname.endsWith("/budgets") ? budgetResponse(init) : json(aiUsage()),
+      );
 
-    const pending = query({ requestTimeoutMs: 1_000 });
-    await vi.advanceTimersByTimeAsync(1_000);
-    const result = await pending;
+      const pending = query({ requestTimeoutMs: 1_000 });
+      await vi.advanceTimersByTimeAsync(1_000);
+      const result = await pending;
 
-    expect(result).toMatchObject({
-      success: true,
-      mode: "organization_usage",
-      used: 100,
-      budget: undefined,
-      warnings: [expect.stringContaining("usage loaded, but the budget report failed")],
-    });
-    expect(JSON.stringify(result)).toContain(reason);
-    expect(JSON.stringify(result)).not.toContain(patToken);
-  });
+      expect(result).toMatchObject({
+        success: true,
+        mode: "organization_usage",
+        used: 100,
+        budget: undefined,
+        warnings: [expect.stringContaining("usage loaded, but the budget report failed")],
+      });
+      expect(JSON.stringify(result)).toContain(reason);
+      expect(JSON.stringify(result)).not.toContain(patToken);
+    },
+  );
 });
 
 describe("Copilot quota diagnostics", () => {

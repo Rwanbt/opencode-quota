@@ -1,14 +1,14 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { accountFromGroup, rowsFromProviderResult } from "../src/core/rows.js";
 import type { DebugDetail, QuotaRow } from "../src/core/types.js";
+import { computeLocalQuotaProviderEstimate } from "../src/lib/quota-providers-local.js";
+import { fetchRemoteQuotaProvider } from "../src/lib/quota-providers-remote.js";
 import type {
   JsonV1Mapping,
   LocalEstimateQuotaProviderDefinition,
   RemoteApiQuotaProviderDefinition,
 } from "../src/lib/quota-providers.js";
-import { computeLocalQuotaProviderEstimate } from "../src/lib/quota-providers-local.js";
-import { fetchRemoteQuotaProvider } from "../src/lib/quota-providers-remote.js";
 import type { ProviderFetchResult, ProviderRow } from "../src/providers/contract.js";
 import { customAccount } from "../src/providers/quota-providers.js";
 import { answer, NOT_SET_UP, percentRow, textRow } from "./helpers/fake-answers.js";

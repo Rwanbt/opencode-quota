@@ -1,7 +1,7 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { resolveSessionTree } from "../src/lib/opencode-storage.js";
 import { fetchSessionTokensForDisplay } from "../src/lib/session-tokens.js";
@@ -80,13 +80,16 @@ describe("fetchSessionTokensForDisplay", () => {
         ],
       },
     },
-  ] as const)("sums new and cached input apart, and each model's input, for the $scope scope", async (item) => {
-    writeHistory();
+  ] as const)(
+    "sums new and cached input apart, and each model's input, for the $scope scope",
+    async (item) => {
+      writeHistory();
 
-    await expect(
-      fetchSessionTokensForDisplay({ sessionID: "ses_root", scope: item.scope }),
-    ).resolves.toEqual({ sessionTokens: item.sessionTokens });
-  });
+      await expect(
+        fetchSessionTokensForDisplay({ sessionID: "ses_root", scope: item.scope }),
+      ).resolves.toEqual({ sessionTokens: item.sessionTokens });
+    },
+  );
 
   it("has no tokens without a session, for an unknown session, or without a database", async () => {
     await expect(

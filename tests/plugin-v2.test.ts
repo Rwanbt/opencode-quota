@@ -1,6 +1,6 @@
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 const buildOutput = vi.hoisted(() => vi.fn());
 vi.mock("../src/lib/quota-dialog-commands.js", async (importOriginal) => ({
@@ -359,55 +359,55 @@ describe("V2 server plugin", () => {
     expect(integration.connection.active).toHaveBeenCalledOnce();
   });
 
-  it.each([
-    "credential.updated",
-    "credential.switched",
-  ])("drops cached logins when OpenCode reports %s", async (type) => {
-    clearReadAuthFileCacheForTests();
-    // The event makes the store check DeepSeek again; it gets a fake answer, not the real API.
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => new Response(JSON.stringify({ error: "fake" }), { status: 401 })),
-    );
-    const { ctx } = createContext();
-    const deepseek = {
-      integrationId: "deepseek",
-      id: "cred_deepseek",
-      label: "default",
-      registered: true,
-      method: "key" as const,
-      value: { type: "key", key: "old-key" } as Record<string, unknown>,
-    };
-    const integration = createFakeIntegration([deepseek]);
-    let emit!: (event: { type: string; data: Record<string, unknown> }) => void;
-    const nextEvent = new Promise<{ type: string; data: Record<string, unknown> }>((resolve) => {
-      emit = resolve;
-    });
-    const subscribe = vi.fn(() => ({
-      async *[Symbol.asyncIterator]() {
-        yield { type: "session.idle", data: {} };
-        yield await nextEvent;
-      },
-    }));
-    const cleanup = await plugin.setup({ ...ctx, integration, event: { subscribe } } as never);
-    const read = () => readAuthFileCached({ maxAgeMs: 60_000, integrationIds: ["deepseek"] });
+  it.each(["credential.updated", "credential.switched"])(
+    "drops cached logins when OpenCode reports %s",
+    async (type) => {
+      clearReadAuthFileCacheForTests();
+      // The event makes the store check DeepSeek again; it gets a fake answer, not the real API.
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () => new Response(JSON.stringify({ error: "fake" }), { status: 401 })),
+      );
+      const { ctx } = createContext();
+      const deepseek = {
+        integrationId: "deepseek",
+        id: "cred_deepseek",
+        label: "default",
+        registered: true,
+        method: "key" as const,
+        value: { type: "key", key: "old-key" } as Record<string, unknown>,
+      };
+      const integration = createFakeIntegration([deepseek]);
+      let emit!: (event: { type: string; data: Record<string, unknown> }) => void;
+      const nextEvent = new Promise<{ type: string; data: Record<string, unknown> }>((resolve) => {
+        emit = resolve;
+      });
+      const subscribe = vi.fn(() => ({
+        async *[Symbol.asyncIterator]() {
+          yield { type: "session.idle", data: {} };
+          yield await nextEvent;
+        },
+      }));
+      const cleanup = await plugin.setup({ ...ctx, integration, event: { subscribe } } as never);
+      const read = () => readAuthFileCached({ maxAgeMs: 60_000, integrationIds: ["deepseek"] });
 
-    await expect(read()).resolves.toEqual({ deepseek: { type: "api", key: "old-key" } });
-    deepseek.value = { type: "key", key: "new-key" };
-    await expect(read()).resolves.toEqual({ deepseek: { type: "api", key: "old-key" } });
+      await expect(read()).resolves.toEqual({ deepseek: { type: "api", key: "old-key" } });
+      deepseek.value = { type: "key", key: "new-key" };
+      await expect(read()).resolves.toEqual({ deepseek: { type: "api", key: "old-key" } });
 
-    emit({ type, data: { integrationID: "deepseek", credentialID: "cred_deepseek" } });
-    await vi.waitFor(async () =>
-      expect(await read()).toEqual({ deepseek: { type: "api", key: "new-key" } }),
-    );
-    await cleanup?.();
-  });
+      emit({ type, data: { integrationID: "deepseek", credentialID: "cred_deepseek" } });
+      await vi.waitFor(async () =>
+        expect(await read()).toEqual({ deepseek: { type: "api", key: "new-key" } }),
+      );
+      await cleanup?.();
+    },
+  );
 
   it("logs why the credential event subscription stopped, without tokens", async () => {
     const { ctx } = createContext();
     const token = `eyJ${"a".repeat(24)}.${"b".repeat(24)}.${"c".repeat(24)}`;
     const subscribe = vi.fn(() => ({
-      // biome-ignore lint/correctness/useYield: the stream fails before its first event
+      // oxlint-disable-next-line require-yield -- the stream fails before its first event
       async *[Symbol.asyncIterator]() {
         throw new Error(`event stream closed ${token}`);
       },
@@ -427,6 +427,7 @@ describe("V2 server plugin", () => {
   it("stops the credential event subscription silently on cleanup", async () => {
     const { ctx } = createContext();
     const subscribe = vi.fn(({ signal }: { signal: AbortSignal }) => ({
+      // oxlint-disable-next-line require-yield -- the stream is aborted before its first event
       async *[Symbol.asyncIterator]() {
         await new Promise((resolve) => signal.addEventListener("abort", resolve));
         throw new DOMException("This operation was aborted", "AbortError");

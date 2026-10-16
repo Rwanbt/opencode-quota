@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 // --------------- mock modules ---------------
 
@@ -39,13 +39,13 @@ import { rowsFromProviderResult } from "../src/core/rows.js";
 import type { ProviderFetch } from "../src/core/store.js";
 import type { ProviderSnapshot, QuotaRow } from "../src/core/types.js";
 import { writeJsonAtomic } from "../src/lib/atomic-json.js";
+import type { QuotaExport } from "../src/lib/quota-export-types.js";
 import {
   buildQuotaExportFromSnapshot,
   exportProviderFromCheck,
   resolveExportPath,
   writeQuotaExport,
 } from "../src/lib/quota-export.js";
-import type { QuotaExport } from "../src/lib/quota-export-types.js";
 import type {
   QuotaProviderDefinition,
   RemoteApiQuotaProviderDefinition,

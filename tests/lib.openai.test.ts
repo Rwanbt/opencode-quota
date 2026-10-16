@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import businessIndividualLimitUsage from "./fixtures/openai/business-individual-limit.sanitized.json";
 import businessTeamMonthlyUsage from "./fixtures/openai/business-team-monthly.sanitized.json";
 

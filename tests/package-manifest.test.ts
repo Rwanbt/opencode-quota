@@ -4,7 +4,7 @@ import { access, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { parse } from "yaml";
 
 interface WorkflowStep {
@@ -34,14 +34,18 @@ const text = (path: string) => readFile(new URL(path, import.meta.url), "utf8");
 const pkg = JSON.parse(await text("../package.json"));
 const pnpmWorkspace = await text("../pnpm-workspace.yaml");
 const tsconfig = JSON.parse(await text("../tsconfig.json"));
-const biomeConfig = JSON.parse(await text("../biome.json"));
+const viteConfig = await text("../vite.config.ts");
 const lefthookConfig = parse(await text("../lefthook.yml"));
 const ciWorkflow = parse(await text("../.github/workflows/ci.yml")) as Workflow;
 const publishWorkflow = parse(await text("../.github/workflows/publish-npm.yml")) as Workflow;
 const packedSmoke = await text("../scripts/smoke-packed-package.mjs");
 
+// Pinned to a commit; Vite+ installs the pnpm named in package.json `packageManager`.
+const SETUP_VP = "voidzero-dev/setup-vp@68f39c78aaf39be468cabd2afb09c162574c84af";
+
+// The build's `tsc` is the type check, and `pnpm test` runs the cross-surface test.
 const VERIFY_COMMAND =
-  "pnpm run check && pnpm run verify:typescript-version && pnpm run verify:v4-history && pnpm run typecheck && pnpm run build && pnpm test && pnpm run test:four-surfaces && pnpm run verify:package-contents";
+  "pnpm run check && pnpm run verify:typescript-version && pnpm run verify:v4-history && pnpm run build && pnpm test && pnpm run verify:package-contents";
 
 function namedStep(job: WorkflowJob, name: string): WorkflowStep {
   const step = job.steps?.find((candidate) => candidate.name === name);
@@ -104,14 +108,20 @@ describe("package manifest compatibility", () => {
       ["dependencies", "@opentui/core", "^0.5.10"],
       ["dependencies", "@opentui/solid", "^0.5.10"],
       ["pnpm", "peerDependencyRules", undefined],
-      // Biome is the only formatter and linter; Lefthook the only hook runner.
-      ["devDependencies", "@biomejs/biome", "2.3.11"],
+      // Vite+ is the only formatter and linter; Lefthook the only hook runner.
+      ["devDependencies", "vite-plus", "1.2.0"],
+      ["devDependencies", "@biomejs/biome", undefined],
       ["devDependencies", "prettier", undefined],
       ["devDependencies", "eslint", undefined],
-      ["scripts", "format", "biome format --write ."],
-      ["scripts", "format:check", "biome format ."],
-      ["scripts", "lint", "biome lint ."],
-      ["scripts", "check", "biome check ."],
+      ["devDependencies", "oxlint", undefined],
+      ["scripts", "format", "vp fmt"],
+      ["scripts", "format:check", undefined],
+      ["scripts", "lint", "vp lint"],
+      ["scripts", "check", "vp check"],
+      // Vite+ runs the tests too (Vitest 5 inside vite-plus); no separate Vitest.
+      ["devDependencies", "vitest", undefined],
+      ["scripts", "test", "vp test run"],
+      ["scripts", "test:watch", "vp test watch"],
       ["scripts", "verify:v4-formatting", undefined],
       ["devDependencies", "lefthook", "2.0.15"],
       ["devDependencies", "husky", undefined],
@@ -129,6 +139,10 @@ describe("package manifest compatibility", () => {
       // One ordered repository gate, and a release-only alias on top of it.
       ["scripts", "verify", VERIFY_COMMAND],
       ["scripts", "release:check", "pnpm verify && pnpm run verify:release-version"],
+      ["scripts", "build:check", undefined],
+      ["scripts", "test:four-surfaces", undefined],
+      // `pnpm run upstream:prepare-review` still runs the standalone type check.
+      ["scripts", "typecheck", "tsc --noEmit"],
       ["main", null, "./dist/index.js"],
       ["bin", null, { "opencode-quota": "./dist/bin/opencode-quota.js" }],
       ["oc-plugin", null, undefined],
@@ -148,20 +162,14 @@ describe("package manifest compatibility", () => {
 
   it("keeps the tool configs the gates rely on, and none of the removed tools", async () => {
     expect(tsconfig.compilerOptions?.types).toEqual(["node"]);
-    expect(biomeConfig.$schema).toBe("https://biomejs.dev/schemas/2.3.11/schema.json");
-    expect(biomeConfig.linter?.rules?.recommended).toBe(true);
-    expect(biomeConfig.linter?.domains?.solid).toBe("recommended");
-    expect(
-      biomeConfig.overrides?.some(
-        (override: { includes?: string[]; linter?: { domains?: Record<string, string> } }) =>
-          override.includes?.includes("tests/**/*.test.ts") &&
-          override.linter?.domains?.test === "recommended",
-      ),
-    ).toBe(true);
+    expect(viteConfig).toContain('import { defineConfig } from "vite-plus";');
+    expect(viteConfig).toContain('categories: { correctness: "error" }');
+    // The build's tsc, on the pinned TypeScript, is the only type check.
+    expect(viteConfig).not.toMatch(/typeAware|typeCheck/);
     expect(lefthookConfig["pre-commit"]?.commands).toEqual({
-      biome: {
+      check: {
         glob: "**/*.{js,cjs,mjs,jsx,ts,tsx,json,jsonc,css}",
-        run: "pnpm exec biome check --write --no-errors-on-unmatched {staged_files}",
+        run: "pnpm exec vp check --fix --no-error-on-unmatched-pattern {staged_files}",
         stage_fixed: true,
       },
     });
@@ -178,8 +186,13 @@ describe("package manifest compatibility", () => {
       [".d.ts", ".d.ts.map", ".js", ".js.map"].map((ext) => `../dist/${base}${ext}`),
     );
     const removed = [
-      ...["../.prettierignore", "../.prettierrc.json", "../scripts/verify-v4-formatting.mjs"],
-      ...["../.husky", "../.lintstagedrc"],
+      "../.prettierignore",
+      "../.prettierrc.json",
+      "../scripts/verify-v4-formatting.mjs",
+      "../.husky",
+      "../.lintstagedrc",
+      "../biome.json",
+      "../vitest.config.ts",
       ...staleCrof,
     ];
     for (const path of removed) {
@@ -210,8 +223,12 @@ describe("package manifest compatibility", () => {
         "minimumReleaseAgeStrict: true",
         "minimumReleaseAgeIgnoreMissingTime: false",
         "blockExoticSubdeps: true",
+        "vite@*: npm:@voidzero-dev/vite-plus-core@1.2.0",
       ],
-      [/peerDependencyRules|allowedVersions|ignoreMissing|strictPeerDependencies:\s*false/],
+      [
+        /peerDependencyRules|allowedVersions|ignoreMissing|strictPeerDependencies:\s*false/,
+        /minimumReleaseAgeExclude/,
+      ],
     ],
     ["the README", "../README.md", ["Node.js `22.13+` or `23.4+`"], ["OpenCode `>= 1.4.3`"]],
     ["the pack script", "../scripts/pack-release-package.mjs", [], ["HUSKY", "LEFTHOOK"]],
@@ -269,13 +286,14 @@ describe("package manifest compatibility", () => {
       ],
       [],
     ],
-  ])("keeps %s", async (_name, path, has: Array<string | RegExp>, lacks: Array<
-    string | RegExp
-  >) => {
-    const source = await text(path);
-    for (const pattern of has) expect(source).toMatch(pattern);
-    for (const pattern of lacks) expect(source).not.toMatch(pattern);
-  });
+  ])(
+    "keeps %s",
+    async (_name, path, has: Array<string | RegExp>, lacks: Array<string | RegExp>) => {
+      const source = await text(path);
+      for (const pattern of has) expect(source).toMatch(pattern);
+      for (const pattern of lacks) expect(source).not.toMatch(pattern);
+    },
+  );
 
   it("smokes the packed package after installing it, then installs the metrics SDK", () => {
     const tarballInstall = packedSmoke.indexOf(
@@ -302,7 +320,17 @@ describe("package manifest compatibility", () => {
     for (const job of [quality, windows]) {
       expect(usesStep(job, "actions/checkout@v6")?.with?.["fetch-depth"]).toBe(0);
       expect(usesStep(job, "actions/setup-node@v6")?.with?.["node-version"]).toBe("24.x");
-      expect(namedStep(job, "Install dependencies").run).toBe("pnpm install --frozen-lockfile");
+      expect(namedStep(job, "Install dependencies")).toEqual(
+        expect.objectContaining({
+          uses: SETUP_VP,
+          with: {
+            "node-manager": false,
+            cache: true,
+            "run-install": 'args: ["--frozen-lockfile"]\n',
+          },
+        }),
+      );
+      expect(job.steps?.some((step) => step.run?.includes("corepack"))).toBe(false);
       expect(namedStep(job, "Run canonical verification").run).toBe("pnpm verify");
       expectCanonicalVerificationOnly(job);
     }

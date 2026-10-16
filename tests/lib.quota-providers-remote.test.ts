@@ -2,21 +2,21 @@ import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import {
   bindCredentialSource,
   createIntegrationCredentialSource,
   notifyCredentialsChanged,
 } from "../src/lib/opencode-auth.js";
-import type {
-  JsonV1Mapping,
-  RemoteApiQuotaProviderDefinition,
-} from "../src/lib/quota-providers.js";
 import {
   fetchRemoteQuotaProvider,
   QUOTA_PROVIDER_MAX_BODY_BYTES,
   resolveQuotaProviderApiKey,
 } from "../src/lib/quota-providers-remote.js";
+import type {
+  JsonV1Mapping,
+  RemoteApiQuotaProviderDefinition,
+} from "../src/lib/quota-providers.js";
 import {
   NEURALWATT_LIKE_ADAPTER,
   NEURALWATT_LIKE_RESPONSE,

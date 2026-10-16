@@ -3,13 +3,12 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { parse } from "jsonc-parser";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { quotaAgentTools } from "../src/agent-tools.js";
 import { bindCredentialSource, type CredentialRow } from "../src/lib/opencode-auth.js";
-import type { RemoteApiQuotaProviderDefinition } from "../src/lib/quota-providers.js";
 import { resolveQuotaProviderApiKey } from "../src/lib/quota-providers-remote.js";
+import type { RemoteApiQuotaProviderDefinition } from "../src/lib/quota-providers.js";
 import { loadSettings, settingsPath } from "../src/settings/index.js";
-import { PROVIDER_IDS as CONFIG_PROVIDER_IDS } from "../src/settings/schema.js";
 
 let root: string;
 let openCodeProviderIds: string[];
@@ -114,15 +113,13 @@ function bindLogins(logins: Record<string, string>, onRead = () => {}): void {
       onRead();
       return Object.entries(logins)
         .filter(([integrationId]) => integrationIds.includes(integrationId))
-        .map(
-          ([integrationId, key]): CredentialRow => ({
-            id: integrationId,
-            integrationId,
-            label: "",
-            active: true,
-            value: { type: "api", key },
-          }),
-        );
+        .map(([integrationId, key]): CredentialRow => ({
+          id: integrationId,
+          integrationId,
+          label: "",
+          active: true,
+          value: { type: "api", key },
+        }));
     },
   });
 }
@@ -542,21 +539,21 @@ describe("quota_provider_add", () => {
     expect(result).toMatchObject({ ok: true, added: definition.id });
   });
 
-  it.each([
-    "sk-proj-abcdefghijklmnop1234",
-    "Zx9QmT4vLr8KpW2sNb7YhC3dFg6JkA1e",
-  ])("refuses a secret as a property name, without repeating it: %s", async (secret) => {
-    const result = await call("quota_provider_add", {
-      definition: { ...LOCAL, pricingModelMap: { [secret]: "openai/gpt-4o" } },
-    });
+  it.each(["sk-proj-abcdefghijklmnop1234", "Zx9QmT4vLr8KpW2sNb7YhC3dFg6JkA1e"])(
+    "refuses a secret as a property name, without repeating it: %s",
+    async (secret) => {
+      const result = await call("quota_provider_add", {
+        definition: { ...LOCAL, pricingModelMap: { [secret]: "openai/gpt-4o" } },
+      });
 
-    expect(result).toMatchObject({
-      ok: false,
-      issues: [{ key: "definition.pricingModelMap", message: expect.stringMatching(/secret/) }],
-    });
-    expect(result.text).not.toContain(secret);
-    expect(existsSync(settingsPath())).toBe(false);
-  });
+      expect(result).toMatchObject({
+        ok: false,
+        issues: [{ key: "definition.pricingModelMap", message: expect.stringMatching(/secret/) }],
+      });
+      expect(result.text).not.toContain(secret);
+      expect(existsSync(settingsPath())).toBe(false);
+    },
+  );
 
   it("rejects an invalid definition with the validator's message", async () => {
     writeSettings(FILE_WITH_COMMENTS);
@@ -843,22 +840,22 @@ describe("quota_provider_add", () => {
 });
 
 describe("quota_provider_test and quota_provider_remove", () => {
-  it.each([
-    "quota_provider_test",
-    "quota_provider_remove",
-  ])("%s names the known ids for an unknown one", async (name) => {
-    writeSettings(FILE_WITH_COMMENTS);
+  it.each(["quota_provider_test", "quota_provider_remove"])(
+    "%s names the known ids for an unknown one",
+    async (name) => {
+      writeSettings(FILE_WITH_COMMENTS);
 
-    const result = await call(name, { id: "my-own-id-word" });
+      const result = await call(name, { id: "my-own-id-word" });
 
-    expect(result).toMatchObject({
-      ok: false,
-      message: "No custom provider has that id.",
-      ids: ["other-quota"],
-    });
-    expect(result.text).not.toContain("my-own-id-word");
-    expect(settingsText()).toBe(FILE_WITH_COMMENTS);
-  });
+      expect(result).toMatchObject({
+        ok: false,
+        message: "No custom provider has that id.",
+        ids: ["other-quota"],
+      });
+      expect(result.text).not.toContain("my-own-id-word");
+      expect(settingsText()).toBe(FILE_WITH_COMMENTS);
+    },
+  );
 
   it("tests a saved provider and returns the fetch error", async () => {
     writeSettings(JSON.stringify({ providers: { custom: [GATEWAY] } }));
@@ -890,21 +887,22 @@ describe("quota_provider_test and quota_provider_remove", () => {
   it.each([
     { mode: "remote", definition: { ...GATEWAY, enabled: false } },
     { mode: "local-estimate", definition: { ...LOCAL, enabled: false } },
-  ])("refuses to test a switched-off $mode provider and fetches nothing", async ({
-    definition,
-  }) => {
-    writeSettings(JSON.stringify({ providers: { custom: [definition] } }));
-    vi.stubEnv(GATEWAY_VARIABLE, "gateway-key");
-    const fetch = answerWith(200, DAILY_QUOTA);
+  ])(
+    "refuses to test a switched-off $mode provider and fetches nothing",
+    async ({ definition }) => {
+      writeSettings(JSON.stringify({ providers: { custom: [definition] } }));
+      vi.stubEnv(GATEWAY_VARIABLE, "gateway-key");
+      const fetch = answerWith(200, DAILY_QUOTA);
 
-    const result = await call("quota_provider_test", { id: definition.id });
+      const result = await call("quota_provider_test", { id: definition.id });
 
-    expect(result).toMatchObject({ id: definition.id, ok: false, error: switchedOff() });
-    expect(fetch).not.toHaveBeenCalled();
-    expect(existsSync(join(root, "state", "opencode", "opencode-quota", "quota-providers"))).toBe(
-      false,
-    );
-  });
+      expect(result).toMatchObject({ id: definition.id, ok: false, error: switchedOff() });
+      expect(fetch).not.toHaveBeenCalled();
+      expect(existsSync(join(root, "state", "opencode", "opencode-quota", "quota-providers"))).toBe(
+        false,
+      );
+    },
+  );
 
   it("reads no login of a switched-off provider, not even to hide it", async () => {
     const off = { ...GATEWAY, providerId: "off-gateway", enabled: false };

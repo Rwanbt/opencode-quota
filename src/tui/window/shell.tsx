@@ -164,7 +164,7 @@ export function tabStrip(
     room;
   let first = active;
   let last = active;
-  for (let grew = true; grew; ) {
+  for (let grew = true; grew;) {
     grew = false;
     if (last < end && fits(first, last + 1)) {
       last += 1;
@@ -190,7 +190,7 @@ export type WindowKey = {
   bind: string;
   title: string;
   group: string;
-  // biome-ignore lint/suspicious/noConfusingVoidType: OpenCode's keymap API types `run` this way.
+  // OpenCode's keymap API types `run` this way.
   run: () => void | false;
 };
 

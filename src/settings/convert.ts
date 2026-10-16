@@ -269,11 +269,10 @@ function hasQuotaSettings(files: V5Files): boolean {
 
 /** A v5 object as dotted keys; v5's nested groups are opened one level deep. */
 function flattenV5(raw: Record<string, unknown>): Array<[string, unknown]> {
-  return Object.entries(raw).flatMap(
-    ([key, value]): Array<[string, unknown]> =>
-      V5_GROUPS.has(key) && isRecord(value)
-        ? Object.entries(value).map(([name, child]): [string, unknown] => [`${key}.${name}`, child])
-        : [[key, value]],
+  return Object.entries(raw).flatMap(([key, value]): Array<[string, unknown]> =>
+    V5_GROUPS.has(key) && isRecord(value)
+      ? Object.entries(value).map(([name, child]): [string, unknown] => [`${key}.${name}`, child])
+      : [[key, value]],
   );
 }
 

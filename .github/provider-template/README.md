@@ -59,4 +59,4 @@ A provider returns the row contract in `src/providers/contract.ts`: per account,
 
 Each row's `key` becomes its id (`example-provider.monthly`), which users' hide, rename and order settings use, so a key never changes once released. List every key in the provider's `rowKeys`; `fetchRows` in the provider tests fails on a key that is not listed.
 
-If the provider reports more than a percentage, follow `CONTRIBUTING.md`: amounts as typed `used`, `limit`, `remaining` or `amount` values, yes/no as `flag`, never pre-formatted money strings.
+If the provider reports more than a percentage, follow `.github/CONTRIBUTING.md`: amounts as typed `used`, `limit`, `remaining` or `amount` values, yes/no as `flag`, never pre-formatted money strings.

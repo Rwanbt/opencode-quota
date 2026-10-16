@@ -25,7 +25,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parse as parseJsonc } from "jsonc-parser";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import type { ProviderRow } from "../src/providers/contract.js";
 import { answer, percentRow } from "./helpers/fake-answers.js";
 import { createFakeIntegration } from "./helpers/fake-integration.js";
@@ -424,7 +424,7 @@ async function startHosts() {
       focused = "message box";
     },
     /** The open dialog, drawn again. */
-    renderDialog: () => (dialog.show.mock.calls.at(-1)?.[0] as () => unknown)(),
+    renderDialog: () => (dialog.show.mock.calls.at(-1)![0] as () => unknown)(),
     /** Presses a key of the open dialog (its newest modal layer). */
     pressDialog: (bind: string) =>
       layers
@@ -962,24 +962,22 @@ describe("v6 surfaces on the quota snapshot", () => {
         heading: " Preset",
         line: "When toasts show",
       },
-    ])("puts $page's first lines under a heading, and its switch under Enable/disable", async ({
-      page,
-      toggle,
-      heading,
-      line,
-    }) => {
-      const { tui, windowTree } = await openSettings("Layout", page);
-      try {
-        await vi.waitFor(() => expect(textLines(windowTree())).toContain(heading));
-        const lines = textLines(windowTree());
-        if (toggle) expect(lines[lines.indexOf(toggle) - 1]).toBe(" Enable/disable");
-        const at = lines.findIndex((text) => text.startsWith(`   ${line}`));
-        expect(at).toBeGreaterThan(0);
-        expect(lines[at - 1]).toBe(heading);
-      } finally {
-        await tui.dispose();
-      }
-    });
+    ])(
+      "puts $page's first lines under a heading, and its switch under Enable/disable",
+      async ({ page, toggle, heading, line }) => {
+        const { tui, windowTree } = await openSettings("Layout", page);
+        try {
+          await vi.waitFor(() => expect(textLines(windowTree())).toContain(heading));
+          const lines = textLines(windowTree());
+          if (toggle) expect(lines[lines.indexOf(toggle) - 1]).toBe(" Enable/disable");
+          const at = lines.findIndex((text) => text.startsWith(`   ${line}`));
+          expect(at).toBeGreaterThan(0);
+          expect(lines[at - 1]).toBe(heading);
+        } finally {
+          await tui.dispose();
+        }
+      },
+    );
 
     it("closes with unsaved changes only after Save or Discard", async () => {
       const { tui, windowTree } = await openSettings("Layout", "All places");

@@ -699,7 +699,7 @@ export function createQuotaStore(deps: QuotaStoreDeps): QuotaStore {
     async dispose() {
       disposed = true;
       listeners.clear();
-      while (tasks.size > 0) await Promise.allSettled([...tasks]);
+      while (tasks.size > 0) await Promise.allSettled(tasks);
       await flush();
     },
   };

@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vite-plus/test";
 import { rowsFromProviderResult } from "../src/core/rows.js";
 import type { QuotaRow } from "../src/core/types.js";
 import {
@@ -225,13 +225,16 @@ describe("anthropic provider", () => {
     [["copilot", "anthropic"], true, true],
     [["claude"], true, false],
     [["anthropic"], false, false],
-  ])("with provider ids %j and Claude auth ready=%s is available=%s", async (providerIds, credentialsConfigured, expected) => {
-    credentialsConfiguredMock.mockResolvedValue(credentialsConfigured);
+  ])(
+    "with provider ids %j and Claude auth ready=%s is available=%s",
+    async (providerIds, credentialsConfigured, expected) => {
+      credentialsConfiguredMock.mockResolvedValue(credentialsConfigured);
 
-    await expect(
-      anthropicProvider.isAvailable(createProviderAvailabilityContext({ providerIds })),
-    ).resolves.toBe(expected);
-  });
+      await expect(
+        anthropicProvider.isAvailable(createProviderAvailabilityContext({ providerIds })),
+      ).resolves.toBe(expected);
+    },
+  );
 
   it("is not available when provider lookup throws", async () => {
     const ctx = createProviderAvailabilityContext({ providersError: new Error("boom") });

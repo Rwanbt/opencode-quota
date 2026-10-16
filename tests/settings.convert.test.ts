@@ -10,7 +10,7 @@ import {
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { getOpencodeRuntimeDirs } from "../src/lib/opencode-runtime-paths.js";
 import { oldSettingsFolders } from "../src/settings/convert.js";
 import {
@@ -308,13 +308,13 @@ describe("convertV5, which v5 files", () => {
     expect(existsSync(settingsPath())).toBe(false);
   });
 
-  it.each([
-    undefined,
-    "auto",
-  ])("converts a missing or auto v5 provider choice to no exclusions: %s", async (enabledProviders) => {
-    writeV5(enabledProviders === undefined ? {} : { enabledProviders });
-    expect((await convertV5())?.settings.providers.off).toEqual([]);
-  });
+  it.each([undefined, "auto"])(
+    "converts a missing or auto v5 provider choice to no exclusions: %s",
+    async (enabledProviders) => {
+      writeV5(enabledProviders === undefined ? {} : { enabledProviders });
+      expect((await convertV5())?.settings.providers.off).toEqual([]);
+    },
+  );
 
   it("switches off every provider for a v5 list with only unknown ids", async () => {
     writeV5({ enabledProviders: ["unknown-provider"] });

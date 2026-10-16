@@ -4,7 +4,7 @@
  * Kimi Code and MiniMax, which also need a key, share the "without a key" check.
  */
 
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import type { QuotaProvider } from "../src/lib/entries.js";
 import { isCanonicalProviderAvailable } from "../src/lib/provider-availability.js";
@@ -99,19 +99,20 @@ beforeEach(() => {
 });
 
 describe("every API-key vendor", () => {
-  it.each(
-    KEY_PROVIDERS.map((provider) => [provider.id, provider] as const),
-  )("%s without a key is not configured and sends nothing", async (_id, provider) => {
-    const http = fakeHttp(() => {
-      throw new Error("no request expected");
-    });
+  it.each(KEY_PROVIDERS.map((provider) => [provider.id, provider] as const))(
+    "%s without a key is not configured and sends nothing",
+    async (_id, provider) => {
+      const http = fakeHttp(() => {
+        throw new Error("no request expected");
+      });
 
-    const fetched = await fetchRows(provider);
+      const fetched = await fetchRows(provider);
 
-    expect(fetched.rows).toEqual([]);
-    expect(fetched.error).toEqual({ code: "not_configured" });
-    expect(http).not.toHaveBeenCalled();
-  });
+      expect(fetched.rows).toEqual([]);
+      expect(fetched.error).toEqual({ code: "not_configured" });
+      expect(http).not.toHaveBeenCalled();
+    },
+  );
 
   it.each<{
     id: VendorId;
@@ -473,34 +474,36 @@ describe("DeepSeek and Ollama Cloud stored keys", () => {
     });
   });
 
-  it.each(
-    STORED_KEY_VENDORS,
-  )("$id leaves out a stored login that is not a usable key", async (vendor) => {
-    world.storeLogins([
-      keyLogin("empty", vendor.id, " ", { updated: 3 }),
-      keyLogin("number", vendor.id, 42, { updated: 2 }),
-      keyLogin("work", vendor.id, "work-key", { updated: 1 }),
-    ]);
+  it.each(STORED_KEY_VENDORS)(
+    "$id leaves out a stored login that is not a usable key",
+    async (vendor) => {
+      world.storeLogins([
+        keyLogin("empty", vendor.id, " ", { updated: 3 }),
+        keyLogin("number", vendor.id, 42, { updated: 2 }),
+        keyLogin("work", vendor.id, "work-key", { updated: 1 }),
+      ]);
 
-    expect(await fetchKeysAndAccounts(vendor.id, vendor.reply, vendor.rowId)).toEqual({
-      keys: ["Bearer work-key"],
-      accounts: [undefined],
-      error: null,
-    });
-  });
+      expect(await fetchKeysAndAccounts(vendor.id, vendor.reply, vendor.rowId)).toEqual({
+        keys: ["Bearer work-key"],
+        accounts: [undefined],
+        error: null,
+      });
+    },
+  );
 
-  it.each(
-    STORED_KEY_VENDORS,
-  )("$id uses an env key alone, before the stored keys", async (vendor) => {
-    setKey(vendor.id);
-    world.storeLogins([keyLogin("work", vendor.id, "work-key", { label: "work" })]);
+  it.each(STORED_KEY_VENDORS)(
+    "$id uses an env key alone, before the stored keys",
+    async (vendor) => {
+      setKey(vendor.id);
+      world.storeLogins([keyLogin("work", vendor.id, "work-key", { label: "work" })]);
 
-    expect(await fetchKeysAndAccounts(vendor.id, vendor.reply, vendor.rowId)).toEqual({
-      keys: [`Bearer ${KEY}`],
-      accounts: [undefined],
-      error: null,
-    });
-  });
+      expect(await fetchKeysAndAccounts(vendor.id, vendor.reply, vendor.rowId)).toEqual({
+        keys: [`Bearer ${KEY}`],
+        accounts: [undefined],
+        error: null,
+      });
+    },
+  );
 });
 
 describe("availability and model matching", () => {
@@ -513,12 +516,15 @@ describe("availability and model matching", () => {
     ["ollama-cloud", false, true, true],
     ["openrouter", true, false, false],
     ["openrouter", false, true, true],
-  ])("%s with an OpenCode provider %s and a key %s is available: %s", async (id, configured, withKey, expected) => {
-    vi.mocked(isCanonicalProviderAvailable).mockResolvedValue(configured);
-    if (withKey) setKey(id);
+  ])(
+    "%s with an OpenCode provider %s and a key %s is available: %s",
+    async (id, configured, withKey, expected) => {
+      vi.mocked(isCanonicalProviderAvailable).mockResolvedValue(configured);
+      if (withKey) setKey(id);
 
-    await expect(VENDORS[id].provider.isAvailable({} as never)).resolves.toBe(expected);
-  });
+      await expect(VENDORS[id].provider.isAvailable({} as never)).resolves.toBe(expected);
+    },
+  );
 
   it.each<[VendorId, string, boolean]>([
     ["deepseek", "deepseek/deepseek-chat", true],

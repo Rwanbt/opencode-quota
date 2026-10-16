@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { PROVIDER_IDS as CONFIG_PROVIDER_IDS } from "../src/settings/schema.js";
 
 import { answer, percentRow } from "./helpers/fake-answers.js";
@@ -199,20 +199,20 @@ describe("show and status arguments", () => {
     expect(buildStatusReportData).not.toHaveBeenCalled();
   });
 
-  it.each([
-    "show",
-    "status",
-  ] as const)("%s rejects an unknown provider before checking any provider", async (command) => {
-    const provider = zai();
-    mockProviders.push(provider);
+  it.each(["show", "status"] as const)(
+    "%s rejects an unknown provider before checking any provider",
+    async (command) => {
+      const provider = zai();
+      mockProviders.push(provider);
 
-    const result = await run(command, ["--provider", "not-a-provider"]);
+      const result = await run(command, ["--provider", "not-a-provider"]);
 
-    expect(result).toEqual({ code: 1, stdout: "", stderr: "Unknown provider: not-a-provider\n" });
-    expect(provider.isAvailable).not.toHaveBeenCalled();
-    expect(provider.fetch).not.toHaveBeenCalled();
-    expect(buildStatusReportData).not.toHaveBeenCalled();
-  });
+      expect(result).toEqual({ code: 1, stdout: "", stderr: "Unknown provider: not-a-provider\n" });
+      expect(provider.isAvailable).not.toHaveBeenCalled();
+      expect(provider.fetch).not.toHaveBeenCalled();
+      expect(buildStatusReportData).not.toHaveBeenCalled();
+    },
+  );
 
   it("prints help without starting a report", async () => {
     const show = await run("show", ["--help"]);

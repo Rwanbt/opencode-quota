@@ -1,7 +1,7 @@
 import { mkdir, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 import {
   type AlibabaTokenPlanSpawnRequest,
@@ -260,28 +260,24 @@ describe("alibaba token plan executable resolution", () => {
       cwd: "/home/user/project",
       kind: "workspace_path_rejected",
     },
-  ])("resolves $name", async ({
-    file,
-    target,
-    cwd = "/workspace",
-    pathEnv = "/trusted/bin",
-    kind,
-    resolved,
-  }) => {
-    await mockExecutable(file, target);
-    expect(
-      await resolveAlibabaTokenPlanExecutable({
-        platform: "linux",
-        cwd,
-        homedir: "/home/user",
-        pathEnv,
-      }),
-    ).toEqual(
-      resolved
-        ? { ok: true, file: resolved }
-        : { ok: false, error: { kind, message: expect.any(String) } },
-    );
-  });
+  ])(
+    "resolves $name",
+    async ({ file, target, cwd = "/workspace", pathEnv = "/trusted/bin", kind, resolved }) => {
+      await mockExecutable(file, target);
+      expect(
+        await resolveAlibabaTokenPlanExecutable({
+          platform: "linux",
+          cwd,
+          homedir: "/home/user",
+          pathEnv,
+        }),
+      ).toEqual(
+        resolved
+          ? { ok: true, file: resolved }
+          : { ok: false, error: { kind, message: expect.any(String) } },
+      );
+    },
+  );
 
   it.runIf(process.platform !== "win32")(
     "rejects a real bl symlink to a .cmd launcher",

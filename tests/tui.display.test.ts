@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { checkSetting, SETTINGS_SCHEMA, type SettingRule } from "../src/settings/schema.js";
 import {
   type DisplaySettings,
@@ -37,14 +37,15 @@ describe("the Settings tabs' field table", () => {
       settings,
     );
 
-  it.each(
-    FIELDS.map((item) => [item.path, item] as const),
-  )("%s edits a window setting, starts at its default and steps through values it accepts", (path, item) => {
-    const rule: SettingRule = SETTINGS_SCHEMA[path];
-    expect(rule.fileOnly).toBeUndefined();
-    if (item.values.length > 0) expect(item.values).toContain(rule.default);
-    for (const value of item.values) expect(checkSetting(path, value).issues).toEqual([]);
-  });
+  it.each(FIELDS.map((item) => [item.path, item] as const))(
+    "%s edits a window setting, starts at its default and steps through values it accepts",
+    (path, item) => {
+      const rule: SettingRule = SETTINGS_SCHEMA[path];
+      expect(rule.fileOnly).toBeUndefined();
+      if (item.values.length > 0) expect(item.values).toContain(rule.default);
+      for (const value of item.values) expect(checkSetting(path, value).issues).toEqual([]);
+    },
+  );
 
   it.each([
     // From "fill", the first value, to the first and the last number.

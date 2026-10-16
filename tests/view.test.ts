@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type {
   ProviderSnapshot,
   QuotaRow,
@@ -456,12 +456,12 @@ describe("view text", () => {
     { percent: "remaining", title: "▼ Quota remaining" },
     { percent: "used", title: "▼ Quota used" },
     { percent: "bare", title: "▼ Quota" },
-  ] as const)("titles the expanded panel $title, so its rows show only the number", ({
-    percent,
-    title,
-  }) => {
-    expect(sidebarTitle({ ...DEFAULT_WORDS, percent })).toBe(title);
-  });
+  ] as const)(
+    "titles the expanded panel $title, so its rows show only the number",
+    ({ percent, title }) => {
+      expect(sidebarTitle({ ...DEFAULT_WORDS, percent })).toBe(title);
+    },
+  );
 
   it.each([
     { providers: [CLAUDE], expected: "▶ Quota (1 provider)" },
@@ -615,22 +615,19 @@ describe("view text", () => {
       });
     });
 
-    it.each([
-      "blocks",
-      "shades",
-      "line",
-      "squares",
-      "dots",
-    ] as const)("draws the mark in a %s bar, which keeps its width", (shape) => {
-      const [full] = barParts(shape, 100, 1);
-      const [, empty] = barParts(shape, 0, 1);
-      expect(barSegments(shape, 70, 20, 50)).toEqual([
-        { text: full.repeat(10), role: "bar", percent: 70 },
-        { text: "┃", role: "label" },
-        { text: full.repeat(3), role: "bar", percent: 70 },
-        { text: empty.repeat(6), role: "empty", percent: 70 },
-      ]);
-    });
+    it.each(["blocks", "shades", "line", "squares", "dots"] as const)(
+      "draws the mark in a %s bar, which keeps its width",
+      (shape) => {
+        const [full] = barParts(shape, 100, 1);
+        const [, empty] = barParts(shape, 0, 1);
+        expect(barSegments(shape, 70, 20, 50)).toEqual([
+          { text: full.repeat(10), role: "bar", percent: 70 },
+          { text: "┃", role: "label" },
+          { text: full.repeat(3), role: "bar", percent: 70 },
+          { text: empty.repeat(6), role: "empty", percent: 70 },
+        ]);
+      },
+    );
 
     it.each([
       { name: "no bar", shape: "none", width: 20, text: "" },
@@ -740,18 +737,16 @@ describe("view text", () => {
     { room: 75, level: "bar", first: "Claude █░░░░ 12%", shown: 3 },
     { room: 70, level: "numbers", first: "Claude 12%", shown: 3 },
     { room: 40, level: "numbers", first: "Claude 12%", shown: 1 },
-  ])("fits the status line in $room columns at the $level level", ({
-    room,
-    level,
-    first,
-    shown,
-  }) => {
-    const layout = statusLayout(statusInput(), room, 0, "auto");
-    expect(layout.level).toBe(level);
-    expect(layout.shown.map(lineText)[0]).toBe(first);
-    // Every provider shows its least-left row; the rest wait behind "+N ›".
-    expect([layout.shown.length, layout.hiddenAfter]).toEqual([shown, 3 - shown]);
-  });
+  ])(
+    "fits the status line in $room columns at the $level level",
+    ({ room, level, first, shown }) => {
+      const layout = statusLayout(statusInput(), room, 0, "auto");
+      expect(layout.level).toBe(level);
+      expect(layout.shown.map(lineText)[0]).toBe(first);
+      // Every provider shows its least-left row; the rest wait behind "+N ›".
+      expect([layout.shown.length, layout.hiddenAfter]).toEqual([shown, 3 - shown]);
+    },
+  );
 
   it("scrolls the status line, keeping room for the markers", () => {
     const layout = statusLayout(statusInput(), 40, 1, "auto");

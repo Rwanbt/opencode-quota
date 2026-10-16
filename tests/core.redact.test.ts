@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import {
   looksSecret,
@@ -76,27 +76,24 @@ const NOT_SECRETS = [
 ];
 
 describe("key shapes", () => {
-  it.each(KEY_SHAPES)("hides $name in text and agent answers, and refuses it in a name", ({
-    secret,
-    text = "[redacted]",
-    answer = "[redacted]",
-  }) => {
-    expect(safeDetail(`key ${secret} end`, 300)).toBe(`key ${text} end`);
-    expect(secretValuesRedactor([])(`key ${secret} end`)).toBe(`key ${answer} end`);
-    expect(looksSecret(secret, { isName: true })).toBe(true);
-  });
+  it.each(KEY_SHAPES)(
+    "hides $name in text and agent answers, and refuses it in a name",
+    ({ secret, text = "[redacted]", answer = "[redacted]" }) => {
+      expect(safeDetail(`key ${secret} end`, 300)).toBe(`key ${text} end`);
+      expect(secretValuesRedactor([])(`key ${secret} end`)).toBe(`key ${answer} end`);
+      expect(looksSecret(secret, { isName: true })).toBe(true);
+    },
+  );
 
-  it.each(EDGE_CASES)("$input: text, agent refusal and answer", ({
-    input,
-    text,
-    refused,
-    answer = input,
-  }) => {
-    expect(safeDetail(input, 300)).toBe(text);
-    expect(looksSecret(input, { isName: false })).toBe(refused);
-    expect(looksSecret(input, { isName: true })).toBe(refused);
-    expect(secretValuesRedactor([])(input)).toBe(answer);
-  });
+  it.each(EDGE_CASES)(
+    "$input: text, agent refusal and answer",
+    ({ input, text, refused, answer = input }) => {
+      expect(safeDetail(input, 300)).toBe(text);
+      expect(looksSecret(input, { isName: false })).toBe(refused);
+      expect(looksSecret(input, { isName: true })).toBe(refused);
+      expect(secretValuesRedactor([])(input)).toBe(answer);
+    },
+  );
 
   it.each(NOT_SECRETS)("shows and takes %s", (text) => {
     expect(safeDetail(text, 300)).toBe(text);
@@ -321,16 +318,13 @@ describe("publicDetail", () => {
     max?: number;
     shown: string;
     hidden?: string[];
-  }>)("hides what a public issue must not show: $name", ({
-    text,
-    home = HOME,
-    max = Infinity,
-    shown,
-    hidden = [],
-  }) => {
-    const result = publicDetail(text, max, home);
+  }>)(
+    "hides what a public issue must not show: $name",
+    ({ text, home = HOME, max = Infinity, shown, hidden = [] }) => {
+      const result = publicDetail(text, max, home);
 
-    expect(result).toBe(shown);
-    for (const part of ["CANARY", ...hidden]) expect(result).not.toContain(part);
-  });
+      expect(result).toBe(shown);
+      for (const part of ["CANARY", ...hidden]) expect(result).not.toContain(part);
+    },
+  );
 });

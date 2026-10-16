@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { isolatedGitEnv } from "./helpers/isolated-git-env.js";
 
@@ -83,6 +83,12 @@ async function createHistoryRepo(root: string): Promise<string> {
     "public image fixture\n",
     "utf8",
   );
+  await mkdir(path.join(root, ".github/images"), { recursive: true });
+  await writeFile(
+    path.join(root, ".github/images/opencode-quota-logo-dark.svg"),
+    "public image fixture\n",
+    "utf8",
+  );
   await writeFile(
     path.join(root, ".gitignore"),
     [
@@ -103,7 +109,13 @@ async function createHistoryRepo(root: string): Promise<string> {
     ].join("\n"),
     "utf8",
   );
-  git(root, ["add", "README.md", ".gitignore", "images/opencode-quota-logo-dark.svg"]);
+  git(root, [
+    "add",
+    "README.md",
+    ".gitignore",
+    "images/opencode-quota-logo-dark.svg",
+    ".github/images/opencode-quota-logo-dark.svg",
+  ]);
   git(root, ["commit", "-qm", "base"]);
   return git(root, ["rev-parse", "HEAD"]);
 }
@@ -197,6 +209,7 @@ describe("v4 release gates", () => {
       "prompt-exports/session.md",
       "opencode-quota/opencode.db",
       "images/private-smoke.png",
+      ".github/images/private-smoke.png",
       "local-live-tests/google-agy/account.json",
       "local-live-tests/openai/account.json",
       "local-live-tests/notes.txt",

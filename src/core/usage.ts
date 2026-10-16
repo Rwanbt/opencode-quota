@@ -222,7 +222,7 @@ async function sessionsToRead(query: UsageQuery): Promise<string[] | undefined> 
 function topSessionID(sessionID: string, index: Record<string, OpenCodeSessionInfo>): string {
   const seen = new Set<string>([sessionID]);
   let current = sessionID;
-  for (let parentID = index[current]?.parentID; parentID && !seen.has(parentID); ) {
+  for (let parentID = index[current]?.parentID; parentID && !seen.has(parentID);) {
     seen.add(parentID);
     current = parentID;
     parentID = index[current]?.parentID;

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { QuotaRow, QuotaWindow, Words } from "../src/core/types.js";
 import { DEFAULT_WORDS } from "../src/view/format.js";
 import { errorWords, type Place, rowFacts } from "../src/view/row-facts.js";
@@ -46,14 +46,12 @@ describe("row facts", () => {
     { names: "words", rowNames: "full", item: HOURLY, name: "Hourly limit" },
     { names: "label", rowNames: "short", item: RENAMED, name: "Pro plan" },
     { names: "label", rowNames: "short", item: HOURLY, name: "Hourly limit" },
-  ] as const)("names $item.label as $name ($names, rowNames $rowNames)", ({
-    names,
-    rowNames,
-    item,
-    name,
-  }) => {
-    expect(rowFacts(item, GROUP, place({ names, words: words({ rowNames }) })).name).toBe(name);
-  });
+  ] as const)(
+    "names $item.label as $name ($names, rowNames $rowNames)",
+    ({ names, rowNames, item, name }) => {
+      expect(rowFacts(item, GROUP, place({ names, words: words({ rowNames }) })).name).toBe(name);
+    },
+  );
 
   it.each([
     { style: "number", percent: "left", left: 58, value: "58%" },
@@ -66,18 +64,16 @@ describe("row facts", () => {
     { style: "usedWord", percent: "used", left: 58, value: "42% used" },
     { style: "words", percent: "left", left: -12, value: "0% left" },
     { style: "words", percent: "used", left: 140, value: "0% used" },
-  ] as const)("writes $left% left as $value ($style, $percent)", ({
-    style,
-    percent,
-    left,
-    value,
-  }) => {
-    const row = quotaRow("x.a", { percentRemaining: left });
-    expect(factsOf(row, { percent: style, words: words({ percent }) })).toMatchObject({
-      percent: left,
-      value,
-    });
-  });
+  ] as const)(
+    "writes $left% left as $value ($style, $percent)",
+    ({ style, percent, left, value }) => {
+      const row = quotaRow("x.a", { percentRemaining: left });
+      expect(factsOf(row, { percent: style, words: words({ percent }) })).toMatchObject({
+        percent: left,
+        value,
+      });
+    },
+  );
 
   it("gives a row without a percent its value, and no reset or pace", () => {
     const balance = quotaRow("x.balance", {

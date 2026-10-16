@@ -28,13 +28,13 @@ import {
 } from "@opentui/core";
 import { type JSX, useTerminalDimensions } from "@opentui/solid";
 import { createSignal, Show } from "solid-js";
-import type { UsageModelRow, UsageQuery, UsageReport } from "../../core/usage.js";
 import {
   DEFAULT_USAGE_RANGE,
   USAGE_RANGES,
   type UsageRange,
   usageRangeLabel,
 } from "../../core/usage-ranges.js";
+import type { UsageModelRow, UsageQuery, UsageReport } from "../../core/usage.js";
 import { parseCalendarDate } from "../../lib/calendar-date.js";
 import { sanitizeDisplayText } from "../../lib/display-sanitize.js";
 import { QuotaRpc } from "../../rpc.js";

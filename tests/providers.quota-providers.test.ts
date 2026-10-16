@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import type { QuotaProviderContext } from "../src/lib/entries.js";
 import { bindCredentialSource } from "../src/lib/opencode-auth.js";
@@ -234,12 +234,15 @@ describe("quota-providers aggregate provider", () => {
       {},
       ["custom"],
     ],
-  ] as const)("selects definitions for %s", async (_name, definitions, ids, overrides, expected) => {
-    const ctx = context([...definitions], [...ids], overrides);
-    await expect(quotaProvidersProvider.isAvailable(ctx)).resolves.toBe(expected.length > 0);
-    const result = await quotaProvidersProvider.fetch(ctx);
-    expect(result.accounts.map((account) => account.login)).toEqual(expected);
-  });
+  ] as const)(
+    "selects definitions for %s",
+    async (_name, definitions, ids, overrides, expected) => {
+      const ctx = context([...definitions], [...ids], overrides);
+      await expect(quotaProvidersProvider.isAvailable(ctx)).resolves.toBe(expected.length > 0);
+      const result = await quotaProvidersProvider.fetch(ctx);
+      expect(result.accounts.map((account) => account.login)).toEqual(expected);
+    },
+  );
 
   it("treats a slash-containing current model as opaque when matching the session", () => {
     expect(

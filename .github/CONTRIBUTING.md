@@ -11,7 +11,7 @@ Thanks for contributing! Please read this before you open an issue or PR.
 
 ## Setup
 
-Node.js `^22.13.0 || >=23.4.0` and pnpm 11:
+Node.js 22.18+, 24.11+ or 26+ (what Vite+ needs; the published plugin itself runs on `^22.13.0 || >=23.4.0`) and pnpm 11:
 
 ```sh
 corepack enable
@@ -19,11 +19,11 @@ corepack prepare pnpm@11.7.0 --activate
 pnpm install
 ```
 
-`pnpm install` also installs the Git hooks: pre-commit formats staged files with Biome; pre-push runs `pnpm verify`.
+`pnpm install` also installs the Git hooks: pre-commit formats and lints staged files and fixes what it can with Vite+ (`vp check --fix`); pre-push runs `pnpm verify`.
 
 ## Checks
 
-Run `pnpm verify` before opening a PR. It runs lint and formatting, typecheck, build, all tests, the cross-surface test, and package checks. CI runs the same command, then installs the packed package on Node 22 and 24 as a smoke test.
+Run `pnpm verify` before opening a PR. It runs lint and formatting, the TypeScript-version and history checks, the build (its `tsc` step is the type check), all tests (the cross-surface test among them), and the package contents check. CI runs the same command, then installs the packed package on Node 22 and 24 as a smoke test.
 
 For quick iteration: `pnpm run test:watch`.
 
@@ -53,10 +53,10 @@ Even then, it needs a reasonable maintenance cost.
 | You want to… | Use |
 | --- | --- |
 | Use an OpenAI-compatible model service OpenCode doesn't include | an OpenCode custom provider |
-| Track quota for a provider OpenCode already exposes (request estimates or one fixed quota endpoint) | an OpenCode Quota custom provider ([ask your agent](docs/readme/providers.md#custom-providers)); its `providerId` must match OpenCode's |
+| Track quota for a provider OpenCode already exposes (request estimates or one fixed quota endpoint) | an OpenCode Quota custom provider ([ask your agent](../docs/readme/providers.md#custom-providers)); its `providerId` must match OpenCode's |
 | Anything the custom path can't do, and the policy above is met | a built-in provider |
 
-**Building one:** for API-key or token providers, start from `contributing/provider-template/` (see its README), replace every example name, and add tests for every auth source. Use the README setup label that matches reality: `Automatic` or `Needs setup`.
+**Building one:** for API-key or token providers, start from `.github/provider-template/` (see its README), replace every example name, and add tests for every auth source. Use the README setup label that matches reality: `Automatic` or `Needs setup`.
 
 **Every row** follows the row contract in `src/providers/contract.ts`. Pick `type` by what the number means (`quota`, `budget`, `usage`, `balance`, `status`), not by what's easiest to draw; `method` by how it was read (`remote_api`, `dashboard_scrape`, `local_cli`, `local_estimation`); and `authority` by who worked it out (`provider_reported` or `locally_derived`). A row's `key` is part of its id, which users' settings use, so it never changes once released.
 

@@ -7,14 +7,14 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { afterEach, beforeEach, expect, vi } from "vitest";
+import { afterEach, beforeEach, expect, vi } from "vite-plus/test";
 
 import { rowsFromProviderResult } from "../../src/core/rows.js";
 import type { Amount, QuotaRow } from "../../src/core/types.js";
 import { API_KEY_VENDORS } from "../../src/lib/api-key-resolver.js";
 import type { QuotaProvider } from "../../src/lib/entries.js";
-import { bindCredentialSource, notifyCredentialsChanged } from "../../src/lib/opencode-auth.js";
 import { createSqliteCredentialSource } from "../../src/lib/opencode-auth-sqlite.js";
+import { bindCredentialSource, notifyCredentialsChanged } from "../../src/lib/opencode-auth.js";
 import { type CredentialDatabaseRow, writeCredentialDatabase } from "./credential-database.js";
 import { isLedgerRowKey } from "./provider-assertions.js";
 

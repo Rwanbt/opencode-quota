@@ -1,6 +1,6 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { vi } from "vitest";
+import { vi } from "vite-plus/test";
 import { createFakeIntegration } from "./fake-integration.js";
 
 type MockFunction = ReturnType<typeof vi.fn>;

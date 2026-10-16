@@ -5,8 +5,8 @@
  * `quotaProviderIdsOfUsage` matches the two.
  */
 import type { QuotaSnapshot, Words } from "../core/types.js";
-import type { UsageProviderRow, UsageReport } from "../core/usage.js";
 import { type UsageRange, usageRangeLabel } from "../core/usage-ranges.js";
+import type { UsageProviderRow, UsageReport } from "../core/usage.js";
 import {
   getQuotaProviderDisplayLabel,
   getQuotaProviderIdsForRuntimeId,
@@ -107,13 +107,11 @@ function blocksOf(
     };
   });
   const unused = groups.filter((group) => !claimed.has(group));
-  const quotaBlocks = unused.map(
-    (group, index): Block => ({
-      name: group.title,
-      dot: `provider:${(report?.providers.length ?? 0) + index}`,
-      groups: [group],
-    }),
-  );
+  const quotaBlocks = unused.map((group, index): Block => ({
+    name: group.title,
+    dot: `provider:${(report?.providers.length ?? 0) + index}`,
+    groups: [group],
+  }));
   return [...usedBlocks, ...quotaBlocks];
 }
 

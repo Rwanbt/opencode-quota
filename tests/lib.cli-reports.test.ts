@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { PROVIDER_IDS as CONFIG_PROVIDER_IDS } from "../src/settings/schema.js";
 import { answer, percentRow, textRow } from "./helpers/fake-answers.js";
 
@@ -34,9 +34,8 @@ vi.mock("../src/lib/quota-dialog-commands.js", async (importOriginal) => {
 const { snapshotFilePath } = await import("../src/core/persist.js");
 const { loadProviderSource } = await import("../src/core/provider-source.js");
 const { createQuotaStore } = await import("../src/core/store.js");
-const { buildCliShowJson, buildCliShowText, buildCliStatus } = await import(
-  "../src/lib/cli-reports.js"
-);
+const { buildCliShowJson, buildCliShowText, buildCliStatus } =
+  await import("../src/lib/cli-reports.js");
 const { buildStatusReportData } = await import("../src/lib/quota-dialog-commands.js");
 const { loadSettings } = await import("../src/settings/index.js");
 type ProviderSourceHost = import("../src/core/provider-source.js").ProviderSourceHost;
@@ -288,31 +287,34 @@ describe("CLI reports", () => {
     it.each([
       [80, 50, 0],
       [30, 50, 1],
-    ])("--threshold uses percentage rows even when the first row is a quantity: %s vs %s", async (percentRemaining, threshold, expectedCode) => {
-      const balance = {
-        ...textRow("balance", "Balance", ""),
-        type: "balance" as const,
-        text: undefined,
-        amount: { decimal: "5", unit: { kind: "currency" as const, code: "USD" } },
-      };
-      mockProviders.push(
-        fakeProvider(
-          {
-            name: "OpenCode Zen",
-            rows: [balance, percentRow("monthly", "Monthly", percentRemaining)],
-          },
-          "opencode",
-        ),
-      );
-      writeSettings({
-        providers: { off: CONFIG_PROVIDER_IDS.filter((id) => !["opencode"].includes(id)) },
-      });
+    ])(
+      "--threshold uses percentage rows even when the first row is a quantity: %s vs %s",
+      async (percentRemaining, threshold, expectedCode) => {
+        const balance = {
+          ...textRow("balance", "Balance", ""),
+          type: "balance" as const,
+          text: undefined,
+          amount: { decimal: "5", unit: { kind: "currency" as const, code: "USD" } },
+        };
+        mockProviders.push(
+          fakeProvider(
+            {
+              name: "OpenCode Zen",
+              rows: [balance, percentRow("monthly", "Monthly", percentRemaining)],
+            },
+            "opencode",
+          ),
+        );
+        writeSettings({
+          providers: { off: CONFIG_PROVIDER_IDS.filter((id) => !["opencode"].includes(id)) },
+        });
 
-      await saveSnapshot();
-      const report = await buildCliShowJson({ host: await hostFor(), threshold });
+        await saveSnapshot();
+        const report = await buildCliShowJson({ host: await hostFor(), threshold });
 
-      expect(report.exitCode).toBe(expectedCode);
-    });
+        expect(report.exitCode).toBe(expectedCode);
+      },
+    );
 
     it("--threshold exits 2 when no provider is ok", async () => {
       mockProviders.push(

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import {
   minimaxChinaCodingPlanProvider,
@@ -218,27 +218,26 @@ describe("MiniMax model choice", () => {
       envVar: "MINIMAX_CHINA_CODING_PLAN_API_KEY",
       percents: [],
     },
-  ])("$provider.id reads a percent beside zero counts on a coding model: $percents", async ({
-    provider,
-    envVar,
-    percents,
-  }) => {
-    process.env[envVar] = "env-key";
-    fakeHttp(() =>
-      remainsReply([
-        model("MiniMax-M*", {
-          current_interval_total_count: 0,
-          current_interval_usage_count: 0,
-          current_interval_remaining_percent: 70,
-        }),
-      ]),
-    );
+  ])(
+    "$provider.id reads a percent beside zero counts on a coding model: $percents",
+    async ({ provider, envVar, percents }) => {
+      process.env[envVar] = "env-key";
+      fakeHttp(() =>
+        remainsReply([
+          model("MiniMax-M*", {
+            current_interval_total_count: 0,
+            current_interval_usage_count: 0,
+            current_interval_remaining_percent: 70,
+          }),
+        ]),
+      );
 
-    const fetched = await fetchRows(provider);
+      const fetched = await fetchRows(provider);
 
-    expect(fetched.error).toBeUndefined();
-    expect(fetched.rows.map((row) => row.percentRemaining)).toEqual(percents);
-  });
+      expect(fetched.error).toBeUndefined();
+      expect(fetched.rows.map((row) => row.percentRemaining)).toEqual(percents);
+    },
+  );
 });
 
 describe("MiniMax availability and models", () => {
