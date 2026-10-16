@@ -232,14 +232,14 @@ export function surfaceEditor(surface: Surface, snapshot?: QuotaSnapshot) {
 
     /**
      * e or a double-click on a row: typing its new name (nothing typed puts its own name back),
-     * with the input's placeholder and the hint. Undefined for a provider, or on a page without rows.
+     * with the hint. Its line's label is the input's placeholder. Undefined for a provider, or on a
+     * page without rows.
      */
-    rename(settings: DisplaySettings, id: string) {
+    rename(id: string) {
       const all = snapshot?.providers.flatMap((provider) => provider.rows) ?? [];
       const row = withRows ? all.find((item) => item.id === id) : undefined;
       if (!row) return undefined;
       return {
-        placeholder: settings[namesKey].names[id] ?? row.label,
         hint: `Type a new name, then enter · enter with nothing typed = its own name ("${row.label}") · esc stop`,
         apply:
           (text: string): SettingsEdit =>

@@ -125,9 +125,31 @@ describe("the Settings tree's lines and edits", () => {
   });
 
   it("leaves rows hidden on Collapsed out of the ‹ › and the summary", () => {
-    const hidden = set("collapsed.hidden", ["claude.5h"]);
-    expect(linesOn("collapsed", hidden)[0]).toBe("[x] Claude · 60% left");
-    expect(surfaceEditor("collapsed", QUOTA).cycleWindow("claude", 1)(hidden)).toBe(hidden);
+    const collapsed = surfaceEditor(
+      "collapsed",
+      snapshot([
+        providerSnapshot("openai", "OpenAI", [
+          quotaRow("openai.5h", { window: "five_hour", percentRemaining: 65 }),
+          quotaRow("openai.7d", { window: "week", percentRemaining: 26 }),
+          quotaRow("openai.30d", { window: "month", percentRemaining: 12 }),
+        ]),
+      ]),
+    );
+    let settings = set("collapsed.hidden", ["openai.30d"]);
+    // The summary is the lowest row Collapsed shows, not the hidden 12% one.
+    expect(collapsed.lines(settings, NOW)[0]).toMatchObject({
+      window: "lowest",
+      detail: "26% left",
+    });
+    // ‹ › steps through 5h and 7d only, then back to no pick of its own.
+    const picks = [1, 2, 3].map(() => {
+      settings = collapsed.cycleWindow("openai", 1)(settings);
+      return settings.collapsed.window.openai;
+    });
+    expect(picks).toEqual(["five_hour", "week", undefined]);
+    // With one window left there is nothing to step through.
+    const one = set("collapsed.hidden", ["openai.30d", "openai.5h"]);
+    expect(collapsed.cycleWindow("openai", 1)(one)).toBe(one);
   });
 
   it("steps a provider's window through its own, then back to no pick of its own", () => {
@@ -154,17 +176,13 @@ describe("the Settings tree's lines and edits", () => {
       [],
     ]);
     expect(toast.toggleSurface()(SETTINGS).toast.show).toBe(!SETTINGS.toast.show);
-    const rename = toast.rename(set("toast.names", { "claude.7d": "Week" }), "claude.7d");
-    expect([rename?.placeholder, rename?.hint]).toEqual([
-      "Week",
+    const rename = toast.rename("claude.7d");
+    expect(rename?.hint).toBe(
       'Type a new name, then enter · enter with nothing typed = its own name ("Weekly") · esc stop',
-    ]);
+    );
     expect(rename?.apply(" Mine ")(SETTINGS).toast.names).toEqual({ "claude.7d": "Mine" });
     // Only a row takes a name, and only on a page that lists rows.
     const collapsed = surfaceEditor("collapsed", QUOTA);
-    expect([toast.rename(SETTINGS, "claude"), collapsed.rename(SETTINGS, "claude.7d")]).toEqual([
-      undefined,
-      undefined,
-    ]);
+    expect([toast.rename("claude"), collapsed.rename("claude.7d")]).toEqual([undefined, undefined]);
   });
 });

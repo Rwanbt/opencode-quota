@@ -367,7 +367,10 @@ export function createSettingsEditor(
 ) {
   const [tab, setTabNow] = createSignal<SettingsTab>();
   const [selected, setSelected] = createSignal("");
-  const [typing, setTyping] = createSignal<Typed & { id: string; value: string }>();
+  // The input's placeholder comes from its line, so it follows a new label or saved name.
+  const [typing, setTyping] = createSignal<
+    Omit<Typed, "placeholder"> & { id: string; value: string }
+  >();
   const [confirming, setConfirming] = createSignal(false);
   const [sidebars, setSidebars] = createSignal(0);
   const [dragging, setDragging] = createSignal<string>();
@@ -831,12 +834,11 @@ export function createSettingsEditor(
         return;
       }
       const line = selectedLine();
-      const rename = line && editor()?.rename(shown(), line.id);
+      const rename = line && editor()?.rename(line.id);
       if (!line || !rename) return;
       setTyping({
         id: lineKey(line.id),
         value: "",
-        placeholder: rename.placeholder,
         hint: rename.hint,
         apply: (text) => display.edit(rename.apply(text)),
       });
@@ -967,8 +969,7 @@ export function createSettingsEditor(
       ],
     }));
 
-    /** The input of the line that takes typing, with that typing's placeholder. */
-    function TypingInput(inputProps: { width: number }): JSX.Element {
+    function TypingInput(inputProps: { width: number; placeholder: string }): JSX.Element {
       return (
         <input
           ref={(element: Renderable) => {
@@ -977,7 +978,7 @@ export function createSettingsEditor(
           width={inputProps.width}
           flexShrink={0}
           value=""
-          placeholder={typing()?.placeholder ?? ""}
+          placeholder={inputProps.placeholder}
           focused
           onInput={(value: string) => {
             const current = typing();
@@ -1030,7 +1031,7 @@ export function createSettingsEditor(
               </Cell>
             }
           >
-            <TypingInput width={labelWidth} />
+            <TypingInput width={labelWidth} placeholder={line().label} />
           </Show>
           {/* One-line-per-provider tabs keep the window column, so the details line up. */}
           <Show
@@ -1072,7 +1073,9 @@ export function createSettingsEditor(
               use={() => useOption(line)}
               input={
                 typing()?.id === line.id
-                  ? (width: number) => <TypingInput width={width} />
+                  ? (width: number) => (
+                      <TypingInput width={width} placeholder={line.typed?.placeholder ?? ""} />
+                    )
                   : undefined
               }
             />

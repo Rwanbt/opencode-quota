@@ -12,7 +12,7 @@ import type {
   QuotaRpcNoticeListOutput,
   QuotaRpcSaveSettingsInput,
 } from "../src/rpc.js";
-import { createFileDisplay } from "../src/tui/display.js";
+import { createFileDisplay, setIn } from "../src/tui/display.js";
 import { createServerSettings } from "../src/tui/server-settings.js";
 import { createSettingsEditor } from "../src/tui/window/settings.tsx";
 import { createQuotaWindow, type QuotaWindow } from "../src/tui/window/shell.tsx";
@@ -484,6 +484,42 @@ describe("quota window shell", () => {
     click(view.tree, "‹ 5h ");
     view.dispose();
     expect(host.display.shown().collapsed.window).toEqual({ "*": "five_hour", openai: "week" });
+  });
+
+  it("shows a row's newest label or saved name as its rename placeholder while typing", async () => {
+    const cursor = (label: string) =>
+      providerSnapshot("cursor", "Cursor", [quotaRow("cursor.api", { label })]);
+    const snapshot: QuotaSnapshot = {
+      version: 6,
+      generatedAtMs: 0,
+      resetNotices: [],
+      providers: [cursor("Known API")],
+    };
+    const host = fakeHost(snapshot);
+    host.quotaWindow.open("sidebar");
+    await flush();
+    let view = draw(host.quotaWindow);
+    const row = findAll(
+      view.tree,
+      (node) =>
+        typeof node.props?.onMouseDown === "function" &&
+        textLines(node).some((line) => line.includes("Known API")),
+    ).at(-1);
+    row?.props.onMouseDown({ button: 0 });
+    row?.props.onMouseDown({ button: 0 });
+    view.dispose();
+    /** The rename input's placeholder, as the window draws it now. */
+    const placeholder = () => {
+      view = draw(host.quotaWindow);
+      const input = findAll(view.tree, (node) => node.type === "input")[0];
+      view.dispose();
+      return input?.props.placeholder;
+    };
+    expect(placeholder()).toBe("Known API");
+    snapshot.providers = [cursor("API")];
+    expect(placeholder()).toBe("API");
+    host.display.edit((settings) => setIn(settings, ["sidebar", "names", "cursor.api"], "Mine"));
+    expect(placeholder()).toBe("Mine");
   });
 
   it("says Limits is still loading when c has nothing to copy yet", () => {
