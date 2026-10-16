@@ -15,6 +15,7 @@ import { consoleBaseUrl, resolveOpenCodeConsoleAuth } from "../lib/opencode-cons
 import { queryOpenCodeGoConsoleStatus, queryOpenCodeGoQuota } from "../lib/opencode-go.js";
 import { normalizeQuotaProviderId } from "../lib/provider-metadata.js";
 import type { OpenCodeGoResult, OpenCodeGoWindowKey } from "../lib/types.js";
+import { vendorKeysPolicy } from "./cache-policies.js";
 import {
   type FetchError,
   FIVE_HOUR,
@@ -79,6 +80,7 @@ function goRows(
 
 export const opencodeGoProvider: QuotaProvider = {
   id: "opencode-go",
+  cachePolicy: vendorKeysPolicy("opencode-go"),
 
   async isAvailable(_ctx: QuotaProviderContext): Promise<boolean> {
     // Any Console sign-in counts, even a failed one, so fetch() can show its error when there

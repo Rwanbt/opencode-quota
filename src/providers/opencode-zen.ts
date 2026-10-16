@@ -12,6 +12,7 @@ import {
   queryOpenCodeZenQuota,
 } from "../lib/opencode-zen.js";
 import { normalizeQuotaProviderId } from "../lib/provider-metadata.js";
+import { resolvedCredentialPolicy } from "./cache-policies.js";
 import { failedAccount, MONTHLY, type ProviderFetchResult, type ProviderRow } from "./contract.js";
 import { statusDetailsFromRecord } from "./result-helpers.js";
 
@@ -66,6 +67,23 @@ const ZEN_ROW = {
 
 export const opencodeZenProvider: QuotaProvider = {
   id: "opencode",
+  cachePolicy: resolvedCredentialPolicy("opencode", async () => {
+    const resolved = await resolveOpenCodeConsoleAuth();
+    if (resolved.state !== "configured") return null;
+    const { credential } = resolved;
+    // The identity distinguishes accounts within the same org (member budgets
+    // are queried per account): org + account, else the account, else the
+    // token. The Console URL qualifies it because org ids can collide across
+    // self-hosted Console URLs.
+    return {
+      credential:
+        credential.orgId && credential.accountId
+          ? JSON.stringify([credential.orgId, credential.accountId])
+          : (credential.orgId ?? credential.accountId ?? credential.accessToken),
+      principalKind: credential.orgId || credential.accountId ? "stable-id" : "credential",
+      qualifiers: [consoleBaseUrl(credential)],
+    };
+  }),
 
   async isAvailable(ctx: QuotaProviderContext): Promise<boolean> {
     // An expired or failed sign-in stays available so fetch() can show its hint.

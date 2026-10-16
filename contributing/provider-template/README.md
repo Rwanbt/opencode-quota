@@ -18,7 +18,7 @@ Use this template for API-key/token providers that support all three trusted sou
 
 Do not use it for OAuth-only providers such as OpenAI.
 
-Auth is one table entry, not a new file: add the provider to `API_KEY_VENDORS` in `src/lib/api-key-resolver.ts` (env var names and OpenCode provider ids). The shared resolver reads env, then trusted global config, then OpenCode logins for those ids, and `tests/lib.api-key-resolver.test.ts` covers that order; add a row to its vendor table.
+Auth is part of the provider's entry in `src/lib/provider-registration.ts`, not a new file: its `apiKey` lists the env var names and OpenCode provider ids. The shared resolver reads env, then trusted global config, then OpenCode logins for those ids, and `tests/lib.api-key-resolver.test.ts` covers that order; add a row to its vendor table.
 
 ## Copy targets
 
@@ -29,11 +29,9 @@ Auth is one table entry, not a new file: add the provider to `API_KEY_VENDORS` i
 
 Also update:
 
-- `src/lib/api-key-resolver.ts` (`API_KEY_VENDORS`) and its test table
-- `src/lib/provider-registration.ts` with the provider metadata and display order
-- `src/providers/registry.ts` with the provider singleton binding
-- `tests/helpers/provider-assertions.ts` (`PROVIDER_ROW_KEYS`) with the provider's row keys
-- `tests/helpers/provider-fetch.ts` (`PROVIDER_ENV_NAMES`) with the provider's env var names
+- `src/lib/provider-registration.ts`: one entry, in display order, with the provider's label, OpenCode ids, row keys (`rowKeys`) and key (`apiKey`)
+- `src/providers/registry.ts`: bind the provider to its id (the compiler checks every id has one)
+- `tests/lib.api-key-resolver.test.ts`: a row in its vendor table
 - `README.md`
 
 ## Replacement checklist
@@ -57,6 +55,6 @@ In provider ledgers, use `Data from` rather than `Source`. These are friendly la
 
 A provider returns the row contract in `src/providers/contract.ts`: per account, its rows and its errors, plus debug details for `/quota_status`. The copied `provider.ts` shows one remote quota row with the percent left (`quotaRow`). Keep that shape when the provider only reports a percentage.
 
-Each row's `key` becomes its id (`example-provider.daily`), which users' hide, rename and order settings use, so a key never changes once released. List every key in `PROVIDER_ROW_KEYS`; `fetchRows` in the provider tests fails on a key that is not listed.
+Each row's `key` becomes its id (`example-provider.daily`), which users' hide, rename and order settings use, so a key never changes once released. List every key in the provider's `rowKeys`; `fetchRows` in the provider tests fails on a key that is not listed.
 
 If the provider reports more than a percentage, follow `CONTRIBUTING.md`: amounts as typed `used`, `limit`, `remaining` or `amount` values, yes/no as `flag`, never pre-formatted money strings.

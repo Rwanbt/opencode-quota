@@ -10,6 +10,7 @@ import { FIVE_HOUR, keySlug, type ProviderRow, quotaRow, WEEKLY } from "./contra
 import {
   fetchGoogleProviderQuota,
   type GoogleProviderFlavor,
+  googleCachePolicy,
   isGoogleProviderAvailable,
   remainingCount,
 } from "./google-oauth-provider.js";
@@ -54,6 +55,7 @@ const AGY_PROVIDER: GoogleProviderFlavor<
 
 export const googleAgyProvider: QuotaProvider = {
   id: "google-agy",
+  cachePolicy: googleCachePolicy(AGY_PROVIDER),
   isAvailable: () => isGoogleProviderAvailable(AGY_PROVIDER),
   matchesCurrentModel: (model) =>
     (AGY_AUTH_KEYS as readonly string[]).includes(parseProviderModelRef(model).providerId),

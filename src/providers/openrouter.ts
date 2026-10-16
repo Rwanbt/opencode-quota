@@ -3,6 +3,7 @@ import {
   hasOpenRouterApiKeyConfigured,
   queryOpenRouterQuota,
   resolveOpenRouterApiKey,
+  resolveOpenRouterAuthIdentity,
 } from "../lib/openrouter.js";
 import { modelProviderMatchesRuntimeId } from "../lib/provider-model-matching.js";
 import { failedAccount, type ProviderFetchResult } from "./contract.js";
@@ -12,6 +13,7 @@ const LABEL = "OpenRouter";
 
 export const openRouterProvider: QuotaProvider = {
   id: "openrouter",
+  cachePolicy: { kind: "resolved-auth", resolveIdentity: () => resolveOpenRouterAuthIdentity() },
 
   async isAvailable(_ctx: QuotaProviderContext): Promise<boolean> {
     return await hasOpenRouterApiKeyConfigured();

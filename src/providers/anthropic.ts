@@ -5,6 +5,7 @@
 
 import {
   type AnthropicQuotaResult,
+  anthropicLoginsIdentity,
   getAnthropicDiagnostics,
   hasAnthropicCredentialsConfigured,
   queryAnthropicQuota,
@@ -73,6 +74,13 @@ function quotaRows(quota: AnthropicQuotaResult, method: ProviderRow["method"]): 
 
 export const anthropicProvider: QuotaProvider = {
   id: "anthropic",
+  cachePolicy: {
+    kind: "resolved-auth",
+    resolveIdentity: async (ctx) =>
+      anthropicLoginsIdentity(await readAnthropicLogins(), {
+        binaryPath: ctx.config.anthropicBinaryPath,
+      }),
+  },
 
   async isAvailable(ctx: QuotaProviderContext): Promise<boolean> {
     const providerAvailable = await isCanonicalProviderAvailable({

@@ -52,6 +52,7 @@ function statusDetailsFromResult(result: AlibabaTokenPlanClosedResult) {
 
 export const alibabaTokenPlanProvider: QuotaProvider = {
   id: "alibaba-token-plan",
+  cachePolicy: { kind: "uncached" },
 
   // Never probes PATH: availability comes from selection or the current runtime identity.
   async isAvailable(ctx: QuotaProviderContext): Promise<boolean> {

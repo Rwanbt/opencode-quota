@@ -7,6 +7,7 @@ import { keySlug, type ProviderRow, quotaRow } from "./contract.js";
 import {
   fetchGoogleProviderQuota,
   type GoogleProviderFlavor,
+  googleCachePolicy,
   isGoogleProviderAvailable,
   remainingCount,
 } from "./google-oauth-provider.js";
@@ -68,6 +69,7 @@ const GEMINI_CLI_PROVIDER: GoogleProviderFlavor<
 
 export const googleGeminiCliProvider: QuotaProvider = {
   id: "google-gemini-cli",
+  cachePolicy: googleCachePolicy(GEMINI_CLI_PROVIDER),
   isAvailable: () => isGoogleProviderAvailable(GEMINI_CLI_PROVIDER),
   matchesCurrentModel: isGeminiCliModel,
   fetch: (ctx) => fetchGoogleProviderQuota(GEMINI_CLI_PROVIDER, ctx),

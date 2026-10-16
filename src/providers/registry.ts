@@ -1,8 +1,6 @@
 /**
- * Provider implementation registry.
- *
- * Add metadata and display order in provider-registration.ts, then bind the
- * corresponding provider singleton here. Everything else stays provider-agnostic.
+ * Each provider in `provider-registration.ts` order (the display order), bound to its id.
+ * A provider's facts live there; its fetch and cache policy in `src/providers/<vendor>.ts`.
  */
 
 import type { QuotaProvider } from "../lib/entries.js";
@@ -13,7 +11,6 @@ import {
 import { alibabaCodingPlanProvider } from "./alibaba-coding-plan.js";
 import { alibabaTokenPlanProvider } from "./alibaba-token-plan.js";
 import { anthropicProvider } from "./anthropic.js";
-import { PROVIDER_CACHE_POLICIES } from "./cache-policies.js";
 import { copilotProvider } from "./copilot.js";
 import { cursorProvider } from "./cursor.js";
 import { deepseekProvider } from "./deepseek.js";
@@ -67,7 +64,6 @@ export function getProviders(): QuotaProvider[] {
         `Quota provider registration mismatch: expected ${id}, received ${provider.id}`,
       );
     }
-    provider.cachePolicy = PROVIDER_CACHE_POLICIES[id];
     return provider;
   });
 }

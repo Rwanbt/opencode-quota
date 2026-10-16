@@ -8,9 +8,14 @@ import type {
   MimoPlanDetail,
 } from "../lib/mimo.js";
 import { queryMimoDashboard } from "../lib/mimo.js";
-import { getMimoConfigDiagnostics, resolveMimoConfigCached } from "../lib/mimo-config.js";
+import {
+  DEFAULT_MIMO_CONFIG_CACHE_MAX_AGE_MS,
+  getMimoConfigDiagnostics,
+  resolveMimoConfigCached,
+} from "../lib/mimo-config.js";
 import { getQuotaProviderRuntimeIds } from "../lib/provider-metadata.js";
 import { accountingDecimalFromNumber } from "./accounting-decimal.js";
+import { resolvedCredentialPolicy } from "./cache-policies.js";
 import {
   type AccountResult,
   failedAccount,
@@ -99,6 +104,12 @@ function mimoAccounts(result: MimoDashboardResult): AccountResult[] {
 
 export const xiaomiProvider: QuotaProvider = {
   id: "xiaomi",
+  cachePolicy: resolvedCredentialPolicy("xiaomi", async () => {
+    const resolved = await resolveMimoConfigCached({
+      maxAgeMs: DEFAULT_MIMO_CONFIG_CACHE_MAX_AGE_MS,
+    });
+    return resolved.state === "configured" ? { credential: resolved.config.cookie } : null;
+  }),
 
   async isAvailable(_ctx: QuotaProviderContext): Promise<boolean> {
     const config = await resolveMimoConfigCached();

@@ -1,9 +1,10 @@
 import type { Amount } from "../core/types.js";
 import { sanitizeDisplayText } from "../lib/display-sanitize.js";
-import type { QuotaProviderContext } from "../lib/entries.js";
+import type { QuotaProviderCachePolicy, QuotaProviderContext } from "../lib/entries.js";
 import {
   type GoogleAuthSourceKey,
   type GoogleQuotaFlavor,
+  googleLoginsIdentity,
   hasGoogleQuotaRuntimeAvailable,
   inspectGoogleAuthPresence,
   queryGoogleQuota,
@@ -32,6 +33,17 @@ export async function isGoogleProviderAvailable<Key extends GoogleAuthSourceKey,
   } catch {
     return false;
   }
+}
+
+/** Who the provider is signed in as: its logins and the companion's OAuth client. */
+export function googleCachePolicy<Key extends GoogleAuthSourceKey, Response, Bucket>(
+  flavor: GoogleProviderFlavor<Key, Response, Bucket>,
+): QuotaProviderCachePolicy {
+  return {
+    kind: "resolved-auth",
+    resolveIdentity: async () =>
+      googleLoginsIdentity(flavor.quota, await readGoogleLogins(flavor.quota)),
+  };
 }
 
 /** A remaining count Google reported ("1200", "12.5") in `unit`; none for anything else. */

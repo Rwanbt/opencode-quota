@@ -10,6 +10,7 @@ import { queryOllamaCloudQuota } from "../lib/ollama-cloud.js";
 import { modelProviderMatchesRuntimeId } from "../lib/provider-model-matching.js";
 import type { OllamaCloudIncludedCredits, OllamaCloudResult } from "../lib/types.js";
 import { accountingDecimalFromNumber } from "./accounting-decimal.js";
+import { vendorKeysPolicy } from "./cache-policies.js";
 import {
   fetchKeyLogins,
   MONTHLY,
@@ -119,6 +120,7 @@ function ollamaKeyFetch(result: OllamaCloudResult): {
 
 export const ollamaCloudProvider: QuotaProvider = {
   id: "ollama-cloud",
+  cachePolicy: vendorKeysPolicy("ollama-cloud"),
 
   async isAvailable(_ctx: QuotaProviderContext): Promise<boolean> {
     return hasVendorKey(await readVendorKeys(SPEC));

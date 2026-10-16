@@ -4,7 +4,7 @@
  * Order (first wins): environment variables, then the trusted global
  * `opencode.json(c)` (`providers.<id>.settings.apiKey`, or the legacy
  * `provider.<id>.options.apiKey`, with `{env:NAME}` templates), then OpenCode's
- * stored logins. Each vendor is one entry in `API_KEY_VENDORS`.
+ * stored logins. Each vendor's spec is its `apiKey` in `provider-registration.ts`.
  */
 
 import { existsSync } from "fs";
@@ -24,6 +24,7 @@ import {
   readOpenCodeConfigCandidate,
 } from "./opencode-config-read.js";
 import { getOpencodeRuntimeDirs } from "./opencode-runtime-paths.js";
+import { QUOTA_PROVIDER_REGISTRATION_SOURCE } from "./provider-registration.js";
 
 /** Where an API key may live for one vendor. */
 export interface ApiKeySpec {
@@ -48,80 +49,19 @@ export interface ApiKeyLoginSpec extends ApiKeySpec {
   skipBrokenLogins?: boolean;
 }
 
-export const API_KEY_VENDORS = {
-  deepseek: {
-    displayName: "DeepSeek",
-    envVars: ["DEEPSEEK_API_KEY"],
-    providerKeys: ["deepseek"],
-    authKeys: ["deepseek"],
-    skipBrokenLogins: true,
-  },
-  "ollama-cloud": {
-    displayName: "Ollama Cloud",
-    envVars: ["OLLAMA_API_KEY"],
-    providerKeys: ["ollama-cloud"],
-    authKeys: ["ollama-cloud"],
-    skipBrokenLogins: true,
-  },
-  zai: {
-    displayName: "Z.ai",
-    envVars: ["ZAI_API_KEY", "ZAI_CODING_PLAN_API_KEY"],
-    providerKeys: ["zai", "zai-coding-plan", "glm"],
-    authKeys: ["zai-coding-plan"],
-  },
-  zhipu: {
-    displayName: "Zhipu",
-    envVars: ["ZHIPU_API_KEY", "ZHIPU_CODING_PLAN_API_KEY"],
-    providerKeys: ["zhipu", "zhipu-coding-plan", "zhipuai-coding-plan", "glm-coding-plan"],
-    authKeys: ["zhipu-coding-plan", "zhipuai-coding-plan"],
-  },
-  // `opencode-go` is what `opencode auth login opencode-go` writes; `opencode` stays as a
-  // fallback alias for older manual setups. Key logins only: the active `opencode` login is
-  // usually the OpenCode Console sign-in, and resolving it could refresh its token for nothing.
-  "opencode-go": {
-    displayName: "OpenCode Go",
-    envVars: ["OPENCODE_API_KEY"],
-    providerKeys: ["opencode-go", "opencode"],
-    authKeys: ["opencode-go", "opencode"],
-    keyLoginsOnly: true,
-    unsupportedTypeError: "OpenCode Go auth entry has unsupported type",
-  },
-  "kimi-code-plan-global": {
-    displayName: "Kimi",
-    envVars: ["KIMI_GLOBAL_API_KEY"],
-    providerKeys: ["kimi-code-plan-global"],
-    authKeys: ["kimi-code-plan-global"],
-  },
-  "kimi-code-plan-cn": {
-    displayName: "Kimi",
-    envVars: ["KIMI_CN_API_KEY", "KIMI_API_KEY", "KIMI_CODE_API_KEY"],
-    providerKeys: ["kimi-code-plan-cn", "kimi-for-coding", "kimi-code", "kimi"],
-    authKeys: ["kimi-code-plan-cn", "kimi-for-coding", "kimi-code", "kimi"],
-  },
-  "minimax-coding-plan": {
-    displayName: "MiniMax",
-    envVars: ["MINIMAX_CODING_PLAN_API_KEY", "MINIMAX_API_KEY"],
-    providerKeys: ["minimax-coding-plan", "minimax"],
-    authKeys: ["minimax-coding-plan"],
-  },
-  "minimax-china-coding-plan": {
-    displayName: "MiniMax",
-    envVars: ["MINIMAX_CHINA_CODING_PLAN_API_KEY"],
-    providerKeys: [
-      "minimax-china-coding-plan",
-      "minimax-cn-coding-plan",
-      "minimax-cn",
-      "minimax-china",
-    ],
-    authKeys: ["minimax-china-coding-plan", "minimax-cn-coding-plan"],
-  },
-  "alibaba-coding-plan": {
-    displayName: "Alibaba Coding Plan",
-    envVars: ["ALIBABA_CODING_PLAN_API_KEY", "ALIBABA_API_KEY"],
-    providerKeys: ["alibaba-coding-plan", "alibaba"],
-    authKeys: ["alibaba-coding-plan", "alibaba"],
-  },
-} as const satisfies Record<string, ApiKeyLoginSpec>;
+type ApiKeyVendorId = Extract<
+  (typeof QUOTA_PROVIDER_REGISTRATION_SOURCE)[number],
+  { apiKey: object }
+>["id"];
+
+/** Each API-key vendor's spec, from its `apiKey` in provider-registration.ts. */
+export const API_KEY_VENDORS = Object.fromEntries<ApiKeyLoginSpec>(
+  QUOTA_PROVIDER_REGISTRATION_SOURCE.flatMap((source) => {
+    if (!("apiKey" in source)) return [];
+    const { apiKey } = source;
+    return [[source.id, { displayName: source.label, authKeys: apiKey.providerKeys, ...apiKey }]];
+  }),
+) as Readonly<Record<ApiKeyVendorId, ApiKeyLoginSpec>>;
 
 /** How long a stored login read stays cached, unless the caller asks for another age. */
 const API_KEY_LOGIN_CACHE_MAX_AGE_MS = 5_000;

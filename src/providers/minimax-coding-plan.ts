@@ -23,6 +23,7 @@ import {
 } from "../lib/provider-availability.js";
 import { normalizeQuotaProviderId } from "../lib/provider-metadata.js";
 import { accountingDecimalFromNumber } from "./accounting-decimal.js";
+import { vendorKeysPolicy } from "./cache-policies.js";
 import {
   FIVE_HOUR,
   failedAccount,
@@ -331,6 +332,7 @@ async function fetchMiniMaxQuota(
 function minimaxProvider(spec: MiniMaxSpec): QuotaProvider {
   return {
     id: spec.id,
+    cachePolicy: vendorKeysPolicy(spec.id, spec.endpoint),
 
     async isAvailable(ctx: QuotaProviderContext): Promise<boolean> {
       const providerAvailable =

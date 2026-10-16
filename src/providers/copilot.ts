@@ -7,6 +7,7 @@
 
 import {
   type CopilotQuotaAuthDiagnostics,
+  copilotLoginsIdentity,
   getCopilotQuotaAuthDiagnostics,
   queryCopilotQuota,
   readCopilotLogins,
@@ -304,6 +305,10 @@ function fetchPerCredential(
 
 export const copilotProvider: QuotaProvider = {
   id: "copilot",
+  cachePolicy: {
+    kind: "resolved-auth",
+    resolveIdentity: async () => copilotLoginsIdentity(await readCopilotLogins()),
+  },
 
   async isAvailable(ctx: QuotaProviderContext): Promise<boolean> {
     const providerAvailable = await isCanonicalProviderAvailable({

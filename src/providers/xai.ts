@@ -10,7 +10,13 @@ import type {
   QuotaProviderMatchContext,
 } from "../lib/entries.js";
 import { modelProviderMatchesRuntimeId } from "../lib/provider-model-matching.js";
-import { periodKindLabel, queryXaiQuota, readXaiLogins, type XaiWindowValue } from "../lib/xai.js";
+import {
+  periodKindLabel,
+  queryXaiQuota,
+  readXaiLogins,
+  type XaiWindowValue,
+  xaiLoginsIdentity,
+} from "../lib/xai.js";
 import {
   fetchEachLogin,
   type ProviderFetchResult,
@@ -33,6 +39,10 @@ function creditsRow(window: XaiWindowValue): ProviderRow {
 
 export const xaiProvider: QuotaProvider = {
   id: "xai",
+  cachePolicy: {
+    kind: "resolved-auth",
+    resolveIdentity: async () => xaiLoginsIdentity(await readXaiLogins()),
+  },
 
   async isAvailable(): Promise<boolean> {
     return (await readXaiLogins()).length > 0;

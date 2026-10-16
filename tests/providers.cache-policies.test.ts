@@ -18,9 +18,11 @@ vi.mock("../src/lib/resolved-auth-identity.js", async (importOriginal) => {
   };
 });
 
-import { QUOTA_PROVIDER_REGISTRATION_SOURCE } from "../src/lib/provider-registration.js";
-import { PROVIDER_CACHE_POLICIES } from "../src/providers/cache-policies.js";
+import type { QuotaProviderCachePolicy } from "../src/lib/entries.js";
 import { getProviders } from "../src/providers/registry.js";
+
+const PROVIDER_CACHE_POLICIES: Readonly<Record<string, QuotaProviderCachePolicy>> =
+  Object.fromEntries(getProviders().map((provider) => [provider.id, provider.cachePolicy]));
 
 describe("provider cache policies", () => {
   beforeEach(() => {
@@ -31,9 +33,7 @@ describe("provider cache policies", () => {
     vi.unstubAllEnvs();
   });
 
-  it("classifies every canonical provider without an account-neutral fallback", () => {
-    const registeredIds = QUOTA_PROVIDER_REGISTRATION_SOURCE.map(({ id }) => id).sort();
-    expect(Object.keys(PROVIDER_CACHE_POLICIES).sort()).toEqual(registeredIds);
+  it("classifies every provider without an account-neutral fallback", () => {
     expect(Object.values(PROVIDER_CACHE_POLICIES)).not.toContainEqual({
       kind: "account-neutral",
     });
@@ -43,14 +43,6 @@ describe("provider cache policies", () => {
       .map(([id]) => id)
       .sort();
     expect(uncached).toEqual(["alibaba-token-plan", "cursor"]);
-
-    expect(PROVIDER_CACHE_POLICIES["kimi-code-plan-global"].kind).toBe("resolved-auth");
-    expect(PROVIDER_CACHE_POLICIES["kimi-code-plan-cn"].kind).toBe("resolved-auth");
-    expect(PROVIDER_CACHE_POLICIES).not.toHaveProperty("kimi-for-coding");
-
-    for (const id of ["anthropic", "copilot", "google-gemini-cli", "openrouter", "xai"] as const) {
-      expect(PROVIDER_CACHE_POLICIES[id].kind).toBe("resolved-auth");
-    }
   });
 
   it("keeps Kimi identities isolated through the actual regional policy resolvers", async () => {
@@ -59,7 +51,7 @@ describe("provider cache policies", () => {
     vi.stubEnv("KIMI_CN_API_KEY", "shared-kimi-secret");
     const globalPolicy = PROVIDER_CACHE_POLICIES["kimi-code-plan-global"];
     const cnPolicy = PROVIDER_CACHE_POLICIES["kimi-code-plan-cn"];
-    if (globalPolicy.kind !== "resolved-auth" || cnPolicy.kind !== "resolved-auth") {
+    if (globalPolicy?.kind !== "resolved-auth" || cnPolicy?.kind !== "resolved-auth") {
       throw new Error("Expected resolved-auth Kimi cache policies");
     }
 
@@ -91,7 +83,7 @@ describe("provider cache policies", () => {
 
   it("derives distinct OpenCode Zen identities for the same org on different Console URLs", async () => {
     const policy = PROVIDER_CACHE_POLICIES.opencode;
-    if (policy.kind !== "resolved-auth") throw new Error("Expected a resolved-auth policy");
+    if (policy?.kind !== "resolved-auth") throw new Error("Expected a resolved-auth policy");
 
     const ctx = { config: {} } as never;
     const cacheContext = {} as never;
@@ -129,7 +121,7 @@ describe("provider cache policies", () => {
 
   it("derives distinct OpenCode Zen identities for two accounts in the same org", async () => {
     const policy = PROVIDER_CACHE_POLICIES.opencode;
-    if (policy.kind !== "resolved-auth") throw new Error("Expected a resolved-auth policy");
+    if (policy?.kind !== "resolved-auth") throw new Error("Expected a resolved-auth policy");
 
     const ctx = { config: {} } as never;
     const cacheContext = {} as never;
@@ -168,7 +160,7 @@ describe("provider cache policies", () => {
     [{ accessToken: "st_secret-token" }, { kind: "credential", value: "st_secret-token" }],
   ])("uses the account, then the token, when the Console sign-in has no org (%j)", async (credential, principal) => {
     const policy = PROVIDER_CACHE_POLICIES.opencode;
-    if (policy.kind !== "resolved-auth") throw new Error("Expected a resolved-auth policy");
+    if (policy?.kind !== "resolved-auth") throw new Error("Expected a resolved-auth policy");
 
     cachePolicyMocks.resolveConsoleAuth.mockResolvedValue({ state: "configured", credential });
     await policy.resolveIdentity({ config: {} } as never, {} as never);
@@ -186,25 +178,10 @@ describe("provider cache policies", () => {
     { state: "invalid", error: "refresh_failed: boom" },
   ])("returns no OpenCode Zen identity without a configured Console sign-in (%j)", async (resolution) => {
     const policy = PROVIDER_CACHE_POLICIES.opencode;
-    if (policy.kind !== "resolved-auth") throw new Error("Expected a resolved-auth policy");
+    if (policy?.kind !== "resolved-auth") throw new Error("Expected a resolved-auth policy");
 
     cachePolicyMocks.resolveConsoleAuth.mockResolvedValue(resolution);
     await expect(policy.resolveIdentity({ config: {} } as never, {} as never)).resolves.toBeNull();
     expect(cachePolicyMocks.deriveIdentity).not.toHaveBeenCalled();
-  });
-
-  it("attaches the exhaustive policy to the stable provider singleton", () => {
-    const first = getProviders();
-    const second = getProviders();
-    expect(first.map(({ id }) => id)).toEqual(
-      QUOTA_PROVIDER_REGISTRATION_SOURCE.map(({ id }) => id),
-    );
-
-    first.forEach((provider, index) => {
-      expect(second[index]).toBe(provider);
-      expect(provider.cachePolicy).toBe(
-        PROVIDER_CACHE_POLICIES[provider.id as keyof typeof PROVIDER_CACHE_POLICIES],
-      );
-    });
   });
 });

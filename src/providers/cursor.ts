@@ -54,6 +54,7 @@ function formatUsage(bucket: { costUsd: number; messageCount: number }): string 
 
 export const cursorProvider: QuotaProvider = {
   id: "cursor",
+  cachePolicy: { kind: "uncached" },
 
   async isAvailable(ctx: QuotaProviderContext): Promise<boolean> {
     const availableViaProviderConfig = await isCanonicalProviderAvailable({

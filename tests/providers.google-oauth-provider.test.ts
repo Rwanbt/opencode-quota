@@ -9,7 +9,6 @@ import {
   createIntegrationCredentialSource,
 } from "../src/lib/opencode-auth.js";
 import { __resetResolvedAuthIdentityForTests } from "../src/lib/resolved-auth-identity.js";
-import { PROVIDER_CACHE_POLICIES } from "../src/providers/cache-policies.js";
 import { googleAgyProvider } from "../src/providers/google-agy.js";
 import { googleGeminiCliProvider } from "../src/providers/google-gemini-cli.js";
 import type { CredentialDatabaseRow } from "./helpers/credential-database.js";
@@ -203,7 +202,7 @@ describe.each(PROVIDERS)("$name provider", (flavor) => {
   });
 
   it("keeps the remembered rows apart per companion client and login list", async () => {
-    const policy = PROVIDER_CACHE_POLICIES[provider.id as Flavor["integrationId"]];
+    const policy = provider.cachePolicy;
     if (policy.kind !== "resolved-auth") throw new Error("expected a resolved-auth policy");
     const identity = () => policy.resolveIdentity({ config: {} } as never, {} as never);
     world.storeLogins([googleLogin(flavor, "work")]);
@@ -351,7 +350,7 @@ describe("Gemini CLI rows", () => {
       expect(errorDebug(fetched)).toEqual([
         "[Gemini CLI [email]] (active): Gemini CLI sign-in could not be refreshed: refresh_failed: HTTP 400. Run `opencode auth login google`.",
       ]);
-      const policy = PROVIDER_CACHE_POLICIES["google-gemini-cli"];
+      const policy = googleGeminiCliProvider.cachePolicy;
       if (policy.kind !== "resolved-auth") throw new Error("expected a resolved-auth policy");
       await expect(
         policy.resolveIdentity({ config: {} } as never, {} as never),

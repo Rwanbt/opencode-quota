@@ -16,6 +16,7 @@ import {
 } from "../lib/glm-coding-plan.js";
 import { isCanonicalProviderAvailable } from "../lib/provider-availability.js";
 import type { ZaiQuotaResult } from "../lib/types.js";
+import { vendorKeysPolicy } from "./cache-policies.js";
 import {
   FIVE_HOUR,
   failedAccount,
@@ -110,6 +111,7 @@ function glmProvider(
   const endpoint = GLM_ENDPOINTS[id];
   return {
     id,
+    cachePolicy: vendorKeysPolicy(id),
 
     async isAvailable(ctx: QuotaProviderContext): Promise<boolean> {
       const providerAvailable = await isCanonicalProviderAvailable({

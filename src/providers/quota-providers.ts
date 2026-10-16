@@ -1,5 +1,9 @@
 import type { DebugDetail } from "../core/types.js";
-import type { QuotaProvider, QuotaProviderContext } from "../lib/entries.js";
+import type {
+  QuotaProvider,
+  QuotaProviderCachePolicy,
+  QuotaProviderContext,
+} from "../lib/entries.js";
 import { mapWithConcurrency } from "../lib/map-with-concurrency.js";
 import type {
   LocalEstimateQuotaProviderDefinition,
@@ -23,6 +27,11 @@ import {
   type QuotaProviderAuthSource,
   resolveQuotaProviderApiKey,
 } from "../lib/quota-providers-remote.js";
+import {
+  composeResolvedAuthIdentities,
+  deriveResolvedAuthIdentity,
+  type ResolvedAuthIdentity,
+} from "../lib/resolved-auth-identity.js";
 import {
   type AccountResult,
   failedAccount,
@@ -166,8 +175,47 @@ function failedDefinition(definition: QuotaProviderDefinition): DefinitionResult
   };
 }
 
+async function resolveQuotaProviderDefinitionAuthIdentity(
+  definition: QuotaProviderDefinition,
+): Promise<ResolvedAuthIdentity | null> {
+  if (definition.mode === "local-estimate") {
+    return deriveResolvedAuthIdentity({
+      providerId: `quota-providers:${definition.id}`,
+      principal: { kind: "stable-id", value: "local-estimate" },
+    });
+  }
+
+  const resolved = await resolveQuotaProviderApiKey(definition as RemoteApiQuotaProviderDefinition);
+  return deriveResolvedAuthIdentity({
+    providerId: `quota-providers:${definition.id}`,
+    principal: resolved.key
+      ? { kind: "credential", value: resolved.key }
+      : { kind: "stable-id", value: "missing-credential" },
+    qualifiers: [definition.providerId],
+  });
+}
+
+const quotaProvidersCachePolicy: QuotaProviderCachePolicy = {
+  kind: "resolved-auth",
+  async resolveIdentity(_ctx, cacheContext) {
+    const definitions = cacheContext.runtimeEligibleQuotaProviders;
+    if (!definitions || definitions.length === 0) return null;
+
+    const identities = await Promise.all(
+      definitions.map(resolveQuotaProviderDefinitionAuthIdentity),
+    );
+    if (identities.some((identity) => identity === null)) return null;
+
+    return composeResolvedAuthIdentities({
+      providerId: "quota-providers",
+      identities: identities as ResolvedAuthIdentity[],
+    });
+  },
+};
+
 export const quotaProvidersProvider: QuotaProvider = {
   id: QUOTA_PROVIDERS_AGGREGATE_ID,
+  cachePolicy: quotaProvidersCachePolicy,
 
   async isAvailable(ctx): Promise<boolean> {
     if (customQuotaProviderDefinitions(ctx.config.quotaProviders ?? []).length === 0) return false;

@@ -11,6 +11,7 @@ import { afterEach, beforeEach, expect, vi } from "vitest";
 
 import { rowsFromProviderResult } from "../../src/core/rows.js";
 import type { Amount, QuotaRow } from "../../src/core/types.js";
+import { API_KEY_VENDORS } from "../../src/lib/api-key-resolver.js";
 import type { QuotaProvider } from "../../src/lib/entries.js";
 import { bindCredentialSource, notifyCredentialsChanged } from "../../src/lib/opencode-auth.js";
 import { createSqliteCredentialSource } from "../../src/lib/opencode-auth-sqlite.js";
@@ -21,24 +22,9 @@ import { isLedgerRowKey } from "./provider-assertions.js";
 const PROVIDER_ENV_NAMES = [
   "OPENCODE_CONFIG_DIR",
   "OPENCODE_DB",
-  "ALIBABA_API_KEY",
-  "ALIBABA_CODING_PLAN_API_KEY",
-  "DEEPSEEK_API_KEY",
-  "KIMI_API_KEY",
-  "KIMI_CN_API_KEY",
-  "KIMI_CODE_API_KEY",
-  "KIMI_GLOBAL_API_KEY",
   "MIMO_USAGE_COOKIE",
-  "MINIMAX_API_KEY",
-  "MINIMAX_CHINA_CODING_PLAN_API_KEY",
-  "MINIMAX_CODING_PLAN_API_KEY",
-  "OLLAMA_API_KEY",
-  "OPENCODE_API_KEY",
   "OPENROUTER_API_KEY",
-  "ZAI_API_KEY",
-  "ZAI_CODING_PLAN_API_KEY",
-  "ZHIPU_API_KEY",
-  "ZHIPU_CODING_PLAN_API_KEY",
+  ...Object.values(API_KEY_VENDORS).flatMap((spec) => spec.envVars),
 ];
 
 export type ProviderWorld = {

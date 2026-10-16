@@ -80,11 +80,10 @@ export interface QuotaProvider {
   ) => Promise<ProviderFetchResult>;
 
   /**
-   * Shared-cache safety policy. Canonical runtime providers are classified in
-   * the registry. Missing policy fails closed as uncached; account-neutral
-   * caching must be explicit.
+   * Shared-cache safety policy: how the store tells the signed-in accounts apart. Every
+   * provider names its own; account-neutral caching must be explicit.
    */
-  cachePolicy?: QuotaProviderCachePolicy;
+  cachePolicy: QuotaProviderCachePolicy;
 
   /** Optional provider match for onlyCurrentModel filtering */
   matchesCurrentModel?: (model: string, context?: QuotaProviderMatchContext) => boolean;

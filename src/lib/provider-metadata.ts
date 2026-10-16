@@ -43,43 +43,14 @@ export const QUOTA_PROVIDER_RUNTIME_IDS = Object.fromEntries(
   CATALOG.map(([id, entry]) => [id, entry.runtimeIds]),
 ) as Readonly<Record<CanonicalQuotaProviderId, readonly string[]>>;
 
-/**
- * The v6 row keys each provider may emit (`${providerId}.${key}` is the row id that hide,
- * rename and order settings use). `*` stands for one segment taken from provider data, such
- * as a model, a window family or a currency. Changing a key breaks users' settings.
- */
-export const PROVIDER_ROW_KEYS: Readonly<Record<CanonicalQuotaProviderId, readonly string[]>> = {
-  anthropic: ["five_hour", "weekly", "weekly_fable", "extra_usage"],
-  copilot: ["allowance", "additional_budget"],
-  // `status`: an OpenAI login without a ChatGPT plan ("unavailable for API key").
-  openai: ["five_hour", "weekly", "monthly", "code_review", "status"],
-  openrouter: ["key"],
-  cursor: ["api", "auto_composer"],
-  "alibaba-coding-plan": ["five_hour", "weekly", "monthly"],
-  "alibaba-token-plan": ["five_hour", "weekly"],
-  "google-gemini-cli": ["pro", "flash", "flash_lite", "model.*"],
-  "google-agy": [
-    "gemini.weekly",
-    "gemini.five_hour",
-    "claude_gpt.weekly",
-    "claude_gpt.five_hour",
-    "*.weekly",
-    "*.five_hour",
-  ],
-  zai: ["five_hour", "weekly", "mcp"],
-  zhipu: ["five_hour", "weekly", "mcp"],
-  "minimax-coding-plan": ["five_hour", "weekly"],
-  "minimax-china-coding-plan": ["five_hour", "weekly"],
-  "kimi-code-plan-global": ["weekly", "limit.*"],
-  "kimi-code-plan-cn": ["weekly", "limit.*"],
-  deepseek: ["total_balance.*", "granted_balance.*", "topped_up_balance.*", "available"],
-  xai: ["credits"],
-  xiaomi: ["monthly_tokens", "total_balance", "cash_balance", "gift_balance"],
-  "opencode-go": ["five_hour", "weekly", "monthly"],
-  opencode: ["monthly", "balance", "auto_reload"],
-  "ollama-cloud": ["session", "weekly", "monthly", "purchased"],
-  "quota-providers": ["custom.*.*"],
-};
+/** The v6 row keys each provider may emit; see `rowKeys` in provider-registration.ts. */
+export const PROVIDER_ROW_KEYS = Object.fromEntries(
+  REGISTRATIONS.map(({ id, rowKeys }) => [id, rowKeys]),
+) as Readonly<Record<CanonicalQuotaProviderId, readonly string[]>>;
+
+const GROUP_BRANDS: Readonly<Record<string, readonly string[]>> = Object.fromEntries(
+  REGISTRATIONS.map(({ id, label, groupBrands }) => [id, groupBrands ?? [label]]),
+);
 
 /** Labels by provider id and by label alias. */
 const LABELS: Readonly<Record<string, string>> = Object.fromEntries(
@@ -120,6 +91,11 @@ export function getQuotaProviderRuntimeIds(id: string): readonly string[] {
 export function getQuotaProviderIdsForRuntimeId(id: string): readonly CanonicalQuotaProviderId[] {
   const normalized = id.trim().toLowerCase();
   return CATALOG.filter(([, entry]) => entry.runtimeIds.includes(normalized)).map(([id]) => id);
+}
+
+/** Brand words at the start of the provider's account names; none for an unknown id. */
+export function getQuotaProviderGroupBrands(providerId: string): readonly string[] {
+  return Object.hasOwn(GROUP_BRANDS, providerId) ? (GROUP_BRANDS[providerId] ?? []) : [];
 }
 
 export function isLiveLocalUsageProviderId(id: string): boolean {

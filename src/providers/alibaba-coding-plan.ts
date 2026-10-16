@@ -18,6 +18,7 @@ import {
 } from "../lib/alibaba-coding-plan-local-quota.js";
 import type { QuotaProvider, QuotaProviderContext } from "../lib/entries.js";
 import { findQuotaProviderDefinition } from "../lib/quota-providers.js";
+import { resolvedCredentialPolicy } from "./cache-policies.js";
 import {
   FIVE_HOUR,
   failedAccount,
@@ -59,6 +60,12 @@ function estimateRow(
 
 export const alibabaCodingPlanProvider: QuotaProvider = {
   id: "alibaba-coding-plan",
+  cachePolicy: resolvedCredentialPolicy("alibaba-coding-plan", async () => {
+    const resolved = await resolveAlibabaCodingPlanAuthCached();
+    return resolved.state === "configured"
+      ? { credential: resolved.apiKey, qualifiers: [resolved.tier] }
+      : null;
+  }),
 
   async isAvailable(_ctx: QuotaProviderContext): Promise<boolean> {
     const plan = await resolveAlibabaCodingPlanAuthCached();

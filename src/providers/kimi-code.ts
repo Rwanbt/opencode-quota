@@ -18,6 +18,7 @@ import { getKimiQuotaEndpoint, type KimiQuotaEndpointId } from "../lib/kimi-endp
 import { isCanonicalProviderAvailable } from "../lib/provider-availability.js";
 import { normalizeQuotaProviderId } from "../lib/provider-metadata.js";
 import type { KimiQuotaWindow } from "../lib/types.js";
+import { vendorKeysPolicy } from "./cache-policies.js";
 import {
   failedAccount,
   fetchKeyLogins,
@@ -120,6 +121,7 @@ async function fetchKimiQuota(
 function kimiProvider(spec: KimiSpec): QuotaProvider {
   return {
     id: spec.id,
+    cachePolicy: vendorKeysPolicy(spec.id, spec.endpoint),
 
     async isAvailable(ctx: QuotaProviderContext): Promise<boolean> {
       const providerAvailable = await isCanonicalProviderAvailable({

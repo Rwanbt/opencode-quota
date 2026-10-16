@@ -8,6 +8,7 @@ import { queryDeepSeekBalance } from "../lib/deepseek.js";
 import type { QuotaProvider, QuotaProviderContext } from "../lib/entries.js";
 import { isCanonicalProviderAvailable } from "../lib/provider-availability.js";
 import { modelProviderIncludesAny } from "../lib/provider-model-matching.js";
+import { vendorKeysPolicy } from "./cache-policies.js";
 import {
   type AccountResult,
   failedAccount,
@@ -78,6 +79,7 @@ function deepseekAccounts(result: DeepSeekBalanceSuccess): AccountResult[] {
 
 export const deepseekProvider: QuotaProvider = {
   id: "deepseek",
+  cachePolicy: vendorKeysPolicy("deepseek"),
 
   async isAvailable(ctx: QuotaProviderContext): Promise<boolean> {
     const providerAvailable = await isCanonicalProviderAvailable({

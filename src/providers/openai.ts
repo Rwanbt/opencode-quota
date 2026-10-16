@@ -6,6 +6,7 @@ import type { QuotaProvider, QuotaProviderContext } from "../lib/entries.js";
 import {
   type OpenAILogin,
   type OpenAIResult,
+  openaiLoginsIdentity,
   queryOpenAIQuota,
   readOpenAIAuthCached,
   readOpenAILogins,
@@ -142,6 +143,10 @@ async function fetchActiveLoginQuota(
 
 export const openaiProvider: QuotaProvider = {
   id: "openai",
+  cachePolicy: {
+    kind: "resolved-auth",
+    resolveIdentity: async () => openaiLoginsIdentity(await readOpenAILogins()),
+  },
 
   async isAvailable(ctx: QuotaProviderContext): Promise<boolean> {
     // Best-effort: if provider lookup errors, preserve current permissive fallback.

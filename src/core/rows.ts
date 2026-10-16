@@ -5,6 +5,7 @@
  */
 
 import { sanitizeSingleLineDisplaySnippet } from "../lib/display-sanitize.js";
+import { getQuotaProviderGroupBrands } from "../lib/provider-metadata.js";
 import { QUOTA_PROVIDERS_AGGREGATE_ID } from "../lib/quota-providers.js";
 import type { ProviderFetchResult } from "../providers/contract.js";
 import { classifyError, errorKind } from "./errors.js";
@@ -14,31 +15,6 @@ import type { DebugDetail, QuotaRow } from "./types.js";
 import { validateRows } from "./validate.js";
 
 const DEBUG_VALUE_MAX_LENGTH = 300;
-
-/** Brand words at the start of a provider's groups; what follows names the account or plan. */
-const GROUP_BRANDS: Readonly<Record<string, readonly string[]>> = {
-  anthropic: ["Claude"],
-  copilot: ["Copilot"],
-  openai: ["OpenAI"],
-  openrouter: ["OpenRouter"],
-  cursor: ["Cursor"],
-  "alibaba-coding-plan": ["Alibaba Coding Plan"],
-  "alibaba-token-plan": ["Alibaba Personal Token Plan"],
-  "google-gemini-cli": ["Gemini CLI"],
-  "google-agy": ["Google AGY", "AGY"],
-  zai: ["Z.ai"],
-  zhipu: ["Zhipu"],
-  "minimax-coding-plan": ["MiniMax Token Plan"],
-  "minimax-china-coding-plan": ["MiniMax Token Plan (CN)", "MiniMax Token Plan"],
-  "kimi-code-plan-global": ["Kimi Code"],
-  "kimi-code-plan-cn": ["Kimi Code (CN)", "Kimi Code"],
-  deepseek: ["DeepSeek"],
-  xai: ["xAI"],
-  xiaomi: ["Xiaomi MiMo"],
-  "opencode-go": ["OpenCode Go"],
-  opencode: ["OpenCode Zen"],
-  "ollama-cloud": ["Ollama Cloud"],
-};
 
 /** "(Pro)" → "Pro", ": Standard [code]" → "Standard". */
 function unwrap(text: string): string {
@@ -50,7 +26,7 @@ function unwrap(text: string): string {
 }
 
 function stripBrand(providerId: string, text: string): string {
-  const brand = (GROUP_BRANDS[providerId] ?? []).find(
+  const brand = getQuotaProviderGroupBrands(providerId).find(
     (name) => text === name || text.startsWith(`${name} `) || text.startsWith(`${name}:`),
   );
   return brand ? text.slice(brand.length) : text;

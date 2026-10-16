@@ -1020,7 +1020,7 @@ const CONSOLE_AUTH_STATES = ["none", "configured", "expired", "invalid"] as cons
  * The debug details each provider's section may show besides its setup and API-key details,
  * by key; every other one is counted.
  */
-const DEBUG_DETAILS: Readonly<Partial<Record<CanonicalQuotaProviderId, DebugRules>>> = {
+const DEBUG_DETAILS = {
   anthropic: {
     ...each(bool, "cli_installed", "quota_supported"),
     cli_version: version,
@@ -1116,6 +1116,11 @@ const DEBUG_DETAILS: Readonly<Partial<Record<CanonicalQuotaProviderId, DebugRule
   },
   "google-gemini-cli": GOOGLE_DETAILS,
   "google-agy": GOOGLE_DETAILS,
+  openrouter: {},
+  zai: {},
+  zhipu: {},
+  deepseek: {},
+  xai: {},
   "minimax-coding-plan": { api_endpoint: oneOf("international", "china") },
   "minimax-china-coding-plan": { api_endpoint: oneOf("international", "china") },
   "kimi-code-plan-global": { api_endpoint: oneOf("global", "cn") },
@@ -1149,7 +1154,8 @@ const DEBUG_DETAILS: Readonly<Partial<Record<CanonicalQuotaProviderId, DebugRule
     member_budget_note: oneOf(MEMBER_BUDGET_NOTE),
     auto_reload: bool,
   },
-};
+  "quota-providers": {},
+} satisfies Record<CanonicalQuotaProviderId, DebugRules>;
 
 /**
  * Every section may show whether OpenCode lists the provider ("yes found=openai"), the kind of
