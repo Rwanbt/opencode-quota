@@ -146,7 +146,7 @@ function pickedFacts(
   group: Group,
   percent: Place["percent"],
 ): RowFacts | undefined {
-  const picked = pickRow(group, windowFor(input.window, group.providerId));
+  const picked = pickRow(group, windowFor(input.window, group));
   return picked && rowFacts(picked, group, alwaysOnPlace(input, percent));
 }
 

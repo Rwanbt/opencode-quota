@@ -152,14 +152,19 @@ export function visibleGroups(
 }
 
 /**
- * The window a provider shows in the collapsed sidebar or the status line: its own pick, else the
- * pick for all providers, else "lowest".
+ * The window a group shows in the collapsed sidebar or the status line, and the one its Settings
+ * ‹ › shows: its provider's own pick; else the pick for all providers when one of its rows with a
+ * percent has that window; else "lowest" (where `pickRow` would fall back anyway).
  */
 export function windowFor(
   windows: Readonly<Record<string, WindowChoice>>,
-  providerId: string,
+  group: Pick<Group, "providerId" | "rows">,
 ): WindowChoice {
-  return windows[providerId] ?? windows[ALL_PROVIDERS] ?? "lowest";
+  const all = windows[ALL_PROVIDERS];
+  const hasAll = group.rows.some(
+    ({ row }) => row.percentRemaining !== undefined && row.window === all,
+  );
+  return windows[group.providerId] ?? (all !== undefined && hasAll ? all : "lowest");
 }
 
 /**

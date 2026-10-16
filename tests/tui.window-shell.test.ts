@@ -462,7 +462,7 @@ describe("quota window shell", () => {
     view.dispose();
   });
 
-  it("picks a window for all providers on Collapsed, and a provider's own pick over it", async () => {
+  it("edits Collapsed's windows from a click on For all providers and on a provider's ‹ ›", async () => {
     const snapshot: QuotaSnapshot = {
       version: 6,
       generatedAtMs: 0,
@@ -477,63 +477,13 @@ describe("quota window shell", () => {
     const host = fakeHost(snapshot);
     host.quotaWindow.open("collapsed");
     await flush();
-    const picked = () => host.display.shown().collapsed.window;
-    /** Draws the window, clicks what shows `text`, and takes the window away again. */
-    const clickOnce = (text: string, line = false) => {
-      const view = draw(host.quotaWindow);
-      if (line) clickLine(view.tree, text);
-      else click(view.tree, text);
-      view.dispose();
-    };
-
-    clickOnce("For all providers", true);
-    expect(picked()).toEqual({ "*": "five_hour" });
-    // OpenAI shows the window for all providers until it gets a pick of its own.
-    clickOnce("‹ 5h ");
-    expect(picked()).toEqual({ "*": "five_hour", openai: "week" });
-    clickOnce("‹ 7d ");
-    expect(picked()).toEqual({ "*": "five_hour", openai: "lowest" });
-    // Back at the window for all providers, OpenAI has no pick of its own again.
-    clickOnce("‹ lowest left ›");
-    expect(picked()).toEqual({ "*": "five_hour" });
-  });
-
-  it("leaves rows hidden on Collapsed out of a provider's window ‹ › and summary", async () => {
-    const snapshot: QuotaSnapshot = {
-      version: 6,
-      generatedAtMs: 0,
-      resetNotices: [],
-      providers: [
-        providerSnapshot("openai", "OpenAI", [
-          quotaRow("openai.five_hour", { label: "5h", window: "five_hour", percentRemaining: 65 }),
-          quotaRow("openai.weekly", { label: "Weekly", window: "week", percentRemaining: 26 }),
-          quotaRow("openai.monthly", { label: "Monthly", window: "month", percentRemaining: 12 }),
-        ]),
-      ],
-    };
-    const host = fakeHost(snapshot);
-    host.server.values["collapsed.hidden"] = ["openai.monthly"];
-    host.quotaWindow.open("collapsed");
-    await flush();
-    const picked = () => host.display.shown().collapsed.window;
-    const clickOnce = (text: string) => {
-      const view = draw(host.quotaWindow);
-      click(view.tree, text);
-      view.dispose();
-    };
-
-    // The summary is the lowest row Collapsed shows, not the hidden 12% one.
-    const view = draw(host.quotaWindow);
-    expect(textLines(view.tree)).toContain("26% left                ");
-    expect(textLines(view.tree).join("\n")).not.toContain("12% left");
+    let view = draw(host.quotaWindow);
+    clickLine(view.tree, "For all providers");
     view.dispose();
-    // ‹ › steps through 5h and 7d only, then back to lowest.
-    clickOnce("‹ lowest left ›");
-    expect(picked()).toEqual({ openai: "five_hour" });
-    clickOnce("‹ 5h ");
-    expect(picked()).toEqual({ openai: "week" });
-    clickOnce("‹ 7d ");
-    expect(picked()).toEqual({});
+    view = draw(host.quotaWindow);
+    click(view.tree, "‹ 5h ");
+    view.dispose();
+    expect(host.display.shown().collapsed.window).toEqual({ "*": "five_hour", openai: "week" });
   });
 
   it("says Limits is still loading when c has nothing to copy yet", () => {

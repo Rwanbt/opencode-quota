@@ -15,21 +15,13 @@ import {
 } from "@opentui/core";
 import type { JSX } from "@opentui/solid";
 import { createEffect, createMemo, createSignal, For, on, Show } from "solid-js";
-import type { ProviderSnapshot, QuotaRow, QuotaSnapshot, QuotaWindow } from "../../core/types.js";
+import type { QuotaSnapshot, QuotaWindow } from "../../core/types.js";
 import { ALL_PROVIDERS, WINDOWS } from "../../core/windows.js";
 import type { CustomProviderSwitch } from "../../settings/index.js";
 import { CHANGED_SINCE_REVIEW } from "../../settings/schema.js";
 import { columnsOf } from "../../view/columns.js";
 import { DEFAULT_WORDS, fit } from "../../view/format.js";
-import { errorWords, type Place, rowFacts } from "../../view/row-facts.js";
-import {
-  pickRow,
-  type Surface,
-  type SurfaceRows,
-  visibleRow,
-  type WindowChoice,
-  windowFor,
-} from "../../view/select.js";
+import type { Surface, WindowChoice } from "../../view/select.js";
 import type { ColorRole } from "../../view/text.js";
 import { rpcErrorMessage } from "../client.js";
 import {
@@ -43,7 +35,6 @@ import {
   type PresetName,
   presetChoice,
   presetValues,
-  renameRow,
   resetTab,
   type SettingsTab,
   setIn,
@@ -55,9 +46,15 @@ import { foundProviderIds, isTicked, PROVIDERS_KEY, withTick } from "../server-s
 import type { SurfaceHost } from "../sidebar.js";
 import { namedColor, roleColor } from "../theme.js";
 import { plainMessage, quotaToastLines, type ToastHost } from "../toasts.js";
-import { draggedTo, movedBy, surfaceTree, type TreeProvider } from "./drag.js";
 import { Rail, railRoom } from "./rail.js";
 import type { WindowHost, WindowTheme } from "./shell.js";
+import {
+  type SettingsEdit,
+  type SurfaceEditor,
+  showsRows,
+  surfaceEditor,
+  type TreeLine,
+} from "./surface-editor.js";
 
 export const SETTINGS_TABS: ReadonlyArray<{
   tab: SettingsTab;
@@ -170,9 +167,6 @@ export type OptionLine = {
 /** What a line takes when you type into it (e, or a double-click). */
 type Typed = { placeholder: string; hint: string; apply: (text: string) => void };
 
-/** A line of a surface tab's tree. One object per line, so <For> keeps its view while it moves. */
-type TreeLine = { id: string; providerId: string; row: boolean };
-
 type Click = (run: () => void) => () => void;
 
 const KEYS = "Quota window";
@@ -221,31 +215,8 @@ function pageId(tab: SettingsTab): string {
   return `quota-layout-page-${tab}`;
 }
 
-/** The windows ‹ › steps through: those of the provider's rows not hidden on the page. */
-function windowChoices(provider: ProviderSnapshot, hidden: readonly string[]): WindowChoice[] {
-  const windows = provider.rows.flatMap((row) =>
-    row.window && row.percentRemaining !== undefined && !hidden.includes(row.id)
-      ? [row.window]
-      : [],
-  );
-  const unique = [...new Set(windows)];
-  return unique.length > 1 ? ["lowest", ...unique] : [];
-}
-
 function windowTitle(choice: WindowChoice): string {
   return choice === "lowest" ? "lowest left" : WINDOWS[choice].short;
-}
-
-/**
- * What a provider's ‹ › shows without a pick of its own: the pick for all providers when the
- * provider has that window (one of its `choices`), else lowest.
- */
-function inheritedWindow(
-  windows: Readonly<Record<string, WindowChoice>>,
-  choices: readonly WindowChoice[],
-): WindowChoice {
-  const all = windows[ALL_PROVIDERS];
-  return all !== undefined && choices.includes(all) ? all : "lowest";
 }
 
 /**
@@ -404,7 +375,6 @@ export function createSettingsEditor(
   let lastPress = { id: "", atMs: 0 };
   /** The inline input while a line takes typing; its keys work only while it has the keyboard. */
   let typingInput: Renderable | undefined;
-  const treeLines = new Map<string, TreeLine>();
   const theme = () => api.theme;
   const shown = () => display.shown();
   const server = display.server;
@@ -430,18 +400,6 @@ export function createSettingsEditor(
     const double = lastPress.id === id && now - lastPress.atMs < DOUBLE_CLICK_MS;
     lastPress = double ? { id: "", atMs: 0 } : { id, atMs: now };
     return double;
-  }
-
-  function editSurface(surface: Surface, change: (rows: SurfaceRows) => SurfaceRows): void {
-    const rows = change(shown().surfaces[surface]);
-    server.set(`${surface}.show`, rows.enabled);
-    server.set(`${surface}.hidden`, rows.hidden);
-    server.set(`${surface}.providerOrder`, rows.providerOrder);
-    server.set(`${surface}.rowOrder`, rows.rowOrder);
-  }
-
-  function toggleSurface(surface: Surface): void {
-    editSurface(surface, (rows) => ({ ...rows, enabled: !rows.enabled }));
   }
 
   /** What typing into a line does: a color for a color line, a number for a server number. */
@@ -771,7 +729,7 @@ export function createSettingsEditor(
                 flexShrink={0}
                 backgroundColor={active() ? theme().background.action.primary.focused : TRANSPARENT}
                 onMouseDown={() => setSelected(SWITCH_ID)}
-                onMouseUp={click(() => toggleSurface(current()))}
+                onMouseUp={click(() => display.edit(surfaceEditor(current()).toggleSurface()))}
               >
                 <Cell fg={active() ? theme().text.action.primary.focused : theme().text.base} bold>
                   {`   ${surfaceOn() ? "[x]" : "[ ]"} ${info().switchTitle}`}
@@ -821,38 +779,23 @@ export function createSettingsEditor(
     let list: BoxRenderable | undefined;
     let dragId: string | undefined;
     const surface = () => (isSurfaceTab(props.tab) ? props.tab : undefined);
-    const withRows = () => props.tab === "sidebar" || props.tab === "toast";
     const snapshot = () => props.host.quota.snapshot(props.sessionID);
-    const words = () => snapshot()?.words ?? DEFAULT_WORDS;
-    /** The picked windows of Collapsed or Status line. */
-    const windows = () => shown()[props.tab === "statusLine" ? "statusLine" : "collapsed"].window;
-    /** The providers and rows hidden on this page. */
-    const hiddenIds = (): readonly string[] => {
-      const current = surface();
-      return current ? shown().surfaces[current].hidden : [];
-    };
-    const tree = (): TreeProvider[] => {
-      const current = surface();
-      const loaded = snapshot();
-      return current && loaded ? surfaceTree(loaded, shown().surfaces[current]) : [];
-    };
     const options = createMemo(() =>
       optionLines(props.tab, snapshot(), () => props.box()?.focus()),
     );
-    const lines = createMemo(() =>
-      tree().flatMap(({ provider, rowIds }) => [
-        treeLine(provider.providerId, provider.providerId, false),
-        ...(withRows() ? rowIds.map((id) => treeLine(id, provider.providerId, true)) : []),
-      ]),
-    );
+    /** The page's tree and its edits; undefined on a page without a surface. */
+    const editor = () => {
+      const current = surface();
+      return current && surfaceEditor(current, snapshot());
+    };
+    const lines = createMemo(() => editor()?.lines(shown(), Date.now()) ?? []);
     const selectedOption = () => options().find((line) => line.id === selected());
     const selectedLine = () => lines().find((line) => lineKey(line.id) === selected());
 
-    function treeLine(id: string, providerId: string, row: boolean): TreeLine {
-      const key = `${row ? "row" : "provider"}:${id}`;
-      const line = treeLines.get(key) ?? { id, providerId, row };
-      treeLines.set(key, line);
-      return line;
+    /** Makes an edit of this page's surface; nothing on a page without one. */
+    function editSurface(edit: (editor: SurfaceEditor) => SettingsEdit): void {
+      const current = editor();
+      if (current) display.edit(edit(current));
     }
 
     /**
@@ -875,44 +818,9 @@ export function createSettingsEditor(
       else setSelected(ids[next] as string);
     }
 
-    function toggleHidden(id: string): void {
-      const current = surface();
-      if (!current) return;
-      editSurface(current, (rows) => {
-        const hidden = rows.hidden.includes(id);
-        return {
-          ...rows,
-          hidden: hidden ? rows.hidden.filter((item) => item !== id) : [...rows.hidden, id],
-        };
-      });
-    }
-
-    function cycleWindow(providerId: string, delta: number): void {
-      const provider = tree().find((item) => item.provider.providerId === providerId)?.provider;
-      const choices = provider ? windowChoices(provider, hiddenIds()) : [];
-      if (choices.length === 0) return;
-      const inherited = inheritedWindow(windows(), choices);
-      const next = stepIn(choices, windows()[providerId] ?? inherited, delta);
-      // The window it would show anyway is no pick of its own, so it follows "For all providers".
-      display.edit((settings) =>
-        setIn(
-          settings,
-          [props.tab === "statusLine" ? "statusLine" : "collapsed", "window", providerId],
-          next === inherited ? undefined : next,
-        ),
-      );
-    }
-
     function move(delta: number): void {
-      const current = surface();
       const line = selectedLine();
-      if (current && line) editSurface(current, (rows) => movedBy(tree(), rows, line.id, delta));
-    }
-
-    function ownRow(line: TreeLine): QuotaRow | undefined {
-      return tree()
-        .find((item) => item.provider.providerId === line.providerId)
-        ?.provider.rows.find((row) => row.id === line.id);
+      if (line) editSurface((current) => current.move(line.id, delta));
     }
 
     /** e or a double-click: type a color, or rename a row. */
@@ -923,18 +831,14 @@ export function createSettingsEditor(
         return;
       }
       const line = selectedLine();
-      const row = line?.row ? ownRow(line) : undefined;
-      if (!line || !row) return;
+      const rename = line && editor()?.rename(shown(), line.id);
+      if (!line || !rename) return;
       setTyping({
         id: lineKey(line.id),
         value: "",
-        placeholder:
-          shown()[props.tab === "toast" ? "toast" : "sidebar"].names[line.id] ?? row.label,
-        hint: `Type a new name, then enter · enter with nothing typed = its own name ("${row.label}") · esc stop`,
-        apply: (text) =>
-          display.edit((settings) =>
-            renameRow(settings, props.tab === "toast" ? "toast" : "sidebar", line.id, text),
-          ),
+        placeholder: rename.placeholder,
+        hint: rename.hint,
+        apply: (text) => display.edit(rename.apply(text)),
       });
     }
 
@@ -967,13 +871,12 @@ export function createSettingsEditor(
      * value, or show/hide a line.
      */
     function activate(): void {
-      const current = surface();
       const option = selectedOption();
       const line = selectedLine();
       if (selected() === PAGES_ID) toFirstLine();
-      else if (selected() === SWITCH_ID && current) toggleSurface(current);
+      else if (selected() === SWITCH_ID) editSurface((current) => current.toggleSurface());
       else if (option) useOption(option);
-      else if (line) toggleHidden(line.id);
+      else if (line) editSurface((current) => current.toggleHidden(line.id));
     }
 
     /** A click on an option's value: run its button, its next value, or start typing. */
@@ -990,7 +893,8 @@ export function createSettingsEditor(
       if (selected() === PAGES_ID) {
         if (delta > 0) toFirstLine();
       } else if (option) option.cycle?.(delta);
-      else if (line && !line.row) cycleWindow(line.providerId, delta);
+      else if (line && !line.row)
+        editSurface((current) => current.cycleWindow(line.providerId, delta));
     }
 
     /** A provider moves with all its rows; a row moves only among its own provider's rows. */
@@ -1006,7 +910,7 @@ export function createSettingsEditor(
       else if (scroll && event.y >= scroll.y + scroll.height - 1) scroll.scrollBy(1);
       // list.y already includes the scroll offset, so this counts lines from the first line.
       const pointer = event.y - list.y;
-      editSurface(current, (rows) => draggedTo(tree(), rows, id, pointer, withRows()));
+      display.edit(surfaceEditor(current, snapshot()).drag(id, pointer));
     }
 
     // On the Toast tab the real toast shows again after every change of what it shows.
@@ -1063,7 +967,8 @@ export function createSettingsEditor(
       ],
     }));
 
-    function TypingInput(inputProps: { width: number; placeholder: string }): JSX.Element {
+    /** The input of the line that takes typing, with that typing's placeholder. */
+    function TypingInput(inputProps: { width: number }): JSX.Element {
       return (
         <input
           ref={(element: Renderable) => {
@@ -1072,7 +977,7 @@ export function createSettingsEditor(
           width={inputProps.width}
           flexShrink={0}
           value=""
-          placeholder={inputProps.placeholder}
+          placeholder={typing()?.placeholder ?? ""}
           focused
           onInput={(value: string) => {
             const current = typing();
@@ -1083,76 +988,21 @@ export function createSettingsEditor(
       );
     }
 
-    function TreeRow(rowProps: { line: TreeLine }): JSX.Element {
+    /** A tree line; its id never changes, so <For> keeps its view while it moves. */
+    function TreeRow(rowProps: { line: () => TreeLine }): JSX.Element {
       const line = rowProps.line;
-      const key = lineKey(line.id);
-      const entry = () => tree().find((item) => item.provider.providerId === line.providerId);
-      const rows = () => shown().surfaces[surface() as Surface];
+      const { id, providerId, row } = line();
+      const key = lineKey(id);
       const active = () => selected() === key;
       // Dragging a provider carries its rows, so they light up with it.
-      const lit = () =>
-        active() || dragging() === line.id || (line.row && dragging() === line.providerId);
-      const hidden = () => rows().hidden.includes(line.id);
+      const lit = () => active() || dragging() === id || (row && dragging() === providerId);
       const { text } = theme();
       const fg = () =>
-        lit()
-          ? text.action.primary.focused
-          : !rows().enabled || hidden() || (line.row && rows().hidden.includes(line.providerId))
-            ? text.muted
-            : text.base;
+        lit() ? text.action.primary.focused : line().muted ? text.muted : text.base;
       /** Tree lines show which provider a row belongs to: ├ for a middle row, └ for the last. */
-      const branch = () => {
-        const rowIds = entry()?.rowIds ?? [];
-        return !line.row ? "" : rowIds[rowIds.length - 1] === line.id ? "  └ " : "  ├ ";
-      };
-      const own = () => (line.row ? ownRow(line) : undefined);
-      const shownRow = (row: QuotaRow) =>
-        visibleRow(row, shown()[props.tab === "toast" ? "toast" : "sidebar"].names);
-      /** A row's name on this page, and its percent and reset as the Web text shows them. */
-      const facts = (row: QuotaRow) => {
-        const item = shownRow(row);
-        const place: Place = {
-          words: words(),
-          nowMs: Date.now(),
-          names: "label",
-          percent: "words",
-        };
-        return rowFacts(item, { rows: [item] }, place);
-      };
-      const label = () => {
-        const row = own();
-        if (line.row) return row ? facts(row).name : line.id;
-        return entry()?.provider.label ?? line.id;
-      };
-      const summary = (row: QuotaRow) => {
-        const { value, reset } = facts(row);
-        return reset ? `${value} · ${reset}` : value;
-      };
-      const detail = () => {
-        const provider = entry()?.provider;
-        const row = own();
-        if (row && shownRow(row).named) return `was "${row.label}"`;
-        if (row?.prominence === "supplementary" && words().detail !== "detailed") {
-          return "only with all rows";
-        }
-        if (row) return summary(row);
-        if (!provider) return "";
-        const error = errorWords({ error: provider.error, name: provider.label }, Date.now());
-        if (error && provider.rows.length === 0) return error;
-        if (withRows()) return "";
-        const rows = provider.rows.filter((item) => !hiddenIds().includes(item.id));
-        const picked = pickRow(
-          { rows: rows.map((item) => visibleRow(item, {})) },
-          windowFor(windows(), provider.providerId),
-        );
-        return picked ? summary(picked.row) : "";
-      };
-      const choices = () => {
-        const provider = entry()?.provider;
-        return !line.row && !withRows() && provider ? windowChoices(provider, hiddenIds()) : [];
-      };
+      const branch = () => (!row ? "" : line().last ? "  └ " : "  ├ ");
       /** Rows sit 4 columns further right, so their names get 4 fewer; the details line up. */
-      const labelWidth = line.row ? 24 : 28;
+      const labelWidth = row ? 24 : 28;
       return (
         <box
           id={boxId(key)}
@@ -1161,41 +1011,43 @@ export function createSettingsEditor(
           onMouseDown={(event: MouseEvent) => {
             if (event.button !== 0 || typing()) return;
             setSelected(key);
-            dragId = line.id;
-            if (line.row && isDoubleClick(key)) startTyping();
+            dragId = id;
+            if (row && isDoubleClick(key)) startTyping();
           }}
         >
           <Cell fg={text.muted}>{` ${branch()}`}</Cell>
           <Cell fg={lit() ? fg() : text.action.primary.selected}>
             {api.renderer.useMouse === false ? "" : "⠿ "}
           </Cell>
-          <Cell fg={fg()} onUp={click(() => toggleHidden(line.id))}>
-            {hidden() ? "[ ] " : "[x] "}
+          <Cell fg={fg()} onUp={click(() => editSurface((current) => current.toggleHidden(id)))}>
+            {line().hidden ? "[ ] " : "[x] "}
           </Cell>
           <Show
             when={typing()?.id === key}
             fallback={
-              <Cell fg={fg()} bold={!line.row}>
-                {fit(label(), labelWidth)}
+              <Cell fg={fg()} bold={!row}>
+                {fit(line().label, labelWidth)}
               </Cell>
             }
           >
-            <TypingInput width={labelWidth} placeholder={label()} />
+            <TypingInput width={labelWidth} />
           </Show>
           {/* One-line-per-provider tabs keep the window column, so the details line up. */}
           <Show
-            when={choices().length > 0}
-            fallback={<Cell>{withRows() ? " " : " ".repeat(17)}</Cell>}
+            when={line().window}
+            fallback={<Cell>{showsRows(props.tab) ? " " : " ".repeat(17)}</Cell>}
           >
-            <Cell
-              fg={active() ? fg() : text.action.primary.selected}
-              onUp={click(() => cycleWindow(line.providerId, 1))}
-            >
-              {` ‹ ${fit(windowTitle(windows()[line.providerId] ?? inheritedWindow(windows(), choices())), 11)} › `}
-            </Cell>
+            {(window: () => WindowChoice) => (
+              <Cell
+                fg={active() ? fg() : text.action.primary.selected}
+                onUp={click(() => editSurface((current) => current.cycleWindow(providerId, 1)))}
+              >
+                {` ‹ ${fit(windowTitle(window()), 11)} › `}
+              </Cell>
+            )}
           </Show>
           <Cell fg={lit() ? fg() : text.muted} shrink>
-            {fit(detail(), 24)}
+            {fit(line().detail, 24)}
           </Cell>
         </box>
       );
@@ -1220,9 +1072,7 @@ export function createSettingsEditor(
               use={() => useOption(line)}
               input={
                 typing()?.id === line.id
-                  ? (width: number) => (
-                      <TypingInput width={width} placeholder={line.typed?.placeholder ?? ""} />
-                    )
+                  ? (width: number) => <TypingInput width={width} />
                   : undefined
               }
             />
@@ -1248,7 +1098,13 @@ export function createSettingsEditor(
             dragId = undefined;
           }}
         >
-          <For each={lines()}>{(line: TreeLine) => <TreeRow line={line} />}</For>
+          <For each={lines().map((line) => line.id)}>
+            {(id: string) => (
+              <Show when={lines().find((line) => line.id === id)}>
+                {(line: () => TreeLine) => <TreeRow line={line} />}
+              </Show>
+            )}
+          </For>
         </box>
       </box>
     );
@@ -1427,7 +1283,7 @@ export function createSettingsEditor(
       if (!isSurfaceTab(windowTab)) {
         return `‹ › or ←/→ change · double-click a color (or e) to type your own · ${end}`;
       }
-      const rowsTab = windowTab === "sidebar" || windowTab === "toast";
+      const rowsTab = showsRows(windowTab);
       const moving =
         api.renderer.useMouse === false
           ? "shift+↑↓ move"
