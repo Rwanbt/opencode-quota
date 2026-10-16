@@ -1,9 +1,8 @@
 /**
  * The pace of a quota window: how much would be left now if the limit were used evenly until
- * it resets (the Limits tab's │ marker), and what that means in words. Pure.
+ * it resets (the Limits tab's │ marker), and whether it runs out before then. Pure.
  */
-import { formatDuration } from "../view/format.js";
-import type { QuotaRow, Words } from "./types.js";
+import type { QuotaRow } from "./types.js";
 import { WINDOWS } from "./windows.js";
 
 /** Within this many percentage points of even use counts as on track. */
@@ -44,12 +43,4 @@ export function paceOf(row: QuotaRow, nowMs: number): Pace | undefined {
   if (left === 0 || elapsedMs < lengthMs * MIN_ELAPSED_SHARE) return { evenLeft, kind: "fast" };
   const runsOutInMs = (left / (100 - left)) * elapsedMs;
   return { evenLeft, kind: "fast", runsOutInMs };
-}
-
-/** "plenty to spare", "on track", "faster than it refills", or "runs out in 2h 10m". */
-export function paceText(pace: Pace, words: Words): string {
-  if (pace.kind === "spare") return "plenty to spare";
-  if (pace.kind === "on_track") return "on track";
-  if (pace.runsOutInMs === undefined) return "faster than it refills";
-  return `runs out in ${formatDuration(pace.runsOutInMs, words.reset, words.resetDecimals)}`;
 }

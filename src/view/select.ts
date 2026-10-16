@@ -45,6 +45,12 @@ export type RowSettings = {
 /** A row as a place shows it: `label` is your name for it, or its own; `named` says you named it. */
 export type VisibleRow = { row: QuotaRow; label: string; named: boolean };
 
+/** `row` under your name for it in `names`, else its own label. */
+export function visibleRow(row: QuotaRow, names: Readonly<Record<string, string>>): VisibleRow {
+  const name = names[row.id];
+  return { row, label: name ?? row.label, named: name !== undefined };
+}
+
 /** One provider account on a surface: its title, its rows, and its last error. */
 export type Group = {
   /** Provider id, or `${providerId} (account)` when it has several accounts. */
@@ -140,10 +146,7 @@ export function visibleGroups(
         (row) => prefixes === undefined || prefixes.some((prefix) => row.id.startsWith(prefix)),
       )
       .filter((row) => words.detail === "detailed" || row.prominence === "primary")
-      .map((row) => {
-        const name = (shown.names ?? settings.labels)[row.id];
-        return { row, label: name ?? row.label, named: name !== undefined };
-      });
+      .map((row) => visibleRow(row, shown.names ?? settings.labels));
     return groupsOf(provider, rows, provider.rows.length > 0);
   });
 }

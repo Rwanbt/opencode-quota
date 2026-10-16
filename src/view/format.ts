@@ -98,13 +98,6 @@ export function formatDuration(ms: number, style: Words["reset"], decimals: numb
   return parts.join(style === "compact" ? "" : " ");
 }
 
-/** The time until a row resets, in the words' style; "" when the row has no reset time. */
-export function resetText(row: QuotaRow, nowMs: number, words: Words): string {
-  const resetMs = Date.parse(row.resetsAt ?? "");
-  if (!Number.isFinite(resetMs)) return "";
-  return formatDuration(resetMs - nowMs, words.reset, words.resetDecimals);
-}
-
 export type BarShape = Settings["layout"]["bar"];
 
 const BAR_CHARACTERS: Record<Exclude<BarShape, "none">, [string, string]> = {

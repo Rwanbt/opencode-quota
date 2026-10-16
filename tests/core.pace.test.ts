@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { type Pace, paceOf, paceText } from "../src/core/pace.js";
+import { paceOf } from "../src/core/pace.js";
 import type { QuotaRow } from "../src/core/types.js";
-import { DEFAULT_WORDS } from "../src/view/format.js";
 import { quotaRow } from "./helpers/fake-answers.js";
 
 const NOW = Date.parse("2026-10-10T12:00:00.000Z");
@@ -57,17 +56,5 @@ describe("core/pace", () => {
     { name: "a window that has not started", fields: { windowStartedAt: at(10) } },
   ])("has no pace for $name", ({ fields }) => {
     expect(paceOf(row({ percentRemaining: 40, ...fields }), NOW)).toBeUndefined();
-  });
-
-  it.each<{ pace: Pace; text: string }>([
-    { pace: { evenLeft: 50, kind: "spare" }, text: "plenty to spare" },
-    { pace: { evenLeft: 50, kind: "on_track" }, text: "on track" },
-    { pace: { evenLeft: 50, kind: "fast" }, text: "faster than it refills" },
-    {
-      pace: { evenLeft: 50, kind: "fast", runsOutInMs: 64 * MINUTE },
-      text: "runs out in 1h 4m",
-    },
-  ])("says $text", ({ pace, text }) => {
-    expect(paceText(pace, DEFAULT_WORDS)).toBe(text);
   });
 });

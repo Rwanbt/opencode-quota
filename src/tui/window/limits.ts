@@ -13,20 +13,12 @@
  * A narrower window first shortens "resets in 2h 30m" to "2h", then the labels, and then puts
  * the reset and the pace on a line under the bar (on two lines when they don't fit together).
  */
-import { describeError } from "../../core/errors.js";
-import { paceOf, paceText } from "../../core/pace.js";
 import type { QuotaSnapshot, Words } from "../../core/types.js";
 import { columnsOf, padEndColumns, padStartColumns, sliceColumns } from "../../view/columns.js";
-import {
-  type BarShape,
-  DEFAULT_WORDS,
-  fit,
-  percentText,
-  resetText,
-  rowValueText,
-} from "../../view/format.js";
-import { type Group, type RowSettings, type VisibleRow, visibleGroups } from "../../view/select.js";
-import { barSegments, type Layout, type Line, type Segment } from "../../view/text.js";
+import { type BarShape, DEFAULT_WORDS, fit } from "../../view/format.js";
+import { errorWords, type Place, type RowFacts, rowFacts } from "../../view/row-facts.js";
+import { type Group, type RowSettings, visibleGroups } from "../../view/select.js";
+import { barSegments, type Layout, type Line, type Segment, trimEnd } from "../../view/text.js";
 
 /** Before a provider's name. */
 const HEADING_INDENT = " ";
@@ -44,18 +36,6 @@ const BAR_MAX = 80;
 const BAR_ROOMY = 20;
 const BAR_SHORT = 14;
 const BAR_MIN = 8;
-
-/** One row's texts, before they are fitted to the grid. */
-type RowTexts = {
-  item: VisibleRow;
-  percent?: number;
-  percentWords: string;
-  /** The reset in the words' style, and in the short style ("2h", "4d 12h"). */
-  reset: string;
-  shortReset: string;
-  pace?: Segment;
-  evenLeft?: number;
-};
 
 /** The grid's column widths; `narrow` puts the reset and the pace under the bar. */
 type Grid = {
@@ -79,42 +59,20 @@ export type LimitsInput = {
   width: number;
 };
 
-function rowTexts(item: VisibleRow, words: Words, nowMs: number): RowTexts {
-  const percent = item.row.percentRemaining;
-  if (percent === undefined) {
-    return { item, percentWords: rowValueText(item.row), reset: "", shortReset: "" };
-  }
-  const pace = paceOf(item.row, nowMs);
-  const exact: Words = { ...words, reset: "exact" };
-  return {
-    item,
-    percent,
-    percentWords: percentText(words, percent, true),
-    reset: resetText(item.row, nowMs, exact),
-    shortReset: resetText(item.row, nowMs, { ...words, reset: "short" }),
-    ...(pace
-      ? {
-          pace: { text: paceText(pace, exact), role: pace.kind === "fast" ? "warning" : "value" },
-          evenLeft: pace.evenLeft,
-        }
-      : {}),
-  };
-}
-
 const widest = (texts: string[]) => Math.max(0, ...texts.map(columnsOf));
-function resetWords(row: RowTexts, long: boolean): string {
+function resetWords(row: RowFacts, long: boolean): string {
   if (!row.reset) return "";
   return long ? `resets in ${row.reset}` : row.shortReset;
 }
 
 /** The widest grid that fits `width`, giving way in the order the file comment describes. */
-function gridFor(rows: RowTexts[], width: number): Grid {
+function gridFor(rows: RowFacts[], width: number): Grid {
   const bars = rows.filter((row) => row.percent !== undefined);
-  const labelWidest = Math.min(LABEL_MAX, widest(rows.map((row) => row.item.label)));
+  const labelWidest = Math.min(LABEL_MAX, widest(rows.map((row) => row.name)));
   if (bars.length === 0) {
     // Only balances and other values: they line up at their right ends.
     const barColumn = INDENT.length + labelWidest + GAP.length;
-    const values = widest(rows.map((row) => row.percentWords));
+    const values = widest(rows.map((row) => row.value));
     const percent = Math.max(1, Math.min(values, width - barColumn));
     return {
       label: labelWidest,
@@ -127,8 +85,8 @@ function gridFor(rows: RowTexts[], width: number): Grid {
       barColumn,
     };
   }
-  const percent = widest(bars.map((row) => row.percentWords));
-  const pace = widest(bars.map((row) => row.pace?.text ?? ""));
+  const percent = widest(bars.map((row) => row.value));
+  const pace = widest(bars.map((row) => row.pace?.words ?? ""));
   const build = (longReset: boolean, label: number, narrow: boolean): Grid => {
     const reset = widest(bars.map((row) => resetWords(row, longReset)));
     const barColumn = INDENT.length + label + GAP.length;
@@ -150,23 +108,10 @@ function gridFor(rows: RowTexts[], width: number): Grid {
   return build(true, Math.min(labelWidest, LABEL_NARROW, Math.max(4, room)), true);
 }
 
-/** The line without the spaces at its end. */
-function trimmed(segments: Segment[]): Segment[] {
-  const out = segments.map((segment) => ({ ...segment }));
-  while (out.length > 0) {
-    const last = out[out.length - 1];
-    last.text = last.text.trimEnd();
-    if (last.text !== "") break;
-    out.pop();
-  }
-  return out;
-}
-
-function rowLines(texts: RowTexts, grid: Grid, width: number, shape: BarShape): Line[] {
-  const { item, percent, percentWords } = texts;
-  const id = item.row.id;
+function rowLines(row: RowFacts, grid: Grid, width: number, shape: BarShape): Line[] {
+  const { id, percent } = row;
   const label: Segment = {
-    text: `${INDENT}${fit(item.label, grid.label)}${GAP}`,
+    text: `${INDENT}${fit(row.name, grid.label)}${GAP}`,
     role: "label",
     percent,
   };
@@ -174,36 +119,40 @@ function rowLines(texts: RowTexts, grid: Grid, width: number, shape: BarShape): 
     // A balance or other value ends where the percents end, so the amounts line up.
     const end = grid.bar > 0 ? grid.bar + GAP.length + grid.percent : grid.percent;
     const room = Math.max(1, Math.min(end, width - grid.barColumn));
-    const value = padStartColumns(fit(percentWords, room).trimEnd(), room);
+    const value = padStartColumns(fit(row.value, room).trimEnd(), room);
     return [{ id, segments: [label, { text: value, role: "value" }] }];
   }
-  const bar = barSegments(shape, percent, grid.bar, texts.evenLeft);
+  const bar = barSegments(shape, percent, grid.bar, row.evenLeft);
   const percentSegment: Segment = {
-    text: `${GAP}${padStartColumns(percentWords, grid.percent)}`,
+    text: `${GAP}${padStartColumns(row.value, grid.percent)}`,
     role: "percent",
     percent,
   };
-  const reset = resetWords(texts, grid.longReset);
+  const pace: Segment | undefined = row.pace && {
+    text: row.pace.words,
+    role: row.pace.fast ? "warning" : "value",
+  };
+  const reset = resetWords(row, grid.longReset);
   if (!grid.narrow) {
     const segments: Segment[] = [label, ...bar, percentSegment];
     if (grid.reset > 0) {
       const text = `${WIDE_GAP}${padEndColumns(reset, grid.reset)}`;
       segments.push({ text, role: "reset", percent });
     }
-    if (texts.pace) segments.push({ ...texts.pace, text: `${WIDE_GAP}${texts.pace.text}` });
-    return [{ id, segments: trimmed(segments) }];
+    if (pace) segments.push({ ...pace, text: `${WIDE_GAP}${pace.text}` });
+    return [{ id, segments: trimEnd(segments) }];
   }
   const under: Segment = { text: " ".repeat(grid.barColumn), role: "label" };
   const lines: Line[] = [{ id, segments: [label, ...bar, percentSegment] }];
   const resetSegment: Segment = { text: reset, role: "reset", percent };
-  const together = grid.barColumn + columnsOf(reset) + 3 + columnsOf(texts.pace?.text ?? "");
-  if (reset && texts.pace && together <= width) {
+  const together = grid.barColumn + columnsOf(reset) + 3 + columnsOf(pace?.text ?? "");
+  if (reset && pace && together <= width) {
     const dot: Segment = { text: " · ", role: "reset", percent };
-    lines.push({ id, segments: [under, resetSegment, dot, texts.pace] });
+    lines.push({ id, segments: [under, resetSegment, dot, pace] });
     return lines;
   }
   if (reset) lines.push({ id, segments: [under, resetSegment] });
-  if (texts.pace) lines.push({ id, segments: [under, texts.pace] });
+  if (pace) lines.push({ id, segments: [under, pace] });
   return lines;
 }
 
@@ -247,23 +196,33 @@ export function limitsLines(input: LimitsInput): Line[] {
       },
     ];
   }
-  const texts = new Map(
-    groups.map((group) => [group.id, group.rows.map((item) => rowTexts(item, words, nowMs))]),
+  // Full names, exact times, the even-use marker and every pace, whatever the settings.
+  const place: Place = {
+    words,
+    nowMs,
+    names: "label",
+    percent: "words",
+    times: "exact",
+    evenUse: true,
+    pace: "all",
+  };
+  const facts = new Map(
+    groups.map((group) => [group.id, group.rows.map((item) => rowFacts(item, group, place))]),
   );
-  const grid = gridFor([...texts.values()].flat(), width);
+  const grid = gridFor([...facts.values()].flat(), width);
   // With bars off elsewhere, Limits keeps a thin line: the even-use marker needs a bar.
   const shape = display.layout.bar === "none" ? "line" : display.layout.bar;
   return groups.flatMap((group, index) => {
     const lines: Line[] = index > 0 ? [{ id: "", segments: [] }] : [];
     lines.push(providerLine(group));
-    if (group.error) {
-      const error = describeError(group.error, group.name, nowMs);
+    const error = errorWords(group, nowMs);
+    if (error) {
       lines.push({
         id: group.id,
         segments: [{ text: fit(`${INDENT}${error}`, width).trimEnd(), role: "error" }],
       });
     }
-    for (const row of texts.get(group.id) ?? []) lines.push(...rowLines(row, grid, width, shape));
+    for (const row of facts.get(group.id) ?? []) lines.push(...rowLines(row, grid, width, shape));
     return lines.map((line) => clipped(line, width));
   });
 }

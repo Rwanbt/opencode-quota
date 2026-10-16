@@ -1,8 +1,7 @@
 import { describe, expect, it } from "vitest";
-import type { ProviderSnapshot, QuotaRow, QuotaSnapshot, Words } from "../src/core/types.js";
+import type { ProviderSnapshot, QuotaRow, QuotaSnapshot } from "../src/core/types.js";
 import type { UsageProviderRow, UsageReport } from "../src/core/usage.js";
 import { defaultDisplaySettings } from "../src/tui/display.js";
-import { DEFAULT_WORDS } from "../src/view/format.js";
 import { quickLookText, quotaProviderIdsOfUsage } from "../src/view/quick-look.js";
 import { providerSnapshot, quotaRow as row } from "./helpers/fake-answers.js";
 
@@ -45,14 +44,8 @@ const TEAM = provider("quota-providers", "Custom providers", [
 ]);
 const TEAM_ROW_PROVIDERS = { "quota-providers.custom.team-accounting.": "team-gateway" };
 
-function snapshot(providers: ProviderSnapshot[], words?: Words): QuotaSnapshot {
-  return {
-    version: 6,
-    providers,
-    resetNotices: [],
-    generatedAtMs: NOW,
-    ...(words ? { words } : {}),
-  };
+function snapshot(providers: ProviderSnapshot[]): QuotaSnapshot {
+  return { version: 6, providers, resetNotices: [], generatedAtMs: NOW };
 }
 
 function usageRow(providerID: string, costUsd: number, tokens: number, sessions: number) {
@@ -143,12 +136,6 @@ describe("quick look: short text", () => {
       "● Copilot     Premium 80% left",
       "● OpenRouter  Provider error 500",
     ]);
-  });
-
-  it("shows pace words when the quota runs out before its reset", () => {
-    const words = DEFAULT_WORDS;
-    const message = shortText({ snapshot: snapshot([ZAI], words), usage: undefined });
-    expect(message).toBe("Quota\n● Z.ai  5h 30% left runs out in 1h 5m");
   });
 
   it("keeps each amount and limit whole on lines as wide as the toast", () => {

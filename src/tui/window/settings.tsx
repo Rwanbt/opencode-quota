@@ -15,17 +15,18 @@ import {
 } from "@opentui/core";
 import type { JSX } from "@opentui/solid";
 import { createEffect, createMemo, createSignal, For, on, Show } from "solid-js";
-import { describeError } from "../../core/errors.js";
 import type { ProviderSnapshot, QuotaRow, QuotaSnapshot, QuotaWindow } from "../../core/types.js";
 import { ALL_PROVIDERS, WINDOWS } from "../../core/windows.js";
 import type { CustomProviderSwitch } from "../../settings/index.js";
 import { CHANGED_SINCE_REVIEW } from "../../settings/schema.js";
 import { columnsOf } from "../../view/columns.js";
-import { DEFAULT_WORDS, fit, percentText, resetText, rowValueText } from "../../view/format.js";
+import { DEFAULT_WORDS, fit } from "../../view/format.js";
+import { errorWords, type Place, rowFacts } from "../../view/row-facts.js";
 import {
   pickRow,
   type Surface,
   type SurfaceRows,
+  visibleRow,
   type WindowChoice,
   windowFor,
 } from "../../view/select.js";
@@ -1105,37 +1106,43 @@ export function createSettingsEditor(
         return !line.row ? "" : rowIds[rowIds.length - 1] === line.id ? "  └ " : "  ├ ";
       };
       const own = () => (line.row ? ownRow(line) : undefined);
-      const label = () =>
-        line.row
-          ? (shown()[props.tab === "toast" ? "toast" : "sidebar"].names[line.id] ??
-            own()?.label ??
-            line.id)
-          : (entry()?.provider.label ?? line.id);
+      const shownRow = (row: QuotaRow) =>
+        visibleRow(row, shown()[props.tab === "toast" ? "toast" : "sidebar"].names);
+      /** A row's name on this page, and its percent and reset as the Web text shows them. */
+      const facts = (row: QuotaRow) => {
+        const item = shownRow(row);
+        const place: Place = {
+          words: words(),
+          nowMs: Date.now(),
+          names: "label",
+          percent: "words",
+        };
+        return rowFacts(item, { rows: [item] }, place);
+      };
+      const label = () => {
+        const row = own();
+        if (line.row) return row ? facts(row).name : line.id;
+        return entry()?.provider.label ?? line.id;
+      };
       const summary = (row: QuotaRow) => {
-        if (row.percentRemaining === undefined) return rowValueText(row);
-        const reset = resetText(row, Date.now(), words());
-        return `${percentText(words(), row.percentRemaining, true)}${reset ? ` · ${reset}` : ""}`;
+        const { value, reset } = facts(row);
+        return reset ? `${value} · ${reset}` : value;
       };
       const detail = () => {
         const provider = entry()?.provider;
         const row = own();
-        if (
-          row &&
-          shown()[props.tab === "toast" ? "toast" : "sidebar"].names[line.id] !== undefined
-        )
-          return `was "${row.label}"`;
+        if (row && shownRow(row).named) return `was "${row.label}"`;
         if (row?.prominence === "supplementary" && words().detail !== "detailed") {
           return "only with all rows";
         }
         if (row) return summary(row);
         if (!provider) return "";
-        if (provider.error && provider.rows.length === 0) {
-          return describeError(provider.error, provider.label, Date.now());
-        }
+        const error = errorWords({ error: provider.error, name: provider.label }, Date.now());
+        if (error && provider.rows.length === 0) return error;
         if (withRows()) return "";
         const rows = provider.rows.filter((item) => !hiddenIds().includes(item.id));
         const picked = pickRow(
-          { rows: rows.map((item) => ({ row: item, label: item.label, named: false })) },
+          { rows: rows.map((item) => visibleRow(item, {})) },
           windowFor(windows(), provider.providerId),
         );
         return picked ? summary(picked.row) : "";

@@ -3,10 +3,7 @@
  * draws each segment in its color role; the Web and terminal `/quota` text print the plain
  * text.
  */
-import { describeError } from "../core/errors.js";
-import { paceOf, paceText } from "../core/pace.js";
-import type { QuotaRow, SessionModelInput, SessionTokens, Words } from "../core/types.js";
-import { WINDOWS } from "../core/windows.js";
+import type { SessionModelInput, SessionTokens, Words } from "../core/types.js";
 import type { Settings } from "../settings/schema.js";
 import { columnsOf } from "./columns.js";
 import {
@@ -17,13 +14,11 @@ import {
   evenUseCell,
   fit,
   LOW_CACHE_MARK,
-  percentText,
   percentWord,
-  resetText,
-  rowValueText,
   sessionTokensText,
 } from "./format.js";
-import { type Group, pickRow, type VisibleRow, type WindowChoice, windowFor } from "./select.js";
+import { errorWords, type Place, type RowFacts, rowFacts } from "./row-facts.js";
+import { type Group, pickRow, type WindowChoice, windowFor } from "./select.js";
 
 /** Every colored thing quota draws; the TUI maps each to a theme color. */
 export type ColorRole =
@@ -110,37 +105,49 @@ export function barSegments(
   return marked.filter((segment) => segment.text !== "");
 }
 
-/** Where even use would be for a row's bar, when the place draws the mark and the row has a pace. */
-function evenLeftOf(on: boolean, row: QuotaRow, nowMs: number): number | undefined {
-  return on ? paceOf(row, nowMs)?.evenLeft : undefined;
-}
-
-/** The words for a group's last error ("Sign in again"); undefined when its last check worked. */
-function errorWords(group: Group, nowMs: number): Segment | undefined {
-  return group.error
-    ? { text: describeError(group.error, group.name, nowMs), role: "error" }
-    : undefined;
-}
-
 /** The words after a group's title: its error, or "not checked yet" before the first check. */
 function groupState(group: Group, nowMs: number): Segment | undefined {
-  if (group.error) return errorWords(group, nowMs);
+  const error = errorWords(group, nowMs);
+  if (error) return { text: error, role: "error" };
   if (group.unchecked) return { text: "not checked yet", role: "value" };
   return undefined;
 }
 
 /**
- * "runs out in 1h 5m" when the surface shows it (`on`) and the row, used at its pace so far,
- * runs out before it resets.
+ * How the sidebar, the collapsed sidebar, the status line and the toasts show rows: named by
+ * `words.rowNames`, with the even-use mark when the layout draws it, and "runs out in …" when
+ * the place shows it.
  */
-function runsOutText(
-  on: boolean | undefined,
-  row: QuotaRow,
-  nowMs: number,
-  words: Words,
-): string | undefined {
-  const pace = on ? paceOf(row, nowMs) : undefined;
-  return pace?.runsOutInMs === undefined ? undefined : paceText(pace, words);
+function alwaysOnPlace(
+  input: Pick<StatusInput, "words" | "nowMs" | "layout" | "runsOut">,
+  percent: Place["percent"],
+): Place {
+  return {
+    words: input.words,
+    nowMs: input.nowMs,
+    names: "words",
+    percent,
+    evenUse: input.layout.evenUse,
+    pace: input.runsOut ? "runsOut" : undefined,
+  };
+}
+
+/** The facts of every row of each group. */
+function groupFacts(groups: Group[], place: Place): Array<{ group: Group; rows: RowFacts[] }> {
+  return groups.map((group) => ({
+    group,
+    rows: group.rows.map((item) => rowFacts(item, group, place)),
+  }));
+}
+
+/** The one row a group shows on the collapsed sidebar and the status line (`pickRow`). */
+function pickedFacts(
+  input: StatusInput,
+  group: Group,
+  percent: Place["percent"],
+): RowFacts | undefined {
+  const picked = pickRow(group, windowFor(input.window, group.providerId));
+  return picked && rowFacts(picked, group, alwaysOnPlace(input, percent));
 }
 
 /** Marks rows kept from an earlier check when there is no room for the error's words. */
@@ -172,22 +179,6 @@ function clip(segments: Segment[], width: number): Segment[] {
   if ((kept && /[\p{L}\p{N}]|⚠/u.test(kept.text)) || width < columnsOf(mark)) return clipped;
   const rest = segments.filter((segment) => segment !== error);
   return [...cut(rest, width - columnsOf(mark)), { ...error, text: mark }];
-}
-
-/**
- * A row's name on the sidebar, the collapsed panel, the status line and a toast: your name for
- * it; else, with `words.rowNames` "short", its window's short name ("5h", "7d") when no other
- * row of its group has the same one; else its label.
- */
-export function rowName(item: VisibleRow, group: Pick<Group, "rows">, words: Words): string {
-  if (words.rowNames === "full" || item.named || !item.row.window) {
-    return item.label;
-  }
-  const short = WINDOWS[item.row.window].short;
-  const shared = group.rows.some(
-    (other) => other !== item && other.row.window && WINDOWS[other.row.window].short === short,
-  );
-  return shared ? item.label : short;
 }
 
 type SidebarInput = {
@@ -272,64 +263,57 @@ const SIDEBAR_BAR_MOST = 20;
  * columns after a longer name.
  */
 export function sidebarLines(input: SidebarInput): Line[] {
-  const { layout, words, nowMs, width } = input;
-  const percentRows = input.groups.flatMap((group) =>
-    group.rows
-      .filter((item) => item.row.percentRemaining !== undefined)
-      .map((item) => ({ ...item, name: rowName(item, group, words) })),
-  );
-  const resetWidth =
-    1 + Math.max(0, ...percentRows.map((item) => resetText(item.row, nowMs, words).length));
+  const { layout, nowMs, width } = input;
+  const groups = groupFacts(input.groups, alwaysOnPlace(input, "number"));
+  const percentRows = groups.flatMap(({ rows }) => rows.filter((row) => row.percent !== undefined));
+  const resetWidth = 1 + Math.max(0, ...percentRows.map((row) => row.reset.length));
   const nameWidth = Math.min(
     layout.labelWidth,
-    Math.max(0, ...percentRows.map((item) => columnsOf(item.name))),
+    Math.max(0, ...percentRows.map((row) => columnsOf(row.name))),
   );
   const barColumn = layout.indent + nameWidth + 1;
   const fixed = barColumn + 5 + resetWidth;
   const wanted = layout.barWidth === "fill" ? SIDEBAR_BAR_MOST : layout.barWidth;
   const barWidth = layout.bar === "none" ? 0 : Math.max(0, Math.min(wanted, width - fixed));
 
-  const rowLine = (item: VisibleRow, group: Group): Line => {
-    const { row } = item;
-    const percent = row.percentRemaining;
-    const name = rowName(item, group, words);
+  const rowLine = (row: RowFacts): Line => {
+    const { percent } = row;
     if (percent === undefined) {
-      const start = valueRowStart(layout.indent, name, layout.labelWidth, barColumn);
+      const start = valueRowStart(layout.indent, row.name, layout.labelWidth, barColumn);
       return {
         id: row.id,
         segments: clip(
           [
             { text: start, role: "label" },
-            { text: rowValueText(row), role: "value" },
+            { text: row.value, role: "value" },
           ],
           width,
         ),
       };
     }
-    const labelText = `${" ".repeat(layout.indent)}${fit(name, nameWidth)} `;
+    const labelText = `${" ".repeat(layout.indent)}${fit(row.name, nameWidth)} `;
     return {
       id: row.id,
       segments: [
         { text: labelText, role: "label", percent },
-        ...barSegments(layout.bar, percent, barWidth, evenLeftOf(layout.evenUse, row, nowMs)),
-        { text: percentText(words, percent, false).padStart(5), role: "percent", percent },
-        { text: resetText(row, nowMs, words).padStart(resetWidth), role: "reset", percent },
+        ...barSegments(layout.bar, percent, barWidth, row.evenLeft),
+        { text: row.value.padStart(5), role: "percent", percent },
+        { text: row.reset.padStart(resetWidth), role: "reset", percent },
       ],
     };
   };
 
   const lines: Line[] = [];
-  input.groups.forEach((group, index) => {
+  groups.forEach(({ group, rows }, index) => {
     if (index > 0) {
       for (let gap = 0; gap < layout.providerGap; gap++) lines.push({ id: "", segments: [] });
     }
     lines.push(groupLine(group, nowMs, width, true));
-    for (const item of group.rows) {
-      lines.push(rowLine(item, group));
-      const runsOut = runsOutText(input.runsOut, item.row, nowMs, words);
-      if (!runsOut) continue;
-      const text = `${" ".repeat(barColumn)}${runsOut}`;
-      lines.push({ id: item.row.id, segments: clip([{ text, role: "warning" }], width) });
+    for (const row of rows) {
+      lines.push(rowLine(row));
+      if (!row.pace) continue;
+      const text = `${" ".repeat(barColumn)}${row.pace.words}`;
+      lines.push({ id: row.id, segments: clip([{ text, role: "warning" }], width) });
     }
   });
   if (input.sessionTokens) {
@@ -373,36 +357,25 @@ type CollapsedInput = {
  * takes the room the names, the percent and the longest reset time leave, at most 10 cells.
  */
 export function collapsedLines(input: CollapsedInput): Line[] {
-  const { layout, words, nowMs } = input;
+  const { layout, nowMs } = input;
   const picks = input.groups.map((group) => ({
     group,
-    picked: pickRow(group, windowFor(input.window, group.providerId)),
+    picked: pickedFacts(input, group, "usedWord"),
   }));
-  const withWord = words.percent === "used";
   // The percent after a space: " 100%", or "  100% used" with its word.
-  const percentWidth = withWord ? 10 : 5;
+  const percentWidth = input.words.percent === "used" ? 10 : 5;
   // The reset as wide as the longest, at least "11h 59m".
-  const resetWidth = Math.max(
-    7,
-    ...picks.map(({ picked }) =>
-      picked?.row.percentRemaining === undefined
-        ? 0
-        : columnsOf(resetText(picked.row, nowMs, words)),
-    ),
-  );
+  const resetWidth = Math.max(7, ...picks.map(({ picked }) => columnsOf(picked?.reset ?? "")));
   const room = input.width - COLLAPSED_NAMES - percentWidth - 1 - resetWidth;
   const wanted = layout.barWidth === "fill" ? COLLAPSED_BAR_MOST : layout.barWidth;
   const barWidth =
     layout.bar === "none" ? 0 : Math.max(0, Math.min(wanted, COLLAPSED_BAR_MOST, room));
-  const providerLine = (group: Group, picked: VisibleRow | undefined): Line => {
-    const percent = picked?.row.percentRemaining;
+  const providerLine = (group: Group, picked: RowFacts | undefined): Line => {
+    const percent = picked?.percent;
     const name: Segment = { text: `${fit(group.title, 9)} `, role: "provider", percent };
     const state = groupState(group, nowMs);
     if (!picked || percent === undefined) {
-      const value: Segment = state ?? {
-        text: picked ? rowValueText(picked.row) : "",
-        role: "value",
-      };
+      const value: Segment = state ?? { text: picked?.value ?? "", role: "value" };
       return { id: group.providerId, segments: clip([name, value], input.width) };
     }
     const error = errorWords(group, nowMs);
@@ -411,25 +384,12 @@ export function collapsedLines(input: CollapsedInput): Line[] {
       segments: clip(
         [
           name,
-          { text: `${fit(rowName(picked, group, words), 4)} `, role: "label", percent },
-          ...barSegments(
-            layout.bar,
-            percent,
-            barWidth,
-            evenLeftOf(layout.evenUse, picked.row, nowMs),
-          ),
-          {
-            text: percentText(words, percent, withWord).padStart(percentWidth),
-            role: "percent",
-            percent,
-          },
+          { text: `${fit(picked.name, 4)} `, role: "label", percent },
+          ...barSegments(layout.bar, percent, barWidth, picked.evenLeft),
+          { text: picked.value.padStart(percentWidth), role: "percent", percent },
           error
-            ? { ...error, text: `  ${error.text}` }
-            : {
-                text: ` ${resetText(picked.row, nowMs, words).padStart(resetWidth)}`,
-                role: "reset",
-                percent,
-              },
+            ? { text: `  ${error}`, role: "error" }
+            : { text: ` ${picked.reset.padStart(resetWidth)}`, role: "reset", percent },
         ],
         input.width,
       ),
@@ -437,9 +397,8 @@ export function collapsedLines(input: CollapsedInput): Line[] {
   };
   return picks.flatMap(({ group, picked }) => {
     const line = providerLine(group, picked);
-    const runsOut = picked && runsOutText(input.runsOut, picked.row, nowMs, words);
-    if (!runsOut) return [line];
-    const text = `${" ".repeat(10)}${runsOut}`;
+    if (!picked?.pace) return [line];
+    const text = `${" ".repeat(10)}${picked.pace.words}`;
     return [
       line,
       { id: group.providerId, segments: clip([{ text, role: "warning" }], input.width) },
@@ -475,25 +434,23 @@ function statusName(input: StatusInput, group: Group): string {
  * from before, or "⚠" where the level shows no reset time.
  */
 function statusSegment(input: StatusInput, group: Group, level: StatusLevel): Line {
-  const { layout, words, nowMs } = input;
-  const picked = pickRow(group, windowFor(input.window, group.providerId));
-  const percent = picked?.row.percentRemaining;
+  const { layout, nowMs } = input;
+  const picked = pickedFacts(input, group, "usedWord");
+  const percent = picked?.percent;
   const name: Segment = { text: statusName(input, group), role: "statusName", percent };
   if (!picked || percent === undefined) {
-    const state = groupState(group, nowMs);
-    const value = state ?? { text: picked ? rowValueText(picked.row) : "", role: "value" };
+    const value = groupState(group, nowMs) ?? { text: picked?.value ?? "", role: "value" };
     return { id: group.providerId, segments: [name, { ...value, text: ` ${value.text}` }] };
   }
   const withBar = layout.bar !== "none" && (level === "full" || level === "bar");
   const withReset = level === "full" || level === "reset";
   const error = errorWords(group, nowMs);
-  const reset = withReset ? resetText(picked.row, nowMs, words) : "";
+  const reset = withReset ? picked.reset : "";
   const after: Segment | undefined = error
-    ? { ...error, text: ` ${withReset ? error.text : ERROR_MARK}` }
+    ? { text: ` ${withReset ? error : ERROR_MARK}`, role: "error" }
     : reset
       ? { text: ` ${reset}`, role: "reset", percent }
       : undefined;
-  const runsOut = runsOutText(input.runsOut, picked.row, nowMs, words);
   return {
     id: group.providerId,
     segments: [
@@ -501,21 +458,12 @@ function statusSegment(input: StatusInput, group: Group, level: StatusLevel): Li
       ...(withBar
         ? [
             { text: " ", role: "separator" as const },
-            ...barSegments(
-              layout.bar,
-              percent,
-              STATUS_BAR_WIDTH,
-              evenLeftOf(layout.evenUse, picked.row, nowMs),
-            ),
+            ...barSegments(layout.bar, percent, STATUS_BAR_WIDTH, picked.evenLeft),
           ]
         : []),
-      {
-        text: ` ${percentText(words, percent, words.percent === "used")}`,
-        role: "percent",
-        percent,
-      },
+      { text: ` ${picked.value}`, role: "percent", percent },
       ...(after ? [after] : []),
-      ...(runsOut ? [{ text: ` (${runsOut})`, role: "warning" as const }] : []),
+      ...(picked.pace ? [{ text: ` (${picked.pace.words})`, role: "warning" as const }] : []),
     ],
   };
 }
@@ -591,35 +539,24 @@ export function statusLayout(
 export function bigStatusLine(input: StatusInput, width?: number): Line | undefined {
   const group = input.groups[0];
   if (!group) return undefined;
-  const picked = pickRow(group, windowFor(input.window, group.providerId));
-  const percent = picked?.row.percentRemaining;
+  const picked = pickedFacts(input, group, "words");
+  const percent = picked?.percent;
   if (!picked || percent === undefined) {
     const line = statusSegment(input, group, "full");
     return width === undefined ? line : { ...line, segments: clip(line.segments, width) };
   }
   const error = errorWords(group, input.nowMs);
-  const reset = resetText(picked.row, input.nowMs, input.words);
   const after: Segment | undefined = error
-    ? { ...error, text: ` · ${error.text}` }
-    : reset
-      ? { text: ` · ${reset}`, role: "reset", percent }
+    ? { text: ` · ${error}`, role: "error" }
+    : picked.reset
+      ? { text: ` · ${picked.reset}`, role: "reset", percent }
       : undefined;
-  const runsOut = runsOutText(input.runsOut, picked.row, input.nowMs, input.words);
   const segments: Segment[] = [
-    {
-      text: `${statusName(input, group)} ${rowName(picked, group, input.words)} `,
-      role: "statusName",
-      percent,
-    },
-    ...barSegments(
-      input.layout.bar,
-      percent,
-      10,
-      evenLeftOf(input.layout.evenUse, picked.row, input.nowMs),
-    ),
-    { text: ` ${percentText(input.words, percent, true)}`, role: "percent", percent },
+    { text: `${statusName(input, group)} ${picked.name} `, role: "statusName", percent },
+    ...barSegments(input.layout.bar, percent, 10, picked.evenLeft),
+    { text: ` ${picked.value}`, role: "percent", percent },
     ...(after ? [after] : []),
-    ...(runsOut ? [{ text: ` · ${runsOut}`, role: "warning" as const }] : []),
+    ...(picked.pace ? [{ text: ` · ${picked.pace.words}`, role: "warning" as const }] : []),
   ];
   return { id: group.providerId, segments: width === undefined ? segments : clip(segments, width) };
 }
@@ -640,17 +577,17 @@ export function plainLines(params: {
   runsOut?: boolean;
 }): string[] {
   const { words, nowMs } = params;
-  const lines = params.groups.flatMap((group) => {
-    const rows = group.rows.map(({ row, label }) => {
-      const name = fit(`${group.title} ${label}`, PLAIN_NAME_WIDTH);
-      if (row.percentRemaining === undefined) return `${name} ${rowValueText(row)}`.trimEnd();
-      const percent = percentText(words, row.percentRemaining, true).padEnd(13);
-      const line = `${name} ${percent} ${resetText(row, nowMs, words)}`.trimEnd();
-      const runsOut = runsOutText(params.runsOut, row, nowMs, words);
-      return runsOut ? `${line}  ${runsOut}` : line;
+  const pace = params.runsOut ? "runsOut" : undefined;
+  const place: Place = { words, nowMs, names: "label", percent: "words", pace };
+  const lines = groupFacts(params.groups, place).flatMap(({ group, rows }) => {
+    const texts = rows.map((row) => {
+      const name = fit(`${group.title} ${row.name}`, PLAIN_NAME_WIDTH);
+      if (row.percent === undefined) return `${name} ${row.value}`.trimEnd();
+      const line = `${name} ${row.value.padEnd(13)} ${row.reset}`.trimEnd();
+      return row.pace ? `${line}  ${row.pace.words}` : line;
     });
     const state = groupState(group, nowMs);
-    return state ? [...rows, `${fit(group.title, PLAIN_NAME_WIDTH)} ${state.text}`] : rows;
+    return state ? [...texts, `${fit(group.title, PLAIN_NAME_WIDTH)} ${state.text}`] : texts;
   });
   return params.sessionTokens
     ? [...lines, `Session  ${sessionTokensText(params.sessionTokens)}`]
@@ -685,7 +622,7 @@ const GROUPED_NAME_MAX = 9;
 const GROUPED_BAR_MAX = 20;
 
 /** The segments without the spaces at the end of their line. */
-function trimEnd(segments: Segment[]): Segment[] {
+export function trimEnd(segments: Segment[]): Segment[] {
   const trimmed = [...segments];
   while (trimmed.length > 0) {
     const last = trimmed[trimmed.length - 1] as Segment;
@@ -716,28 +653,18 @@ function runsOutLine(id: string, runsOut: string, column: number, room: number):
  * longer name.
  */
 function groupedToastLines(input: ToastInput): Line[] {
-  const { words, nowMs, room, layout } = input;
-  const word = percentWord(words);
+  const { nowMs, room, layout } = input;
+  const word = percentWord(input.words);
   // "100% left": the number right-aligned, then its word.
   const percentWidth = 4 + (word ? word.length + 1 : 0);
-  const named = input.groups.map((group) => ({
-    group,
-    rows: group.rows.map((item) => ({ ...item, name: rowName(item, group, words) })),
-  }));
+  const named = groupFacts(input.groups, alwaysOnPlace(input, "number"));
   const items = named.flatMap(({ rows }) => rows);
-  const resetWidth = Math.max(
-    0,
-    ...items.map(({ row }) =>
-      row.percentRemaining === undefined ? 0 : columnsOf(resetText(row, nowMs, words)),
-    ),
-  );
+  const resetWidth = Math.max(0, ...items.map((row) => columnsOf(row.reset)));
   const nameWidth = Math.min(
     GROUPED_NAME_MAX,
     Math.max(
       0,
-      ...items
-        .filter(({ row }) => row.percentRemaining !== undefined)
-        .map(({ name }) => columnsOf(name)),
+      ...items.filter((row) => row.percent !== undefined).map((row) => columnsOf(row.name)),
     ),
   );
   const barColumn = GROUPED_INDENT + nameWidth + 1;
@@ -745,32 +672,27 @@ function groupedToastLines(input: ToastInput): Line[] {
   const barWidth = layout.bar === "none" ? 0 : Math.min(GROUPED_BAR_MAX, room - fixed);
   const withBar = barWidth >= TOAST_BAR_MIN;
 
-  const rowLines = (item: (typeof items)[number]): Line[] => {
-    const { row } = item;
-    const percent = row.percentRemaining;
+  const rowLines = (row: RowFacts): Line[] => {
+    const { percent } = row;
     if (percent === undefined) {
-      const start = valueRowStart(GROUPED_INDENT, item.name, GROUPED_NAME_MAX, barColumn);
-      const value: Segment = { text: rowValueText(row), role: "value" };
+      const start = valueRowStart(GROUPED_INDENT, row.name, GROUPED_NAME_MAX, barColumn);
+      const value: Segment = { text: row.value, role: "value" };
       return [{ id: row.id, segments: clip([{ text: start, role: "label" }, value], room) }];
     }
-    const name = `${" ".repeat(GROUPED_INDENT)}${fit(item.name, nameWidth)} `;
-    const number = percentText(words, percent, false).padStart(4);
-    const reset = resetText(row, nowMs, words);
+    const name = `${" ".repeat(GROUPED_INDENT)}${fit(row.name, nameWidth)} `;
+    const number = row.value.padStart(4);
     const segments: Segment[] = [
       { text: name, role: "label", percent },
-      ...(withBar
-        ? barSegments(layout.bar, percent, barWidth, evenLeftOf(layout.evenUse, row, nowMs))
-        : []),
+      ...(withBar ? barSegments(layout.bar, percent, barWidth, row.evenLeft) : []),
       {
         text: `${withBar ? " " : ""}${word ? `${number} ${word}` : number}`,
         role: "percent",
         percent,
       },
-      ...(reset ? [{ text: `  ${reset}`, role: "reset" as const, percent }] : []),
+      ...(row.reset ? [{ text: `  ${row.reset}`, role: "reset" as const, percent }] : []),
     ];
     const line: Line = { id: row.id, segments: clip(segments, room) };
-    const runsOut = runsOutText(input.runsOut, row, nowMs, words);
-    return runsOut ? [line, runsOutLine(row.id, runsOut, barColumn, room)] : [line];
+    return row.pace ? [line, runsOutLine(row.id, row.pace.words, barColumn, room)] : [line];
   };
 
   const lines = named.flatMap(({ group, rows }) => [
@@ -801,53 +723,49 @@ function spread(left: Segment, right: Segment, room: number): Segment[] {
  * as the toast with the percent at the right. "runs out in" goes under the bar.
  */
 function detailedToastLines(input: ToastInput): Line[] {
-  const { words, nowMs, room, layout } = input;
-  const percents = input.groups.flatMap((group) =>
-    group.rows.flatMap(({ row }) =>
-      row.percentRemaining === undefined ? [] : [percentText(words, row.percentRemaining, true)],
-    ),
+  const { nowMs, room, layout } = input;
+  const named = groupFacts(input.groups, alwaysOnPlace(input, "words"));
+  const percents = named.flatMap(({ rows }) =>
+    rows.flatMap((row) => (row.percent === undefined ? [] : [row.value])),
   );
   const percentWidth = Math.max(0, ...percents.map(columnsOf));
   const barWidth = layout.bar === "none" ? 0 : room - 2 - percentWidth;
 
-  const rowLines = (item: VisibleRow, group: Group): Line[] => {
-    const { row } = item;
-    const percent = row.percentRemaining;
-    const name: Segment = { text: rowName(item, group, words), role: "label", percent };
+  const rowLines = (row: RowFacts): Line[] => {
+    const { percent } = row;
+    const name: Segment = { text: row.name, role: "label", percent };
     if (percent === undefined) {
-      const value: Segment = { text: rowValueText(row), role: "value" };
+      const value: Segment = { text: row.value, role: "value" };
       return [{ id: row.id, segments: spread(name, value, room) }];
     }
-    const reset = resetText(row, nowMs, words);
-    const percentWords = percentText(words, percent, true).padStart(percentWidth);
+    const percentWords = row.value.padStart(percentWidth);
     const bar: Segment[] =
       barWidth >= TOAST_BAR_MIN
         ? [
-            ...barSegments(layout.bar, percent, barWidth, evenLeftOf(layout.evenUse, row, nowMs)),
+            ...barSegments(layout.bar, percent, barWidth, row.evenLeft),
             { text: `  ${percentWords}`, role: "percent", percent },
           ]
         : [{ text: percentWords.padStart(room), role: "percent", percent }];
-    const runsOut = runsOutText(input.runsOut, row, nowMs, words);
     return [
       {
         id: row.id,
-        segments: reset
-          ? spread(name, { text: reset, role: "reset", percent }, room)
+        segments: row.reset
+          ? spread(name, { text: row.reset, role: "reset", percent }, room)
           : clip([name], room),
       },
       { id: row.id, segments: clip(bar, room) },
-      ...(runsOut ? [runsOutLine(row.id, runsOut, 0, room)] : []),
+      ...(row.pace ? [runsOutLine(row.id, row.pace.words, 0, room)] : []),
     ];
   };
 
   const blank: Line = { id: "", segments: [] };
-  const lines = input.groups.flatMap((group, index) => {
+  const lines = named.flatMap(({ group, rows }, index) => {
     const state = groupState(group, nowMs);
     return [
       ...(index > 0 ? [blank] : []),
       groupLine(group, nowMs, room, false),
       ...(state ? [{ id: group.providerId, segments: clip([state], room) }] : []),
-      ...group.rows.flatMap((item) => rowLines(item, group)),
+      ...rows.flatMap(rowLines),
     ];
   });
   if (!input.sessionTokens) return lines;

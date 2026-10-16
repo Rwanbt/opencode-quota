@@ -4,25 +4,16 @@
  * too, its limits; a quota provider OpenCode did not use gets only its limits.
  * `quotaProviderIdsOfUsage` matches the two.
  */
-import { describeError } from "../core/errors.js";
-import { paceOf, paceText } from "../core/pace.js";
 import type { QuotaSnapshot, Words } from "../core/types.js";
 import type { UsageProviderRow, UsageReport } from "../core/usage.js";
 import { type UsageRange, usageRangeLabel } from "../core/usage-ranges.js";
-import { WINDOWS } from "../core/windows.js";
 import {
   getQuotaProviderDisplayLabel,
   getQuotaProviderIdsForRuntimeId,
 } from "../lib/provider-metadata.js";
 import { columnsOf } from "./columns.js";
-import {
-  DEFAULT_WORDS,
-  fit,
-  formatTokens,
-  formatUsd,
-  percentText,
-  rowValueText,
-} from "./format.js";
+import { DEFAULT_WORDS, fit, formatTokens, formatUsd } from "./format.js";
+import { errorWords, type Place, rowFacts } from "./row-facts.js";
 import { type Group, type RowSettings, visibleGroups } from "./select.js";
 import { costText, type UsageMode, type UsageRole } from "./usage.js";
 
@@ -126,17 +117,19 @@ function blocksOf(
   return [...usedBlocks, ...quotaBlocks];
 }
 
-/** A group's error and its limits in a few words: "5h 41% left · 7d 68% left". */
+/**
+ * A group's error and its limits in a few words: "5h 41% left · 7d 68% left", with the pace's
+ * words for a limit used faster than it refills.
+ */
 function shortLimits(group: Group, words: Words, nowMs: number): string[] {
-  const error = group.error ? [describeError(group.error, group.name, nowMs)] : [];
-  const limits = group.rows.map(({ row, label }) => {
-    const name = row.window ? WINDOWS[row.window].short : fit(label, LABEL_MAX_WIDTH).trimEnd();
-    if (row.percentRemaining === undefined) return `${name} ${rowValueText(row)}`;
-    const percent = `${name} ${percentText(words, row.percentRemaining, true)}`;
-    const pace = paceOf(row, nowMs);
-    return pace?.kind === "fast" ? `${percent} ${paceText(pace, words)}` : percent;
+  const place: Place = { words, nowMs, names: "window", percent: "words", pace: "fast" };
+  const error = errorWords(group, nowMs);
+  const limits = group.rows.map((item) => {
+    const row = rowFacts(item, group, place);
+    const limit = `${fit(row.name, LABEL_MAX_WIDTH).trimEnd()} ${row.value}`;
+    return row.pace ? `${limit} ${row.pace.words}` : limit;
   });
-  return [...error, ...limits];
+  return error ? [error, ...limits] : limits;
 }
 
 /** A piece of a short-text line, and what goes before it when it follows on the same line. */

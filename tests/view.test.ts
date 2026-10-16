@@ -3,7 +3,6 @@ import type {
   ProviderSnapshot,
   QuotaRow,
   QuotaSnapshot,
-  QuotaWindow,
   SessionModelInput,
   Words,
 } from "../src/core/types.js";
@@ -17,14 +16,12 @@ import {
   fit as fitToWidth,
   formatDuration,
   levelOf,
-  percentText,
   rowValueText,
 } from "../src/view/format.js";
 import {
   pickRow,
   type RowSettings,
   type Surface,
-  type VisibleRow,
   visibleGroups,
   type WindowChoice,
 } from "../src/view/select.js";
@@ -35,7 +32,6 @@ import {
   collapsedTitle,
   lineText,
   plainLines,
-  rowName,
   type StatusInput,
   sidebarLines,
   sidebarTitle,
@@ -120,23 +116,6 @@ function settings(change: (settings: RowSettings) => void = () => {}): RowSettin
 const words = (change: Partial<Words> = {}): Words => ({ ...DEFAULT_WORDS, ...change });
 
 describe("view format", () => {
-  it.each([
-    { percent: "left", value: 58, withWord: true, expected: "58% left" },
-    { percent: "remaining", value: 58, withWord: true, expected: "58% remaining" },
-    { percent: "bare", value: 58, withWord: true, expected: "58%" },
-    { percent: "used", value: 58, withWord: true, expected: "42% used" },
-    { percent: "left", value: 58, withWord: false, expected: "58%" },
-    { percent: "left", value: -12, withWord: true, expected: "0% left" },
-    { percent: "used", value: 140, withWord: true, expected: "0% used" },
-  ] as const)("percent $percent of $value is $expected", ({
-    percent,
-    value,
-    withWord,
-    expected,
-  }) => {
-    expect(percentText(words({ percent }), value, withWord)).toBe(expected);
-  });
-
   it.each([
     { ms: 134 * MINUTE, style: "exact", expected: "2h 14m" },
     { ms: 134 * MINUTE, style: "compact", expected: "2h14m" },
@@ -918,38 +897,6 @@ describe("view text", () => {
     expect(lines.map(columnsOf).filter((width) => width !== 54 && width > 20)).toEqual([]);
   });
 
-  it("names a grouped row by its window unless you renamed it or its group shares the window", () => {
-    const named = (change: (settings: RowSettings) => void, wording: Partial<Words> = {}) =>
-      toastLines({
-        groups: visibleGroups(snapshot([CLAUDE]), settings(change), "toast", words(wording)),
-        words: words(wording),
-        nowMs: NOW,
-        layout: display.layout,
-        toastLayout: "grouped",
-        room: 54,
-      }).map(lineText);
-    expect({
-      // The weekly limit and Fable's both reset weekly, so both keep their labels.
-      shared: named(() => {}, { detail: "detailed" }),
-      // Your toast name shows, cut to the 9 columns of the name column.
-      renamed: named((settings) => {
-        settings.surfaces.toast.names = { "anthropic.weekly": "All models" };
-      }),
-    }).toEqual({
-      shared: [
-        "Claude",
-        "  5h     ████████████░░░░░░░░  58% left  2h 14m",
-        "  Weekly ██░░░░░░░░░░░░░░░░░░  12% left  3.2d",
-        "  Fable  ██████████████████░░  90% left",
-      ],
-      renamed: [
-        "Claude",
-        "  5h        ████████████░░░░░░░░  58% left  2h 14m",
-        "  All mode… ██░░░░░░░░░░░░░░░░░░  12% left  3.2d",
-      ],
-    });
-  });
-
   it("fits both toast layouts in a narrow toast, cutting long names with …", () => {
     const narrow = {
       grouped: toast("grouped", 38, [PREMIUM, CLAUDE]),
@@ -1010,88 +957,20 @@ describe("view text", () => {
     });
   });
 
-  /** A row as a place shows it: `shown` is your name for it; without one, its own label. */
-  const visible = (label: string, window?: QuotaWindow, shown?: string): VisibleRow => ({
-    row: row(`claude.${label}`, { label, ...(window ? { window } : {}) }),
-    label: shown ?? label,
-    named: shown !== undefined,
-  });
-
-  it("names a row by its window's short name only when that tells it apart in its group", () => {
-    const fiveHour = visible("5h", "five_hour");
-    const weekly = visible("Weekly", "week");
-    const fable = visible("Fable", "week");
-    const premium = visible("Premium requests");
-    const renamed = visible("Plan", "month", "Pro plan");
-    // Named with its own label: your name still wins over "1d".
-    const keptName = visible("Daily", "day", "Daily");
-    const shared = { rows: [fiveHour, weekly, fable, premium, renamed, keptName] };
-    const short = (item: VisibleRow, group = shared) => rowName(item, group, DEFAULT_WORDS);
-    const full = (item: VisibleRow) => rowName(item, shared, words({ rowNames: "full" }));
+  it("lays full row names out in every place with rowNames full", () => {
+    const full = { ...drawn, words: words({ rowNames: "full" }) };
+    const of = (surface: Surface) => groups(surface, [CLAUDE]);
+    const toastOf = (toastLayout: ToastLayout) =>
+      toast(toastLayout, 30, [CLAUDE], { words: full.words, runsOut: false });
     expect({
-      // The only 7d row of its group.
-      unique: short(weekly, { rows: [fiveHour, weekly] }),
-      // Weekly and Fable both reset weekly, so both keep their labels.
-      shared: [short(weekly), short(fable)],
-      noWindow: short(premium),
-      renamed: short(renamed),
-      keptName: [short(keptName), short(visible("Daily", "day"), { rows: [] })],
-      others: [short(fiveHour), short(renamed, { rows: [renamed] })],
-      full: [fiveHour, weekly, fable, premium, renamed].map(full),
+      sidebar: sidebarLines({ ...full, groups: of("sidebar"), width: 40 }).map(lineText),
+      collapsed: collapsedLines({ ...full, groups: of("collapsed"), width: 40, window: {} }).map(
+        lineText,
+      ),
+      statusLine: lineText(bigStatusLine({ ...full, groups: of("statusLine"), window: {} })!),
+      grouped: toastOf("grouped"),
+      detailed: toastOf("detailed"),
     }).toEqual({
-      unique: "7d",
-      shared: ["Weekly", "Fable"],
-      noWindow: "Premium requests",
-      renamed: "Pro plan",
-      keptName: ["Daily", "1d"],
-      others: ["5h", "Pro plan"],
-      full: ["5h", "Weekly", "Fable", "Premium requests", "Pro plan"],
-    });
-  });
-
-  it("names the rows of every place by their window, or by their labels with rowNames full", () => {
-    /** Claude's rows on each place, in the words given. */
-    const places = (
-      wording: Partial<Words>,
-      change: (settings: RowSettings) => void = () => {},
-    ) => {
-      const used = words(wording);
-      const shown = settings(change);
-      const of = (surface: Surface) => visibleGroups(snapshot([CLAUDE]), shown, surface, used);
-      const base = { layout: display.layout, words: used, nowMs: NOW };
-      const toastBase = { ...base, room: 30 };
-      return {
-        sidebar: sidebarLines({ ...base, groups: of("sidebar"), width: 40 }).map(lineText),
-        collapsed: collapsedLines({ ...base, groups: of("collapsed"), width: 40, window: {} }).map(
-          lineText,
-        ),
-        statusLine: lineText(bigStatusLine({ ...base, groups: of("statusLine"), window: {} })!),
-        grouped: toastLines({ ...toastBase, groups: of("toast"), toastLayout: "grouped" }).map(
-          lineText,
-        ),
-        detailed: toastLines({ ...toastBase, groups: of("toast"), toastLayout: "detailed" }).map(
-          lineText,
-        ),
-      };
-    };
-    expect(places({})).toEqual({
-      sidebar: [
-        "Claude",
-        " 5h ████████████░░░░░░░░  58% 2h 14m",
-        " 7d ██░░░░░░░░░░░░░░░░░░  12%   3.2d",
-      ],
-      collapsed: ["Claude    7d   █░░░░░░░░░  12%    3.2d"],
-      statusLine: "Claude 7d █░░░░░░░░░ 12% left · 3.2d",
-      grouped: ["Claude", "  5h ████░░░  58% left  2h 14m", "  7d █░░░░░░  12% left  3.2d"],
-      detailed: [
-        "Claude",
-        `5h${" ".repeat(22)}2h 14m`,
-        `${"█".repeat(12)}${"░".repeat(8)}  58% left`,
-        `7d${" ".repeat(24)}3.2d`,
-        `${"█".repeat(2)}${"░".repeat(18)}  12% left`,
-      ],
-    });
-    expect(places({ rowNames: "full" })).toEqual({
       sidebar: [
         "Claude",
         " 5h     ████████████░░░░░░░░  58% 2h 14m",
@@ -1108,18 +987,6 @@ describe("view text", () => {
         `${"█".repeat(2)}${"░".repeat(18)}  12% left`,
       ],
     });
-    // Your name for a row shows collapsed and on the status line too, in both.
-    const renamed = (settings: RowSettings) => {
-      settings.surfaces.collapsed.names = { "anthropic.weekly": "All" };
-      settings.surfaces.statusLine.names = { "anthropic.weekly": "All" };
-    };
-    for (const rowNames of ["short", "full"] as const) {
-      const shown = places({ rowNames }, renamed);
-      expect([shown.collapsed, shown.statusLine]).toEqual([
-        ["Claude    All  █░░░░░░░░░  12%    3.2d"],
-        "Claude All █░░░░░░░░░ 12% left · 3.2d",
-      ]);
-    }
   });
 
   it("writes plain lines for the Web and terminal /quota text, errors and session tokens last", () => {
