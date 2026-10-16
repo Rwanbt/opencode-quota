@@ -14,6 +14,7 @@ import {
   loadServerSettings,
   type ProviderSourceHost,
 } from "./core/provider-source.js";
+import { safeErrorText } from "./core/redact.js";
 import { createSnapshotPublisher } from "./core/snapshot-publisher.js";
 import { createQuotaStore } from "./core/store.js";
 import type { QuotaSnapshot, SessionModel } from "./core/types.js";
@@ -32,7 +33,6 @@ import {
   bindCredentialSource,
   createIntegrationCredentialSource,
   notifyCredentialsChanged,
-  scrubCredentialErrorText,
 } from "./lib/opencode-auth.js";
 import { reconcileDetectedProvidersInGlobalConfig } from "./lib/opencode-config-providers.js";
 import {
@@ -94,11 +94,6 @@ function withoutQuotaReports<M extends ModelMessage>(messages: M[]): M[] {
   });
 }
 
-/** An error as one line that is safe to log: tokens redacted, at most 120 characters. */
-function logReason(error: unknown): string {
-  return scrubCredentialErrorText(error instanceof Error ? error.message : String(error));
-}
-
 /**
  * Runs an RPC handler and logs its failure in the OpenCode service before rethrowing it.
  * The client gets only OpenCode's `rpc.internal` error, so the reason shows only here.
@@ -107,7 +102,7 @@ async function logRpcFailure<T>(method: string, handler: () => Promise<T>): Prom
   try {
     return await handler();
   } catch (error) {
-    console.warn(`[opencode-quota] ${method} RPC failed: ${logReason(error)}`);
+    console.warn(`[opencode-quota] ${method} RPC failed: ${safeErrorText(error)}`);
     throw error;
   }
 }
@@ -132,7 +127,7 @@ async function convertV5Settings(): Promise<V5Conversion | undefined> {
   try {
     return await convertV5();
   } catch (error) {
-    console.warn(`[opencode-quota] settings conversion failed: ${logReason(error)}`);
+    console.warn(`[opencode-quota] settings conversion failed: ${safeErrorText(error)}`);
     return undefined;
   }
 }
@@ -334,7 +329,7 @@ export const QuotaToastPlugin = Plugin.define({
     // The export file and the gauges follow the snapshot; neither asks a provider again.
     const publisher = createSnapshotPublisher({
       loadSettings: () => loadServerSettings(sourceHost),
-      log: (message, error) => console.warn(`[opencode-quota] ${message}: ${logReason(error)}`),
+      log: (message, error) => console.warn(`[opencode-quota] ${message}: ${safeErrorText(error)}`),
     });
     const announce = (snapshot: QuotaSnapshot) => {
       publisher.publish(snapshot);
@@ -342,7 +337,7 @@ export const QuotaToastPlugin = Plugin.define({
         try {
           await registration.events.emit("changed", { snapshot: forClients(snapshot) });
         } catch (error) {
-          console.warn(`[opencode-quota] changed event failed: ${logReason(error)}`);
+          console.warn(`[opencode-quota] changed event failed: ${safeErrorText(error)}`);
         }
       })();
     };
@@ -367,7 +362,7 @@ export const QuotaToastPlugin = Plugin.define({
         // "/" list until OpenCode restarts: OpenCode 2 sends this reload without the folder
         // (location) that the TUI refreshes its list for.
         await ctx.command.reload().catch((error: unknown) => {
-          console.warn(`[opencode-quota] command reload failed: ${logReason(error)}`);
+          console.warn(`[opencode-quota] command reload failed: ${safeErrorText(error)}`);
         });
       }
     }
@@ -449,7 +444,7 @@ export const QuotaToastPlugin = Plugin.define({
           // Without OpenCode's history the limits still show.
           const usage = await loadUsageReport({ range: DEFAULT_QUICK_LOOK_RANGE }).catch(
             (error) => {
-              console.warn(`[opencode-quota] /quota usage failed: ${logReason(error)}`);
+              console.warn(`[opencode-quota] /quota usage failed: ${safeErrorText(error)}`);
               return undefined;
             },
           );
@@ -518,7 +513,7 @@ export const QuotaToastPlugin = Plugin.define({
         );
         if (delay !== undefined) event.decision = { retry: true, delay };
       } catch (error) {
-        console.warn(`[opencode-quota] retry hook failed: ${logReason(error)}`);
+        console.warn(`[opencode-quota] retry hook failed: ${safeErrorText(error)}`);
       }
     });
 
@@ -542,7 +537,9 @@ export const QuotaToastPlugin = Plugin.define({
       }
     })().catch((error) => {
       if (credentialEvents.signal.aborted) return;
-      console.warn(`[opencode-quota] credential event subscription stopped: ${logReason(error)}`);
+      console.warn(
+        `[opencode-quota] credential event subscription stopped: ${safeErrorText(error)}`,
+      );
     });
 
     // Running fetches still read logins, so the store is drained before the binding goes.

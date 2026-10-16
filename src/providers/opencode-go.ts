@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 
+import { safeErrorText } from "../core/redact.js";
 import type { DebugDetail } from "../core/types.js";
 import {
   API_KEY_LOGIN_VENDORS,
@@ -9,7 +10,7 @@ import {
   resolveApiKeyLogin,
 } from "../lib/api-key-resolver.js";
 import type { QuotaProvider, QuotaProviderContext } from "../lib/entries.js";
-import { scrubCredentialErrorText, selectConnectionCredentialRows } from "../lib/opencode-auth.js";
+import { selectConnectionCredentialRows } from "../lib/opencode-auth.js";
 import { consoleBaseUrl, resolveOpenCodeConsoleAuth } from "../lib/opencode-console-auth.js";
 import { queryOpenCodeGoConsoleStatus, queryOpenCodeGoQuota } from "../lib/opencode-go.js";
 import { normalizeQuotaProviderId } from "../lib/provider-metadata.js";
@@ -150,7 +151,7 @@ export const opencodeGoProvider: QuotaProvider = {
       consoleError = consoleResult.error;
       consoleFailure = { message: consoleError };
     } else {
-      consoleError = scrubCredentialErrorText(consoleAuth.error);
+      consoleError = safeErrorText(consoleAuth.error);
       consoleFailure = {
         message: `OpenCode Console sign-in failed: ${consoleError}. ${CONSOLE_LOGIN_HINT}`,
       };

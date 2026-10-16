@@ -14,7 +14,6 @@ import {
   readAuthFile,
   readAuthFileCached,
   readCredentialRows,
-  scrubCredentialErrorText,
   selectConnectionCredentialRows,
 } from "../src/lib/opencode-auth.js";
 import { createFakeIntegration, type FakeCredential } from "./helpers/fake-integration.js";
@@ -641,13 +640,6 @@ describe("integration credential source", () => {
       expect(text).not.toContain(opaque);
       expect(text).not.toContain(opaque.slice(-24));
     }
-  });
-
-  it("scrubs error text to one short line before cutting it to length", () => {
-    expect(scrubCredentialErrorText("a\nb\tc\u0007")).toBe("a b c");
-    const cut = scrubCredentialErrorText(`${"x ".repeat(55)}${"t".repeat(40)}`);
-    expect(cut).toBe(`${"x ".repeat(55)}[redacted]`.slice(0, 120));
-    expect(cut).not.toContain("tttt");
   });
 
   it("reads no login and warns once while no source is bound", async () => {

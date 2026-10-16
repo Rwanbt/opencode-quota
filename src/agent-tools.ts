@@ -9,6 +9,7 @@
  * on. Every answer is cleaned in one place: each key the plugin can read, and anything in a
  * known key format, is replaced before the agent sees it.
  */
+import { looksSecret, REDACTED, redactJson, secretValuesRedactor } from "./core/redact.js";
 import { rowsFromProviderResult } from "./core/rows.js";
 import {
   getGlobalOpencodeConfigCandidatePaths,
@@ -65,10 +66,8 @@ type QuotaAgentTool = {
 /** What a tool reports back to the agent, as JSON text. */
 type ToolResult = Record<string, unknown>;
 
-/** Replaces every key in one string; see `credentialRedactor`. */
+/** Replaces every key in one string; see `secretValuesRedactor`. */
 type Redact = (text: string) => string;
-
-const REDACTED = "[redacted]";
 
 /** The top-level settings agents may change; the user changes the others in /quota_settings. */
 const AGENT_GROUPS: readonly string[] = ["providers"];
@@ -94,20 +93,6 @@ const SETTING_SECRET_MESSAGE = "looks like a key or other secret, so nothing was
 /** A top-level definition field that would hold a secret; `apiKeyEnv` holds only a name. */
 const SECRET_FIELD_PATTERN = /key|token|secret|passw|bearer|cookie|credential|authorization/i;
 
-/** Known key formats, found anywhere in a text: refused in inputs, replaced in answers. */
-const SECRET_PATTERNS: readonly RegExp[] = [
-  /\bsk-[A-Za-z0-9_-]{16,}/g, // OpenAI, Anthropic, OpenRouter, DeepSeek, Moonshot
-  /\b(?:gh[opsur]|github_pat)_[A-Za-z0-9_]{20,}/g, // GitHub
-  /\bxox[abprs]-[A-Za-z0-9-]{10,}/g, // Slack
-  /\bAKIA[0-9A-Z]{16}\b/g, // AWS
-  /\bAIza[0-9A-Za-z_-]{30,}/g, // Google API key
-  /\bya29\.[0-9A-Za-z_-]{20,}/g, // Google OAuth access token
-  /\b1\/\/[0-9A-Za-z_-]{20,}/g, // Google OAuth refresh token
-  /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}(?:\.[A-Za-z0-9_-]*)?/g, // JWT, all three parts
-  /\bbearer\s+\S{8,}/gi,
-  /-----BEGIN [A-Z ]*PRIVATE KEY-----/g,
-];
-
 /** Fields holding names (ids, model names, URLs, JSON paths): long runs pass in them. */
 const NAME_FIELDS: ReadonlySet<string> = new Set([
   "id",
@@ -125,60 +110,17 @@ const VARIABLE_NAME = /^[A-Z_][A-Z0-9_]*$/;
 /** Environment variables whose values the answers never show: the names keys go by. */
 const KEY_VARIABLE_NAME = /API_?KEY|TOKEN|SECRET|PASSW|COOKIE|CREDENTIAL/i;
 
-/** Keys this long are replaced anywhere; shorter ones only as a whole token, so no word is cut. */
-const LONG_KEY_LENGTH = 8;
-
-/**
- * True when a run of 20+ letters and digits switches between letters, digits and case so often
- * that its pieces average under 3 characters: a random token, not words. A camelCase name such
- * as "AvailableBalanceUSD2024Total" splits into Available|Balance|USD|2024|Total and passes; a
- * hex or base62 key splits into pieces of 1-2 characters.
- */
-function looksRandom(run: string): boolean {
-  if (!/[0-9]/.test(run) || !/[A-Za-z]/.test(run)) return false;
-  const pieces = run.match(/[0-9]+|[A-Z]+(?![a-z])|[A-Z]?[a-z]+/g) ?? [];
-  return run.length / pieces.length < 3;
-}
-
-/**
- * True when a value holds something shaped like a key: a known key format, a random run of
- * letters and digits, or (outside name fields) any run of 24+ of them. Any other character ends
- * a run, so model names such as "Qwen3-Coder-480B-A35B-Instruct-2507", UUIDs and version
- * strings pass. A heuristic: keys never belong in a definition or a setting, only in an
- * environment variable.
- */
-function looksSecret(text: string, isName: boolean): boolean {
-  return (
-    SECRET_PATTERNS.some((pattern) => text.search(pattern) !== -1) ||
-    (text.match(/[A-Za-z0-9]{20,}/g) ?? []).some(
-      (run) => looksRandom(run) || (!isName && run.length >= 24),
-    )
-  );
-}
-
-/** A copy of a JSON value with `redact` applied to every string in it, property names too. */
-function redactStrings(value: unknown, redact: Redact): unknown {
-  if (typeof value === "string") return redact(value);
-  if (Array.isArray(value)) return value.map((item) => redactStrings(item, redact));
-  if (isRecord(value)) {
-    return Object.fromEntries(
-      Object.entries(value).map(([name, item]) => [redact(name), redactStrings(item, redact)]),
-    );
-  }
-  return value;
-}
-
 /**
  * True when a value holds a string, or a property name, that looks like a secret. Property names
  * are checked like ids (a pricingModelMap is keyed by model ids).
  */
 function holdsSecret(value: unknown, isName: boolean): boolean {
-  if (typeof value === "string") return looksSecret(value, isName);
+  if (typeof value === "string") return looksSecret(value, { isName });
   if (Array.isArray(value)) return value.some((item) => holdsSecret(item, isName));
   if (isRecord(value)) {
     return Object.entries(value).some(
       ([name, item]) =>
-        looksSecret(name, true) || holdsSecret(item, isName || NAME_FIELDS.has(name)),
+        looksSecret(name, { isName: true }) || holdsSecret(item, isName || NAME_FIELDS.has(name)),
     );
   }
   return false;
@@ -198,7 +140,9 @@ function definitionSecretIssues(definition: Record<string, unknown>): SettingsIs
         : [];
     }
     const secret =
-      SECRET_FIELD_PATTERN.test(field) || looksSecret(field, true) || holdsSecret(value, false);
+      SECRET_FIELD_PATTERN.test(field) ||
+      looksSecret(field, { isName: true }) ||
+      holdsSecret(value, false);
     return secret
       ? [{ key: "definition", message: `field ${index + 1} ${DEFINITION_SECRET_MESSAGE}` }]
       : [];
@@ -208,8 +152,8 @@ function definitionSecretIssues(definition: Record<string, unknown>): SettingsIs
 /**
  * Every key the plugin can read: variables named like keys or named by a switched-on custom
  * provider; keys in the global opencode.json(c); and API-key logins saved in OpenCode for the
- * providers OpenCode has. OAuth tokens are not read (that could refresh them); `SECRET_PATTERNS`
- * covers their shape. The key of a switched-off provider (and of one a tool saves, always
+ * providers OpenCode has. OAuth tokens are not read (that could refresh them); the key shapes in
+ * core/redact.ts cover them. The key of a switched-off provider (and of one a tool saves, always
  * switched off) is never read: until the user switches it on, nothing touches it.
  */
 async function credentialValues(host: QuotaAgentToolsHost): Promise<string[]> {
@@ -250,29 +194,6 @@ async function credentialValues(host: QuotaAgentToolsHost): Promise<string[]> {
   return values.flatMap((value) =>
     typeof value === "string" && value.trim() ? [value.trim()] : [],
   );
-}
-
-/**
- * Replaces, in one string, each key the plugin can read and each known key format. A key under
- * LONG_KEY_LENGTH counts only as a whole token (letters, digits, `_` and `-`).
- */
-async function credentialRedactor(host: QuotaAgentToolsHost): Promise<Redact> {
-  // Longest first, so a key that contains another is replaced whole.
-  const values = [...new Set(await credentialValues(host))].sort((a, b) => b.length - a.length);
-  const long = values.filter((value) => value.length >= LONG_KEY_LENGTH);
-  const short = values
-    .filter((value) => value.length < LONG_KEY_LENGTH)
-    .map((value) => {
-      const escaped = value.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
-      return new RegExp(`(?<![\\w-])${escaped}(?![\\w-])`, "g");
-    });
-  return (text) => {
-    let redacted = text;
-    for (const value of long) redacted = redacted.split(value).join(REDACTED);
-    for (const pattern of short) redacted = redacted.replace(pattern, REDACTED);
-    for (const pattern of SECRET_PATTERNS) redacted = redacted.replace(pattern, REDACTED);
-    return redacted;
-  };
 }
 
 function valueAt(settings: Settings, key: string): unknown {
@@ -447,7 +368,7 @@ function testedRows(
   };
   const fetched = rowsFromProviderResult(
     QUOTA_PROVIDERS_AGGREGATE_ID,
-    redactStrings(result, (text) => redact(text).replaceAll(REDACTED, "redacted")) as typeof result,
+    redactJson(result, (text) => redact(text).replaceAll(REDACTED, "redacted")) as typeof result,
   );
   const problems = fetched.debug.map((detail) => detail.value);
   if (fetched.rows.length === 0) {
@@ -647,7 +568,7 @@ function tool(
     async execute(input) {
       let redact: Redact;
       try {
-        redact = await credentialRedactor(host);
+        redact = secretValuesRedactor(await credentialValues(host));
       } catch {
         const message =
           "Nothing was done: the saved keys to hide from the answer could not be read.";
@@ -662,7 +583,7 @@ function tool(
       }
       // The one place answers are cleaned: whatever a file or an endpoint holds, no key gets out.
       // Each string is cleaned on its own, so a replacement never reaches the JSON around it.
-      return { content: JSON.stringify(redactStrings(result, redact), null, 2) };
+      return { content: JSON.stringify(redactJson(result, redact), null, 2) };
     },
   };
 }

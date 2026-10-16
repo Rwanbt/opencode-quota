@@ -1,6 +1,6 @@
+import { safeErrorText } from "../core/redact.js";
 import type { DebugDetail } from "../core/types.js";
 import type { QuotaProvider, QuotaProviderContext } from "../lib/entries.js";
-import { scrubCredentialErrorText } from "../lib/opencode-auth.js";
 import {
   consoleBaseUrl,
   type OpenCodeConsoleCredential,
@@ -97,7 +97,7 @@ export const opencodeZenProvider: QuotaProvider = {
     }
 
     if (consoleAuth.state === "invalid") {
-      return signInFailed("invalid", scrubCredentialErrorText(consoleAuth.error));
+      return signInFailed("invalid", safeErrorText(consoleAuth.error));
     }
 
     if (consoleAuth.state === "expired") {

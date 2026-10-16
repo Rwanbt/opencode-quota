@@ -127,37 +127,6 @@ function bindLogins(logins: Record<string, string>, onRead = () => {}): void {
   });
 }
 
-/**
- * Secrets that must never get through: each is refused in a definition, and each in a known
- * key format (`inAnswers`) is replaced in every answer.
- */
-const SECRET_CANARIES = [
-  { name: "an OpenAI-style key", value: "sk-proj-abcdefghijklmnop1234", inAnswers: true },
-  { name: "an OpenRouter key", value: "sk-or-v1-0123456789abcdef0123", inAnswers: true },
-  { name: "a GitHub token", value: "ghp_0123456789abcdefABCDEF0123456789abcd", inAnswers: true },
-  { name: "a Slack token", value: "xoxb-1234567890-abcdefghij", inAnswers: true },
-  {
-    name: "a Google OAuth token",
-    value: "ya29.a0AfH6SMBx3kQ9vR2pT7nW4cY8zD1eF5gH",
-    inAnswers: true,
-  },
-  { name: "a Google refresh token", value: "1//0gLm3QvR8sT2uV5wX7yZ9aB1cD3eF5gH", inAnswers: true },
-  {
-    name: "a JWT",
-    value: "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2lnbmF0dXJlLXBhcnQx",
-    inAnswers: true,
-  },
-  { name: "a bearer header", value: "Bearer abcdefghijklmnop", inAnswers: true },
-  { name: "a lowercase hex token", value: "9f86d081884c7d659a2feaa0c55ad015", inAnswers: false },
-  {
-    name: "a lowercase letter and digit token",
-    value: "k3j9x2m8q7w1z5n4b6v0c8x2a7",
-    inAnswers: false,
-  },
-  { name: "a lowercase letter token", value: "qvkjmznxwtyslrfpdhcbagqvkjmznxwt", inAnswers: false },
-  { name: "a mixed-case token", value: "Zx9QmT4vLr8KpW2sNb7YhC3dFg6JkA1e", inAnswers: false },
-];
-
 /** The custom provider labels a quota_settings_get answer shows. */
 function shownLabels(result: Answer): string[] {
   const custom = result.settings?.["providers.custom"] as { value: Array<{ label: string }> };
@@ -376,27 +345,15 @@ describe("quota_settings_get", () => {
     expect(result.text).not.toContain("private-model-key-77");
   });
 
-  it("replaces a short saved key only where it stands as a whole token", async () => {
-    vi.stubEnv("MY_SERVICE_TOKEN", "abc1234");
-    writeSettings(
-      JSON.stringify({ providers: { custom: [{ ...OTHER, label: "key abc1234, not abc12345" }] } }),
-    );
-
-    const result = await call("quota_settings_get", {});
-
-    expect(shownLabels(result)).toEqual(["key [redacted], not abc12345"]);
-  });
-
-  it.each(
-    SECRET_CANARIES.filter(({ inAnswers }) => inAnswers),
-  )("replaces $name in every answer, which stays valid JSON", async ({ value }) => {
-    writeSettings(JSON.stringify({ providers: { custom: [{ ...OTHER, label: value }] } }));
+  it("replaces each key shape in every answer, which stays valid JSON", async () => {
+    const label = 'pk_test_0123456789abcdefFAKE "and" Basic dXNlcjpwYXNzd29yZA==';
+    writeSettings(JSON.stringify({ providers: { custom: [{ ...OTHER, label }] } }));
 
     // `call` parses the answer, so an answer that is not valid JSON fails here.
     const result = await call("quota_settings_get", {});
 
     expect(result.problemsInFile).toBeUndefined();
-    expect(shownLabels(result)).toEqual(["[redacted]"]);
+    expect(shownLabels(result)).toEqual(['[redacted] "and" Basic [redacted]']);
   });
 });
 
@@ -507,9 +464,9 @@ describe("quota_settings_set", () => {
 
 describe("quota_provider_add", () => {
   it.each([
-    ...SECRET_CANARIES.map(({ name, value }) => ({
-      name,
-      definition: { ...GATEWAY, label: value },
+    ...["xai-0123456789abcdefFAKE", "Basic dXNlcjpwYXNzd29yZA=="].map((label) => ({
+      name: label,
+      definition: { ...GATEWAY, label },
       key: "definition.label",
     })),
     { name: "a key field", definition: { ...GATEWAY, apiKey: "abc" }, key: "definition" },
@@ -575,7 +532,6 @@ describe("quota_provider_add", () => {
       definition: { ...GATEWAY, apiKeyEnv: "MY_X1X2X3X4X5X6X7X8X9X0_API_KEY" },
     },
     { name: "a UUID", definition: { ...GATEWAY, label: "123e4567-e89b-12d3-a456-426614174000" } },
-    { name: "a version string", definition: { ...GATEWAY, label: "v2.14.0-rc.1+build.20261010" } },
   ])("saves $name", async ({ definition }) => {
     const result = await call("quota_provider_add", { definition });
 

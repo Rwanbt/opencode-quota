@@ -1,6 +1,87 @@
 import { describe, expect, it } from "vitest";
 
-import { publicDetail, safeDebugValue, safeDetail } from "../src/core/redact.js";
+import {
+  looksSecret,
+  publicDetail,
+  safeDebugValue,
+  safeDetail,
+  safeErrorText,
+  secretValuesRedactor,
+} from "../src/core/redact.js";
+
+/** Every known key shape: hidden in text and agent answers, refused in agent tool input. */
+const KEY_SHAPES = [
+  { name: "an OpenAI key", secret: "sk-proj-abcdefghijklmnop1234" },
+  { name: "a Stripe test key", secret: "pk_test_0123456789abcdefFAKE" },
+  { name: "a GitHub token", secret: "ghp_0123456789abcdefABCDEF0123456789abcd" },
+  { name: "a Google API key", secret: "AIzaFAKE-0123456789abcdefghijklmnopqr" },
+  { name: "an xAI key", secret: "xai-0123456789abcdefFAKE" },
+  { name: "a JWT", secret: "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2lnbmF0dXJlLXBhcnQx" },
+  { name: "a Slack token", secret: "xoxb-1234567890-abcdefghij" },
+  { name: "an AWS key id", secret: "AKIAIOSFODNN7EXAMPLE" },
+  { name: "a Google OAuth token", secret: "ya29.a0AfH6SMBx3kQ9vR2pT7nW4cY8zD1eF5gH" },
+  { name: "a Google refresh token", secret: "1//0gLm3QvR8sT2uV5wX7yZ9aB1cD3eF5gH" },
+  { name: "a PEM key", secret: "-----BEGIN PRIVATE KEY-----\nMIIE\n-----END PRIVATE KEY-----" },
+  { name: "a bearer token", secret: "Bearer abcdefghijklmnop", shown: "Bearer [redacted]" },
+  { name: "a Basic credential", secret: "Basic dXNlcjpwYXNzd29yZA==", shown: "Basic [redacted]" },
+];
+
+/** No secret in these: text shows them as they are, and the agent tools take them. */
+const NOT_SECRETS = [
+  "claude-opus-4-5-20251101",
+  "gpt-5.1-codex-max",
+  "accounts/fireworks/models/llama-v3p1-405b-instruct",
+  "unpriced: Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8 and deepseek-ai/DeepSeek-R1-Distill-Qwen-32B-Preview",
+  "google/gemini-2.0-flash-preview-image-generation",
+  "custom_production-gateway-us_check outcome=success",
+  "xai-quota for xai/grok-4-fast-reasoning",
+  "https://gateway.example/v1/quota?plan=pro",
+  "v2.14.0-rc.1+build.20261010",
+  "Basic requests: 58/100",
+  "resets 2026-11-01T00:00:00.000Z",
+];
+
+describe("key shapes", () => {
+  it.each(KEY_SHAPES)("hides $name in text and agent answers, and refuses it in a name", ({
+    secret,
+    shown = "[redacted]",
+  }) => {
+    expect(safeDetail(`key ${secret} end`, 300)).toBe(`key ${shown} end`);
+    expect(secretValuesRedactor([])(`key ${secret} end`)).toBe(`key ${shown} end`);
+    expect(looksSecret(secret, { isName: true })).toBe(true);
+  });
+
+  it.each(NOT_SECRETS)("shows and takes %s", (text) => {
+    expect(safeDetail(text, 300)).toBe(text);
+    expect(secretValuesRedactor([])(text)).toBe(text);
+    expect(looksSecret(text, { isName: false })).toBe(false);
+  });
+
+  it.each([
+    ["9f86d081884c7d659a2feaa0c55ad015", true],
+    ["Zx9QmT4vLr8KpW2sNb7YhC3dFg6JkA1e", true],
+    ["k3j9x2m8q7w1z5n4b6v0c8x2a7", true],
+    ["qvkjmznxwtyslrfpdhcbagqvkjmznxwt", false],
+  ])("refuses the long run %s outside a name; in a name too: %s", (run, inName) => {
+    expect(looksSecret(run, { isName: false })).toBe(true);
+    expect(looksSecret(run, { isName: true })).toBe(inName);
+  });
+
+  it("hides each known value, a short one only as a whole token", () => {
+    const redact = secretValuesRedactor(["abc1234", "long-key-value", "long-key-value-2"]);
+
+    expect(redact("abc1234, not abc12345; long-key-value-2 and xlong-key-valuex")).toBe(
+      "[redacted], not abc12345; [redacted] and x[redacted]x",
+    );
+  });
+
+  it("shows an error as one short line, redacted before it is cut", () => {
+    expect(safeErrorText(new Error("a\nb\tc\u0007"))).toBe("a b c");
+    expect(safeErrorText(`${"x ".repeat(55)}${"t".repeat(40)}`)).toBe(
+      `${"x ".repeat(55)}[redacted]`.slice(0, 120),
+    );
+  });
+});
 
 describe("credential redaction", () => {
   it.each([
@@ -117,12 +198,6 @@ describe("publicDetail", () => {
       hidden: ["Alice"],
     },
     {
-      name: "a long model id with capitalised words and numbers",
-      text: "unpriced: Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8 and deepseek-ai/DeepSeek-R1-Distill-Qwen-32B-Preview",
-      shown:
-        "unpriced: Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8 and deepseek-ai/DeepSeek-R1-Distill-Qwen-32B-Preview",
-    },
-    {
       name: "a cookie in JSON, the other fields kept",
       text: '{"cookie":"a=CANARY; b=2","status":401}',
       shown: '{"cookie":[redacted],"status":401}',
@@ -151,11 +226,6 @@ describe("publicDetail", () => {
       name: "an email address and short account ids",
       text: "alice.CANARY@example.co.uk account_id=CANARY1 teamId: CANARY2",
       shown: "[email] account_id=[id] teamId: [id]",
-    },
-    {
-      name: "a bearer token and a key shape",
-      text: "Authorization: Bearer CANARYtoken | sk-proj-CANARYsecret0123",
-      shown: "Authorization: [redacted] | [redacted]",
     },
     {
       name: "a long opaque token and a UUID",
@@ -196,16 +266,6 @@ describe("publicDetail", () => {
       home: WINDOWS_HOME,
       text: "path=C:\\Users\\Alice Smithson\\bin",
       shown: "path=C:\\Users\\Alice Smithson\\bin",
-    },
-    {
-      name: "a model id with many words",
-      text: "unpriced: google/gemini-2.0-flash-preview-image-generation",
-      shown: "unpriced: google/gemini-2.0-flash-preview-image-generation",
-    },
-    {
-      name: "a diagnostic name made from a provider id",
-      text: "custom_production-gateway-us_check outcome=success",
-      shown: "custom_production-gateway-us_check outcome=success",
     },
   ] as Array<{
     name: string;

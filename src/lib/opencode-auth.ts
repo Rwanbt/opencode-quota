@@ -11,7 +11,7 @@
 
 import type { Plugin } from "@opencode/plugin";
 
-import { safeDetail } from "../core/redact.js";
+import { safeErrorText } from "../core/redact.js";
 import { getOpenCodeDbPath } from "./opencode-db-path.js";
 
 import type { AuthData } from "./types.js";
@@ -224,19 +224,6 @@ export function getCredentialSourceDiagnostics(): CredentialSourceDiagnostics {
   };
 }
 
-/**
- * Error text that is safe to show and to store: one sanitized line with
- * JWT-shaped and long opaque strings (tokens) replaced, at most 120 characters.
- */
-export function scrubCredentialErrorText(message: string): string {
-  // Redact before cutting to length, so a token cut at the limit cannot leave a readable part.
-  return safeDetail(message, 120);
-}
-
-function credentialErrorDetail(error: unknown): string {
-  return scrubCredentialErrorText(error instanceof Error ? error.message : String(error));
-}
-
 type ConnectionSlot =
   | { integrationId: string; connection: CredentialConnection }
   | { integrationId: string; activeFailure: CredentialFailure };
@@ -257,7 +244,7 @@ async function activeConnectionSlots(
     const activeFailure: CredentialFailure = {
       at: Date.now(),
       category: "active_failed",
-      detail: credentialErrorDetail(error),
+      detail: safeErrorText(error),
       integrationId,
       label: "",
     };
@@ -301,7 +288,7 @@ async function listedConnectionSlots(
     lastListError = undefined;
   } catch (error) {
     // One malformed login anywhere makes list() fail; each id's active login still reads.
-    lastListError = { at: Date.now(), detail: credentialErrorDetail(error) };
+    lastListError = { at: Date.now(), detail: safeErrorText(error) };
   }
 
   const slots: ConnectionSlot[] = [];
@@ -366,7 +353,7 @@ function resolveCredentialConnection(
     } catch (error) {
       return recordResolveFailure(connection, {
         category: "refresh_failed",
-        detail: credentialErrorDetail(error),
+        detail: safeErrorText(error),
         integrationId,
       });
     }

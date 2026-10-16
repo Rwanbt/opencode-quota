@@ -5,12 +5,16 @@
  * length, saved or shown. `publicDetail` also hides the home dir, email addresses and account
  * ids, for the error and debug details the store keeps. /quota_status shows only structured
  * values and passes them through `publicDetail` as a second filter.
+ *
+ * The agent tools use the same key shapes: `looksSecret` refuses a definition or setting that
+ * holds one, and `secretValuesRedactor` cleans their answers.
  */
 import { homedir } from "node:os";
 import { sanitizeDisplayText, sanitizeSingleLineDisplayText } from "../lib/display-sanitize.js";
 import { replaceHomeDirWithTilde } from "../lib/home-dir-display.js";
+import { isRecord } from "../lib/json-guards.js";
 
-const REDACTED = "[redacted]";
+export const REDACTED = "[redacted]";
 const PRIVATE_ID = "[id]";
 const EMAIL_ADDRESS = "[email]";
 
@@ -108,26 +112,48 @@ function redactNamedValues(text: string): string {
   return result + text.slice(copied);
 }
 
-/** Checked in order, before named values; each replaces what it matches. */
-const SECRET_PATTERNS: ReadonlyArray<readonly [RegExp, string]> = [
-  // Cookie, Set-Cookie and Authorization headers: the whole value, to the end of the line or
-  // the next " | " joiner. The JSON forms ("cookie": "a=1") are named values.
-  [
-    /\b((?:set-)?cookie|(?:proxy-)?authorization)(\s*[:=]\s*)(?:(?! \| )[^\r\n])*/giu,
-    `$1$2${REDACTED}`,
-  ],
-  // Bearer abc, Basic abc (outside a header too)
-  [/\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]{6,}/giu, `$1 ${REDACTED}`],
+/**
+ * Cookie, Set-Cookie and Authorization headers: the whole value, to the end of the line or the
+ * next " | " joiner. The JSON forms ("cookie": "a=1") are named values.
+ */
+const HEADER_VALUE =
+  /\b((?:set-)?cookie|(?:proxy-)?authorization)(\s*[:=]\s*)(?:(?! \| )[^\r\n])*/giu;
+
+/**
+ * Each credential after an auth scheme, outside a header too ("Bearer abc", "Basic abc"), as
+ * "[redacted]"; the scheme word stays. A plain word after "Basic" is a name ("Basic requests").
+ */
+function hideSchemeCredentials(text: string): string {
+  const credential = /\b(bearer|basic)\s+([A-Za-z0-9._~+/=-]{6,})/giu;
+  return text.replace(credential, (whole, scheme: string, value: string) =>
+    scheme.toLowerCase() === "basic" && /^[A-Z]?[a-z]+$/u.test(value)
+      ? whole
+      : `${scheme} ${REDACTED}`,
+  );
+}
+
+/** Known key formats, found anywhere in a text; each is replaced whole. */
+const KEY_FORMATS: readonly RegExp[] = [
+  /\b(?:sk|pk|rk)[-_][A-Za-z0-9_-]{8,}/gu, // OpenAI, Anthropic, OpenRouter, Stripe
+  /\b(?:gh[pousr]_|github_pat_)[A-Za-z0-9_]{10,}/gu, // GitHub
+  /\bAIza[0-9A-Za-z_-]{20,}/gu, // Google API key
+  /\bxai-[A-Za-z0-9]{10,}/gu, // xAI
+  /eyJ[A-Za-z0-9_-]{8,}(?:\.[A-Za-z0-9_-]+)*/gu, // JWT
+  /\bxox[abprs]-[A-Za-z0-9-]{10,}/gu, // Slack
+  /\bAKIA[0-9A-Z]{16}\b/gu, // AWS
+  /\bya29\.[0-9A-Za-z_-]{20,}/gu, // Google OAuth access token
+  /\b1\/\/[0-9A-Za-z_-]{20,}/gu, // Google OAuth refresh token
+  // A PEM private key, to its end line or, cut short, to the end of the text.
+  /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/gu,
 ];
 
-/** Well-known key shapes and JWT-shaped strings; after named values. */
-const SHAPE_PATTERNS: readonly RegExp[] = [
-  /\b(?:sk|pk|rk)[-_][A-Za-z0-9_-]{8,}/gu,
-  /\b(?:gh[pousr]_|github_pat_)[A-Za-z0-9_]{10,}/gu,
-  /\bAIza[0-9A-Za-z_-]{20,}/gu,
-  /\bxai-[A-Za-z0-9]{10,}/gu,
-  /eyJ[A-Za-z0-9_-]{10,}(?:\.[A-Za-z0-9_-]+)*/gu,
-];
+/** `text` with every known key shape replaced: credentials after an auth scheme, key formats. */
+function hideKeyShapes(text: string): string {
+  return KEY_FORMATS.reduce(
+    (result, pattern) => result.replace(pattern, REDACTED),
+    hideSchemeCredentials(text),
+  );
+}
 
 /**
  * One part of a name or model id: a word, also capitalised, camel-cased or with a number after
@@ -147,15 +173,72 @@ function hideOpaqueRun(run: string): string {
   return wordsOnly ? run : REDACTED;
 }
 
-/** `text` with credential-looking parts replaced by "[redacted]". */
+/**
+ * `text` with credential-looking parts replaced by "[redacted]": headers and auth schemes first
+ * (a credential goes whole, with any `name=value` in it), then named values, then key shapes and
+ * long opaque runs. Hiding auth schemes again finds nothing new: a hidden value starts with "[".
+ */
 function redactSecrets(text: string): string {
-  let result = text;
-  for (const [pattern, replacement] of SECRET_PATTERNS) {
-    result = result.replace(pattern, replacement);
+  const headersHidden = hideSchemeCredentials(text.replace(HEADER_VALUE, `$1$2${REDACTED}`));
+  const shapesHidden = hideKeyShapes(redactNamedValues(headersHidden));
+  return shapesHidden.replace(/[A-Za-z0-9_-]{32,}/gu, hideOpaqueRun);
+}
+
+/**
+ * True when a run of 20+ letters and digits switches between letters, digits and case so often
+ * that its pieces average under 3 characters: a random token, not words. A camelCase name such
+ * as "AvailableBalanceUSD2024Total" splits into Available|Balance|USD|2024|Total and passes; a
+ * hex or base62 key splits into pieces of 1-2 characters.
+ */
+function looksRandom(run: string): boolean {
+  if (!/[0-9]/u.test(run) || !/[A-Za-z]/u.test(run)) return false;
+  const pieces = run.match(/[0-9]+|[A-Z]+(?![a-z])|[A-Z]?[a-z]+/gu) ?? [];
+  return run.length / pieces.length < 3;
+}
+
+/**
+ * True when a text holds something shaped like a key: a known key shape, a random run of
+ * letters and digits, or (outside a name: an id, model name, URL or JSON path) any run of 24+
+ * of them. Any other character ends a run, so model names such as
+ * "Qwen3-Coder-480B-A35B-Instruct-2507", UUIDs and version strings pass.
+ */
+export function looksSecret(text: string, { isName }: { isName: boolean }): boolean {
+  if (hideKeyShapes(text) !== text) return true;
+  return (text.match(/[A-Za-z0-9]{20,}/gu) ?? []).some(
+    (run) => looksRandom(run) || (!isName && run.length >= 24),
+  );
+}
+
+/** Secrets this long are replaced anywhere; shorter ones only as a whole token, so no word is cut. */
+const LONG_SECRET_LENGTH = 8;
+
+/**
+ * Replaces, in one text, each of `secrets` and every known key shape. A secret under
+ * LONG_SECRET_LENGTH counts only as a whole token (letters, digits, `_` and `-`).
+ */
+export function secretValuesRedactor(secrets: readonly string[]): (text: string) => string {
+  // Longest first, so a secret that contains another is replaced whole.
+  const patterns = [...new Set(secrets)]
+    .sort((a, b) => b.length - a.length)
+    .map((secret) => {
+      const escaped = secret.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
+      const wholeToken = secret.length < LONG_SECRET_LENGTH;
+      return new RegExp(wholeToken ? `(?<![\\w-])${escaped}(?![\\w-])` : escaped, "g");
+    });
+  return (text) =>
+    hideKeyShapes(patterns.reduce((result, pattern) => result.replace(pattern, REDACTED), text));
+}
+
+/** A copy of a JSON value with `redact` applied to every string in it, property names too. */
+export function redactJson(value: unknown, redact: (text: string) => string): unknown {
+  if (typeof value === "string") return redact(value);
+  if (Array.isArray(value)) return value.map((item) => redactJson(item, redact));
+  if (isRecord(value)) {
+    return Object.fromEntries(
+      Object.entries(value).map(([name, item]) => [redact(name), redactJson(item, redact)]),
+    );
   }
-  result = redactNamedValues(result);
-  for (const pattern of SHAPE_PATTERNS) result = result.replace(pattern, REDACTED);
-  return result.replace(/[A-Za-z0-9_-]{32,}/gu, hideOpaqueRun);
+  return value;
 }
 
 /**
@@ -173,6 +256,11 @@ function visibleText(text: string): string {
 /** One safe line: control characters removed, credentials redacted, then cut to `maxLength`. */
 export function safeDetail(text: string, maxLength: number): string {
   return redactSecrets(sanitizeSingleLineDisplayText(visibleText(text))).slice(0, maxLength);
+}
+
+/** An error's message (or any thrown value) as one safe line of at most 120 characters. */
+export function safeErrorText(error: unknown): string {
+  return safeDetail(error instanceof Error ? error.message : String(error), 120);
 }
 
 /**
