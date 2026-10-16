@@ -40,8 +40,9 @@ const ciWorkflow = parse(await text("../.github/workflows/ci.yml")) as Workflow;
 const publishWorkflow = parse(await text("../.github/workflows/publish-npm.yml")) as Workflow;
 const packedSmoke = await text("../scripts/smoke-packed-package.mjs");
 
+// The build's `tsc` is the type check, and `pnpm test` runs the cross-surface test.
 const VERIFY_COMMAND =
-  "pnpm run check && pnpm run verify:typescript-version && pnpm run verify:v4-history && pnpm run typecheck && pnpm run build && pnpm test && pnpm run test:four-surfaces && pnpm run verify:package-contents";
+  "pnpm run check && pnpm run verify:typescript-version && pnpm run verify:v4-history && pnpm run build && pnpm test && pnpm run verify:package-contents";
 
 function namedStep(job: WorkflowJob, name: string): WorkflowStep {
   const step = job.steps?.find((candidate) => candidate.name === name);
@@ -109,7 +110,7 @@ describe("package manifest compatibility", () => {
       ["devDependencies", "prettier", undefined],
       ["devDependencies", "eslint", undefined],
       ["scripts", "format", "biome format --write ."],
-      ["scripts", "format:check", "biome format ."],
+      ["scripts", "format:check", undefined],
       ["scripts", "lint", "biome lint ."],
       ["scripts", "check", "biome check ."],
       ["scripts", "verify:v4-formatting", undefined],
@@ -129,6 +130,10 @@ describe("package manifest compatibility", () => {
       // One ordered repository gate, and a release-only alias on top of it.
       ["scripts", "verify", VERIFY_COMMAND],
       ["scripts", "release:check", "pnpm verify && pnpm run verify:release-version"],
+      ["scripts", "build:check", undefined],
+      ["scripts", "test:four-surfaces", undefined],
+      // `pnpm run upstream:prepare-review` still runs the standalone type check.
+      ["scripts", "typecheck", "tsc --noEmit"],
       ["main", null, "./dist/index.js"],
       ["bin", null, { "opencode-quota": "./dist/bin/opencode-quota.js" }],
       ["oc-plugin", null, undefined],
