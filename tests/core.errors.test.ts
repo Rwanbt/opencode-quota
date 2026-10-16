@@ -80,7 +80,6 @@ const REAL_MESSAGES: Record<QuotaErrorCode, readonly string[]> = {
   ],
   no_data: [
     "No quota data",
-    "No weekly quota data",
     "No Google AGY quota data available",
     "Ollama Cloud returned no limits or balance",
     "Quota summary API unavailable",

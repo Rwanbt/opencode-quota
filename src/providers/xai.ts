@@ -251,7 +251,7 @@ async function queryXaiLogin(
         }
 
         const row = parseCreditsRow(await response.json());
-        return row ? { rows: [row], errors: [] } : failedLogin("No weekly quota data");
+        return row ? { rows: [row], errors: [] } : failedLogin("No quota data");
       },
     });
     if (credits.errors.length > 0) return credits;

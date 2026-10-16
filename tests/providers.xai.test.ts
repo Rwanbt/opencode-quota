@@ -177,7 +177,7 @@ describe("xAI provider", () => {
       { access: "token-1" },
       { config: { currentPeriod: {} } },
       "no_data",
-      "No weekly quota data",
+      "No quota data",
     ],
     [
       "a usage percent that is not a number",
