@@ -657,10 +657,14 @@ describe("v6 surfaces on the quota snapshot", () => {
     await tui.command("limits").run();
     const quotaWindow = () => textLines(tui.render("session.composer.top", { sessionID: "ses_1" }));
     await vi.waitFor(() => expect(quotaWindow()).toContain("   Provider error 503"));
+    // A release sets package.json to its tag first, such as 6.0.0-beta.1.
+    const { version } = JSON.parse(
+      await readFile(new URL("../package.json", import.meta.url), "utf8"),
+    ) as { version: string };
     expect(quotaWindow()).toEqual(
       expect.arrayContaining([
         // The title and the plugin's version from package.json.
-        expect.stringMatching(/^OpenCode Quota v\d+\.\d+\.\d+$/u),
+        `OpenCode Quota v${version}`,
         "Usage",
         "Limits",
         "Plugin",
