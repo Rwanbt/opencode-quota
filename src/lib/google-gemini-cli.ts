@@ -1,24 +1,7 @@
-import {
-  type GoogleCompanionPresence,
-  geminiCliCompanion,
-} from "./google-companion-credentials.js";
-import {
-  type GoogleAccount,
-  type GoogleAuthPresence,
-  type GoogleQuotaFlavor,
-  hasGoogleQuotaRuntimeAvailable,
-  inspectGoogleAuthPresence,
-  queryGoogleQuota,
-  resolveGoogleAuthIdentity,
-} from "./google-oauth-quota.js";
+import { geminiCliCompanion } from "./google-companion-credentials.js";
+import type { GoogleAccount, GoogleQuotaFlavor } from "./google-oauth-quota.js";
 import { nonEmptyString } from "./json-guards.js";
-import type { ResolvedAuthIdentity } from "./resolved-auth-identity.js";
-import type {
-  AuthData,
-  GeminiCliAuthSourceKey,
-  GeminiCliQuotaBucket,
-  GeminiCliResult,
-} from "./types.js";
+import type { GeminiCliAuthSourceKey, GeminiCliQuotaBucket } from "./types.js";
 
 export const GEMINI_CLI_AUTH_KEYS = [
   "google-gemini-cli",
@@ -30,7 +13,7 @@ export const GEMINI_CLI_AUTH_KEYS = [
 
 type GeminiCliAccount = GoogleAccount<GeminiCliAuthSourceKey>;
 
-type RetrieveUserQuotaResponse = {
+export type RetrieveUserQuotaResponse = {
   buckets?: {
     remainingAmount?: string;
     remainingFraction?: number;
@@ -40,7 +23,8 @@ type RetrieveUserQuotaResponse = {
   }[];
 };
 
-const GEMINI_CLI: GoogleQuotaFlavor<
+/** The Google OAuth quota flow of Gemini CLI. */
+export const GEMINI_CLI_FLAVOR: GoogleQuotaFlavor<
   GeminiCliAuthSourceKey,
   RetrieveUserQuotaResponse,
   GeminiCliQuotaBucket
@@ -138,28 +122,4 @@ function toGeminiCliBuckets(
         };
       }),
   );
-}
-
-export function inspectGeminiCliAuthPresence(): Promise<
-  GoogleAuthPresence<GeminiCliAuthSourceKey>
-> {
-  return inspectGoogleAuthPresence(GEMINI_CLI);
-}
-
-export function inspectGeminiCliCompanionPresence(): Promise<GoogleCompanionPresence> {
-  return geminiCliCompanion.inspect();
-}
-
-export function hasGeminiCliQuotaRuntimeAvailable(): Promise<boolean> {
-  return hasGoogleQuotaRuntimeAvailable(GEMINI_CLI);
-}
-
-export function resolveGeminiCliAuthIdentity(): Promise<ResolvedAuthIdentity | null> {
-  return resolveGoogleAuthIdentity(GEMINI_CLI);
-}
-
-export function queryGeminiCliQuota(
-  options: { requestTimeoutMs?: number; authData?: AuthData } = {},
-): Promise<GeminiCliResult> {
-  return queryGoogleQuota(GEMINI_CLI, options);
 }

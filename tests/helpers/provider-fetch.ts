@@ -48,6 +48,8 @@ export type ProviderWorld = {
   storeLogins(rows: readonly CredentialDatabaseRow[]): void;
   /** Writes a file below the config folder. */
   writeConfigFile(relativePath: string, content: string): void;
+  /** Writes a file below OpenCode's cache folder (its plugin packages); returns its path. */
+  writeCacheFile(relativePath: string, content: string): string;
 };
 
 /** Temp OpenCode folders and a bound credential reader for each test; see the file header. */
@@ -71,6 +73,12 @@ export function useProviderWorld(): ProviderWorld {
       const path = join(world.configDir, relativePath);
       mkdirSync(dirname(path), { recursive: true });
       writeFileSync(path, content);
+    },
+    writeCacheFile(relativePath, content) {
+      const path = join(root, "cache", "opencode", relativePath);
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, content);
+      return path;
     },
   };
 

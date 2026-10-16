@@ -1,23 +1,12 @@
 import crypto from "node:crypto";
-import { agyCompanion, type GoogleCompanionPresence } from "./google-companion-credentials.js";
-import {
-  type GoogleAccount,
-  type GoogleAuthPresence,
-  type GoogleQuotaFlavor,
-  hasGoogleQuotaRuntimeAvailable,
-  inspectGoogleAuthPresence,
-  queryGoogleQuota,
-  resolveGoogleAuthIdentity,
-} from "./google-oauth-quota.js";
+import { agyCompanion } from "./google-companion-credentials.js";
+import type { GoogleAccount, GoogleQuotaFlavor } from "./google-oauth-quota.js";
 import { nonEmptyString } from "./json-guards.js";
-import type { ResolvedAuthIdentity } from "./resolved-auth-identity.js";
 import type {
-  AuthData,
   GoogleAgyAuthSourceKey,
   GoogleAgyQuotaBucket,
   GoogleAgyQuotaSummaryBucket,
   GoogleAgyQuotaSummaryResponse,
-  GoogleAgyResult,
 } from "./types.js";
 
 export const AGY_AUTH_KEYS = [
@@ -28,7 +17,8 @@ export const AGY_AUTH_KEYS = [
 
 type AgyAccount = GoogleAccount<GoogleAgyAuthSourceKey>;
 
-const AGY: GoogleQuotaFlavor<
+/** The Google OAuth quota flow of Google AGY. */
+export const AGY_FLAVOR: GoogleQuotaFlavor<
   GoogleAgyAuthSourceKey,
   GoogleAgyQuotaSummaryResponse,
   GoogleAgyQuotaBucket
@@ -160,26 +150,4 @@ function toAgyBuckets(
   // A summary without one usable row fails this account.
   if (deduplicated.size === 0) throw new Error("Quota summary API unavailable");
   return [...deduplicated.values()].sort(compareAgyBuckets);
-}
-
-export function resolveGoogleAgyAuthIdentity(): Promise<ResolvedAuthIdentity | null> {
-  return resolveGoogleAuthIdentity(AGY);
-}
-
-export function inspectAgyAuthPresence(): Promise<GoogleAuthPresence<GoogleAgyAuthSourceKey>> {
-  return inspectGoogleAuthPresence(AGY);
-}
-
-export function inspectAgyCompanionPresence(): Promise<GoogleCompanionPresence> {
-  return agyCompanion.inspect();
-}
-
-export function hasAgyQuotaRuntimeAvailable(): Promise<boolean> {
-  return hasGoogleQuotaRuntimeAvailable(AGY);
-}
-
-export function queryGoogleAgyQuota(
-  options: { requestTimeoutMs?: number; authData?: AuthData } = {},
-): Promise<GoogleAgyResult> {
-  return queryGoogleQuota(AGY, options);
 }

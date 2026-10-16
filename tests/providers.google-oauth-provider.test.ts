@@ -1,243 +1,368 @@
-// The provider flow shared by Google AGY and Gemini CLI (src/providers/google-oauth-provider.ts).
-import { beforeEach, describe, expect, it, vi } from "vitest";
+// The provider flow shared by Google AGY and Gemini CLI (src/providers/google-oauth-provider.ts),
+// through the real providers with logins in a temp `opencode.db`, a fake companion plugin in
+// OpenCode's package cache, and fake HTTP.
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-const mocks = vi.hoisted(() => ({
-  readCredentialRows: vi.fn(),
-  agy: {
-    query: vi.fn(),
-    hasRuntime: vi.fn(),
-    inspectAuth: vi.fn(),
-    inspectCompanion: vi.fn(),
-  },
-  gemini: {
-    query: vi.fn(),
-    hasRuntime: vi.fn(),
-    inspectAuth: vi.fn(),
-    inspectCompanion: vi.fn(),
-  },
-}));
-
-vi.mock("../src/lib/opencode-auth.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../src/lib/opencode-auth.js")>()),
-  readCredentialRows: mocks.readCredentialRows,
-}));
-vi.mock("../src/lib/google-agy.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../src/lib/google-agy.js")>()),
-  queryGoogleAgyQuota: mocks.agy.query,
-  hasAgyQuotaRuntimeAvailable: mocks.agy.hasRuntime,
-  inspectAgyAuthPresence: mocks.agy.inspectAuth,
-  inspectAgyCompanionPresence: mocks.agy.inspectCompanion,
-}));
-vi.mock("../src/lib/google-gemini-cli.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../src/lib/google-gemini-cli.js")>()),
-  queryGeminiCliQuota: mocks.gemini.query,
-  hasGeminiCliQuotaRuntimeAvailable: mocks.gemini.hasRuntime,
-  inspectGeminiCliAuthPresence: mocks.gemini.inspectAuth,
-  inspectGeminiCliCompanionPresence: mocks.gemini.inspectCompanion,
-}));
-
-import { rowsFromProviderResult } from "../src/core/rows.js";
-import type { ProviderFetchResult } from "../src/providers/contract.js";
+import { agyCompanion, geminiCliCompanion } from "../src/lib/google-companion-credentials.js";
+import {
+  bindCredentialSource,
+  createIntegrationCredentialSource,
+} from "../src/lib/opencode-auth.js";
+import { __resetResolvedAuthIdentityForTests } from "../src/lib/resolved-auth-identity.js";
+import { PROVIDER_CACHE_POLICIES } from "../src/providers/cache-policies.js";
 import { googleAgyProvider } from "../src/providers/google-agy.js";
 import { googleGeminiCliProvider } from "../src/providers/google-gemini-cli.js";
+import type { CredentialDatabaseRow } from "./helpers/credential-database.js";
+import { createFakeIntegration } from "./helpers/fake-integration.js";
+import { fakeHttp, fetchRows, requestHeader, useProviderWorld } from "./helpers/provider-fetch.js";
+
+const world = useProviderWorld();
 
 const PROVIDERS = [
   {
     name: "Google AGY",
     integrationId: "google-agy",
     provider: googleAgyProvider,
-    lib: mocks.agy,
-    bucket: {
-      family: "Gemini Models",
-      window: "weekly",
-      windowLabel: "Weekly",
-      accountIndex: 0,
-      percentRemaining: 70,
+    companion: {
+      resolver: agyCompanion,
+      packageName: "@anthonyhaussman/opencode-agy-auth",
+      constants: "AGY",
     },
+    /** A quota answer with one bucket holding `fields`. */
+    quota: (fields: Record<string, unknown> = {}) => ({
+      groups: [
+        {
+          displayName: "Gemini Models",
+          buckets: [{ window: "WEEKLY", remainingFraction: 0.7, ...fields }],
+        },
+      ],
+    }),
     rowId: "google-agy.gemini.weekly",
   },
   {
     name: "Gemini CLI",
     integrationId: "google-gemini-cli",
     provider: googleGeminiCliProvider,
-    lib: mocks.gemini,
-    bucket: { displayName: "Gemini 2.5", percentRemaining: 70 },
+    companion: {
+      resolver: geminiCliCompanion,
+      packageName: "opencode-gemini-auth",
+      constants: "GEMINI",
+    },
+    quota: (fields: Record<string, unknown> = {}) => ({
+      buckets: [{ modelId: "gemini-2.5", remainingFraction: 0.7, ...fields }],
+    }),
     rowId: "google-gemini-cli.model.2_5",
   },
 ] as const;
 
-async function fetchRows(provider: (typeof PROVIDERS)[number]["provider"], config = {}) {
-  return rowsFromProviderResult(provider.id, await provider.fetch({ client: {}, config } as never));
-}
+type Flavor = (typeof PROVIDERS)[number];
 
 beforeEach(() => {
-  mocks.readCredentialRows.mockResolvedValue([]);
-  for (const lib of [mocks.agy, mocks.gemini]) {
-    lib.inspectAuth.mockResolvedValue({ state: "missing", accountCount: 0, validAccountCount: 0 });
-    lib.inspectCompanion.mockResolvedValue({ state: "missing", error: "companion unavailable" });
-  }
+  agyCompanion.clearCacheForTests();
+  geminiCliCompanion.clearCacheForTests();
 });
 
-describe.each(PROVIDERS)("$name provider", ({ name, integrationId, provider, lib, ...flavor }) => {
-  it("passes the request timeout only when the user configured it", async () => {
-    lib.query.mockResolvedValue(null);
+afterEach(() => {
+  __resetResolvedAuthIdentityForTests();
+});
 
-    await provider.fetch({ client: {}, config: { requestTimeoutMs: 5000 } } as never);
-    expect(lib.query).toHaveBeenLastCalledWith({ requestTimeoutMs: undefined });
+/**
+ * Installs the flavor's companion plugin in OpenCode's package cache, with its OAuth client or,
+ * when `compatible` is false, without it. Returns the constants file.
+ */
+function installCompanion(flavor: Flavor, compatible = true): string {
+  const { packageName, constants } = flavor.companion;
+  return world.writeCacheFile(
+    `node_modules/${packageName}/src/constants.ts`,
+    compatible
+      ? `export const ${constants}_CLIENT_ID = "client-id";\nexport const ${constants}_CLIENT_SECRET = "client-secret";\n`
+      : "export const UNRELATED = 1;\n",
+  );
+}
 
-    await provider.fetch({
-      client: {},
-      config: { requestTimeoutMs: 12000, requestTimeoutMsConfigured: true },
-    } as never);
-    expect(lib.query).toHaveBeenLastCalledWith({ requestTimeoutMs: 12000 });
+/** A stored login whose access token is still valid, so no token refresh is needed. */
+function googleLogin(
+  flavor: Flavor,
+  id: string,
+  fields: { label?: string; updated?: number; refresh?: string } = {},
+): CredentialDatabaseRow {
+  return {
+    id,
+    integrationId: flavor.integrationId,
+    label: fields.label ?? id,
+    active: null,
+    updated: fields.updated ?? 1,
+    value: {
+      type: "oauth",
+      refresh: fields.refresh ?? `refresh-${id}|project-${id}`,
+      access: `access-${id}`,
+      expires: Date.now() + 3_600_000,
+    },
+  };
+}
+
+function errorDebug(fetched: { debug: Array<{ key: string; value: string }> }): string[] {
+  return fetched.debug.filter((detail) => detail.key === "error").map((detail) => detail.value);
+}
+
+describe.each(PROVIDERS)("$name provider", (flavor) => {
+  const { name, provider } = flavor;
+
+  it.each([
+    ["a login and the companion plugin", true, true, true],
+    ["no login", false, false, true],
+    ["no companion plugin", false, true, false],
+  ])("is available with %s: %s", async (_case, expected, withLogin, withCompanion) => {
+    if (withLogin) world.storeLogins([googleLogin(flavor, "work")]);
+    if (withCompanion) installCompanion(flavor);
+
+    await expect(provider.isAvailable({ client: {} } as never)).resolves.toBe(expected);
   });
 
-  it("is not set up without a login and shows the error when the query fails", async () => {
-    lib.query.mockResolvedValueOnce(null);
+  it("is not set up without a login", async () => {
+    installCompanion(flavor);
+    const http = fakeHttp(() => flavor.quota());
+
     expect(await fetchRows(provider)).toMatchObject({
       rows: [],
       error: { code: "not_configured" },
     });
-
-    lib.query.mockResolvedValueOnce({ success: false, error: `No ${name} quota data available` });
-    const failed = await fetchRows(provider);
-    expect(failed).toMatchObject({ rows: [], error: { code: "no_data" } });
-    expect(failed.debug).toContainEqual({
-      key: "error",
-      value: `${name}: No ${name} quota data available`,
-    });
+    expect(http).not.toHaveBeenCalled();
   });
 
-  it("is available only when the runtime check succeeds", async () => {
-    lib.hasRuntime.mockResolvedValueOnce(true);
-    await expect(provider.isAvailable({ client: {} } as never)).resolves.toBe(true);
-    lib.hasRuntime.mockResolvedValueOnce(false);
-    await expect(provider.isAvailable({ client: {} } as never)).resolves.toBe(false);
-    lib.hasRuntime.mockRejectedValueOnce(new Error("broken"));
-    await expect(provider.isAvailable({ client: {} } as never)).resolves.toBe(false);
-  });
-
-  it("reports auth and companion state in status details", async () => {
-    lib.query.mockResolvedValueOnce(null);
-    lib.inspectAuth.mockResolvedValueOnce({
-      state: "invalid",
-      sourceKey: integrationId,
-      accountCount: 1,
-      validAccountCount: 0,
-      error: "missing project id",
-    });
-    lib.inspectCompanion.mockResolvedValueOnce({
-      state: "invalid",
-      resolvedPath: "/plugin/constants.ts",
-      error: "incompatible",
-    });
-
-    const { debug } = await fetchRows(provider);
-    expect(debug).toEqual([
-      { key: "auth_state", value: "invalid" },
-      { key: "auth_source", value: integrationId },
-      { key: "account_count", value: "1" },
-      { key: "valid_account_count", value: "0" },
-      { key: "companion_package_state", value: "invalid" },
-      { key: "companion_package_path", value: "/plugin/constants.ts" },
-      { key: "auth_error", value: "missing project id" },
-      { key: "companion_error", value: "incompatible" },
+  it("queries every login without deduping duplicate aliases", async () => {
+    installCompanion(flavor);
+    world.storeLogins([
+      googleLogin(flavor, "one", { label: "Work", updated: 2 }),
+      googleLogin(flavor, "two", { label: "Work", updated: 1 }),
     ]);
-  });
-
-  it("queries every DB login without deduping duplicate aliases", async () => {
-    mocks.readCredentialRows.mockResolvedValueOnce([
-      {
-        id: "active-id",
-        integrationId,
-        label: "Work",
-        active: true,
-        value: { type: "oauth", refresh: "one|project" },
-      },
-      {
-        id: "other-id",
-        integrationId,
-        label: "Work",
-        active: false,
-        value: { type: "oauth", refresh: "two|project" },
-      },
-    ]);
-    lib.query.mockResolvedValue({ success: true, buckets: [flavor.bucket] });
+    const http = fakeHttp(() => flavor.quota());
 
     const fetched = await fetchRows(provider);
 
-    expect(lib.query).toHaveBeenCalledTimes(2);
-    expect(lib.query).toHaveBeenCalledWith({
-      requestTimeoutMs: undefined,
-      authData: { [integrationId]: { type: "oauth", refresh: "two|project" } },
-    });
+    expect(http.mock.calls.map(([, init]) => requestHeader(init, "Authorization")).sort()).toEqual([
+      "Bearer access-one",
+      "Bearer access-two",
+    ]);
     expect(fetched.rows.map((row) => [row.id, row.account, row.percentRemaining])).toEqual([
       [flavor.rowId, "Work", 70],
       [flavor.rowId, "Work 2", 70],
     ]);
-    expect(fetched.rowLogins).toEqual(["active-id", "other-id"]);
+    expect(fetched.rowLogins).toEqual(["one", "two"]);
   });
-});
 
-describe("Google AGY database login", () => {
-  it("gives each model family and window of one login its own row id and label", async () => {
-    mocks.readCredentialRows.mockResolvedValueOnce([
-      {
-        id: "work-id",
-        integrationId: "google-agy",
-        label: "Work",
-        active: true,
-        value: { type: "oauth", refresh: "one|project" },
-      },
-    ]);
-    const bucket = { accountIndex: 0, percentRemaining: 70 };
-    mocks.agy.query.mockResolvedValueOnce({
-      success: true,
-      buckets: [
-        { ...bucket, family: "Gemini Models", window: "weekly", windowLabel: "Weekly" },
-        { ...bucket, family: "Gemini Models", window: "five_hour", windowLabel: "5h" },
-        { ...bucket, family: "Claude and GPT models", window: "weekly", windowLabel: "Weekly" },
-        { ...bucket, family: "Claude and GPT models", window: "five_hour", windowLabel: "5h" },
-      ],
-    });
-
-    const fetched = await fetchRows(googleAgyProvider);
-
-    expect(fetched.rows.map((row) => [row.id, row.label, row.account])).toEqual([
-      ["google-agy.gemini.weekly", "Gemini Weekly", "Work"],
-      ["google-agy.gemini.five_hour", "Gemini 5h", "Work"],
-      ["google-agy.claude_gpt.weekly", "Claude/GPT Weekly", "Work"],
-      ["google-agy.claude_gpt.five_hour", "Claude/GPT 5h", "Work"],
-    ]);
-    expect(fetched.rowLogins).toEqual(["work-id", "work-id", "work-id", "work-id"]);
-  });
-});
-
-describe.each(PROVIDERS)("$name account labels", ({ provider, lib, bucket }) => {
-  it.each([
-    [
-      "short hints without the domain",
-      ["alice@example.com", "bo@example.com", "local-only"],
-      ["ali…", "bo…", "loc…"],
-    ],
-    [
-      "extended or numbered hints where they would collide",
-      ["alice@work.com", "alicia@example.com", "alice@personal.com"],
-      ["alice… 1", "alici…", "alice… 2"],
-    ],
-  ])("names accounts with %s", async (_name, emails, accounts) => {
-    lib.query.mockResolvedValueOnce({
-      success: true,
-      buckets: emails.map((accountEmail, accountIndex) => ({
-        ...bucket,
-        accountEmail,
-        accountIndex,
-      })),
-    });
+  it("shows a failed quota request as the login's error", async () => {
+    installCompanion(flavor);
+    world.storeLogins([googleLogin(flavor, "work")]);
+    fakeHttp(() => new Response("{}", { status: 500 }));
 
     const fetched = await fetchRows(provider);
 
-    expect(fetched.rows.map((row) => row.account)).toEqual(accounts);
+    expect(fetched.rows).toEqual([]);
+    expect(errorDebug(fetched)).toEqual([`[${name} work]: ${name} quota API error: 500`]);
+  });
+
+  it("passes the request timeout only when the user configured it", async () => {
+    installCompanion(flavor);
+    world.storeLogins([googleLogin(flavor, "work")]);
+    fakeHttp(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      return flavor.quota();
+    });
+
+    const configured = await fetchRows(provider, {
+      requestTimeoutMs: 20,
+      requestTimeoutMsConfigured: true,
+    });
+    expect(errorDebug(configured)).toEqual([`[${name} work]: API timeout`]);
+
+    // Not configured: Google's own, longer timeout applies.
+    const unconfigured = await fetchRows(provider, { requestTimeoutMs: 20 });
+    expect(unconfigured.rows.map((row) => row.id)).toEqual([flavor.rowId]);
+  });
+
+  it("reports auth and companion state in status details", async () => {
+    const companionPath = installCompanion(flavor, false);
+    world.storeLogins([googleLogin(flavor, "work", { refresh: "refresh-token" })]);
+
+    const { debug } = await fetchRows(provider);
+
+    expect(debug).toEqual([
+      { key: "auth_state", value: "invalid" },
+      { key: "auth_source", value: flavor.integrationId },
+      { key: "account_count", value: "1" },
+      { key: "valid_account_count", value: "0" },
+      { key: "companion_package_state", value: "invalid" },
+      { key: "companion_package_path", value: companionPath },
+      { key: "auth_error", value: `${name} OAuth auth is missing a refresh token or project id` },
+      {
+        key: "companion_error",
+        value: `Installed ${flavor.companion.packageName} package is incompatible`,
+      },
+    ]);
+  });
+
+  it("keeps the remembered rows apart per companion client and login list", async () => {
+    const policy = PROVIDER_CACHE_POLICIES[provider.id as Flavor["integrationId"]];
+    if (policy.kind !== "resolved-auth") throw new Error("expected a resolved-auth policy");
+    const identity = () => policy.resolveIdentity({ config: {} } as never, {} as never);
+    world.storeLogins([googleLogin(flavor, "work")]);
+
+    // Without the companion's OAuth client the rows are not remembered.
+    await expect(identity()).resolves.toBeNull();
+
+    installCompanion(flavor);
+    flavor.companion.resolver.clearCacheForTests();
+    const one = await identity();
+    expect(one).toEqual(expect.any(String));
+    await expect(identity()).resolves.toBe(one);
+
+    world.storeLogins([googleLogin(flavor, "work"), googleLogin(flavor, "home")]);
+    await expect(identity()).resolves.not.toBe(one);
+  });
+});
+
+describe("Google AGY rows", () => {
+  it.each([
+    [
+      "each model family and window",
+      {
+        groups: [
+          {
+            displayName: "Gemini Models",
+            buckets: [
+              { window: "FIVE_HOUR", remainingFraction: 0.25 },
+              { window: "WEEKLY", remainingFraction: 0.58, resetTime: "2026-06-22T00:00:00Z" },
+            ],
+          },
+          {
+            displayName: "Claude and GPT models",
+            buckets: [
+              { window: "FIVE_HOUR", remainingFraction: 0.9 },
+              { window: "WEEKLY", remainingFraction: 1 },
+            ],
+          },
+        ],
+      },
+      [
+        ["google-agy.gemini.weekly", "Gemini Weekly", "week", 58, "2026-06-22T00:00:00.000Z"],
+        ["google-agy.gemini.five_hour", "Gemini 5h", "five_hour", 25, undefined],
+        ["google-agy.claude_gpt.weekly", "Claude/GPT Weekly", "week", 100, undefined],
+        ["google-agy.claude_gpt.five_hour", "Claude/GPT 5h", "five_hour", 90, undefined],
+      ],
+    ],
+    [
+      "a summary without groups",
+      { buckets: [{ window: "WEEKLY", remainingFraction: 0.58 }] },
+      [["google-agy.quota_summary.weekly", "Quota Summary Weekly", "week", 58, undefined]],
+    ],
+  ])("gives %s of one login its own row", async (_case, reply, rows) => {
+    installCompanion(PROVIDERS[0]);
+    world.storeLogins([googleLogin(PROVIDERS[0], "work")]);
+    fakeHttp(() => reply);
+
+    const fetched = await fetchRows(googleAgyProvider);
+
+    expect(
+      fetched.rows.map((row) => [
+        row.id,
+        row.label,
+        row.window,
+        row.percentRemaining,
+        row.resetsAt,
+      ]),
+    ).toEqual(rows);
+    expect(new Set(fetched.rows.map((row) => row.account))).toEqual(new Set(["work"]));
+  });
+
+  it.each([
+    ["google-agy/gpt-4", true],
+    ["opencode-agy-auth/gpt-4", true],
+    ["google-agy-auth/gpt-4", true],
+    ["google/claude-opus", false],
+  ])("matches the Google AGY runtime ids: %s → %s", (model, expected) => {
+    expect(googleAgyProvider.matchesCurrentModel?.(model)).toBe(expected);
+  });
+});
+
+describe("Gemini CLI rows", () => {
+  it("keys the quality tiers and other models", async () => {
+    installCompanion(PROVIDERS[1]);
+    world.storeLogins([googleLogin(PROVIDERS[1], "work")]);
+    fakeHttp(() => ({
+      buckets: [
+        { modelId: "gemini-2.5-pro", remainingFraction: 0.2, resetTime: "2026-01-01T12:00:00Z" },
+        { modelId: "gemini-2.5-flash", remainingFraction: 0.5 },
+        { modelId: "gemini-2.5-flash-lite", remainingFraction: 0.1 },
+        { modelId: "gemini-3-daily", remainingFraction: 0.3 },
+      ],
+    }));
+
+    const fetched = await fetchRows(googleGeminiCliProvider);
+
+    expect(fetched.rows.map((row) => [row.id, row.label, row.window ?? null])).toEqual([
+      ["google-gemini-cli.pro", "Pro", null],
+      ["google-gemini-cli.flash", "Flash", null],
+      ["google-gemini-cli.flash_lite", "Flash Lite", null],
+      ["google-gemini-cli.model.3_daily", "3 Daily", "day"],
+    ]);
+    expect(fetched.rows[0]?.resetsAt).toBe("2026-01-01T12:00:00Z");
+  });
+
+  it("shows a login OpenCode could not return as an error, next to working ones", async () => {
+    installCompanion(PROVIDERS[1]);
+    const integration = createFakeIntegration([
+      {
+        integrationId: "google",
+        id: "failed-id",
+        label: "work@example.com",
+        registered: true,
+        method: "oauth",
+        value: { type: "oauth" },
+        resolveError: "HTTP 400",
+      },
+      {
+        integrationId: "google-gemini-cli",
+        id: "working-id",
+        label: "home@example.com",
+        registered: true,
+        method: "oauth",
+        value: {
+          type: "oauth",
+          refresh: "refresh-token|project-id",
+          access: "access-home",
+          expires: Date.now() + 3_600_000,
+        },
+      },
+    ]);
+    const unbind = bindCredentialSource(createIntegrationCredentialSource(integration as never));
+    const http = fakeHttp(() => PROVIDERS[1].quota({ modelId: "gemini-2.5-pro" }));
+
+    try {
+      const fetched = await fetchRows(googleGeminiCliProvider);
+
+      // Only the working login is queried.
+      expect(http).toHaveBeenCalledOnce();
+      expect(fetched.rows.map((row) => [row.id, row.account])).toEqual([
+        ["google-gemini-cli.pro", "home@example.com"],
+      ]);
+      expect(fetched.rowLogins).toEqual(["working-id"]);
+      expect(errorDebug(fetched)).toEqual([
+        "[Gemini CLI [email]] (active): Gemini CLI sign-in could not be refreshed: refresh_failed: HTTP 400. Run `opencode auth login google`.",
+      ]);
+    } finally {
+      unbind();
+    }
+  });
+
+  it.each([
+    ["google-gemini-cli/gemini-3-pro", true],
+    ["gemini-cli/gemini-3-flash", true],
+    ["google/gemini-2.5-pro", true],
+    ["google/claude-opus", false],
+    ["google/antigravity-gemini-3-pro", false],
+  ])("matches Gemini CLI current model ids: %s → %s", (model, expected) => {
+    expect(googleGeminiCliProvider.matchesCurrentModel?.(model)).toBe(expected);
   });
 });
 
@@ -270,18 +395,12 @@ describe("google remaining counts", () => {
   ])("%s %j keeps the count", async (name, fields, remaining) => {
     const flavor = PROVIDERS.find((candidate) => candidate.name === name);
     if (!flavor) throw new Error(`no provider ${name}`);
-    flavor.lib.query.mockResolvedValueOnce({
-      success: true,
-      buckets: [{ ...flavor.bucket, ...fields }],
-    });
+    installCompanion(flavor);
+    world.storeLogins([googleLogin(flavor, "work")]);
+    fakeHttp(() => flavor.quota(fields));
 
-    const result = (await flavor.provider.fetch({
-      client: {},
-      config: {},
-    } as never)) as ProviderFetchResult;
+    const fetched = await fetchRows(flavor.provider);
 
-    expect(
-      rowsFromProviderResult(flavor.provider.id, result).rows.map((row) => row.remaining),
-    ).toEqual([remaining]);
+    expect(fetched.rows.map((row) => row.remaining)).toEqual([remaining]);
   });
 });

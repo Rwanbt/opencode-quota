@@ -10,12 +10,10 @@ import {
   queryAnthropicQuota,
   queryAnthropicQuotaWithOAuth,
 } from "../lib/anthropic.js";
-import { resolveAnthropicOAuth } from "../lib/anthropic-auth.js";
+import { readAnthropicLogins } from "../lib/anthropic-auth.js";
 import { sanitizeDisplayText } from "../lib/display-sanitize.js";
 import type { QuotaProvider, QuotaProviderContext } from "../lib/entries.js";
-import { credentialRowAuthEntry, readCredentialRows } from "../lib/opencode-auth.js";
 import { isCanonicalProviderAvailable } from "../lib/provider-availability.js";
-import type { AuthData } from "../lib/types.js";
 import {
   FIVE_HOUR,
   failedAccount,
@@ -100,14 +98,7 @@ export const anthropicProvider: QuotaProvider = {
     };
     let debug;
     let method: ProviderRow["method"] = "local_cli";
-    // A failed login stays in the list so it shows as its own error.
-    const logins = (await readCredentialRows(["anthropic"], { methods: ["oauth"] })).flatMap(
-      (row) => {
-        if (row.integrationId !== "anthropic") return [];
-        const auth = resolveAnthropicOAuth({ anthropic: credentialRowAuthEntry(row) } as AuthData);
-        return auth.state === "configured" || auth.state === "failed" ? [{ row, auth }] : [];
-      },
-    );
+    const logins = await readAnthropicLogins();
     try {
       const diagnostics = await getAnthropicDiagnostics(options);
       const quota = diagnostics.quotaSupported ? diagnostics.quota : undefined;

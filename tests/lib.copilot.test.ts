@@ -3,11 +3,12 @@ import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  copilotLoginsIdentity,
   getCopilotQuotaAuthDiagnostics,
-  hasCopilotQuotaRuntimeAvailable,
   queryCopilotQuota,
-  resolveCopilotAuthIdentity,
+  readCopilotLogins,
 } from "../src/lib/copilot.js";
+import { type CredentialRow, credentialRowAuthData } from "../src/lib/opencode-auth.js";
 import type { CopilotResult } from "../src/lib/types.js";
 
 const mocks = vi.hoisted(() => ({
@@ -17,7 +18,7 @@ const mocks = vi.hoisted(() => ({
       : "/home/test/.config/opencode",
   existsSync: vi.fn((_path: string) => false),
   readFileSync: vi.fn(),
-  readAuthFile: vi.fn(),
+  readCredentialRows: vi.fn(async (): Promise<CredentialRow[]> => []),
   deriveResolvedAuthIdentity: vi.fn(async (_params: unknown) => `rai1_${"c".repeat(43)}`),
 }));
 
@@ -29,8 +30,12 @@ vi.mock("fs", async (importOriginal) => ({
 vi.mock("../src/lib/opencode-runtime-paths.js", () => ({
   getOpencodeRuntimeDirs: () => ({ configDir: mocks.configDir }),
 }));
-vi.mock("../src/lib/opencode-auth.js", () => ({ readAuthFile: mocks.readAuthFile }));
-vi.mock("../src/lib/resolved-auth-identity.js", () => ({
+vi.mock("../src/lib/opencode-auth.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/lib/opencode-auth.js")>()),
+  readCredentialRows: mocks.readCredentialRows,
+}));
+vi.mock("../src/lib/resolved-auth-identity.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/lib/resolved-auth-identity.js")>()),
   deriveResolvedAuthIdentity: mocks.deriveResolvedAuthIdentity,
 }));
 
@@ -41,10 +46,35 @@ function configure(value: Record<string, unknown>): void {
   mocks.readFileSync.mockReturnValue(JSON.stringify(value));
 }
 
+function oauthLogin(value: Record<string, unknown>, resolveError?: string): CredentialRow {
+  return {
+    id: "login-1",
+    integrationId: "github-copilot",
+    label: "",
+    active: true,
+    value,
+    resolveError,
+  };
+}
+
+/** One stored Copilot OAuth login. */
 function signIn(entry: Record<string, unknown> = {}): void {
-  mocks.readAuthFile.mockResolvedValue({
-    "github-copilot": { type: "oauth", access: "oauth-token", ...entry },
+  mocks.readCredentialRows.mockResolvedValue([
+    oauthLogin({ type: "oauth", access: "oauth-token", ...entry }),
+  ]);
+}
+
+/** The Copilot query of the first stored login, as the provider asks it. */
+async function query(options: { requestTimeoutMs?: number } = {}): Promise<CopilotResult> {
+  const [login] = await mocks.readCredentialRows();
+  return queryCopilotQuota({
+    ...options,
+    ...(login ? { authData: credentialRowAuthData(login) } : {}),
   });
+}
+
+async function identity() {
+  return copilotLoginsIdentity(await readCopilotLogins());
 }
 
 type FetchHandler = (url: string, init?: RequestInit) => Response | Promise<Response>;
@@ -158,28 +188,28 @@ beforeEach(() => {
   vi.setSystemTime(new Date("2026-01-15T12:00:00.000Z"));
   mocks.existsSync.mockReset().mockReturnValue(false);
   mocks.readFileSync.mockReset();
-  mocks.readAuthFile.mockReset().mockResolvedValue({});
+  mocks.readCredentialRows.mockReset().mockResolvedValue([]);
   stubFetch();
 });
 
 describe("Copilot credential sources", () => {
   it("returns null without trusted PAT or OpenCode OAuth auth", async () => {
     const fetchMock = stubFetch();
-    await expect(queryCopilotQuota()).resolves.toBeNull();
+    await expect(query()).resolves.toBeNull();
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("derives OAuth cache identity from the selected token and API host", async () => {
+  it("derives OAuth cache identity from the login's token and API host", async () => {
     signIn({ access: "copilot-oauth-secret", enterpriseUrl: "example.ghe.com" });
 
-    const identity = await resolveCopilotAuthIdentity();
+    const resolved = await identity();
 
     expect(mocks.deriveResolvedAuthIdentity).toHaveBeenCalledWith({
       providerId: "copilot:oauth",
       principal: { kind: "credential", value: "copilot-oauth-secret" },
       qualifiers: ["api=https://api.example.ghe.com"],
     });
-    expect(identity).not.toContain("copilot-oauth-secret");
+    expect(resolved).not.toContain("copilot-oauth-secret");
   });
 
   it("scopes PAT cache identity to the resolved billing target and UTC period", async () => {
@@ -190,7 +220,7 @@ describe("Copilot credential sources", () => {
       username: "alice",
     });
 
-    await resolveCopilotAuthIdentity();
+    await identity();
 
     expect(mocks.deriveResolvedAuthIdentity).toHaveBeenCalledWith({
       providerId: "copilot:pat",
@@ -209,19 +239,19 @@ describe("Copilot credential sources", () => {
   });
 
   it("shows a login OpenCode could not read as an error, present but without identity", async () => {
-    mocks.readAuthFile.mockResolvedValue({
-      "github-copilot": { type: "oauth", resolveError: "refresh_failed: HTTP 401" },
-      copilot: { type: "oauth", access: "alias-token" },
-    });
+    mocks.readCredentialRows.mockResolvedValue([
+      oauthLogin({ type: "oauth" }, "refresh_failed: HTTP 401"),
+    ]);
     const fetchMock = stubFetch();
 
-    await expect(queryCopilotQuota()).resolves.toEqual({
+    await expect(query()).resolves.toEqual({
       success: false,
       error:
         "Copilot sign-in could not be read: refresh_failed: HTTP 401. Run `opencode auth login github-copilot`.",
     });
-    await expect(hasCopilotQuotaRuntimeAvailable()).resolves.toBe(true);
-    await expect(resolveCopilotAuthIdentity()).resolves.toBeNull();
+    const logins = await readCopilotLogins();
+    expect(getCopilotQuotaAuthDiagnostics(logins).billingApiAccessLikely).toBe(true);
+    await expect(identity()).resolves.toBeNull();
     expect(mocks.deriveResolvedAuthIdentity).not.toHaveBeenCalled();
     expect(fetchMock).not.toHaveBeenCalled();
   });
@@ -240,12 +270,11 @@ describe("Copilot credential sources", () => {
     signIn({ enterpriseUrl: "oauth.ghe.com" });
     const fetchMock = stubFetch();
 
-    const error = await errorOf(queryCopilotQuota());
+    const error = await errorOf(query());
 
     expect(error).toContain("Invalid copilot-quota-token.json");
     expect(error).not.toContain("pat-secret");
-    await expect(resolveCopilotAuthIdentity()).resolves.toBeNull();
-    expect(mocks.readAuthFile).not.toHaveBeenCalled();
+    await expect(identity()).resolves.toBeNull();
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });
@@ -258,7 +287,7 @@ describe("Copilot OAuth internal user quota", () => {
     signIn(credential);
     const fetchMock = stubFetch(() => json(copilotUser()));
 
-    await expect(queryCopilotQuota()).resolves.toEqual({
+    await expect(query()).resolves.toEqual({
       success: true,
       mode: "user_quota",
       unit: "premium_interactions",
@@ -379,7 +408,7 @@ describe("Copilot OAuth internal user quota", () => {
   ])("%s", async (_name, overrides, expected) => {
     signIn();
     stubFetch(() => json(copilotUser(overrides)));
-    await expect(queryCopilotQuota()).resolves.toEqual(expected);
+    await expect(query()).resolves.toEqual(expected);
   });
 
   it.each([
@@ -389,7 +418,7 @@ describe("Copilot OAuth internal user quota", () => {
     signIn({ enterpriseUrl });
     const fetchMock = stubFetch(() => json(copilotUser()));
 
-    await expect(queryCopilotQuota()).resolves.toMatchObject({ success: true });
+    await expect(query()).resolves.toMatchObject({ success: true });
     expect(fetchMock.mock.calls[0]?.[0]).toBe("https://api.acme.ghe.com/copilot_internal/user");
   });
 
@@ -411,7 +440,7 @@ describe("Copilot OAuth internal user quota", () => {
     signIn({ access: "oauth-secret", enterpriseUrl });
     const fetchMock = stubFetch();
 
-    const error = await errorOf(queryCopilotQuota());
+    const error = await errorOf(query());
 
     expect(error).toContain("Invalid OpenCode Copilot enterpriseUrl");
     expect(error).not.toContain("oauth-secret");
@@ -429,7 +458,7 @@ describe("Copilot PAT billing reports", () => {
     signIn({ enterpriseUrl: "oauth.ghe.com" });
     const fetchMock = billingApi();
 
-    await expect(queryCopilotQuota()).resolves.toEqual({
+    await expect(query()).resolves.toEqual({
       success: true,
       mode: "user_quota",
       unit: "ai_credits",
@@ -440,7 +469,6 @@ describe("Copilot PAT billing reports", () => {
       billedAmountUsd: 0.2,
       authority: "provider_reported",
     });
-    expect(mocks.readAuthFile).not.toHaveBeenCalled();
     const [target] = requestedUrls(fetchMock);
     expect(target?.hostname).toBe("api.github.com");
     expect(target?.pathname).toBe("/users/alice/settings/billing/ai_credit/usage");
@@ -458,7 +486,7 @@ describe("Copilot PAT billing reports", () => {
     configure({ token: "ghp_classic", tier: "pro", enterpriseUrl: "personal.ghe.com" });
     const fetchMock = billingApi();
 
-    const result = await queryCopilotQuota();
+    const result = await query();
 
     expect(result).toMatchObject({
       success: true,
@@ -503,7 +531,7 @@ describe("Copilot PAT billing reports", () => {
     configure(config);
     const fetchMock = stubFetch();
 
-    expect(await errorOf(queryCopilotQuota())).toContain(expected);
+    expect(await errorOf(query())).toContain(expected);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -517,7 +545,7 @@ describe("Copilot PAT billing reports", () => {
       aiCreditBudget("user", 1, { budget_entity_name: "alice" }),
     );
 
-    await expect(queryCopilotQuota()).resolves.toEqual({
+    await expect(query()).resolves.toEqual({
       success: true,
       mode: "organization_usage",
       organization: "acme",
@@ -559,7 +587,7 @@ describe("Copilot PAT billing reports", () => {
     configure(config);
     billingApi({ timePeriod: { year: 2026, month: 1 }, ...scope, usageItems: [] });
 
-    await expect(queryCopilotQuota()).resolves.toMatchObject({
+    await expect(query()).resolves.toMatchObject({
       success: true,
       ...scope,
       unit: "ai_credits",
@@ -573,7 +601,7 @@ describe("Copilot PAT billing reports", () => {
     configure({ token: "github_pat_org", tier: "business", organization: "acme" });
     billingApi(aiUsage(), aiCreditBudget("organization", 0));
 
-    await expect(queryCopilotQuota()).resolves.toMatchObject({
+    await expect(query()).resolves.toMatchObject({
       budget: {
         amountUsd: 0,
         spentUsd: 0.2,
@@ -595,7 +623,7 @@ describe("Copilot PAT billing reports", () => {
     });
     const fetchMock = billingApi(aiUsage(), aiCreditBudget("enterprise", 5));
 
-    await expect(queryCopilotQuota()).resolves.toMatchObject({
+    await expect(query()).resolves.toMatchObject({
       success: true,
       mode: "enterprise_usage",
       enterprise: "octo",
@@ -629,7 +657,7 @@ describe("Copilot PAT billing reports", () => {
       ],
     });
 
-    await expect(queryCopilotQuota()).resolves.toEqual({
+    await expect(query()).resolves.toEqual({
       success: true,
       mode: "user_quota",
       unit: "premium_requests",
@@ -679,7 +707,7 @@ describe("Copilot PAT billing reports", () => {
       ],
     });
 
-    await expect(queryCopilotQuota()).resolves.toMatchObject({
+    await expect(query()).resolves.toMatchObject({
       success: true,
       mode: "user_quota",
       period: { year: 2026, month: 1 },
@@ -712,7 +740,7 @@ describe("Copilot PAT billing reports", () => {
     configure({ token: "github_pat_personal", tier: "pro", username: "alice" });
     billingApi(aiUsage(overrides));
 
-    await expect(queryCopilotQuota()).resolves.toMatchObject({
+    await expect(query()).resolves.toMatchObject({
       success: true,
       mode: "user_quota",
       ...expected,
@@ -744,7 +772,7 @@ describe("Copilot PAT billing reports", () => {
     configure({ token: "github_pat_personal", tier: "pro", username: "alice" });
     billingApi(usage);
 
-    expect(await errorOf(queryCopilotQuota())).toContain(expected);
+    expect(await errorOf(query())).toContain(expected);
   });
 });
 
@@ -770,7 +798,7 @@ describe("Copilot HTTP failures", () => {
     configure({ token: "github_pat_personal", tier: "pro", username: "alice" });
     stubFetch(() => response);
 
-    expect(await errorOf(queryCopilotQuota())).toContain(expected);
+    expect(await errorOf(query())).toContain(expected);
   });
 
   it.each([
@@ -782,7 +810,7 @@ describe("Copilot HTTP failures", () => {
     else signIn({ access: token });
     stubFetch((_url, init) => stalledResponse(init?.signal, status));
 
-    const pending = errorOf(queryCopilotQuota({ requestTimeoutMs: 1_000 }));
+    const pending = errorOf(query({ requestTimeoutMs: 1_000 }));
     await vi.advanceTimersByTimeAsync(1_000);
 
     expect(await pending).toBe("Request timeout after 1s");
@@ -796,7 +824,7 @@ describe("Copilot HTTP failures", () => {
     else signIn({ access: token });
     stubFetch(() => json({ message: `Rejected Authorization: Bearer ${token}` }, { status: 401 }));
 
-    const error = await errorOf(queryCopilotQuota());
+    const error = await errorOf(query());
 
     expect(error).toContain("[redacted]");
     expect(error).not.toContain(token);
@@ -820,7 +848,7 @@ describe("Copilot HTTP failures", () => {
       new URL(url).pathname.endsWith("/budgets") ? budgetResponse(init) : json(aiUsage()),
     );
 
-    const pending = queryCopilotQuota({ requestTimeoutMs: 1_000 });
+    const pending = query({ requestTimeoutMs: 1_000 });
     await vi.advanceTimersByTimeAsync(1_000);
     const result = await pending;
 
@@ -938,11 +966,10 @@ describe("Copilot quota diagnostics", () => {
         oauthAccountingState: "invalid_enterprise_host",
       },
     },
-  ])("$name", ({ pat, oauth, expected }) => {
+  ])("$name", async ({ pat, oauth, expected }) => {
     if (pat) configure(pat);
-    const diagnostics = getCopilotQuotaAuthDiagnostics(
-      oauth ? { "github-copilot": { type: "oauth", ...oauth } } : null,
-    );
+    if (oauth) signIn(oauth);
+    const diagnostics = getCopilotQuotaAuthDiagnostics(await readCopilotLogins());
 
     expect(diagnostics).toMatchObject(expected);
     const serialized = JSON.stringify(diagnostics);

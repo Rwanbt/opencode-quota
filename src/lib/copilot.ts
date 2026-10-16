@@ -15,9 +15,18 @@ import {
 } from "./display-sanitize.js";
 import { fetchWithTimeout } from "./http.js";
 import { finiteNumber } from "./json-guards.js";
-import { readAuthFile } from "./opencode-auth.js";
+import {
+  activeCredentialRowsAuthData,
+  type CredentialRow,
+  credentialRowAuthData,
+  readCredentialRows,
+} from "./opencode-auth.js";
 import { getOpencodeRuntimeDirs } from "./opencode-runtime-paths.js";
-import { deriveResolvedAuthIdentity, type ResolvedAuthIdentity } from "./resolved-auth-identity.js";
+import {
+  deriveResolvedAuthIdentity,
+  loginListIdentity,
+  type ResolvedAuthIdentity,
+} from "./resolved-auth-identity.js";
 import type {
   AuthData,
   CopilotAuthData,
@@ -444,11 +453,20 @@ function selectCopilotAuth(authData: AuthData | null): {
   return { auth: null, keyName: null };
 }
 
-export function getCopilotQuotaAuthDiagnostics(
-  authData: AuthData | null,
-): CopilotQuotaAuthDiagnostics {
-  const pat = readQuotaConfigWithMeta();
-  const { auth, keyName } = selectCopilotAuth(authData);
+/** What Copilot can check: the PAT config, and every OpenCode Copilot OAuth login. */
+export type CopilotLogins = { pat: CopilotPatReadResult; oauth: CredentialRow[] };
+
+/** Any PAT config, even an invalid one, is authoritative over OAuth. */
+export async function readCopilotLogins(): Promise<CopilotLogins> {
+  return {
+    pat: readQuotaConfigWithMeta(),
+    oauth: await readCredentialRows(COPILOT_AUTH_KEYS, { methods: ["oauth"] }),
+  };
+}
+
+export function getCopilotQuotaAuthDiagnostics(logins: CopilotLogins): CopilotQuotaAuthDiagnostics {
+  const { pat } = logins;
+  const { auth, keyName } = selectCopilotAuth(activeCredentialRowsAuthData(logins.oauth));
   const oauthEnterpriseHost = validateEnterpriseHost(auth?.enterpriseUrl);
   const target = pat.config ? resolvePatBillingTarget(pat.config) : null;
   const compatibilityError = target ? validatePatTargetCompatibility(target, pat.tokenKind) : null;
@@ -1022,9 +1040,7 @@ async function queryCopilotOAuthQuota(
   authData: AuthData | undefined,
   requestTimeoutMs?: number,
 ): Promise<CopilotResult> {
-  const { auth } = selectCopilotAuth(
-    authData ?? (await readAuthFile({ integrationIds: COPILOT_AUTH_KEYS })),
-  );
+  const { auth } = selectCopilotAuth(authData ?? null);
   if (auth?.resolveError !== undefined) {
     return toQuotaError(
       `Copilot sign-in could not be read: ${auth.resolveError}. Run \`opencode auth login github-copilot\`.`,
@@ -1105,8 +1121,26 @@ export async function queryCopilotQuota(
   }
 }
 
-export async function resolveCopilotAuthIdentity(): Promise<ResolvedAuthIdentity | null> {
-  const pat = readQuotaConfigWithMeta();
+/** The identity of one OAuth login: its token and API host; none without a usable token. */
+async function oauthIdentity(row: CredentialRow): Promise<ResolvedAuthIdentity | null> {
+  const { auth } = selectCopilotAuth(credentialRowAuthData(row));
+  const token = getCopilotOAuthToken(auth);
+  if (!auth || !token) return null;
+
+  const enterpriseHost = validateEnterpriseHost(auth.enterpriseUrl);
+  if (enterpriseHost.error) return null;
+  return deriveResolvedAuthIdentity({
+    providerId: "copilot:oauth",
+    principal: { kind: "credential", value: token },
+    qualifiers: [`api=${getApiBaseUrl(enterpriseHost.host)}`],
+  });
+}
+
+/** Who Copilot is signed in as: the PAT config, or every OAuth login it checks. */
+export async function copilotLoginsIdentity(
+  logins: CopilotLogins,
+): Promise<ResolvedAuthIdentity | null> {
+  const { pat } = logins;
   if (pat.state === "invalid") return null;
 
   if (pat.config) {
@@ -1130,22 +1164,12 @@ export async function resolveCopilotAuthIdentity(): Promise<ResolvedAuthIdentity
     });
   }
 
-  const { auth } = selectCopilotAuth(await readAuthFile({ integrationIds: COPILOT_AUTH_KEYS }));
-  const token = getCopilotOAuthToken(auth);
-  if (!auth || !token) return null;
-
-  const enterpriseHost = validateEnterpriseHost(auth.enterpriseUrl);
-  if (enterpriseHost.error) return null;
-  return deriveResolvedAuthIdentity({
-    providerId: "copilot:oauth",
-    principal: { kind: "credential", value: token },
-    qualifiers: [`api=${getApiBaseUrl(enterpriseHost.host)}`],
-  });
-}
-
-export async function hasCopilotQuotaRuntimeAvailable(): Promise<boolean> {
-  const diagnostics = getCopilotQuotaAuthDiagnostics(
-    await readAuthFile({ integrationIds: COPILOT_AUTH_KEYS }),
+  // A login without a token or OAuth state gives no rows, so it is no part of the identity.
+  const checked = logins.oauth.filter((row) => selectCopilotAuth(credentialRowAuthData(row)).auth);
+  return loginListIdentity(
+    "copilot",
+    await Promise.all(
+      checked.map(async (row) => ({ identity: await oauthIdentity(row), active: row.active })),
+    ),
   );
-  return diagnostics.billingApiAccessLikely;
 }

@@ -1,30 +1,17 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { rowsFromProviderResult } from "../src/core/rows.js";
 import type { Amount, QuotaRow } from "../src/core/types.js";
-import {
-  getCopilotQuotaAuthDiagnostics,
-  hasCopilotQuotaRuntimeAvailable,
-  queryCopilotQuota,
-} from "../src/lib/copilot.js";
+import { getCopilotQuotaAuthDiagnostics, queryCopilotQuota } from "../src/lib/copilot.js";
 import { copilotProvider } from "../src/providers/copilot.js";
 import { createProviderAvailabilityContext } from "./helpers/provider-test-harness.js";
 
-const mocks = vi.hoisted(() => ({
-  readAuthFileCached: vi.fn(async () => null),
-  readCredentialRows: vi.fn(async (): Promise<unknown[]> => []),
-}));
+/** A PAT config by default: its one query gives the rows. */
+const logins = vi.hoisted(() => ({ pat: { state: "valid" }, oauth: [] as unknown[] }));
 
 vi.mock("../src/lib/copilot.js", () => ({
-  COPILOT_AUTH_KEYS: ["github-copilot", "copilot", "copilot-chat", "github-copilot-chat"],
-  hasCopilotQuotaRuntimeAvailable: vi.fn(),
+  readCopilotLogins: vi.fn(async () => ({ ...logins })),
   queryCopilotQuota: vi.fn(),
   getCopilotQuotaAuthDiagnostics: vi.fn(),
-}));
-
-vi.mock("../src/lib/opencode-auth.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../src/lib/opencode-auth.js")>()),
-  readAuthFileCached: mocks.readAuthFileCached,
-  readCredentialRows: mocks.readCredentialRows,
 }));
 
 const NOW_MS = Date.parse("2026-01-15T00:00:00.000Z");
@@ -42,6 +29,7 @@ function diagnostics(effectiveSource: "pat" | "oauth" | "none", billingScope = "
     },
     effectiveSource,
     billingScope,
+    billingApiAccessLikely: false,
   } as unknown as ReturnType<typeof getCopilotQuotaAuthDiagnostics>;
 }
 
@@ -71,7 +59,8 @@ function summary(rows: QuotaRow[]) {
 
 beforeEach(() => {
   vi.mocked(getCopilotQuotaAuthDiagnostics).mockReturnValue(diagnostics("none"));
-  vi.mocked(hasCopilotQuotaRuntimeAvailable).mockResolvedValue(false);
+  logins.pat = { state: "valid" };
+  logins.oauth = [];
 });
 
 describe("copilot provider", () => {
@@ -382,7 +371,8 @@ describe("copilot provider", () => {
 
   it("queries each OpenCode login and shows one it could not read as an error", async () => {
     vi.mocked(getCopilotQuotaAuthDiagnostics).mockReturnValue(diagnostics("oauth", "user"));
-    mocks.readCredentialRows.mockResolvedValueOnce([
+    logins.pat = { state: "absent" };
+    logins.oauth = [
       {
         id: "copilot-alice",
         integrationId: "github-copilot",
@@ -398,7 +388,7 @@ describe("copilot provider", () => {
         active: false,
         value: { type: "oauth", access: "bob-token", enterpriseUrl: "acme.ghe.com" },
       },
-    ]);
+    ];
     const signInError =
       "Copilot sign-in could not be read: refresh_failed: HTTP 401. Run `opencode auth login github-copilot`.";
     vi.mocked(queryCopilotQuota)
@@ -441,7 +431,10 @@ describe("copilot provider", () => {
 
     const openAiOnly = createProviderAvailabilityContext({ providerIds: ["openai"] });
     await expect(copilotProvider.isAvailable(openAiOnly)).resolves.toBe(false);
-    vi.mocked(hasCopilotQuotaRuntimeAvailable).mockResolvedValueOnce(true);
+    vi.mocked(getCopilotQuotaAuthDiagnostics).mockReturnValueOnce({
+      ...diagnostics("pat"),
+      billingApiAccessLikely: true,
+    });
     await expect(copilotProvider.isAvailable(openAiOnly)).resolves.toBe(true);
   });
 

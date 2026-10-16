@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { rowsFromProviderResult } from "../src/core/rows.js";
 import type { QuotaRow } from "../src/core/types.js";
-import { hasOpenAIOAuthCached, queryOpenAIQuota } from "../src/lib/openai.js";
+import { queryOpenAIQuota } from "../src/lib/openai.js";
 import { type CredentialRow, readCredentialRows } from "../src/lib/opencode-auth.js";
 import { quotaReportLines } from "../src/lib/quota-dialog-commands.js";
 import type { ProviderFetchResult } from "../src/providers/contract.js";
@@ -10,7 +10,6 @@ import { createProviderAvailabilityContext } from "./helpers/provider-test-harne
 
 vi.mock("../src/lib/openai.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/lib/openai.js")>()),
-  hasOpenAIOAuthCached: vi.fn(),
   queryOpenAIQuota: vi.fn(),
 }));
 
@@ -82,7 +81,6 @@ function quotaCommandText(rows: QuotaRow[]): string {
 beforeEach(() => {
   readRows.mockReset().mockResolvedValue([]);
   query.mockReset();
-  vi.mocked(hasOpenAIOAuthCached).mockReset().mockResolvedValue(false);
 });
 
 describe("openai provider", () => {
@@ -371,30 +369,27 @@ describe("openai provider", () => {
     { providerIds: ["codex"], expected: true },
     { providerIds: ["opencode"], expected: false },
     // Without an OpenAI provider id, a stored OAuth login or API key still counts.
-    { providerIds: ["zai"], oauth: true, expected: true },
-    { providerIds: ["zai"], keyRows: [keyRow("key-id", { active: true })], expected: true },
+    { providerIds: ["zai"], logins: [oauthRow("oauth-id")], expected: true },
+    { providerIds: ["zai"], logins: [keyRow("key-id")], expected: true },
+    {
+      providerIds: ["zai"],
+      logins: [oauthRow("no-token", { value: { type: "oauth" } })],
+      expected: false,
+    },
     // Provider lookup failure falls back to available.
     { providersError: new Error("boom"), expected: true },
-  ])("isAvailable is $expected for $providerIds (oauth: $oauth)", async ({
+  ])("isAvailable is $expected for $providerIds ($logins.length logins)", async ({
     providerIds,
     providersError,
-    oauth,
-    keyRows,
+    logins,
     expected,
   }) => {
-    vi.mocked(hasOpenAIOAuthCached).mockResolvedValue(Boolean(oauth));
-    readRows.mockResolvedValue(keyRows ?? []);
+    readRows.mockResolvedValue(logins ?? []);
 
     await expect(
       openaiProvider.isAvailable(
         createProviderAvailabilityContext({ providerIds, providersError }),
       ),
     ).resolves.toBe(expected);
-    if (keyRows) {
-      expect(readRows).toHaveBeenLastCalledWith(["openai", "codex", "chatgpt"], {
-        methods: ["key"],
-        firstOnly: true,
-      });
-    }
   });
 });

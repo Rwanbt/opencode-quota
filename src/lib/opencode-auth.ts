@@ -472,6 +472,21 @@ export function credentialRowAuthEntry(row: CredentialRow): Record<string, unkno
     : { ...row.value, resolveError: row.resolveError };
 }
 
+/** One login as the auth map resolvers read: its integration id and its auth entry. */
+export function credentialRowAuthData(row: CredentialRow): AuthData {
+  return { [row.integrationId]: credentialRowAuthEntry(row) } as AuthData;
+}
+
+/**
+ * The first login of each integration id as the auth map resolvers read, or null without
+ * logins. Rows come active first, so these are the logins OpenCode uses.
+ */
+export function activeCredentialRowsAuthData(rows: readonly CredentialRow[]): AuthData | null {
+  const auth: Record<string, unknown> = {};
+  for (const row of rows) auth[row.integrationId] ??= credentialRowAuthEntry(row);
+  return Object.keys(auth).length > 0 ? (auth as AuthData) : null;
+}
+
 /**
  * Map of the first (active) login per requested integration id. With `methods`,
  * an active login using another method is left out without OpenCode resolving it.
@@ -480,15 +495,9 @@ export async function readAuthFile(params: {
   integrationIds: readonly string[];
   methods?: readonly CredentialMethod[];
 }): Promise<AuthData | null> {
-  const rows = await readCredentialRows(params.integrationIds, {
-    methods: params.methods,
-    firstOnly: true,
-  });
-  const auth: Record<string, unknown> = {};
-  for (const row of rows) {
-    if (!(row.integrationId in auth)) auth[row.integrationId] = credentialRowAuthEntry(row);
-  }
-  return Object.keys(auth).length > 0 ? (auth as AuthData) : null;
+  return activeCredentialRowsAuthData(
+    await readCredentialRows(params.integrationIds, { methods: params.methods, firstOnly: true }),
+  );
 }
 
 /**

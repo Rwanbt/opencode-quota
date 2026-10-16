@@ -3,23 +3,25 @@ import businessIndividualLimitUsage from "./fixtures/openai/business-individual-
 import businessTeamMonthlyUsage from "./fixtures/openai/business-team-monthly.sanitized.json";
 
 const mocks = vi.hoisted(() => ({
-  readAuthFileCached: vi.fn(),
+  readCredentialRows: vi.fn(),
   deriveResolvedAuthIdentity: vi.fn(async () => "rai1_test-opaque-identity"),
 }));
 
-vi.mock("../src/lib/opencode-auth.js", () => ({
-  readAuthFileCached: mocks.readAuthFileCached,
+vi.mock("../src/lib/opencode-auth.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/lib/opencode-auth.js")>()),
+  readCredentialRows: mocks.readCredentialRows,
 }));
 
-vi.mock("../src/lib/resolved-auth-identity.js", () => ({
+vi.mock("../src/lib/resolved-auth-identity.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/lib/resolved-auth-identity.js")>()),
   deriveResolvedAuthIdentity: mocks.deriveResolvedAuthIdentity,
 }));
 
 import {
-  hasOpenAIOAuthCached,
   type OpenAIOAuthLogin,
+  openaiLoginsIdentity,
   queryOpenAIQuota,
-  resolveOpenAIAuthIdentity,
+  readOpenAILogins,
   resolveOpenAIOAuth,
 } from "../src/lib/openai.js";
 
@@ -147,48 +149,34 @@ describe("resolveOpenAIOAuth", () => {
   });
 });
 
-describe("cached OpenAI login checks", () => {
-  it.each([
-    [{ openai: { type: "oauth", access: "cached-token" } }, true],
-    [{ openai: { type: "oauth", resolveError: "refresh_failed: HTTP 400" } }, true],
-    [{}, false],
-  ])("reads the OpenAI ids for hasOpenAIOAuthCached (%j)", async (auth, expected) => {
-    mocks.readAuthFileCached.mockResolvedValueOnce(auth);
-
-    await expect(hasOpenAIOAuthCached()).resolves.toBe(expected);
-    expect(mocks.readAuthFileCached).toHaveBeenCalledWith({
-      maxAgeMs: 5_000,
-      integrationIds: ["openai", "codex", "chatgpt"],
-    });
-  });
+describe("OpenAI login identity", () => {
+  /** The identity of one stored `openai` login with this value. */
+  async function identityOf(value: Record<string, unknown>, resolveError?: string) {
+    mocks.readCredentialRows.mockResolvedValue([
+      { id: "login-1", integrationId: "openai", label: "", active: true, value, resolveError },
+    ]);
+    return openaiLoginsIdentity(await readOpenAILogins());
+  }
 
   it("prefers the resolved stable account id for opaque cache identity", async () => {
-    mocks.readAuthFileCached.mockResolvedValue({
-      openai: {
-        type: "oauth",
-        access: "access-secret",
-        refresh: "refresh-secret",
-        accountId: "account-stable-id",
-      },
+    const identity = await identityOf({
+      type: "oauth",
+      access: "access-secret",
+      refresh: "refresh-secret",
+      accountId: "account-stable-id",
     });
 
-    await expect(resolveOpenAIAuthIdentity()).resolves.toBe("rai1_test-opaque-identity");
+    expect(identity).toBe("rai1_test-opaque-identity");
     expect(mocks.deriveResolvedAuthIdentity).toHaveBeenCalledWith({
       providerId: "openai",
       principal: { kind: "stable-id", value: "account-stable-id" },
     });
-    expect(JSON.stringify(await resolveOpenAIAuthIdentity())).not.toMatch(
-      /access-secret|refresh-secret|account-stable-id/u,
-    );
   });
 
-  it("uses the winning credential rather than advisory email when no account id exists", async () => {
+  it("uses the login's credential rather than advisory email when no account id exists", async () => {
     const access = jwt({ email: "shared@example.com" });
     for (const refresh of ["refresh-secret-one", "refresh-secret-two"]) {
-      mocks.readAuthFileCached.mockResolvedValueOnce({
-        openai: { type: "oauth", access, refresh },
-      });
-      await resolveOpenAIAuthIdentity();
+      await identityOf({ type: "oauth", access, refresh });
       expect(mocks.deriveResolvedAuthIdentity).toHaveBeenLastCalledWith({
         providerId: "openai",
         principal: { kind: "credential", value: refresh },
@@ -197,11 +185,7 @@ describe("cached OpenAI login checks", () => {
   });
 
   it("gives a login OpenCode could not return no identity", async () => {
-    mocks.readAuthFileCached.mockResolvedValue({
-      openai: { type: "oauth", resolveError: "refresh_failed: HTTP 400" },
-    });
-
-    await expect(resolveOpenAIAuthIdentity()).resolves.toBeNull();
+    await expect(identityOf({ type: "oauth" }, "refresh_failed: HTTP 400")).resolves.toBeNull();
     expect(mocks.deriveResolvedAuthIdentity).not.toHaveBeenCalled();
   });
 });

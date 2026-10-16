@@ -1,12 +1,8 @@
 // Gemini CLI quota parsing. The OAuth flow it shares with Google AGY is in lib.google-agy.test.ts.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const mocks = vi.hoisted(() => ({
-  readAuthFileCached: vi.fn(),
-  fetchResponse: vi.fn(),
-}));
+const mocks = vi.hoisted(() => ({ fetchResponse: vi.fn() }));
 
-vi.mock("../src/lib/opencode-auth.js", () => ({ readAuthFileCached: mocks.readAuthFileCached }));
 vi.mock("../src/lib/http.js", () => ({
   fetchWithTimeout: async (
     url: string,
@@ -28,7 +24,14 @@ vi.mock("../src/lib/google-companion-credentials.js", () => ({
   },
 }));
 
-import { queryGeminiCliQuota } from "../src/lib/google-gemini-cli.js";
+import { GEMINI_CLI_FLAVOR } from "../src/lib/google-gemini-cli.js";
+import { queryGoogleQuota } from "../src/lib/google-oauth-quota.js";
+import type { AuthData } from "../src/lib/types.js";
+
+/** The Gemini CLI query of the logins in `authData`. */
+function queryGeminiCliQuota(authData: unknown) {
+  return queryGoogleQuota(GEMINI_CLI_FLAVOR, { authData: authData as AuthData });
+}
 
 function quotaResponse(buckets: unknown[]) {
   return { ok: true, status: 200, json: async () => ({ buckets }) };
@@ -42,13 +45,13 @@ describe("Gemini CLI quota buckets", () => {
   });
 
   it("aggregates known Gemini CLI buckets by quality tier and keeps unknown models", async () => {
-    mocks.readAuthFileCached.mockResolvedValueOnce({
+    const auth = {
       google: {
         type: "oauth",
         refresh: "refresh-token|project-1|",
         email: "alice@example.com",
       },
-    });
+    };
     mocks.fetchResponse.mockResolvedValueOnce(
       quotaResponse([
         {
@@ -78,7 +81,7 @@ describe("Gemini CLI quota buckets", () => {
       ]),
     );
 
-    await expect(queryGeminiCliQuota()).resolves.toEqual({
+    await expect(queryGeminiCliQuota(auth)).resolves.toEqual({
       success: true,
       buckets: [
         {
@@ -121,7 +124,7 @@ describe("Gemini CLI quota buckets", () => {
   });
 
   it("does not merge Gemini CLI tier buckets across accounts", async () => {
-    mocks.readAuthFileCached.mockResolvedValueOnce({
+    const auth = {
       "google-gemini-cli": {
         type: "oauth",
         refresh: "refresh-a|project-a|",
@@ -132,7 +135,7 @@ describe("Gemini CLI quota buckets", () => {
         refresh: "refresh-b|project-b|",
         email: "bob@example.com",
       },
-    });
+    };
     mocks.fetchResponse.mockImplementation(async (_url: string, init: { body?: string }) =>
       quotaResponse([
         {
@@ -142,7 +145,7 @@ describe("Gemini CLI quota buckets", () => {
       ]),
     );
 
-    const result = await queryGeminiCliQuota();
+    const result = await queryGeminiCliQuota(auth);
     if (!result?.success) throw new Error("expected successful Gemini CLI quota result");
     expect(result.buckets).toEqual([
       {
@@ -163,16 +166,16 @@ describe("Gemini CLI quota buckets", () => {
   });
 
   it("reports a bucket object that is not a list as that account's error", async () => {
-    mocks.readAuthFileCached.mockResolvedValueOnce({
+    const auth = {
       google: { type: "oauth", refresh: "refresh-token|project-1|", email: "alice@example.com" },
-    });
+    };
     mocks.fetchResponse.mockResolvedValueOnce({
       ok: true,
       status: 200,
       json: async () => ({ buckets: {} }),
     });
 
-    await expect(queryGeminiCliQuota()).resolves.toEqual({
+    await expect(queryGeminiCliQuota(auth)).resolves.toEqual({
       success: true,
       buckets: [],
       errors: [{ email: "alice@example.com", error: "buckets.filter is not a function" }],
@@ -180,12 +183,12 @@ describe("Gemini CLI quota buckets", () => {
   });
 
   it("reports no data when every account answers without buckets", async () => {
-    mocks.readAuthFileCached.mockResolvedValueOnce({
+    const auth = {
       google: { type: "oauth", refresh: "refresh-token|project-1" },
-    });
+    };
     mocks.fetchResponse.mockResolvedValueOnce(quotaResponse([]));
 
-    await expect(queryGeminiCliQuota()).resolves.toEqual({
+    await expect(queryGeminiCliQuota(auth)).resolves.toEqual({
       success: false,
       error: "No Gemini CLI quota data available",
     });

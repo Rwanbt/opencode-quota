@@ -13,7 +13,6 @@ const mocks = vi.hoisted(() => {
     clearCacheForTests: vi.fn(),
   });
   return {
-    readAuthFileCached: vi.fn(),
     fetchResponse,
     fetchWithTimeout: vi.fn(
       async (
@@ -29,49 +28,30 @@ const mocks = vi.hoisted(() => {
     setCachedAccessToken: vi.fn(),
     agyCompanion: companion(),
     geminiCliCompanion: companion(),
-    deriveResolvedAuthIdentity: vi.fn(
-      async (params: { providerId: string; principal: { kind: string } }) =>
-        `identity:${params.providerId}:${params.principal.kind}`,
-    ),
-    composeResolvedAuthIdentities: vi.fn(
-      async (params: { providerId: string; identities: readonly string[] }) =>
-        `composed:${params.providerId}:${params.identities.join("|")}`,
-    ),
   };
 });
 
-vi.mock("../src/lib/opencode-auth.js", () => ({ readAuthFileCached: mocks.readAuthFileCached }));
 vi.mock("../src/lib/http.js", () => ({ fetchWithTimeout: mocks.fetchWithTimeout }));
 vi.mock("../src/lib/google-token-cache.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/lib/google-token-cache.js")>()),
   getCachedAccessToken: mocks.getCachedAccessToken,
   setCachedAccessToken: mocks.setCachedAccessToken,
 }));
-vi.mock("../src/lib/resolved-auth-identity.js", () => ({
-  deriveResolvedAuthIdentity: mocks.deriveResolvedAuthIdentity,
-  composeResolvedAuthIdentities: mocks.composeResolvedAuthIdentities,
-}));
 vi.mock("../src/lib/google-companion-credentials.js", () => ({
   agyCompanion: mocks.agyCompanion,
   geminiCliCompanion: mocks.geminiCliCompanion,
 }));
 
+import { AGY_FLAVOR } from "../src/lib/google-agy.js";
+import { GEMINI_CLI_FLAVOR } from "../src/lib/google-gemini-cli.js";
 import {
-  hasAgyQuotaRuntimeAvailable,
-  inspectAgyAuthPresence,
-  queryGoogleAgyQuota,
-  resolveGoogleAgyAuthIdentity,
-} from "../src/lib/google-agy.js";
-import {
-  hasGeminiCliQuotaRuntimeAvailable,
-  inspectGeminiCliAuthPresence,
-  queryGeminiCliQuota,
-  resolveGeminiCliAuthIdentity,
-} from "../src/lib/google-gemini-cli.js";
-import {
+  inspectGoogleAuthPresence,
+  queryGoogleQuota,
   resolveGoogleAccounts,
   resolveGoogleConfiguredProjectId,
 } from "../src/lib/google-oauth-quota.js";
+import type { CredentialRow } from "../src/lib/opencode-auth.js";
+import type { AuthData } from "../src/lib/types.js";
 
 const TOKEN_URL = "https://oauth2.googleapis.com/token";
 
@@ -101,6 +81,30 @@ function authAccount(
     ...(email ? { email } : {}),
     ...extra,
   };
+}
+
+/** One stored login of `integrationId`, as the login list holds it. */
+function login(
+  integrationId: string,
+  value: Record<string, unknown>,
+  resolveError?: string,
+): CredentialRow {
+  return {
+    id: `${integrationId}-login`,
+    integrationId,
+    label: "",
+    active: true,
+    value,
+    ...(resolveError ? { resolveError } : {}),
+  };
+}
+
+function queryAgy(authData: unknown, options: { requestTimeoutMs?: number } = {}) {
+  return queryGoogleQuota(AGY_FLAVOR, { ...options, authData: authData as AuthData });
+}
+
+function queryGeminiCli(authData: unknown, options: { requestTimeoutMs?: number } = {}) {
+  return queryGoogleQuota(GEMINI_CLI_FLAVOR, { ...options, authData: authData as AuthData });
 }
 
 function summaryResponse(
@@ -174,15 +178,10 @@ const FLAVORS = [
     companion: mocks.agyCompanion,
     missingCompanionError: "Companion plugin is missing",
     failedLoginState: "invalid",
-    query: queryGoogleAgyQuota,
-    resolveProjectId: () =>
-      resolveGoogleConfiguredProjectId({
-        projectIdEnvVar: "OPENCODE_AGY_PROJECT_ID",
-        projectIdConfigProvider: "google-agy",
-      }),
-    resolveIdentity: resolveGoogleAgyAuthIdentity,
-    inspectAuth: inspectAgyAuthPresence,
-    hasRuntime: hasAgyQuotaRuntimeAvailable,
+    query: queryAgy,
+    resolveProjectId: () => resolveGoogleConfiguredProjectId(AGY_FLAVOR),
+    inspectAuth: (rows: CredentialRow[]) =>
+      inspectGoogleAuthPresence(AGY_FLAVOR, { rows, configuredProjectId: undefined }),
   },
   {
     name: "Gemini CLI",
@@ -198,15 +197,10 @@ const FLAVORS = [
     companion: mocks.geminiCliCompanion,
     missingCompanionError: "Gemini CLI requires the opencode-gemini-auth plugin",
     failedLoginState: "present",
-    query: queryGeminiCliQuota,
-    resolveProjectId: () =>
-      resolveGoogleConfiguredProjectId({
-        projectIdEnvVar: "OPENCODE_GEMINI_PROJECT_ID",
-        projectIdConfigProvider: "google",
-      }),
-    resolveIdentity: resolveGeminiCliAuthIdentity,
-    inspectAuth: inspectGeminiCliAuthPresence,
-    hasRuntime: hasGeminiCliQuotaRuntimeAvailable,
+    query: queryGeminiCli,
+    resolveProjectId: () => resolveGoogleConfiguredProjectId(GEMINI_CLI_FLAVOR),
+    inspectAuth: (rows: CredentialRow[]) =>
+      inspectGoogleAuthPresence(GEMINI_CLI_FLAVOR, { rows, configuredProjectId: undefined }),
   },
 ] as const;
 
@@ -224,7 +218,6 @@ beforeEach(() => {
     vi.stubEnv(name, undefined);
   }
   vi.clearAllMocks();
-  mocks.readAuthFileCached.mockResolvedValue(null);
   mocks.getCachedAccessToken.mockResolvedValue({ accessToken: "cached-access-token" });
   for (const companion of [mocks.agyCompanion, mocks.geminiCliCompanion]) {
     companion.inspect.mockResolvedValue({ state: "present", resolvedPath: "/plugin" });
@@ -247,39 +240,6 @@ function writeGlobalConfig(config: unknown) {
 
 describe.each(FLAVORS)("$name OAuth quota flow", (flavor) => {
   const [firstKey, middleKey, lastKey] = flavor.keys;
-
-  it("composes account identities in auth-key order, then the companion client", async () => {
-    mocks.readAuthFileCached.mockResolvedValue({
-      [lastKey]: authAccount("refresh-two", "shared-project", "shared@example.com"),
-      [middleKey]: authAccount("refresh-one", "shared-project", "ignored-duplicate@example.com"),
-      [firstKey]: authAccount("refresh-one", "shared-project", "shared@example.com"),
-    });
-
-    const resolved = await flavor.resolveIdentity();
-
-    expect(resolved).toContain(`composed:${flavor.providerId}:`);
-    expect(mocks.deriveResolvedAuthIdentity.mock.calls.map(([params]) => params)).toEqual([
-      {
-        providerId: flavor.providerId,
-        principal: { kind: "credential", value: "refresh-one" },
-        qualifiers: ["shared-project"],
-      },
-      {
-        providerId: flavor.providerId,
-        principal: { kind: "credential", value: "refresh-two" },
-        qualifiers: ["shared-project"],
-      },
-      {
-        providerId: `${flavor.providerId}:companion`,
-        principal: { kind: "credential", value: "client-secret" },
-        qualifiers: ["client-id"],
-      },
-    ]);
-    expect(JSON.stringify({ resolved })).not.toContain("ignored-duplicate@example.com");
-
-    flavor.companion.resolveCredentials.mockResolvedValueOnce({ state: "missing", error: "x" });
-    await expect(flavor.resolveIdentity()).resolves.toBeNull();
-  });
 
   it("resolves the project id: env override, OpenCode config (native over legacy), GCP env", async () => {
     vi.stubEnv("GOOGLE_CLOUD_PROJECT_ID", "generic-gcp-project-id");
@@ -304,20 +264,15 @@ describe.each(FLAVORS)("$name OAuth quota flow", (flavor) => {
   });
 
   it("reports missing, invalid, and failed-login auth presence", async () => {
-    // A failed API key login is not an OAuth login.
-    mocks.readAuthFileCached.mockResolvedValueOnce({
-      [firstKey]: { type: "api", resolveError: "resolve_empty: no value" },
-    });
-    await expect(flavor.inspectAuth()).resolves.toEqual({
+    expect(flavor.inspectAuth([])).toEqual({
       state: "missing",
       accountCount: 0,
       validAccountCount: 0,
     });
 
-    mocks.readAuthFileCached.mockResolvedValueOnce({
-      [lastKey]: { type: "oauth", refresh: "refresh-token" },
-    });
-    await expect(flavor.inspectAuth()).resolves.toEqual({
+    expect(
+      flavor.inspectAuth([login(lastKey, { type: "oauth", refresh: "refresh-token" })]),
+    ).toEqual({
       state: "invalid",
       sourceKey: lastKey,
       accountCount: 1,
@@ -326,51 +281,42 @@ describe.each(FLAVORS)("$name OAuth quota flow", (flavor) => {
     });
 
     // A login OpenCode could not return never becomes an account.
-    mocks.readAuthFileCached.mockResolvedValueOnce({
-      [firstKey]: { type: "oauth", resolveError: "refresh_failed: HTTP 400" },
-      [lastKey]: authAccount("refresh-token", "project-id"),
-    });
-    await expect(flavor.inspectAuth()).resolves.toEqual({
-      state: "present",
-      sourceKey: lastKey,
-      accountCount: 2,
-      validAccountCount: 1,
-    });
+    const failed = login(firstKey, { type: "oauth" }, "refresh_failed: HTTP 400");
+    expect(
+      flavor.inspectAuth([failed, login(lastKey, authAccount("refresh-token", "project-id"))]),
+    ).toEqual({ state: "present", sourceKey: lastKey, accountCount: 2, validAccountCount: 1 });
 
-    mocks.readAuthFileCached.mockResolvedValue({
-      [firstKey]: { type: "oauth", resolveError: "refresh_failed: HTTP 400" },
-    });
-    await expect(flavor.inspectAuth()).resolves.toMatchObject({
+    expect(flavor.inspectAuth([failed])).toMatchObject({
       state: flavor.failedLoginState,
       sourceKey: firstKey,
       accountCount: 1,
       validAccountCount: 0,
     });
-    await expect(flavor.hasRuntime()).resolves.toBe(flavor.failedLoginState === "present");
-    await expect(flavor.query()).resolves.toBeNull();
+    await expect(
+      flavor.query({ [firstKey]: { type: "oauth", resolveError: "refresh_failed: HTTP 400" } }),
+    ).resolves.toBeNull();
     expect(mocks.fetchResponse).not.toHaveBeenCalled();
   });
 
-  it("is available only with a usable login and an installed companion", async () => {
-    mocks.readAuthFileCached.mockResolvedValue({ [firstKey]: authAccount("refresh", "project") });
-    await expect(flavor.hasRuntime()).resolves.toBe(true);
-
-    flavor.companion.inspect.mockResolvedValueOnce({ state: "missing", error: "missing" });
-    await expect(flavor.hasRuntime()).resolves.toBe(false);
-
-    mocks.readAuthFileCached.mockResolvedValue({ [firstKey]: { type: "oauth" } });
-    await expect(flavor.hasRuntime()).resolves.toBe(false);
+  it("counts the login OpenCode uses for each auth key", () => {
+    // The first login of a key is the one OpenCode uses; later ones do not change the state.
+    expect(
+      flavor.inspectAuth([
+        login(firstKey, { type: "oauth", refresh: "refresh-token" }),
+        login(firstKey, authAccount("refresh-token", "project-id")),
+      ]),
+    ).toMatchObject({ state: "invalid", accountCount: 1, validAccountCount: 0 });
   });
 
   it("returns an actionable error when companion credentials are unavailable", async () => {
-    mocks.readAuthFileCached.mockResolvedValue({
+    const auth = {
       [firstKey]: authAccount("refresh-token", "project-1", "alice@example.com"),
-    });
+    };
     flavor.companion.resolveCredentials.mockResolvedValueOnce({
       state: "missing",
       error: "Companion plugin is missing",
     });
-    await expect(flavor.query()).resolves.toEqual({
+    await expect(flavor.query(auth)).resolves.toEqual({
       success: false,
       error: flavor.missingCompanionError,
     });
@@ -379,7 +325,7 @@ describe.each(FLAVORS)("$name OAuth quota flow", (flavor) => {
       state: "invalid",
       error: "Companion plugin is incompatible",
     });
-    await expect(flavor.query()).resolves.toEqual({
+    await expect(flavor.query(auth)).resolves.toEqual({
       success: false,
       error: "Companion plugin is incompatible",
     });
@@ -387,12 +333,12 @@ describe.each(FLAVORS)("$name OAuth quota flow", (flavor) => {
 
   it("requests the fixed quota endpoint with the existing request contract", async () => {
     vi.stubEnv("OPENCODE_AGY_ENDPOINT", "https://untrusted.example");
-    mocks.readAuthFileCached.mockResolvedValueOnce({
+    const auth = {
       [firstKey]: authAccount("refresh-token", "project-1", "alice@example.com"),
-    });
+    };
     mocks.fetchResponse.mockResolvedValueOnce(jsonResponse(flavor.quotaResponse));
 
-    await expect(flavor.query({ requestTimeoutMs: 12_345 })).resolves.toMatchObject({
+    await expect(flavor.query(auth, { requestTimeoutMs: 12_345 })).resolves.toMatchObject({
       success: true,
     });
     expect(mocks.fetchWithTimeout).toHaveBeenCalledWith(flavor.quotaUrl, {
@@ -412,29 +358,29 @@ describe.each(FLAVORS)("$name OAuth quota flow", (flavor) => {
 
   it("reuses an unexpired login token, else refreshes and retries once after a 401", async () => {
     mocks.getCachedAccessToken.mockResolvedValue(null);
-    mocks.readAuthFileCached.mockResolvedValueOnce({
+    const auth = {
       [firstKey]: authAccount("refresh-token", "project-1", "alice@example.com", {
         access: "auth-entry-access",
         expires: Date.now() + 60 * 60_000,
       }),
-    });
+    };
     mocks.fetchResponse.mockResolvedValueOnce(jsonResponse(flavor.quotaResponse));
-    await expect(flavor.query()).resolves.toMatchObject({ success: true });
+    await expect(flavor.query(auth)).resolves.toMatchObject({ success: true });
     expect(mocks.fetchResponse).toHaveBeenCalledOnce();
     expect(mocks.fetchResponse.mock.calls[0]?.[1].headers.Authorization).toBe(
       "Bearer auth-entry-access",
     );
 
     mocks.fetchResponse.mockClear();
-    mocks.readAuthFileCached.mockResolvedValueOnce({
+    const auth2 = {
       [firstKey]: authAccount("refresh-token", "project-1", "alice@example.com"),
-    });
+    };
     mocks.fetchResponse
       .mockResolvedValueOnce(jsonResponse({ access_token: "new-access-token", expires_in: 3600 }))
       .mockResolvedValueOnce(jsonResponse({}, 401))
       .mockResolvedValueOnce(jsonResponse({ access_token: "retry-access-token", expires_in: 3600 }))
       .mockResolvedValueOnce(jsonResponse(flavor.quotaResponse));
-    await expect(flavor.query()).resolves.toMatchObject({ success: true });
+    await expect(flavor.query(auth2)).resolves.toMatchObject({ success: true });
     expect(mocks.fetchResponse.mock.calls.map(([url]) => url)).toEqual([
       TOKEN_URL,
       flavor.quotaUrl,
@@ -458,13 +404,13 @@ describe.each(FLAVORS)("$name OAuth quota flow", (flavor) => {
     ["network error", new Error("socket hang up"), "Token refresh failed"],
   ])("reports a failed token refresh (%s) as an account error", async (_case, outcome, error) => {
     mocks.getCachedAccessToken.mockResolvedValue(null);
-    mocks.readAuthFileCached.mockResolvedValueOnce({
+    const auth = {
       [firstKey]: authAccount("refresh", "project"),
-    });
+    };
     if (outcome instanceof Error) mocks.fetchResponse.mockRejectedValueOnce(outcome);
     else mocks.fetchResponse.mockResolvedValueOnce(outcome);
 
-    await expect(flavor.query()).resolves.toEqual({
+    await expect(flavor.query(auth)).resolves.toEqual({
       success: true,
       buckets: [],
       errors: [{ email: firstKey, error }],
@@ -484,15 +430,15 @@ describe.each(FLAVORS)("$name OAuth quota flow", (flavor) => {
     ],
     ["timeout", [new Error("Request timeout after 6s")], "API timeout"],
   ])("reports a failed quota request (%s) as an account error", async (_case, outcomes, error) => {
-    mocks.readAuthFileCached.mockResolvedValueOnce({
+    const auth = {
       [firstKey]: authAccount("refresh", "project"),
-    });
+    };
     for (const outcome of outcomes) {
       if (outcome instanceof Error) mocks.fetchResponse.mockRejectedValueOnce(outcome);
       else mocks.fetchResponse.mockResolvedValueOnce(outcome);
     }
 
-    await expect(flavor.query()).resolves.toEqual({
+    await expect(flavor.query(auth)).resolves.toEqual({
       success: true,
       buckets: [],
       errors: [{ email: firstKey, error }],
@@ -500,10 +446,10 @@ describe.each(FLAVORS)("$name OAuth quota flow", (flavor) => {
   });
 
   it("keeps account order and returns sibling account errors", async () => {
-    mocks.readAuthFileCached.mockResolvedValue({
+    const auth = {
       [firstKey]: authAccount("refresh-1", "project-1", "alice@example.com"),
       [lastKey]: authAccount("refresh-2", "project-2", "bob@example.com"),
-    });
+    };
     mocks.fetchResponse.mockImplementation(async (_url: string, init: { body?: string }) => {
       if (JSON.parse(init.body ?? "{}").project === "project-1") {
         await new Promise((resolve) => setTimeout(resolve, 25));
@@ -511,7 +457,7 @@ describe.each(FLAVORS)("$name OAuth quota flow", (flavor) => {
       }
       return jsonResponse(flavor.quotaResponse);
     });
-    const result = await flavor.query();
+    const result = await flavor.query(auth);
     if (!result?.success) throw new Error("expected success");
     expect([...new Set(result.buckets.map((bucket) => bucket.accountEmail))]).toEqual([
       "alice@example.com",
@@ -523,7 +469,7 @@ describe.each(FLAVORS)("$name OAuth quota flow", (flavor) => {
         ? jsonResponse(flavor.quotaResponse)
         : jsonResponse({}, 500),
     );
-    const partial = await flavor.query();
+    const partial = await flavor.query(auth);
     if (!partial?.success) throw new Error("expected success");
     expect(new Set(partial.buckets.map((bucket) => bucket.accountEmail))).toEqual(
       new Set(["alice@example.com"]),
@@ -533,7 +479,7 @@ describe.each(FLAVORS)("$name OAuth quota flow", (flavor) => {
     ]);
 
     mocks.fetchResponse.mockResolvedValue(jsonResponse({}, 500));
-    await expect(flavor.query()).resolves.toEqual({
+    await expect(flavor.query(auth)).resolves.toEqual({
       success: true,
       buckets: [],
       errors: [
@@ -619,20 +565,19 @@ describe("Google account resolution", () => {
 });
 
 describe("Google AGY quota summary", () => {
+  /** Answers the next quota request with `summary`; returns the one login to query. */
   function mockSummary(summary: unknown) {
-    mocks.readAuthFileCached.mockResolvedValueOnce({
-      "google-agy": authAccount("refresh-token", "project-1"),
-    });
     mocks.fetchResponse.mockResolvedValueOnce(jsonResponse(summary));
+    return { "google-agy": authAccount("refresh-token", "project-1") };
   }
 
   it("normalizes grouped weekly and five-hour buckets with canonical family labels", async () => {
-    mocks.readAuthFileCached.mockResolvedValueOnce({
+    const auth = {
       "google-agy": authAccount("refresh-token", "project-1", "alice@example.com"),
-    });
+    };
     mocks.fetchResponse.mockResolvedValueOnce(jsonResponse(summaryResponse()));
 
-    const result = await queryGoogleAgyQuota();
+    const result = await queryAgy(auth);
     if (!result?.success) throw new Error("expected success");
     expect(result.buckets[0]).toEqual({
       family: "Gemini Models",
@@ -664,7 +609,7 @@ describe("Google AGY quota summary", () => {
   });
 
   it("uses top-level buckets only when grouped buckets are not usable", async () => {
-    mockSummary({
+    const auth = mockSummary({
       description: "Fallback family",
       groups: [{ displayName: "Gemini Models", buckets: [{ window: "DAILY" }] }],
       buckets: [
@@ -673,7 +618,7 @@ describe("Google AGY quota summary", () => {
       ],
     });
 
-    const result = await queryGoogleAgyQuota();
+    const result = await queryAgy(auth);
     if (!result?.success) throw new Error("expected success");
     expect(result.buckets.map((bucket) => [bucket.family, bucket.window])).toEqual([
       ["Fallback family", "weekly"],
@@ -682,7 +627,7 @@ describe("Google AGY quota summary", () => {
   });
 
   it("reports a summary without usable rows as an account error", async () => {
-    mockSummary({
+    const auth = mockSummary({
       groups: [
         {
           displayName: "Gemini Models",
@@ -700,7 +645,7 @@ describe("Google AGY quota summary", () => {
       ],
     });
 
-    await expect(queryGoogleAgyQuota()).resolves.toEqual({
+    await expect(queryAgy(auth)).resolves.toEqual({
       success: true,
       buckets: [],
       errors: [{ email: "google-agy", error: "Quota summary API unavailable" }],
@@ -708,7 +653,7 @@ describe("Google AGY quota summary", () => {
   });
 
   it("keeps the most constrained duplicate, an explicit zero, and drops an invalid reset", async () => {
-    mockSummary({
+    const auth = mockSummary({
       groups: [
         {
           displayName: "Gemini Models",
@@ -736,7 +681,7 @@ describe("Google AGY quota summary", () => {
       ],
     });
 
-    const result = await queryGoogleAgyQuota();
+    const result = await queryAgy(auth);
     if (!result?.success) throw new Error("expected success");
     expect(result.buckets).toHaveLength(2);
     expect(result.buckets.find((bucket) => bucket.bucketId === "same-weekly")).toMatchObject({
@@ -749,11 +694,11 @@ describe("Google AGY quota summary", () => {
   });
 
   it("numbers accounts in input order and limits requests to three in flight", async () => {
-    mocks.readAuthFileCached.mockResolvedValueOnce({
+    const auth = {
       "google-agy": authAccount("refresh-1", "project-1"),
       "opencode-agy-auth": authAccount("refresh-2", "project-2"),
       "google-agy-auth": authAccount("refresh-3", "project-3"),
-    });
+    };
     let inFlight = 0;
     let maxInFlight = 0;
     mocks.fetchResponse.mockImplementation(async () => {
@@ -764,7 +709,7 @@ describe("Google AGY quota summary", () => {
       return jsonResponse(summaryResponse());
     });
 
-    const result = await queryGoogleAgyQuota();
+    const result = await queryAgy(auth);
     if (!result?.success) throw new Error("expected success");
     expect(maxInFlight).toBe(3);
     expect(result.buckets.map((bucket) => bucket.accountIndex)).toEqual([

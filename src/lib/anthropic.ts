@@ -15,13 +15,13 @@ import { readFile } from "fs/promises";
 import { homedir } from "os";
 import { join } from "path";
 
-import { resolveAnthropicOAuthCached } from "./anthropic-auth.js";
+import { type AnthropicLogin, readAnthropicLogins } from "./anthropic-auth.js";
 import { sanitizeDisplaySnippet, sanitizeDisplayText } from "./display-sanitize.js";
 import { fetchWithTimeout } from "./http.js";
 import { asRecord, finiteNumber, nonEmptyString } from "./json-guards.js";
 import {
-  composeResolvedAuthIdentities,
   deriveResolvedAuthIdentity,
+  loginListIdentity,
   type ResolvedAuthIdentity,
 } from "./resolved-auth-identity.js";
 
@@ -478,11 +478,11 @@ async function readClaudeOAuthAccessToken(): Promise<AnthropicCredentialsAccess>
 async function readAnthropicOAuthAccessToken(options: {
   includeClaudeCredentials: boolean;
 }): Promise<AnthropicCredentialsAccess> {
-  const opencodeCredentials = await resolveAnthropicOAuthCached();
-  if (opencodeCredentials.state === "configured") {
+  const [opencodeCredentials] = await readAnthropicLogins();
+  if (opencodeCredentials?.auth.state === "configured") {
     return {
       state: "configured",
-      accessToken: opencodeCredentials.accessToken,
+      accessToken: opencodeCredentials.auth.accessToken,
       source: "opencode-auth",
     };
   }
@@ -951,11 +951,8 @@ export async function hasAnthropicCredentialsConfigured(
   options: AnthropicProbeOptions = {},
 ): Promise<boolean> {
   try {
-    const opencodeCredentials = await resolveAnthropicOAuthCached();
     // A login OpenCode could not return still counts, so it shows as an error.
-    if (opencodeCredentials.state === "configured" || opencodeCredentials.state === "failed") {
-      return true;
-    }
+    if ((await readAnthropicLogins()).length > 0) return true;
   } catch {
     // Fall back to the existing local Claude CLI probe.
   }
@@ -968,47 +965,49 @@ export async function hasAnthropicCredentialsConfigured(
   }
 }
 
-export async function resolveAnthropicAuthIdentity(
+/**
+ * Who Claude is signed in as: every OpenCode login when there are some, since only they are
+ * checked then; else the Claude CLI's credentials.
+ */
+export async function anthropicLoginsIdentity(
+  logins: readonly AnthropicLogin[],
   options: AnthropicProbeOptions = {},
 ): Promise<ResolvedAuthIdentity | null> {
+  if (logins.length > 0) {
+    return loginListIdentity(
+      "anthropic",
+      await Promise.all(
+        logins.map(async ({ row, auth }) => ({
+          identity:
+            auth.state === "configured"
+              ? await deriveResolvedAuthIdentity({
+                  providerId: "anthropic:opencode-auth",
+                  principal: { kind: "credential", value: auth.accessToken },
+                })
+              : null,
+          active: row.active,
+        })),
+      ),
+    );
+  }
+
   let localDiagnostics: AnthropicLocalDiagnostics;
   try {
     localDiagnostics = await getCachedAnthropicLocalDiagnostics(options.binaryPath);
   } catch {
     return null;
   }
-
   // Claude CLI quota does not expose an account identity. Keep that winning
   // path process-local rather than risking reuse after a CLI account switch.
-  if (localDiagnostics.localQuota) return null;
-
-  const opencodeCredentials = await resolveAnthropicOAuthCached();
-  const opencodeIdentity =
-    opencodeCredentials.state === "configured"
-      ? await deriveResolvedAuthIdentity({
-          providerId: "anthropic:opencode-auth",
-          principal: { kind: "credential", value: opencodeCredentials.accessToken },
-        })
-      : null;
-
-  if (localDiagnostics.authStatus !== "authenticated") return opencodeIdentity;
+  if (localDiagnostics.localQuota || localDiagnostics.authStatus !== "authenticated") return null;
 
   const claudeCredentials = await readClaudeOAuthAccessToken();
-  const claudeIdentity =
-    claudeCredentials.state === "configured"
-      ? await deriveResolvedAuthIdentity({
-          providerId: "anthropic:claude-credentials",
-          principal: { kind: "credential", value: claudeCredentials.accessToken },
-        })
-      : null;
-
-  if (opencodeIdentity && claudeIdentity) {
-    return composeResolvedAuthIdentities({
-      providerId: "anthropic",
-      identities: [opencodeIdentity, claudeIdentity],
-    });
-  }
-  return opencodeIdentity ?? claudeIdentity;
+  return claudeCredentials.state === "configured"
+    ? deriveResolvedAuthIdentity({
+        providerId: "anthropic:claude-credentials",
+        principal: { kind: "credential", value: claudeCredentials.accessToken },
+      })
+    : null;
 }
 
 export async function queryAnthropicQuota(

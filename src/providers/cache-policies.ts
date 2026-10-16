@@ -1,5 +1,6 @@
 import { resolveAlibabaCodingPlanAuthCached } from "../lib/alibaba-auth.js";
-import { resolveAnthropicAuthIdentity } from "../lib/anthropic.js";
+import { anthropicLoginsIdentity } from "../lib/anthropic.js";
+import { readAnthropicLogins } from "../lib/anthropic-auth.js";
 import {
   API_KEY_LOGIN_VENDORS,
   API_KEY_VENDORS,
@@ -7,15 +8,16 @@ import {
   resolveApiKey,
   resolveApiKeyLogin,
 } from "../lib/api-key-resolver.js";
-import { resolveCopilotAuthIdentity } from "../lib/copilot.js";
+import { copilotLoginsIdentity, readCopilotLogins } from "../lib/copilot.js";
 import type { QuotaProviderCachePolicy } from "../lib/entries.js";
-import { resolveGoogleAgyAuthIdentity } from "../lib/google-agy.js";
-import { resolveGeminiCliAuthIdentity } from "../lib/google-gemini-cli.js";
+import { AGY_FLAVOR } from "../lib/google-agy.js";
+import { GEMINI_CLI_FLAVOR } from "../lib/google-gemini-cli.js";
+import { googleLoginsIdentity, readGoogleLogins } from "../lib/google-oauth-quota.js";
 import {
   DEFAULT_MIMO_CONFIG_CACHE_MAX_AGE_MS,
   resolveMimoConfigCached,
 } from "../lib/mimo-config.js";
-import { resolveOpenAIAuthIdentity } from "../lib/openai.js";
+import { openaiLoginsIdentity, readOpenAILogins } from "../lib/openai.js";
 import { consoleBaseUrl, resolveOpenCodeConsoleAuth } from "../lib/opencode-console-auth.js";
 import { resolveOpenRouterAuthIdentity } from "../lib/openrouter.js";
 import type { CanonicalQuotaProviderId } from "../lib/provider-registration.js";
@@ -29,7 +31,7 @@ import {
   deriveResolvedAuthIdentity,
   type ResolvedAuthIdentity,
 } from "../lib/resolved-auth-identity.js";
-import { resolveXaiAuthIdentity } from "../lib/xai.js";
+import { readXaiLogins, xaiLoginsIdentity } from "../lib/xai.js";
 
 const UNCACHED = { kind: "uncached" } as const satisfies QuotaProviderCachePolicy;
 
@@ -129,16 +131,18 @@ const quotaProvidersCachePolicy: QuotaProviderCachePolicy = {
 export const PROVIDER_CACHE_POLICIES = {
   anthropic: {
     kind: "resolved-auth",
-    resolveIdentity: (ctx) =>
-      resolveAnthropicAuthIdentity({ binaryPath: ctx.config.anthropicBinaryPath }),
+    resolveIdentity: async (ctx) =>
+      anthropicLoginsIdentity(await readAnthropicLogins(), {
+        binaryPath: ctx.config.anthropicBinaryPath,
+      }),
   },
   copilot: {
     kind: "resolved-auth",
-    resolveIdentity: () => resolveCopilotAuthIdentity(),
+    resolveIdentity: async () => copilotLoginsIdentity(await readCopilotLogins()),
   },
   openai: {
     kind: "resolved-auth",
-    resolveIdentity: () => resolveOpenAIAuthIdentity(),
+    resolveIdentity: async () => openaiLoginsIdentity(await readOpenAILogins()),
   },
   openrouter: {
     kind: "resolved-auth",
@@ -154,11 +158,13 @@ export const PROVIDER_CACHE_POLICIES = {
   }),
   "google-gemini-cli": {
     kind: "resolved-auth",
-    resolveIdentity: () => resolveGeminiCliAuthIdentity(),
+    resolveIdentity: async () =>
+      googleLoginsIdentity(GEMINI_CLI_FLAVOR, await readGoogleLogins(GEMINI_CLI_FLAVOR)),
   },
   "google-agy": {
     kind: "resolved-auth",
-    resolveIdentity: () => resolveGoogleAgyAuthIdentity(),
+    resolveIdentity: async () =>
+      googleLoginsIdentity(AGY_FLAVOR, await readGoogleLogins(AGY_FLAVOR)),
   },
   zai: apiKeyLoginPolicy("zai"),
   zhipu: apiKeyLoginPolicy("zhipu"),
@@ -185,7 +191,7 @@ export const PROVIDER_CACHE_POLICIES = {
   deepseek: apiKeyPolicy("deepseek"),
   xai: {
     kind: "resolved-auth",
-    resolveIdentity: () => resolveXaiAuthIdentity(),
+    resolveIdentity: async () => xaiLoginsIdentity(await readXaiLogins()),
   },
   xiaomi: resolvedCredentialPolicy("xiaomi", async () => {
     const resolved = await resolveMimoConfigCached({

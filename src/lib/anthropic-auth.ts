@@ -1,15 +1,13 @@
 /**
  * OpenCode-managed Anthropic OAuth credentials.
  *
- * Reads the `anthropic` OAuth entry from OpenCode's own opencode.db. This is the
- * credential OpenCode refreshes for Anthropic subscription models, so it stays
+ * Reads the `anthropic` OAuth logins from OpenCode's own opencode.db. These are the
+ * credentials OpenCode refreshes for Anthropic subscription models, so they stay
  * usable even when a separately installed Claude Code has stale credentials.
  */
 
-import { readAuthFileCached } from "./opencode-auth.js";
+import { type CredentialRow, credentialRowAuthData, readCredentialRows } from "./opencode-auth.js";
 import type { AuthData } from "./types.js";
-
-const ANTHROPIC_AUTH_CACHE_MAX_AGE_MS = 5_000;
 
 type ResolvedAnthropicOAuth =
   | { state: "none" }
@@ -38,10 +36,19 @@ export function resolveAnthropicOAuth(
     : { state: "configured", accessToken, expiresAt };
 }
 
-export async function resolveAnthropicOAuthCached(): Promise<ResolvedAnthropicOAuth> {
-  const auth = await readAuthFileCached({
-    maxAgeMs: ANTHROPIC_AUTH_CACHE_MAX_AGE_MS,
-    integrationIds: ["anthropic"],
+export type AnthropicLogin = {
+  row: CredentialRow;
+  auth: Extract<ResolvedAnthropicOAuth, { state: "configured" | "failed" }>;
+};
+
+/**
+ * Every OpenCode Claude sign-in with a usable token, in OpenCode's order (the one it uses
+ * first). A sign-in OpenCode could not return stays, so it shows as its own error.
+ */
+export async function readAnthropicLogins(): Promise<AnthropicLogin[]> {
+  return (await readCredentialRows(["anthropic"], { methods: ["oauth"] })).flatMap((row) => {
+    if (row.integrationId !== "anthropic") return [];
+    const auth = resolveAnthropicOAuth(credentialRowAuthData(row));
+    return auth.state === "configured" || auth.state === "failed" ? [{ row, auth }] : [];
   });
-  return resolveAnthropicOAuth(auth);
 }

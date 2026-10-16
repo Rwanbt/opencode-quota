@@ -1,10 +1,6 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 
-const mocks = vi.hoisted(() => ({ readAuthFileCached: vi.fn() }));
-
-vi.mock("../src/lib/opencode-auth.js", () => ({ readAuthFileCached: mocks.readAuthFileCached }));
-
-import { resolveAnthropicOAuth, resolveAnthropicOAuthCached } from "../src/lib/anthropic-auth.js";
+import { resolveAnthropicOAuth } from "../src/lib/anthropic-auth.js";
 
 describe("anthropic auth resolution", () => {
   it.each([
@@ -42,20 +38,5 @@ describe("anthropic auth resolution", () => {
     ["returns none when the anthropic entry is missing", {}, { state: "none" }],
   ])("%s", (_label, auth, expected) => {
     expect(resolveAnthropicOAuth(auth as never, { nowMs: 2_000 })).toStrictEqual(expected);
-  });
-
-  it("uses cached auth reads for resolveAnthropicOAuthCached", async () => {
-    mocks.readAuthFileCached.mockResolvedValueOnce({
-      anthropic: { type: "oauth", access: "cached-token" },
-    });
-
-    await expect(resolveAnthropicOAuthCached()).resolves.toEqual({
-      state: "configured",
-      accessToken: "cached-token",
-    });
-    expect(mocks.readAuthFileCached).toHaveBeenCalledWith({
-      maxAgeMs: 5_000,
-      integrationIds: ["anthropic"],
-    });
   });
 });

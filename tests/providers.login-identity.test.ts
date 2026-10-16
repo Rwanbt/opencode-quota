@@ -1,0 +1,194 @@
+/**
+ * Who a provider is signed in as covers every login it checks: a login added or switched shows at
+ * the next check after a login change, instead of waiting out the check interval. Through the
+ * store, with the real providers, a temp `opencode.db` and fake HTTP.
+ */
+
+import { join } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+
+import { loadProviderSource } from "../src/core/provider-source.js";
+import { createQuotaStore } from "../src/core/store.js";
+import type { QuotaSnapshot } from "../src/core/types.js";
+import { geminiCliCompanion } from "../src/lib/google-companion-credentials.js";
+import { __resetResolvedAuthIdentityForTests } from "../src/lib/resolved-auth-identity.js";
+import { getProviders } from "../src/providers/registry.js";
+import { defaultSettings } from "../src/settings/index.js";
+import type { CredentialDatabaseRow } from "./helpers/credential-database.js";
+import { fakeHttp, requestHeader, useProviderWorld } from "./helpers/provider-fetch.js";
+
+const world = useProviderWorld();
+
+afterEach(() => {
+  __resetResolvedAuthIdentityForTests();
+});
+
+type Vendor = {
+  providerId: string;
+  /** What the provider needs besides its logins. */
+  setup?: () => void;
+  login: (id: string, token: string, updated: number) => CredentialDatabaseRow;
+  /** The token a request was made with. */
+  token: (init: RequestInit) => string | null;
+  /** The answer for one login's token. */
+  reply: (url: string) => unknown;
+};
+
+function bearerToken(init: RequestInit): string | null {
+  return requestHeader(init, "Authorization")?.replace(/^Bearer /u, "") ?? null;
+}
+
+const VENDORS: Vendor[] = [
+  {
+    providerId: "copilot",
+    login: (id, token, updated) => ({
+      id,
+      integrationId: "github-copilot",
+      label: id,
+      active: null,
+      updated,
+      value: { type: "oauth", access: token, refresh: token },
+    }),
+    token: (init) => requestHeader(init, "Authorization")?.replace(/^token /u, "") ?? null,
+    reply: () => ({
+      copilot_plan: "pro",
+      quota_snapshots: {
+        premium_interactions: { entitlement: 300, quota_remaining: 150, percent_remaining: 50 },
+      },
+    }),
+  },
+  {
+    providerId: "anthropic",
+    login: (id, token, updated) => ({
+      id,
+      integrationId: "anthropic",
+      label: id,
+      active: null,
+      updated,
+      value: { type: "oauth", access: token, refresh: token, expires: Date.now() + 3_600_000 },
+    }),
+    token: bearerToken,
+    reply: () => ({ five_hour: { utilization: 10 }, seven_day: { utilization: 20 } }),
+  },
+  {
+    providerId: "openai",
+    login: (id, token, updated) => ({
+      id,
+      integrationId: "openai",
+      label: id,
+      active: null,
+      updated,
+      value: { type: "oauth", access: token, refresh: `${token}-refresh` },
+    }),
+    token: bearerToken,
+    reply: () => ({
+      plan_type: "plus",
+      rate_limit: { primary_window: { used_percent: 10, limit_window_seconds: 18000 } },
+    }),
+  },
+  {
+    providerId: "xai",
+    login: (id, token, updated) => ({
+      id,
+      integrationId: "xai",
+      label: id,
+      active: null,
+      updated,
+      value: { type: "oauth", access: token },
+    }),
+    token: bearerToken,
+    reply: (url) =>
+      url.includes("billing")
+        ? { config: { creditUsagePercent: 10, currentPeriod: { type: "WEEKLY" } } }
+        : { subscriptions: [] },
+  },
+  {
+    providerId: "google-gemini-cli",
+    setup: () => {
+      world.writeCacheFile(
+        "node_modules/opencode-gemini-auth/src/constants.ts",
+        'export const GEMINI_CLIENT_ID = "client-id";\nexport const GEMINI_CLIENT_SECRET = "client-secret";\n',
+      );
+      geminiCliCompanion.clearCacheForTests();
+    },
+    login: (id, token, updated) => ({
+      id,
+      integrationId: "google-gemini-cli",
+      label: id,
+      active: null,
+      updated,
+      value: {
+        type: "oauth",
+        refresh: `refresh-${id}|project-${id}`,
+        access: token,
+        expires: Date.now() + 3_600_000,
+      },
+    }),
+    token: bearerToken,
+    reply: () => ({ buckets: [{ modelId: "gemini-2.5-pro", remainingFraction: 0.5 }] }),
+  },
+];
+
+/** The accounts the one provider shows, in order. */
+function accounts(snapshot: QuotaSnapshot): Array<string | undefined> {
+  return [...new Set(snapshot.providers[0]?.rows.map((row) => row.account))];
+}
+
+/** A store over the one provider, every other provider switched off. */
+function storeFor(providerId: string) {
+  const settings = defaultSettings();
+  // No Claude CLI: only the OpenCode logins count.
+  settings.providers.anthropic.binaryPath = join(world.configDir, "no-claude");
+  settings.providers.off = getProviders()
+    .map(({ id }) => (id === "quota-providers" ? "custom" : id))
+    .filter((id) => id !== providerId);
+  const loaded = {
+    path: "settings.jsonc",
+    exists: true,
+    settings,
+    issues: [],
+    fromFile: [],
+    notRead: [],
+  };
+  // OpenCode lists the provider, as it does once one of its logins exists.
+  const client = {
+    config: { providers: async () => ({ data: { providers: [{ id: providerId }] } }) },
+  };
+  const host = { client, workspaceRoot: world.configDir, settings: () => loaded };
+  return createQuotaStore({
+    source: () => loadProviderSource(host),
+    file: join(world.configDir, "snapshot-v6.json"),
+    log: () => {},
+  });
+}
+
+describe.each(VENDORS)("$providerId login list", (vendor) => {
+  it("checks a login added after the last check at the next login change", async () => {
+    const tokens: string[] = [];
+    fakeHttp((url, init) => {
+      const token = vendor.token(init);
+      if (token) tokens.push(token);
+      return vendor.reply(url);
+    });
+    vendor.setup?.();
+    world.storeLogins([vendor.login("work", "token-work", 2)]);
+    const store = storeFor(vendor.providerId);
+
+    const first = await store.refresh({ reason: "manual" });
+    expect(accounts(first)).toEqual([expect.stringContaining("work")]);
+
+    world.storeLogins([
+      vendor.login("work", "token-work", 2),
+      vendor.login("home", "token-home", 1),
+    ]);
+    store.invalidateIdentity();
+    const second = await store.refresh({ reason: "poll" });
+    await store.dispose();
+
+    expect(tokens).toContain("token-home");
+    expect(accounts(second)).toEqual([
+      expect.stringContaining("work"),
+      expect.stringContaining("home"),
+    ]);
+  });
+});

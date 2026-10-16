@@ -1,19 +1,16 @@
 import type { QuotaProvider } from "../lib/entries.js";
-import {
-  AGY_AUTH_KEYS,
-  compareAgyBuckets,
-  hasAgyQuotaRuntimeAvailable,
-  inspectAgyAuthPresence,
-  inspectAgyCompanionPresence,
-  queryGoogleAgyQuota,
-} from "../lib/google-agy.js";
+import { AGY_AUTH_KEYS, AGY_FLAVOR, compareAgyBuckets } from "../lib/google-agy.js";
 import { parseProviderModelRef } from "../lib/provider-model-matching.js";
-import type { GoogleAgyQuotaBucket } from "../lib/types.js";
+import type {
+  GoogleAgyAuthSourceKey,
+  GoogleAgyQuotaBucket,
+  GoogleAgyQuotaSummaryResponse,
+} from "../lib/types.js";
 import { FIVE_HOUR, keySlug, type ProviderRow, quotaRow, WEEKLY } from "./contract.js";
 import {
   fetchGoogleProviderQuota,
   type GoogleProviderFlavor,
-  isGoogleRuntimeAvailable,
+  isGoogleProviderAvailable,
   remainingCount,
 } from "./google-oauth-provider.js";
 
@@ -45,23 +42,19 @@ function agyRow(bucket: GoogleAgyQuotaBucket): ProviderRow | undefined {
   };
 }
 
-const AGY_PROVIDER: GoogleProviderFlavor<GoogleAgyQuotaBucket> = {
-  name: "Google AGY",
-  authKeys: AGY_AUTH_KEYS,
-  inspectAuth: inspectAgyAuthPresence,
-  inspectCompanion: inspectAgyCompanionPresence,
-  query: queryGoogleAgyQuota,
+const AGY_PROVIDER: GoogleProviderFlavor<
+  GoogleAgyAuthSourceKey,
+  GoogleAgyQuotaSummaryResponse,
+  GoogleAgyQuotaBucket
+> = {
+  quota: AGY_FLAVOR,
   compareBuckets: compareAgyBuckets,
   row: agyRow,
-  defaultAccount: (bucket, accountLabel) => ({
-    name: `AGY (${accountLabel ?? `Account ${bucket.accountIndex + 1}`})`,
-    login: `account-${bucket.accountIndex + 1}`,
-  }),
 };
 
 export const googleAgyProvider: QuotaProvider = {
   id: "google-agy",
-  isAvailable: () => isGoogleRuntimeAvailable(hasAgyQuotaRuntimeAvailable),
+  isAvailable: () => isGoogleProviderAvailable(AGY_PROVIDER),
   matchesCurrentModel: (model) =>
     (AGY_AUTH_KEYS as readonly string[]).includes(parseProviderModelRef(model).providerId),
   fetch: (ctx) => fetchGoogleProviderQuota(AGY_PROVIDER, ctx),

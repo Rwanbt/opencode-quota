@@ -10,8 +10,17 @@ import type { FixedWindowProjectionEvidence } from "./entries.js";
 import { clampPercent } from "./format-utils.js";
 import { fetchWithTimeout } from "./http.js";
 import { finiteNumber, isRecord } from "./json-guards.js";
-import { readAuthFileCached } from "./opencode-auth.js";
-import { deriveResolvedAuthIdentity, type ResolvedAuthIdentity } from "./resolved-auth-identity.js";
+import {
+  type CredentialRow,
+  credentialRowAuthData,
+  readAuthFileCached,
+  readCredentialRows,
+} from "./opencode-auth.js";
+import {
+  deriveResolvedAuthIdentity,
+  loginListIdentity,
+  type ResolvedAuthIdentity,
+} from "./resolved-auth-identity.js";
 import type { AuthData, QuotaError } from "./types.js";
 
 interface OpenAIUsageResponse {
@@ -177,19 +186,45 @@ export async function readOpenAIAuthCached(): Promise<ResolvedOpenAIOAuth> {
   );
 }
 
-export async function resolveOpenAIAuthIdentity(): Promise<ResolvedAuthIdentity | null> {
-  const resolved = await readOpenAIAuthCached();
-  if (resolved.state !== "configured") return null;
-  return deriveResolvedAuthIdentity({
-    providerId: "openai",
-    principal: resolved.accountId
-      ? { kind: "stable-id", value: resolved.accountId }
-      : { kind: "credential", value: resolved.refreshToken ?? resolved.accessToken },
+/** A stored OpenAI login (OAuth or API key) with its OAuth sign-in, when it has one. */
+export type OpenAILogin = { row: CredentialRow; oauth?: OpenAIOAuthLogin };
+
+/** Every stored OpenAI login, OAuth and API key; a failed one stays so it shows as an error. */
+export async function readOpenAILogins(): Promise<OpenAILogin[]> {
+  const rows = await readCredentialRows(OPENAI_AUTH_SOURCE_KEYS, { methods: ["oauth", "key"] });
+  return rows.map((row) => {
+    if (row.value.type === "api") return { row };
+    const oauth = resolveOpenAIOAuth(credentialRowAuthData(row));
+    return oauth.state === "none" ? { row } : { row, oauth };
   });
 }
 
-export async function hasOpenAIOAuthCached(): Promise<boolean> {
-  return (await readOpenAIAuthCached()).state !== "none";
+/**
+ * Who OpenAI is signed in as: each OAuth sign-in's account (or token), and each other login by
+ * its connection, since its rows do not depend on a secret. A failed login can't be told apart.
+ */
+export async function openaiLoginsIdentity(
+  logins: readonly OpenAILogin[],
+): Promise<ResolvedAuthIdentity | null> {
+  return loginListIdentity(
+    "openai",
+    await Promise.all(
+      logins.map(async ({ row, oauth }) => {
+        if (row.resolveError !== undefined || oauth?.state === "failed") {
+          return { identity: null, active: row.active };
+        }
+        const principal = oauth
+          ? oauth.accountId
+            ? { kind: "stable-id" as const, value: oauth.accountId }
+            : { kind: "credential" as const, value: oauth.refreshToken ?? oauth.accessToken }
+          : { kind: "stable-id" as const, value: `connection:${row.id}` };
+        return {
+          identity: await deriveResolvedAuthIdentity({ providerId: "openai", principal }),
+          active: row.active,
+        };
+      }),
+    ),
+  );
 }
 
 /** A login label that can go into a shell command unquoted and is not read as an option. */

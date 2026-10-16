@@ -6,24 +6,17 @@
  */
 
 import {
-  COPILOT_AUTH_KEYS,
   type CopilotQuotaAuthDiagnostics,
   getCopilotQuotaAuthDiagnostics,
-  hasCopilotQuotaRuntimeAvailable,
   queryCopilotQuota,
+  readCopilotLogins,
 } from "../lib/copilot.js";
 import type { QuotaProvider, QuotaProviderContext } from "../lib/entries.js";
 import { fmtUsdAmount } from "../lib/format-utils.js";
-import {
-  type CredentialRow,
-  credentialRowAuthEntry,
-  readAuthFileCached,
-  readCredentialRows,
-} from "../lib/opencode-auth.js";
+import { type CredentialRow, credentialRowAuthData } from "../lib/opencode-auth.js";
 import { isCanonicalProviderAvailable } from "../lib/provider-availability.js";
 import { modelIncludesAny, modelProviderIncludesAny } from "../lib/provider-model-matching.js";
 import type {
-  AuthData,
   CopilotBudgetResult,
   CopilotEnterpriseUsageResult,
   CopilotOrganizationUsageResult,
@@ -296,7 +289,7 @@ function fetchPerCredential(
     async fetchLogin({ row }) {
       const result = await queryCopilotQuota({
         requestTimeoutMs,
-        authData: { [row.integrationId]: credentialRowAuthEntry(row) } as AuthData,
+        authData: credentialRowAuthData(row),
       });
       if (!result) return null;
       if (!result.success) return { rows: [], errors: [{ message: result.error }] };
@@ -321,7 +314,7 @@ export const copilotProvider: QuotaProvider = {
     if (providerAvailable) return true;
 
     try {
-      return await hasCopilotQuotaRuntimeAvailable();
+      return getCopilotQuotaAuthDiagnostics(await readCopilotLogins()).billingApiAccessLikely;
     } catch {
       return false;
     }
@@ -334,19 +327,12 @@ export const copilotProvider: QuotaProvider = {
 
   async fetch(ctx: QuotaProviderContext): Promise<ProviderFetchResult> {
     const requestTimeoutMs = ctx.config?.requestTimeoutMs;
-    const diagnostics = getCopilotQuotaAuthDiagnostics(
-      await readAuthFileCached({ maxAgeMs: 5_000, integrationIds: COPILOT_AUTH_KEYS }),
-    );
-    const debug = copilotStatusDetails(diagnostics);
-    if (diagnostics.effectiveSource === "oauth") {
-      const credentials = await readCredentialRows(COPILOT_AUTH_KEYS, { methods: ["oauth"] });
-      if (credentials.length > 0) {
-        return {
-          attempted: true,
-          accounts: await fetchPerCredential(credentials, requestTimeoutMs),
-          debug,
-        };
-      }
+    const logins = await readCopilotLogins();
+    const debug = copilotStatusDetails(getCopilotQuotaAuthDiagnostics(logins));
+    if (logins.pat.state === "absent") {
+      // A login without a token or OAuth state gives no account.
+      const accounts = await fetchPerCredential(logins.oauth, requestTimeoutMs);
+      return { attempted: accounts.length > 0, accounts, debug };
     }
 
     const result = await queryCopilotQuota({ requestTimeoutMs });

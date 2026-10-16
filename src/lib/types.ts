@@ -284,12 +284,6 @@ export interface GeminiCliQuotaBucket {
   sourceKey?: GeminiCliAuthSourceKey;
 }
 
-interface GeminiCliQuotaResult {
-  success: true;
-  buckets: GeminiCliQuotaBucket[];
-  errors?: GoogleAccountError[];
-}
-
 export interface GoogleAgyQuotaSummaryBucket {
   bucketId?: string;
   displayName?: string;
@@ -329,14 +323,6 @@ export interface GoogleAgyQuotaBucket {
   sourceKey: GoogleAgyAuthSourceKey;
 }
 
-interface GoogleAgyQuotaResult {
-  success: true;
-  buckets: GoogleAgyQuotaBucket[];
-  errors?: GoogleAccountError[];
-}
-
-export type GoogleAgyResult = GoogleAgyQuotaResult | QuotaError | null;
-
 /** Error result */
 export interface QuotaError {
   success: false;
@@ -351,7 +337,6 @@ export type CopilotResult =
   | CopilotEnterpriseUsageResult
   | QuotaError
   | null;
-export type GeminiCliResult = GeminiCliQuotaResult | QuotaError | null;
 export type ZaiResult = ZaiQuotaResult | QuotaError | null;
 
 /** Session or weekly limit of a legacy plan from the Ollama Cloud balance API */

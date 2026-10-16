@@ -1,19 +1,13 @@
 import { classifyWindow } from "../core/windows.js";
 import type { QuotaProvider } from "../lib/entries.js";
-import {
-  GEMINI_CLI_AUTH_KEYS,
-  hasGeminiCliQuotaRuntimeAvailable,
-  inspectGeminiCliAuthPresence,
-  inspectGeminiCliCompanionPresence,
-  queryGeminiCliQuota,
-} from "../lib/google-gemini-cli.js";
+import { GEMINI_CLI_FLAVOR, type RetrieveUserQuotaResponse } from "../lib/google-gemini-cli.js";
 import { parseProviderModelRef } from "../lib/provider-model-matching.js";
-import type { GeminiCliQuotaBucket } from "../lib/types.js";
+import type { GeminiCliAuthSourceKey, GeminiCliQuotaBucket } from "../lib/types.js";
 import { keySlug, type ProviderRow, quotaRow } from "./contract.js";
 import {
   fetchGoogleProviderQuota,
   type GoogleProviderFlavor,
-  isGoogleRuntimeAvailable,
+  isGoogleProviderAvailable,
   remainingCount,
 } from "./google-oauth-provider.js";
 
@@ -61,24 +55,20 @@ function geminiCliRow(bucket: GeminiCliQuotaBucket): ProviderRow | undefined {
   };
 }
 
-const GEMINI_CLI_PROVIDER: GoogleProviderFlavor<GeminiCliQuotaBucket> = {
-  name: "Gemini CLI",
-  authKeys: GEMINI_CLI_AUTH_KEYS,
-  inspectAuth: inspectGeminiCliAuthPresence,
-  inspectCompanion: inspectGeminiCliCompanionPresence,
-  query: queryGeminiCliQuota,
+const GEMINI_CLI_PROVIDER: GoogleProviderFlavor<
+  GeminiCliAuthSourceKey,
+  RetrieveUserQuotaResponse,
+  GeminiCliQuotaBucket
+> = {
+  quota: GEMINI_CLI_FLAVOR,
   failedLoginError: (resolveError) =>
     `Gemini CLI sign-in could not be refreshed: ${resolveError}. Run \`opencode auth login google\`.`,
   row: geminiCliRow,
-  defaultAccount: (bucket, accountLabel = "Unknown") => ({
-    name: `Gemini CLI (${accountLabel})`,
-    login: bucket.accountEmail,
-  }),
 };
 
 export const googleGeminiCliProvider: QuotaProvider = {
   id: "google-gemini-cli",
-  isAvailable: () => isGoogleRuntimeAvailable(hasGeminiCliQuotaRuntimeAvailable),
+  isAvailable: () => isGoogleProviderAvailable(GEMINI_CLI_PROVIDER),
   matchesCurrentModel: isGeminiCliModel,
   fetch: (ctx) => fetchGoogleProviderQuota(GEMINI_CLI_PROVIDER, ctx),
 };

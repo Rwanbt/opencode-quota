@@ -4,23 +4,16 @@
 
 import type { QuotaProvider, QuotaProviderContext } from "../lib/entries.js";
 import {
-  hasOpenAIOAuthCached,
-  OPENAI_AUTH_SOURCE_KEYS,
-  type OpenAIOAuthLogin,
+  type OpenAILogin,
   type OpenAIResult,
   queryOpenAIQuota,
   readOpenAIAuthCached,
-  resolveOpenAIOAuth,
+  readOpenAILogins,
 } from "../lib/openai.js";
-import {
-  type CredentialRow,
-  credentialRowAuthEntry,
-  readCredentialRows,
-} from "../lib/opencode-auth.js";
+import type { CredentialRow } from "../lib/opencode-auth.js";
 import { isCanonicalProviderAvailable } from "../lib/provider-availability.js";
 import { modelProviderIncludesAny } from "../lib/provider-model-matching.js";
 import { resolveQuotaProviderSessionModelIdentity } from "../lib/quota-providers.js";
-import type { AuthData } from "../lib/types.js";
 import {
   type AccountResult,
   FIVE_HOUR,
@@ -65,10 +58,10 @@ function statusRow(text: string): ProviderRow {
  * an active API key (which only has a status).
  */
 function sortActiveLoginsFirst(
-  rows: readonly CredentialRow[],
+  logins: readonly OpenAILogin[],
   currentIntegrationId: string | undefined,
-): CredentialRow[] {
-  return [...rows].sort((left, right) => {
+): OpenAILogin[] {
+  return [...logins].sort(({ row: left }, { row: right }) => {
     const activeOrder = Number(right.active) - Number(left.active);
     if (activeOrder !== 0 || !left.active) return activeOrder;
     const sessionOrder =
@@ -79,7 +72,7 @@ function sortActiveLoginsFirst(
   });
 }
 
-function tokenStatus(row: CredentialRow, login: OpenAIOAuthLogin | undefined): string {
+function tokenStatus({ row, oauth: login }: OpenAILogin): string {
   if (row.value.type === "api") return row.resolveError !== undefined ? "failed" : "api key";
   if (!login) return "(none)";
   if (login.state === "failed") return "failed";
@@ -91,31 +84,28 @@ function tokenStatus(row: CredentialRow, login: OpenAIOAuthLogin | undefined): s
  * active (e.g. an env-selected connection or a failed active lookup) is never
  * reported as the active one.
  */
-function activeLoginStatusDetails(
-  rows: readonly CredentialRow[],
-  logins: ReadonlyMap<CredentialRow, OpenAIOAuthLogin>,
-): Record<string, string> {
-  const activeRow = rows.find((row) => row.active);
-  if (!activeRow) {
+function activeLoginStatusDetails(logins: readonly OpenAILogin[]): Record<string, string> {
+  const active = logins.find(({ row }) => row.active);
+  if (!active) {
     // With stored logins but none marked active, which one OpenCode uses is unknown.
-    const value = rows.length > 0 ? "unknown" : "(none)";
+    const value = logins.length > 0 ? "unknown" : "(none)";
     return {
-      auth_configured: rows.length > 0 ? "true" : "false",
+      auth_configured: logins.length > 0 ? "true" : "false",
       auth_source: value,
       auth_method: value,
       token_status: value,
       token_expires_at: value,
     };
   }
+  const { row: activeRow, oauth: login } = active;
   const isKey = activeRow.value.type === "api";
-  const login = logins.get(activeRow);
   const expiresAt = login?.state === "configured" ? login.expiresAt : undefined;
   return {
     auth_configured: isKey || login ? "true" : "false",
     auth_source: isKey ? activeRow.integrationId : (login?.sourceKey ?? "(none)"),
     // OpenCode 2's sign-in method, e.g. chatgpt-token-sharing ("Sign in with ChatGPT").
     auth_method: typeof activeRow.value.methodID === "string" ? activeRow.value.methodID : "(none)",
-    token_status: tokenStatus(activeRow, login),
+    token_status: tokenStatus(active),
     token_expires_at: expiresAt ? new Date(expiresAt).toISOString() : "(none)",
   };
 }
@@ -158,14 +148,8 @@ export const openaiProvider: QuotaProvider = {
     if (await isCanonicalProviderAvailable({ ctx, providerId: "openai", fallbackOnError: true })) {
       return true;
     }
-    if (await hasOpenAIOAuthCached()) return true;
-
-    // Without an OpenAI alias or OAuth login, a stored API key still counts.
-    const keyRows = await readCredentialRows(OPENAI_AUTH_SOURCE_KEYS, {
-      methods: ["key"],
-      firstOnly: true,
-    });
-    return keyRows.length > 0;
+    // Without an OpenAI alias, an OAuth sign-in or a stored API key counts.
+    return (await readOpenAILogins()).some(({ row, oauth }) => oauth || row.value.type === "api");
   },
 
   matchesCurrentModel(model: string): boolean {
@@ -177,28 +161,15 @@ export const openaiProvider: QuotaProvider = {
       ctx.config?.currentProviderID ??
       resolveQuotaProviderSessionModelIdentity({ currentModel: ctx.config?.currentModel ?? "" })
         ?.providerId;
-    const rows = sortActiveLoginsFirst(
-      await readCredentialRows(OPENAI_AUTH_SOURCE_KEYS, { methods: ["oauth", "key"] }),
-      currentIntegrationId,
-    );
-
-    // A login OpenCode could not return stays here, so it shows as its own error.
-    const logins = new Map<CredentialRow, OpenAIOAuthLogin>();
-    for (const row of rows) {
-      if (row.value.type === "api") continue;
-      const login = resolveOpenAIOAuth({
-        [row.integrationId]: credentialRowAuthEntry(row),
-      } as AuthData);
-      if (login.state !== "none") logins.set(row, login);
-    }
+    const logins = sortActiveLoginsFirst(await readOpenAILogins(), currentIntegrationId);
     const requestTimeoutMs = ctx.config?.requestTimeoutMs;
     // Names span every stored account (OAuth and API key) so numbering and the
     // `(active)` marker match the accounts OpenCode actually holds.
     const accounts = await fetchEachLogin({
       providerName: "OpenAI",
-      logins: rows.map((row) => ({ row, login: logins.get(row) })),
+      logins,
       numberUnnamed: (row) => row.value.type === "api",
-      async fetchLogin({ row, login }) {
+      async fetchLogin({ row, oauth: login }) {
         if (isTokenSharingLogin(row)) {
           return {
             rows: [statusRow("ChatGPT quota unavailable for Sign in with ChatGPT")],
@@ -227,7 +198,7 @@ export const openaiProvider: QuotaProvider = {
       },
     });
 
-    const debug = statusDetailsFromRecord(activeLoginStatusDetails(rows, logins));
+    const debug = statusDetailsFromRecord(activeLoginStatusDetails(logins));
     if (accounts.length > 0) return { attempted: true, accounts, debug };
     return { ...(await fetchActiveLoginQuota(requestTimeoutMs)), debug };
   },

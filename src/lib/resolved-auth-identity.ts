@@ -219,6 +219,26 @@ export async function composeResolvedAuthIdentities(params: {
   ]);
 }
 
+/**
+ * Who a provider is signed in as across every login it checks, so adding, removing or switching
+ * a login changes it. One login keeps its own identity; several give their identities in a
+ * stable order plus the ones OpenCode uses. Null without logins, or when one of them can't be
+ * told apart safely.
+ */
+export async function loginListIdentity(
+  providerId: string,
+  logins: ReadonlyArray<{ identity: ResolvedAuthIdentity | null; active?: boolean }>,
+): Promise<ResolvedAuthIdentity | null> {
+  const identities = logins.map((login) => login.identity);
+  if (identities.length === 0 || identities.includes(null)) return null;
+  if (identities.length === 1) return identities[0] ?? null;
+  return composeResolvedAuthIdentities({
+    providerId,
+    identities: (identities as ResolvedAuthIdentity[]).sort(),
+    qualifiers: logins.flatMap((login) => (login.active ? [login.identity as string] : [])).sort(),
+  });
+}
+
 export function __resetResolvedAuthIdentityForTests(): void {
   identityKeyPromise = null;
 }

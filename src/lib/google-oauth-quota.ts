@@ -11,10 +11,16 @@ import {
 import { fetchWithTimeout } from "./http.js";
 import { nonEmptyString } from "./json-guards.js";
 import { mapWithConcurrency } from "./map-with-concurrency.js";
-import { readAuthFileCached } from "./opencode-auth.js";
+import {
+  activeCredentialRowsAuthData,
+  type CredentialRow,
+  credentialRowAuthData,
+  readCredentialRows,
+} from "./opencode-auth.js";
 import {
   composeResolvedAuthIdentities,
   deriveResolvedAuthIdentity,
+  loginListIdentity,
   type ResolvedAuthIdentity,
 } from "./resolved-auth-identity.js";
 import type {
@@ -31,7 +37,6 @@ import type {
  * Each flavor brings its auth keys, endpoint, and response parsing.
  */
 
-const AUTH_CACHE_MAX_AGE_MS = 5_000;
 const TOKEN_REFRESH_URL = "https://oauth2.googleapis.com/token";
 const TOKEN_TIMEOUT_MS = 8_000;
 const TOKEN_EXPIRY_SKEW_MS = 2 * 60_000;
@@ -65,6 +70,9 @@ export type GoogleQuotaResult<Bucket> =
   | QuotaError
   | null;
 
+/** Every OAuth login of one flavor, and the project id its logins fall back to. */
+export type GoogleLogins = { rows: CredentialRow[]; configuredProjectId: string | undefined };
+
 /** The logins and companion plugin of one flavor. */
 type GoogleAuthFlavor<Key extends GoogleAuthSourceKey> = {
   providerId: "google-agy" | "google-gemini-cli";
@@ -94,10 +102,6 @@ export type GoogleQuotaFlavor<
 
 type AccessTokenResult = { accessToken: string } | { error: string };
 
-function readGoogleAuth(flavor: { authKeys: readonly string[] }): Promise<AuthData | null> {
-  return readAuthFileCached({ maxAgeMs: AUTH_CACHE_MAX_AGE_MS, integrationIds: flavor.authKeys });
-}
-
 export async function resolveGoogleConfiguredProjectId(flavor: {
   projectIdEnvVar: string;
   projectIdConfigProvider: string;
@@ -108,6 +112,18 @@ export async function resolveGoogleConfiguredProjectId(flavor: {
     nonEmptyString(process.env.GOOGLE_CLOUD_PROJECT) ??
     nonEmptyString(process.env.GOOGLE_CLOUD_PROJECT_ID)
   );
+}
+
+export async function readGoogleLogins(flavor: {
+  authKeys: readonly string[];
+  projectIdEnvVar: string;
+  projectIdConfigProvider: string;
+}): Promise<GoogleLogins> {
+  const [rows, configuredProjectId] = await Promise.all([
+    readCredentialRows(flavor.authKeys, { methods: ["oauth"] }),
+    resolveGoogleConfiguredProjectId(flavor),
+  ]);
+  return { rows, configuredProjectId };
 }
 
 /**
@@ -164,19 +180,18 @@ export function resolveGoogleAccounts<Key extends GoogleAuthSourceKey>(
   return accounts;
 }
 
-export async function inspectGoogleAuthPresence<Key extends GoogleAuthSourceKey>(
+/** The auth state of the logins OpenCode uses: the first login of each auth key. */
+export function inspectGoogleAuthPresence<Key extends GoogleAuthSourceKey>(
   flavor: GoogleAuthFlavor<Key>,
-): Promise<GoogleAuthPresence<Key>> {
-  const [auth, configuredProjectId] = await Promise.all([
-    readGoogleAuth(flavor),
-    resolveGoogleConfiguredProjectId(flavor),
-  ]);
+  logins: GoogleLogins,
+): GoogleAuthPresence<Key> {
+  const auth = activeCredentialRowsAuthData(logins.rows);
   const oauthKeys = flavor.authKeys.filter((key) => auth?.[key]?.type === "oauth");
   if (oauthKeys.length === 0) {
     return { state: "missing", accountCount: 0, validAccountCount: 0 };
   }
 
-  const accounts = resolveGoogleAccounts(flavor, auth, configuredProjectId);
+  const accounts = resolveGoogleAccounts(flavor, auth, logins.configuredProjectId);
   const failedLoginKey = flavor.failedLoginCountsAsPresent
     ? oauthKeys.find((key) => auth?.[key]?.resolveError !== undefined)
     : undefined;
@@ -201,43 +216,54 @@ export async function inspectGoogleAuthPresence<Key extends GoogleAuthSourceKey>
 export async function hasGoogleQuotaRuntimeAvailable<Key extends GoogleAuthSourceKey>(
   flavor: GoogleAuthFlavor<Key>,
 ): Promise<boolean> {
-  const [auth, companion] = await Promise.all([
-    inspectGoogleAuthPresence(flavor),
+  const [logins, companion] = await Promise.all([
+    readGoogleLogins(flavor),
     flavor.companion.inspect(),
   ]);
-  return auth.state === "present" && companion.state === "present";
+  return (
+    inspectGoogleAuthPresence(flavor, logins).state === "present" && companion.state === "present"
+  );
 }
 
-export async function resolveGoogleAuthIdentity<Key extends GoogleAuthSourceKey>(
+/**
+ * Who the flavor is signed in as: the account of every login, plus the companion plugin's
+ * client. Null without a usable login or without the companion's client.
+ */
+export async function googleLoginsIdentity<Key extends GoogleAuthSourceKey>(
   flavor: GoogleAuthFlavor<Key>,
+  logins: GoogleLogins,
 ): Promise<ResolvedAuthIdentity | null> {
-  const [auth, configuredProjectId, credentials] = await Promise.all([
-    readGoogleAuth(flavor),
-    resolveGoogleConfiguredProjectId(flavor),
-    flavor.companion.resolveCredentials(),
-  ]);
-  const accounts = resolveGoogleAccounts(flavor, auth, configuredProjectId);
-  if (accounts.length === 0 || credentials.state !== "configured") return null;
+  const credentials = await flavor.companion.resolveCredentials();
+  if (credentials.state !== "configured") return null;
 
-  const identities = await Promise.all([
-    ...accounts.map((account) =>
-      deriveResolvedAuthIdentity({
+  const accounts = logins.rows.flatMap((row) =>
+    resolveGoogleAccounts(flavor, credentialRowAuthData(row), logins.configuredProjectId).map(
+      (account) => ({ account, active: row.active }),
+    ),
+  );
+  const accountIdentities = await Promise.all(
+    accounts.map(async ({ account, active }) => ({
+      identity: await deriveResolvedAuthIdentity({
         providerId: flavor.providerId,
         principal: { kind: "credential", value: account.refreshToken },
         qualifiers: [account.projectId],
       }),
-    ),
+      active,
+    })),
+  );
+  const [accountsIdentity, companionIdentity] = await Promise.all([
+    loginListIdentity(flavor.providerId, accountIdentities),
     deriveResolvedAuthIdentity({
       providerId: `${flavor.providerId}:companion`,
       principal: { kind: "credential", value: credentials.clientSecret },
       qualifiers: [credentials.clientId],
     }),
   ]);
-  if (identities.some((identity) => identity === null)) return null;
+  if (!accountsIdentity || !companionIdentity) return null;
 
   return composeResolvedAuthIdentities({
     providerId: flavor.providerId,
-    identities: identities as ResolvedAuthIdentity[],
+    identities: [accountsIdentity, companionIdentity],
   });
 }
 
@@ -399,13 +425,10 @@ async function fetchAccountBuckets<Key extends GoogleAuthSourceKey, Response, Bu
 
 export async function queryGoogleQuota<Key extends GoogleAuthSourceKey, Response, Bucket>(
   flavor: GoogleQuotaFlavor<Key, Response, Bucket>,
-  options: { requestTimeoutMs?: number; authData?: AuthData },
+  options: { requestTimeoutMs?: number; authData: AuthData },
 ): Promise<GoogleQuotaResult<Bucket>> {
-  const [auth, configuredProjectId] = await Promise.all([
-    options.authData ?? readGoogleAuth(flavor),
-    resolveGoogleConfiguredProjectId(flavor),
-  ]);
-  const accounts = resolveGoogleAccounts(flavor, auth, configuredProjectId);
+  const configuredProjectId = await resolveGoogleConfiguredProjectId(flavor);
+  const accounts = resolveGoogleAccounts(flavor, options.authData, configuredProjectId);
   if (accounts.length === 0) return null;
 
   const credentials = await flavor.companion.resolveCredentials();
