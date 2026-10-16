@@ -22,7 +22,6 @@ export {
 } from "./file.js";
 export {
   type ClientSettings,
-  type CursorPlan,
   type CustomProviderSwitch,
   checkSetting,
   clientSettings,
@@ -30,9 +29,7 @@ export {
   defaultSettings,
   describeRule,
   keysUnder,
-  type PercentStyle,
   PROVIDER_IDS,
-  type ResetStyle,
   SETTINGS_SCHEMA,
   type SettingRule,
   type Settings,

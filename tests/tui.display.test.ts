@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { checkSetting, SETTINGS_SCHEMA, type SettingRule } from "../src/settings/schema.js";
 import {
   type DisplaySettings,
   defaultDisplaySettings,
@@ -37,9 +38,12 @@ describe("the Settings tabs' field table", () => {
     );
 
   it.each(
-    FIELDS.filter((item) => item.values.length > 0).map((item) => [item.path, item] as const),
-  )("%s starts at one of its values", (_path, item) => {
-    expect(item.values).toContain(valueAt(defaultDisplaySettings(), item.path));
+    FIELDS.map((item) => [item.path, item] as const),
+  )("%s edits a window setting, starts at its default and steps through values it accepts", (path, item) => {
+    const rule: SettingRule = SETTINGS_SCHEMA[path];
+    expect(rule.fileOnly).toBeUndefined();
+    if (item.values.length > 0) expect(item.values).toContain(rule.default);
+    for (const value of item.values) expect(checkSetting(path, value).issues).toEqual([]);
   });
 
   it.each([

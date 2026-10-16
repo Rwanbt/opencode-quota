@@ -4,7 +4,7 @@
  * value is plain JSON, because snapshots travel over the RPC and are saved to disk.
  */
 import type { QuotaExportProvider } from "../lib/quota-export-types.js";
-import type { ClientSettings } from "../settings/schema.js";
+import type { ClientSettings, Settings } from "../settings/schema.js";
 
 /** What a row's number means (ADR 0001: the 7 legacy result types become 5). */
 export type RowType = "quota" | "budget" | "usage" | "balance" | "status";
@@ -146,30 +146,8 @@ export type SessionTokens = {
   models?: SessionModelInput[];
 };
 
-/** "58% left", "58% remaining", "58%", or "42% used". */
-type PercentStyle = "left" | "remaining" | "bare" | "used";
-/** How a time until a reset reads: "4.5d" (smart), "2h 14m", "2h14m", "2h", or "2.2h". */
-export type ResetStyle = "smart" | "exact" | "compact" | "short" | "decimal";
-
 /** The words every surface uses, on every client (TUI, Web, Desktop, CLI). */
-export type Words = {
-  percent: PercentStyle;
-  reset: ResetStyle;
-  /** Decimals of the "decimal" reset style. */
-  resetDecimals: number;
-  /**
-   * How the sidebar, the collapsed panel, the status line and toasts name a row: "short" by
-   * its window ("5h", "7d") unless another row of its provider has the same one, "full" by its
-   * label. A row you renamed shows your name in both.
-   */
-  rowNames: "short" | "full";
-  /** "detailed" also shows supplementary rows. */
-  detail: "summary" | "detailed";
-  /** Show only the providers serving the session's current model. */
-  onlyCurrentModel: boolean;
-  /** Session tokens of this session, or with its subagents. */
-  sessionTokens: "current" | "tree";
-};
+export type Words = Settings["words"];
 
 /** A session's model: its id and OpenCode's provider id. */
 export type SessionModel = { id?: string; providerID?: string };

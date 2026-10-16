@@ -47,7 +47,7 @@ export type SettingRule = (
 };
 
 /** The names a color setting takes besides "#rrggbb": theme colors, and the row's bar color. */
-export const THEME_COLOR_NAMES: readonly string[] = [
+export const THEME_COLOR_NAMES = [
   "text",
   "muted",
   "accent",
@@ -56,7 +56,7 @@ export const THEME_COLOR_NAMES: readonly string[] = [
   "red",
   "blue",
   "bar",
-];
+] as const;
 
 const bool = (value: boolean) => ({ kind: "boolean", default: value }) as const;
 const choice = <const V extends readonly string[]>(values: V, value: V[number]) =>
@@ -133,15 +133,23 @@ export const SETTINGS_SCHEMA = {
   /** The ┃ mark where even use would be, in every place's bars (the Limits tab always has it). */
   "layout.evenUse": bool(false),
   "layout.indent": { ...whole(0, 4), default: 1 },
+  /** The most columns a row name takes; the name column fits the names next to a bar. */
   "layout.labelWidth": { ...whole(3, 20), default: 8 },
+  /** Empty lines between providers in the sidebar. */
   "layout.providerGap": { ...whole(0, 2), default: 1 },
+  /** Between providers on the status line. */
   "layout.separator": { kind: "separator", default: " · " },
   /** The words every client uses: "58% left", "58% remaining", "58%", or "42% used". */
   "words.percent": choice(["left", "remaining", "bare", "used"], "left"),
   /** "4.5d" (smart), "2h 14m", "2h14m", "2h", or "2.2h" (with `resetDecimals`). */
   "words.reset": choice(["smart", "exact", "compact", "short", "decimal"], "smart"),
+  /** Decimals of the "decimal" reset style. */
   "words.resetDecimals": { ...whole(0, 4), default: 1 },
-  /** Rows named by their window ("5h", "7d") where that tells them apart, or by their labels. */
+  /**
+   * How the sidebar, the collapsed panel, the status line and toasts name a row: "short" by its
+   * window ("5h", "7d") unless another row of its provider has the same one, "full" by its label.
+   * A row you renamed shows your name in both.
+   */
   "words.rowNames": choice(["short", "full"], "short"),
   /** "detailed" also shows supplementary rows. */
   "words.detail": choice(["summary", "detailed"], "summary"),
@@ -186,17 +194,7 @@ type KindValue = {
   names: Record<string, string>;
   rowOrder: Record<string, string[]>;
   window: Record<string, "lowest" | QuotaWindow>;
-  color:
-    | "text"
-    | "muted"
-    | "accent"
-    | "green"
-    | "yellow"
-    | "red"
-    | "blue"
-    | "bar"
-    | `#${string}`
-    | undefined;
+  color: (typeof THEME_COLOR_NAMES)[number] | `#${string}` | undefined;
   separator: string;
   customProviders: QuotaProviderDefinition[];
 };
@@ -226,9 +224,6 @@ type Patch<T> = T extends readonly unknown[]
     : T;
 /** A JSON merge patch of the settings: objects merge, null resets a key or a whole group. */
 export type SettingsPatch = Patch<Settings>;
-export type PercentStyle = Settings["words"]["percent"];
-export type ResetStyle = Settings["words"]["reset"];
-export type CursorPlan = Settings["providers"]["cursor"]["plan"];
 
 export function defaultSettings(): Settings {
   const settings = {};
@@ -416,7 +411,7 @@ export function checkSetting(key: string, value: unknown): CheckedSetting {
       return typeof value === "string" && value.length <= 5 ? { value, issues: [] } : invalid;
     case "color":
       return value === undefined ||
-        THEME_COLOR_NAMES.includes(String(value)) ||
+        (THEME_COLOR_NAMES as readonly string[]).includes(String(value)) ||
         (typeof value === "string" && /^#[0-9a-f]{6}$/iu.test(value))
         ? { value, issues: [] }
         : invalid;

@@ -532,7 +532,8 @@ function settingValueText(rule: SettingRule, value: unknown, homeDir: string): s
     case "path":
       return typeof value === "string" ? pathText(value, homeDir) : CUSTOM_PATH;
     case "color":
-      if (typeof value === "string" && THEME_COLOR_NAMES.includes(value)) return value;
+      if (typeof value === "string" && (THEME_COLOR_NAMES as readonly string[]).includes(value))
+        return value;
       return typeof value === "string" && /^#[0-9a-f]{6}$/iu.test(value)
         ? "(custom color)"
         : "(color)";

@@ -49,8 +49,8 @@ function lines() {
     groups: visibleGroups(snapshot, display, "toast", DEFAULT_WORDS),
     words: DEFAULT_WORDS,
     nowMs: NOW,
-    layout: "grouped",
-    bar: "blocks",
+    layout: display.layout,
+    toastLayout: "grouped",
     room: 54,
     runsOut: true,
   });

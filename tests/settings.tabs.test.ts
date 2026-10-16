@@ -13,14 +13,8 @@ import {
   settingsPath,
   watchSettings,
 } from "../src/settings/index.js";
-import { checkSetting, SETTINGS_SCHEMA } from "../src/settings/schema.js";
-import {
-  createFileDisplay,
-  displaySettings,
-  renameRow,
-  setIn,
-  valueAt,
-} from "../src/tui/display.js";
+import { checkSetting } from "../src/settings/schema.js";
+import { createFileDisplay, displaySettings, renameRow, setIn } from "../src/tui/display.js";
 import { createServerSettings } from "../src/tui/server-settings.js";
 import { limitsLines } from "../src/tui/window/limits.js";
 import { DEFAULT_WORDS } from "../src/view/format.js";
@@ -135,9 +129,8 @@ describe("one file section per Settings tab", () => {
   it("has exactly the requested sections and defaults", () => {
     expect(defaultSettings()).toEqual(EXPECTED);
     expect(Object.keys(defaultSettings())).toEqual(Object.keys(EXPECTED));
-  });
-  it.each(Object.keys(SETTINGS_SCHEMA))("%s has its default", (key) => {
-    expect(valueAt(defaultSettings(), key)).toEqual(valueAt(EXPECTED, key));
+    // The words the view uses until the server sends its own.
+    expect(DEFAULT_WORDS).toEqual(EXPECTED.words);
   });
   it.each([
     "checking.minIntervalMs",

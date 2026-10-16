@@ -13,10 +13,12 @@ import {
   checkSetting,
   defaultSettings,
   diffSettings,
+  keysUnder,
   SETTINGS_SCHEMA,
   type SettingRule,
   type Settings,
   setPath,
+  THEME_COLOR_NAMES,
 } from "../settings/schema.js";
 import {
   type BarShape,
@@ -26,13 +28,13 @@ import {
   percentText,
 } from "../view/format.js";
 import type { RowSettings, Surface } from "../view/select.js";
-import type { ColorRole, StatusLevel } from "../view/text.js";
+import type { ColorRole } from "../view/text.js";
 
 /** Named colors follow OpenCode's theme; hex colors stay fixed; bar follows the row's level. */
-export const COLOR_NAMES = ["text", "muted", "accent", "green", "yellow", "red", "blue"] as const;
-export type ColorName = (typeof COLOR_NAMES)[number];
-export type ColorChoice = ColorName | "bar" | `#${string}`;
-type StatusDetail = StatusLevel | "auto" | "one";
+export type ColorChoice = NonNullable<Settings["colors"]["good"]>;
+export type ColorName = Exclude<ColorChoice, "bar" | `#${string}`>;
+export const COLOR_NAMES = THEME_COLOR_NAMES.filter((name): name is ColorName => name !== "bar");
+type StatusDetail = Settings["statusLine"]["detail"];
 
 export type DisplaySettings = Settings &
   RowSettings & {
@@ -69,10 +71,6 @@ export const THEME_COLORS = Object.fromEntries(
   COLOR_LINES.map(({ role, theme }) => [role, theme]),
 ) as Record<ColorRole, ColorName | "bar">;
 const SURFACES: readonly Surface[] = ["sidebar", "collapsed", "statusLine", "toast"];
-
-function isWhole(value: unknown, min: number, max: number): boolean {
-  return typeof value === "number" && Number.isInteger(value) && value >= min && value <= max;
-}
 
 /** The tab sections as the row settings the renderers use. */
 export function displaySettings(settings: Settings): DisplaySettings {
@@ -167,17 +165,15 @@ export type PresetName = "layout" | "toast" | "words" | "colors";
 
 /**
  * One setting line: ‹ › step through `values`; a color line also takes a typed "#rrggbb", a
- * line with a `placeholder` a typed number. Its `path` ("layout.barWidth") is also its id.
+ * line with a `placeholder` a typed number. Its `path` ("layout.barWidth") is also its id; its
+ * default and the values it accepts are the setting's in SETTINGS_SCHEMA.
  */
 export type Field = {
-  path: string;
+  path: keyof typeof SETTINGS_SCHEMA;
   tab: SettingsTab;
   title: string;
-  initial: FieldValue;
   values: readonly FieldValue[];
   show: (value: FieldValue) => string;
-  /** What a stored value may hold besides `values` (typed by hand, or imported from v5). */
-  valid?: (value: unknown) => boolean;
   /** The values ‹ › step through when some of `values` don't fit the other settings. */
   choices?: (settings: DisplaySettings) => readonly FieldValue[];
   /** A heading above the line, which starts a group. */
@@ -194,81 +190,27 @@ export type Field = {
 };
 
 type Show = (value: FieldValue) => string;
-type FieldOptions = Pick<
-  Field,
-  "valid" | "choices" | "group" | "note" | "preset" | "placeholder" | "provider"
-> & { tab?: SettingsTab };
+type FieldOptions = Partial<Omit<Field, "path" | "title" | "show">>;
 
-/** A setting's page is its first key, for example "toast" in "toast.seconds", unless it names one. */
-function tabOf(path: string): SettingsTab {
-  return path.split(".")[0] as SettingsTab;
-}
-
-function listField(
-  path: string,
-  title: string,
-  initial: FieldValue,
-  values: readonly FieldValue[],
-  show: Show,
-  options: FieldOptions = {},
-): Field {
-  return { path, tab: tabOf(path), title, initial, values, show, ...options };
+/**
+ * A setting line on the page of its first key ("toast" in "toast.seconds") unless it names one.
+ * A choice steps through its values and a switch through off and on; a number, a color or a
+ * separator names the `values` it steps through, or none when you type it.
+ */
+function field(path: Field["path"], title: string, show: Show, options: FieldOptions = {}): Field {
+  const rule: SettingRule = SETTINGS_SCHEMA[path];
+  const values =
+    rule.kind === "choice" ? rule.values : rule.kind === "boolean" ? [false, true] : [];
+  const tab = path.split(".")[0] as SettingsTab;
+  return { path, tab, title, values, show, ...options };
 }
 
 const onOff = (off: string, on: string) => (value: FieldValue) => (value ? on : off);
 
-function switchField(path: string, title: string, initial: boolean, options: FieldOptions = {}) {
-  return listField(path, title, initial, [false, true], onOff("off", "on"), options);
-}
-
-/** ‹ › step through `values`; a stored whole number from `min` to `max` counts too. */
-function numberField(
-  path: string,
-  title: string,
-  initial: number,
-  [min, max]: readonly [number, number],
-  values: readonly number[],
-  show: Show,
-  options: FieldOptions = {},
-): Field {
-  const valid = (value: unknown) => isWhole(value, min, max);
-  return listField(path, title, initial, values, show, { valid, ...options });
-}
-
-/**
- * A line of the server's settings.jsonc, on All places or Providers. Its default and its
- * values (a choice, or off and on) come from SETTINGS_SCHEMA; a number line names the `values`
- * it steps through, or none when you type it.
- */
-function serverField(
-  path: keyof typeof SETTINGS_SCHEMA,
-  title: string,
-  show: Show,
-  options: FieldOptions & { values?: readonly number[] } = {},
-): Field {
-  const rule: SettingRule = SETTINGS_SCHEMA[path];
-  const values =
-    rule.kind === "choice" ? rule.values : rule.kind === "boolean" ? [false, true] : [];
-  const tab = tabOf(path);
-  const initial = rule.default as FieldValue;
-  return { path, tab, title, initial, values, show, ...options };
-}
-
 /** One switch per place: the Limits tab always shows the pace. */
 function runsOutField(surface: Surface, where: string, options: FieldOptions = {}): Field {
   const note = "when a limit, used at your pace so far, runs out before its reset";
-  const initial = SETTINGS_SCHEMA[`${surface}.runsOut`].default;
-  return {
-    ...switchField(`${surface}.runsOut`, "Runs out in …", initial, { note, ...options }),
-    show: onOff("off", where),
-  };
-}
-
-function tokensField(path: string, options: FieldOptions = {}): Field {
-  return {
-    ...switchField(path, "Session tokens line", true, options),
-    show: onOff("hidden", "shown"),
-  };
+  return field(`${surface}.runsOut`, "Runs out in …", onOff("off", where), { note, ...options });
 }
 
 function colorTitle(choice: FieldValue): string {
@@ -281,7 +223,7 @@ function colorField({ role, title, theme, group }: (typeof COLOR_LINES)[number])
   const values = [undefined, ...COLOR_NAMES, ...(isLevel ? [] : ["bar"])];
   const show = (value: FieldValue) =>
     value === undefined ? `${colorTitle(theme)} (theme)` : colorTitle(value);
-  return { ...listField(`colors.${role}`, title, undefined, values, show, { group }), color: true };
+  return field(`colors.${role}`, title, show, { group, values, color: true });
 }
 
 const COLOR_FIELDS = COLOR_LINES.map(colorField);
@@ -294,7 +236,6 @@ const STATUS_DETAILS: Record<StatusDetail, string> = {
   reset: "% and reset",
   numbers: "% only",
 };
-const BAR_SHAPES: readonly BarShape[] = ["blocks", "shades", "line", "squares", "dots", "none"];
 const TOAST = { preset: "toast" } as const;
 const LAYOUT = { preset: "layout" } as const;
 /** The `words` lines, which every place follows: on All places. */
@@ -302,8 +243,6 @@ const ALL_PLACES = { tab: "layout" } as const;
 const unit = (word: string) => (value: FieldValue) => `${value} ${word}`;
 const percentLeft = unit("% left");
 const RESET_NOTICES: Record<string, string> = { weekly: "weekly limits", all: "every limit" };
-const REPLY_TOASTS = ["off", "always", "low"];
-const NOTICE_TOASTS = ["off", "weekly", "all"];
 const MINUTE_MS = 60_000;
 /** A reset 2h 14m away and one 5d 3h 20m away, as each reset style writes them. */
 const RESET_EXAMPLES_MS = [134 * MINUTE_MS, 7_400 * MINUTE_MS];
@@ -321,6 +260,8 @@ const cursorPlan = (value: FieldValue) => {
     : `${getCursorPlanDisplayName(plan)}: $${includedUsd} a month`;
 };
 const SHOW = {
+  onOff: onOff("off", "on"),
+  tokensLine: onOff("hidden", "shown"),
   detail: (value) => STATUS_DETAILS[value as StatusDetail],
   width: (value) => (value ? `up to ${value} columns` : "all the free room"),
   scroll: (value) => (value ? `every ${value} s` : "off"),
@@ -354,144 +295,129 @@ const warningChoices = (settings: DisplaySettings) =>
   THRESHOLDS.filter((value) => value >= settings.colors.lowBelow);
 const lowChoices = (settings: DisplaySettings) =>
   THRESHOLDS.filter((value) => value <= settings.colors.warningBelow);
-const isSeparator = (value: unknown) => typeof value === "string" && value.length <= 5;
 
 /** Every plain setting, in the order its tab shows it. */
 export const FIELDS: readonly Field[] = [
-  tokensField("sidebar.sessionTokens", { group: "What it shows" }),
-  runsOutField("sidebar", "under the row"),
-  runsOutField("collapsed", "under the provider", { group: "What it shows" }),
-  {
-    ...switchField("statusLine.withSidebar", "Next to the sidebar", false, {
-      group: "When it shows",
-    }),
-    show: onOff("hide the line", "show it too"),
-  },
-  switchField("statusLine.home", "At the bottom of Home", false, {
-    note: "even when the line under the message box is off",
-  }),
-  listField("statusLine.detail", "Show", "auto", Object.keys(STATUS_DETAILS), SHOW.detail, {
+  field("sidebar.sessionTokens", "Session tokens line", SHOW.tokensLine, {
     group: "What it shows",
   }),
-  runsOutField("statusLine", "after the provider"),
-  numberField("statusLine.width", "Width", 0, [0, 1000], [0, 40, 60, 80], SHOW.width, {
-    group: "Width and scrolling",
+  runsOutField("sidebar", "under the row"),
+  runsOutField("collapsed", "under the provider", { group: "What it shows" }),
+  field("statusLine.withSidebar", "Next to the sidebar", onOff("hide the line", "show it too"), {
+    group: "When it shows",
   }),
-  numberField(
-    "statusLine.autoScrollSeconds",
-    "Scroll by itself",
-    0,
-    [0, 600],
-    [0, 5, 10],
-    SHOW.scroll,
-  ),
-  listField("toast.afterReply", "After each reply", "low", REPLY_TOASTS, SHOW.afterReply, {
+  field("statusLine.home", "At the bottom of Home", SHOW.onOff, {
+    note: "even when the line under the message box is off",
+  }),
+  field("statusLine.detail", "Show", SHOW.detail, { group: "What it shows" }),
+  runsOutField("statusLine", "after the provider"),
+  field("statusLine.width", "Width", SHOW.width, {
+    group: "Width and scrolling",
+    values: [0, 40, 60, 80],
+  }),
+  field("statusLine.autoScrollSeconds", "Scroll by itself", SHOW.scroll, { values: [0, 5, 10] }),
+  field("toast.afterReply", "After each reply", SHOW.afterReply, {
     group: "When it shows",
     ...TOAST,
   }),
-  switchField("toast.afterQuestion", "After a question to you", false, TOAST),
-  switchField("toast.afterCompaction", "After compaction", true, TOAST),
-  switchField("toast.whenAllFail", "When every provider fails", true, TOAST),
-  listField(
-    "toast.resetNotice",
-    "When a limit resets",
-    "off",
-    NOTICE_TOASTS,
-    SHOW.resetNotice,
-    TOAST,
-  ),
-  listField("toast.layout", "Layout", "grouped", ["grouped", "detailed"], SHOW.toastLayout, {
-    group: "Look",
-  }),
-  numberField("toast.seconds", "Stays on screen", 9, [1, 120], [5, 9, 15, 30], unit("s")),
-  tokensField("toast.sessionTokens"),
+  field("toast.afterQuestion", "After a question to you", SHOW.onOff, TOAST),
+  field("toast.afterCompaction", "After compaction", SHOW.onOff, TOAST),
+  field("toast.whenAllFail", "When every provider fails", SHOW.onOff, TOAST),
+  field("toast.resetNotice", "When a limit resets", SHOW.resetNotice, TOAST),
+  field("toast.layout", "Layout", SHOW.toastLayout, { group: "Look" }),
+  field("toast.seconds", "Stays on screen", unit("s"), { values: [5, 9, 15, 30] }),
+  field("toast.sessionTokens", "Session tokens line", SHOW.tokensLine),
   runsOutField("toast", "after the row"),
   ...COLOR_FIELDS.slice(0, 4),
-  numberField("colors.warningBelow", "'Getting low' below", 50, [0, 100], THRESHOLDS, percentLeft, {
+  field("colors.warningBelow", "'Getting low' below", percentLeft, {
+    values: THRESHOLDS,
     choices: warningChoices,
   }),
-  numberField("colors.lowBelow", "'Almost out' below", 20, [0, 100], THRESHOLDS, percentLeft, {
+  field("colors.lowBelow", "'Almost out' below", percentLeft, {
+    values: THRESHOLDS,
     choices: lowChoices,
   }),
   ...COLOR_FIELDS.slice(4),
-  listField("layout.bar", "Bar shape", "blocks", BAR_SHAPES, SHOW.bar, { group: "Bars" }),
-  listField("layout.barWidth", "Bar width", "fill", ["fill", 4, 6, 8, 10, 12], SHOW.barWidth, {
-    valid: (value) => value === "fill" || isWhole(value, 1, 30),
+  field("layout.bar", "Bar shape", SHOW.bar, { group: "Bars" }),
+  field("layout.barWidth", "Bar width", SHOW.barWidth, {
+    values: ["fill", 4, 6, 8, 10, 12],
     ...LAYOUT,
   }),
-  switchField("layout.evenUse", "Even-use mark", false, {
+  field("layout.evenUse", "Even-use mark", SHOW.onOff, {
     note: "┃ in each bar where even use would be, like on the Limits tab",
   }),
-  numberField("layout.indent", "Row indent", 1, [0, 4], [0, 1, 2, 3], SHOW.indent, {
+  field("layout.indent", "Row indent", SHOW.indent, {
     group: "Spacing",
+    values: [0, 1, 2, 3],
     ...LAYOUT,
   }),
-  numberField("layout.labelWidth", "Label width", 8, [3, 20], [6, 8, 10, 12], unit("letters"), {
+  field("layout.labelWidth", "Label width", unit("letters"), {
     note: "the most a row name takes",
+    values: [6, 8, 10, 12],
     ...LAYOUT,
   }),
-  numberField("layout.providerGap", "Between providers", 1, [0, 2], [0, 1], SHOW.gap, LAYOUT),
-  listField("layout.separator", "Separator", " · ", [" · ", " | ", " / ", "  "], SHOW.separator, {
+  field("layout.providerGap", "Between providers", SHOW.gap, { values: [0, 1], ...LAYOUT }),
+  field("layout.separator", "Separator", SHOW.separator, {
     group: "Status line",
-    valid: isSeparator,
+    values: [" · ", " | ", " / ", "  "],
   }),
-  serverField("words.percent", "Percent", SHOW.percent, {
+  field("words.percent", "Percent", SHOW.percent, {
     ...ALL_PLACES,
     group: "Words",
     preset: "words",
   }),
-  serverField("words.reset", "Reset times", SHOW.reset, {
+  field("words.reset", "Reset times", SHOW.reset, {
     ...ALL_PLACES,
     note: "the Limits tab always shows exact times",
     preset: "words",
   }),
-  serverField("words.resetDecimals", "Decimals", SHOW.decimals, {
+  field("words.resetDecimals", "Decimals", SHOW.decimals, {
     ...ALL_PLACES,
     note: "for the decimal reset times",
     values: [0, 1, 2],
   }),
-  serverField("words.rowNames", "Row names", SHOW.rowNames, {
+  field("words.rowNames", "Row names", SHOW.rowNames, {
     ...ALL_PLACES,
     note: "a row you renamed keeps your name; the Limits tab shows full names",
     preset: "words",
   }),
-  serverField("words.detail", "Extra rows", SHOW.rows, { ...ALL_PLACES, group: "What shows" }),
-  serverField("words.onlyCurrentModel", "Providers shown", SHOW.models, ALL_PLACES),
-  serverField("words.sessionTokens", "Session tokens count", SHOW.tokens, ALL_PLACES),
-  serverField("providers.cursor.plan", "Plan", cursorPlan, {
+  field("words.detail", "Extra rows", SHOW.rows, { ...ALL_PLACES, group: "What shows" }),
+  field("words.onlyCurrentModel", "Providers shown", SHOW.models, ALL_PLACES),
+  field("words.sessionTokens", "Session tokens count", SHOW.tokens, ALL_PLACES),
+  field("providers.cursor.plan", "Plan", cursorPlan, {
     ...CURSOR,
     note: "API use the plan includes; shown as a %",
   }),
-  serverField("providers.cursor.includedApiUsd", "Included API budget", usd("from the plan"), {
+  field("providers.cursor.includedApiUsd", "Included API budget", usd("from the plan"), {
     ...CURSOR,
     note: "a dollar amount to use instead of the plan's",
     placeholder: "a dollar amount",
   }),
-  serverField("providers.cursor.billingCycleStartDay", "Billing day", SHOW.day, {
+  field("providers.cursor.billingCycleStartDay", "Billing day", SHOW.day, {
     ...CURSOR,
     note: "the day of the month your Cursor bill renews",
     placeholder: "a day 1-28",
   }),
-  serverField("providers.opencode.monthlyLimitUsd", "Monthly budget", usd("from the Console"), {
+  field("providers.opencode.monthlyLimitUsd", "Monthly budget", usd("from the Console"), {
     provider: "opencode",
     note: "a dollar amount to use instead",
     placeholder: "a dollar amount",
   }),
-  serverField("providers.checking.minIntervalMs", "Check for new numbers", SHOW.minutes, {
+  field("providers.checking.minIntervalMs", "Check for new numbers", SHOW.minutes, {
     group: "Checking",
     values: [1, 2, 5, 10, 15, 30].map((count) => count * MINUTE_MS),
   }),
-  serverField("providers.checking.requestTimeoutMs", "Slow provider: give up", SHOW.seconds, {
+  field("providers.checking.requestTimeoutMs", "Slow provider: give up", SHOW.seconds, {
     values: [5_000, 8_000, 12_000, 20_000, 30_000],
   }),
-  serverField("providers.checking.waitForQuotaReset", "A model hits its limit", SHOW.limitHit),
-  serverField(
+  field("providers.checking.waitForQuotaReset", "A model hits its limit", SHOW.limitHit),
+  field(
     "providers.pricing.source",
     "Prices from",
     named({ auto: "newest list", bundled: "built-in list only", runtime: "downloaded list only" }),
     { group: "Token prices" },
   ),
-  serverField("providers.pricing.autoRefreshDays", "Download new prices", SHOW.days, {
+  field("providers.pricing.autoRefreshDays", "Download new prices", SHOW.days, {
     values: [1, 7, 30],
   }),
 ];
@@ -657,20 +583,20 @@ export function renameRow(
 }
 
 /**
- * The tab's lines back to their defaults. A surface tab also puts that surface's order, hidden
- * rows and switches back (and Collapsed and Status line the preferred windows); row names stay.
+ * The tab's lines back to their defaults. A surface tab puts every setting of its surface back,
+ * its order, hidden rows, switch and preferred windows too; row names stay.
  */
 export function resetTab(settings: DisplaySettings, tab: SettingsTab): DisplaySettings {
-  let next = FIELDS.filter((field) => field.tab === tab).reduce(
-    (result, field) => setIn(result, field.path.split("."), field.initial),
+  const defaults = defaultSettings();
+  const paths = isSurfaceTab(tab)
+    ? keysUnder(tab)
+        .filter((key) => key !== "names")
+        .map((key) => `${tab}.${key}`)
+    : FIELDS.filter((field) => field.tab === tab).map((field) => field.path);
+  return paths.reduce(
+    (result, path) => setIn(result, path.split("."), valueAt(defaults, path)),
     settings,
   );
-  if (isSurfaceTab(tab)) {
-    for (const key of ["show", "hidden", "providerOrder", "rowOrder"])
-      next = setIn(next, [tab, key], valueAt(defaultSettings(), `${tab}.${key}`));
-  }
-  if (tab === "collapsed" || tab === "statusLine") next = setIn(next, [tab, "window"], {});
-  return next;
 }
 
 /** Settings received through the RPC, with this window's draft on top. */

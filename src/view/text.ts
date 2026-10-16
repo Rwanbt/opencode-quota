@@ -7,6 +7,7 @@ import { describeError } from "../core/errors.js";
 import { paceOf, paceText } from "../core/pace.js";
 import type { QuotaRow, SessionModelInput, SessionTokens, Words } from "../core/types.js";
 import { WINDOWS } from "../core/windows.js";
+import type { Settings } from "../settings/schema.js";
 import { columnsOf } from "./columns.js";
 import {
   type BarShape,
@@ -51,20 +52,7 @@ export type Segment = { text: string; role: ColorRole | "bar"; percent?: number;
 /** A line of a surface. `id` is the provider or row it shows ("" for a spacer). */
 export type Line = { id: string; segments: Segment[] };
 
-export type Layout = {
-  bar: BarShape;
-  /** Bar cells, or "fill": the room the other columns leave, up to each place's most. */
-  barWidth: number | "fill";
-  /** The ┃ mark where even use would be, in each bar (`barSegments`). */
-  evenUse: boolean;
-  indent: number;
-  /** The most columns a row name takes; the name column fits the names next to a bar. */
-  labelWidth: number;
-  /** Empty lines between providers in the sidebar. */
-  providerGap: number;
-  /** Between providers on the status line. */
-  separator: string;
-};
+export type Layout = Settings["layout"];
 
 export function lineText(line: Line): string {
   return line.segments.map((segment) => segment.text).join("");
@@ -123,7 +111,7 @@ export function barSegments(
 }
 
 /** Where even use would be for a row's bar, when the place draws the mark and the row has a pace. */
-function evenLeftOf(on: boolean | undefined, row: QuotaRow, nowMs: number): number | undefined {
+function evenLeftOf(on: boolean, row: QuotaRow, nowMs: number): number | undefined {
   return on ? paceOf(row, nowMs)?.evenLeft : undefined;
 }
 
@@ -673,16 +661,15 @@ export function plainLines(params: {
  * How a toast lays out its rows: one line per row under its provider's name ("grouped"), or
  * each row on two lines with a bar as wide as the toast ("detailed").
  */
-export type ToastLayout = "grouped" | "detailed";
+export type ToastLayout = Settings["toast"]["layout"];
 
 export type ToastInput = {
   groups: Group[];
   words: Words;
   nowMs: number;
-  layout: ToastLayout;
-  bar: BarShape;
-  /** The ┃ mark where even use would be, in each bar (`layout.evenUse`). */
-  evenUse?: boolean;
+  /** The bar shape and the even-use mark; a toast's bars take the room it has. */
+  layout: Layout;
+  toastLayout: ToastLayout;
   /** Columns of text inside the toast (`toastRoom`); no line is wider. */
   room: number;
   /** A "runs out in 2h" line under each row that runs out before its reset. */
@@ -729,7 +716,7 @@ function runsOutLine(id: string, runsOut: string, column: number, room: number):
  * longer name.
  */
 function groupedToastLines(input: ToastInput): Line[] {
-  const { words, nowMs, room } = input;
+  const { words, nowMs, room, layout } = input;
   const word = percentWord(words);
   // "100% left": the number right-aligned, then its word.
   const percentWidth = 4 + (word ? word.length + 1 : 0);
@@ -755,7 +742,7 @@ function groupedToastLines(input: ToastInput): Line[] {
   );
   const barColumn = GROUPED_INDENT + nameWidth + 1;
   const fixed = barColumn + 1 + percentWidth + (resetWidth > 0 ? 2 + resetWidth : 0);
-  const barWidth = input.bar === "none" ? 0 : Math.min(GROUPED_BAR_MAX, room - fixed);
+  const barWidth = layout.bar === "none" ? 0 : Math.min(GROUPED_BAR_MAX, room - fixed);
   const withBar = barWidth >= TOAST_BAR_MIN;
 
   const rowLines = (item: (typeof items)[number]): Line[] => {
@@ -772,7 +759,7 @@ function groupedToastLines(input: ToastInput): Line[] {
     const segments: Segment[] = [
       { text: name, role: "label", percent },
       ...(withBar
-        ? barSegments(input.bar, percent, barWidth, evenLeftOf(input.evenUse, row, nowMs))
+        ? barSegments(layout.bar, percent, barWidth, evenLeftOf(layout.evenUse, row, nowMs))
         : []),
       {
         text: `${withBar ? " " : ""}${word ? `${number} ${word}` : number}`,
@@ -814,14 +801,14 @@ function spread(left: Segment, right: Segment, room: number): Segment[] {
  * as the toast with the percent at the right. "runs out in" goes under the bar.
  */
 function detailedToastLines(input: ToastInput): Line[] {
-  const { words, nowMs, room } = input;
+  const { words, nowMs, room, layout } = input;
   const percents = input.groups.flatMap((group) =>
     group.rows.flatMap(({ row }) =>
       row.percentRemaining === undefined ? [] : [percentText(words, row.percentRemaining, true)],
     ),
   );
   const percentWidth = Math.max(0, ...percents.map(columnsOf));
-  const barWidth = input.bar === "none" ? 0 : room - 2 - percentWidth;
+  const barWidth = layout.bar === "none" ? 0 : room - 2 - percentWidth;
 
   const rowLines = (item: VisibleRow, group: Group): Line[] => {
     const { row } = item;
@@ -836,7 +823,7 @@ function detailedToastLines(input: ToastInput): Line[] {
     const bar: Segment[] =
       barWidth >= TOAST_BAR_MIN
         ? [
-            ...barSegments(input.bar, percent, barWidth, evenLeftOf(input.evenUse, row, nowMs)),
+            ...barSegments(layout.bar, percent, barWidth, evenLeftOf(layout.evenUse, row, nowMs)),
             { text: `  ${percentWords}`, role: "percent", percent },
           ]
         : [{ text: percentWords.padStart(room), role: "percent", percent }];
@@ -874,6 +861,7 @@ function detailedToastLines(input: ToastInput): Line[] {
 
 /** §4.4: a quota toast's lines in its layout, none wider than `room` columns. */
 export function toastLines(input: ToastInput): Line[] {
-  const lines = input.layout === "detailed" ? detailedToastLines(input) : groupedToastLines(input);
+  const lines =
+    input.toastLayout === "detailed" ? detailedToastLines(input) : groupedToastLines(input);
   return lines.map((line) => ({ ...line, segments: trimEnd(line.segments) }));
 }

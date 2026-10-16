@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { QuotaRpcSaveSettingsInput, QuotaRpcSettingsOutput } from "../src/rpc.js";
-import { checkSetting, SETTINGS_SCHEMA } from "../src/settings/index.js";
+import { checkSetting } from "../src/settings/index.js";
 import { CHANGED_SINCE_REVIEW } from "../src/settings/schema.js";
 import { FIELDS, type Field, presetChoice, presetValues, typedNumber } from "../src/tui/display.js";
 import {
@@ -10,19 +10,9 @@ import {
   withTick,
 } from "../src/tui/server-settings.js";
 
-const SERVER_FIELDS = FIELDS;
-const field = (path: string) => SERVER_FIELDS.find((item) => item.path === path) as Field;
+const field = (path: string) => FIELDS.find((item) => item.path === path) as Field;
 
 describe("the Settings tabs' lines", () => {
-  it("starts every line at the server's default and steps only through values it accepts", () => {
-    for (const item of SERVER_FIELDS) {
-      const rule = SETTINGS_SCHEMA[item.path as keyof typeof SETTINGS_SCHEMA];
-      expect([item.path, item.initial]).toEqual([item.path, rule.default]);
-      expect("fileOnly" in rule).toBe(false);
-      for (const value of item.values) expect(checkSetting(item.path, value).issues).toEqual([]);
-    }
-  });
-
   it("derives each field's page from its first key, the words lines on All places, and excludes System lines", () => {
     for (const item of FIELDS) {
       const page = item.path.startsWith("words.") ? "layout" : item.path.split(".")[0];

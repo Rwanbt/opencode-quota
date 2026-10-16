@@ -604,8 +604,8 @@ describe("view text", () => {
 
     it("is in the bars of the collapsed panel, the status line, the big bar and both toasts", () => {
       const status: StatusInput = { ...statusInput([PACED]), layout: on };
-      const toastOn = (layout: ToastLayout) =>
-        toast(layout, 40, [PACED], { evenUse: true, runsOut: false });
+      const toastOn = (toastLayout: ToastLayout) =>
+        toast(toastLayout, 40, [PACED], { layout: on, runsOut: false });
       expect({
         collapsed: collapsedLines({
           groups: groups("collapsed", [PACED]),
@@ -845,7 +845,7 @@ describe("view text", () => {
 
   /** A toast of `providers` `room` columns wide, with runs out in, as plain lines. */
   const toast = (
-    layout: ToastLayout,
+    toastLayout: ToastLayout,
     room: number,
     providers = [CLAUDE],
     change: Partial<ToastInput> = {},
@@ -854,8 +854,8 @@ describe("view text", () => {
       groups: groups("toast", providers),
       words: DEFAULT_WORDS,
       nowMs: NOW,
-      layout,
-      bar: "blocks",
+      layout: display.layout,
+      toastLayout,
       room,
       runsOut: true,
       ...change,
@@ -927,8 +927,8 @@ describe("view text", () => {
         groups: visibleGroups(snapshot([CLAUDE]), settings(change), "toast", words(wording)),
         words: words(wording),
         nowMs: NOW,
-        layout: "grouped",
-        bar: "blocks",
+        layout: display.layout,
+        toastLayout: "grouped",
         room: 54,
       }).map(lineText);
     expect({
@@ -997,9 +997,10 @@ describe("view text", () => {
   });
 
   it("shows no toast bar with bars off: the percent alone, at the right in a detailed toast", () => {
+    const barsOff = { layout: { ...display.layout, bar: "none" as const }, runsOut: false };
     expect({
-      grouped: toast("grouped", 54, [CLAUDE], { bar: "none", runsOut: false }),
-      detailed: toast("detailed", 54, [CLAUDE], { bar: "none", runsOut: false }),
+      grouped: toast("grouped", 54, [CLAUDE], barsOff),
+      detailed: toast("detailed", 54, [CLAUDE], barsOff),
     }).toEqual({
       grouped: ["Claude", "  5h  58% left  2h 14m", "  7d  12% left  3.2d"],
       detailed: [
@@ -1061,15 +1062,17 @@ describe("view text", () => {
       const shown = settings(change);
       const of = (surface: Surface) => visibleGroups(snapshot([CLAUDE]), shown, surface, used);
       const base = { layout: display.layout, words: used, nowMs: NOW };
-      const toastBase = { words: used, nowMs: NOW, bar: "blocks" as const, room: 30 };
+      const toastBase = { ...base, room: 30 };
       return {
         sidebar: sidebarLines({ ...base, groups: of("sidebar"), width: 40 }).map(lineText),
         collapsed: collapsedLines({ ...base, groups: of("collapsed"), width: 40, window: {} }).map(
           lineText,
         ),
         statusLine: lineText(bigStatusLine({ ...base, groups: of("statusLine"), window: {} })!),
-        grouped: toastLines({ ...toastBase, groups: of("toast"), layout: "grouped" }).map(lineText),
-        detailed: toastLines({ ...toastBase, groups: of("toast"), layout: "detailed" }).map(
+        grouped: toastLines({ ...toastBase, groups: of("toast"), toastLayout: "grouped" }).map(
+          lineText,
+        ),
+        detailed: toastLines({ ...toastBase, groups: of("toast"), toastLayout: "detailed" }).map(
           lineText,
         ),
       };

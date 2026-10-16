@@ -4,7 +4,8 @@
  * Money, token counts and shares are written the way T3 Code's usage page writes them, always
  * in US English, so the text is the same on every machine.
  */
-import type { Amount, QuotaRow, ResetStyle, SessionTokens, Words } from "../core/types.js";
+import type { Amount, QuotaRow, SessionTokens, Words } from "../core/types.js";
+import type { Settings } from "../settings/schema.js";
 import { columnsOf, padEndColumns, sliceColumns } from "./columns.js";
 
 const USD = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" });
@@ -75,7 +76,7 @@ export function percentText(words: Words, percentRemaining: number, withWord: bo
  * in whole hours ("23h"), below that like "exact" ("11h 35m"). A time that rounds to 24 hours
  * is "1.0d".
  */
-export function formatDuration(ms: number, style: ResetStyle, decimals: number): string {
+export function formatDuration(ms: number, style: Words["reset"], decimals: number): string {
   if (!(ms > 0)) return "now";
   const minutes = Math.ceil(ms / 60_000);
   if (style === "smart" && minutes >= 720) {
@@ -104,7 +105,7 @@ export function resetText(row: QuotaRow, nowMs: number, words: Words): string {
   return formatDuration(resetMs - nowMs, words.reset, words.resetDecimals);
 }
 
-export type BarShape = "blocks" | "shades" | "line" | "squares" | "dots" | "none";
+export type BarShape = Settings["layout"]["bar"];
 
 const BAR_CHARACTERS: Record<Exclude<BarShape, "none">, [string, string]> = {
   blocks: ["█", "░"],
