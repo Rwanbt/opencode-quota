@@ -40,6 +40,9 @@ const ciWorkflow = parse(await text("../.github/workflows/ci.yml")) as Workflow;
 const publishWorkflow = parse(await text("../.github/workflows/publish-npm.yml")) as Workflow;
 const packedSmoke = await text("../scripts/smoke-packed-package.mjs");
 
+// Pinned to a commit; Vite+ installs the pnpm named in package.json `packageManager`.
+const SETUP_VP = "voidzero-dev/setup-vp@68f39c78aaf39be468cabd2afb09c162574c84af";
+
 // The build's `tsc` is the type check, and `pnpm test` runs the cross-surface test.
 const VERIFY_COMMAND =
   "pnpm run check && pnpm run verify:typescript-version && pnpm run verify:v4-history && pnpm run build && pnpm test && pnpm run verify:package-contents";
@@ -317,7 +320,17 @@ describe("package manifest compatibility", () => {
     for (const job of [quality, windows]) {
       expect(usesStep(job, "actions/checkout@v6")?.with?.["fetch-depth"]).toBe(0);
       expect(usesStep(job, "actions/setup-node@v6")?.with?.["node-version"]).toBe("24.x");
-      expect(namedStep(job, "Install dependencies").run).toBe("pnpm install --frozen-lockfile");
+      expect(namedStep(job, "Install dependencies")).toEqual(
+        expect.objectContaining({
+          uses: SETUP_VP,
+          with: {
+            "node-manager": false,
+            cache: true,
+            "run-install": 'args: ["--frozen-lockfile"]\n',
+          },
+        }),
+      );
+      expect(job.steps?.some((step) => step.run?.includes("corepack"))).toBe(false);
       expect(namedStep(job, "Run canonical verification").run).toBe("pnpm verify");
       expectCanonicalVerificationOnly(job);
     }
