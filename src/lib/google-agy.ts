@@ -66,10 +66,9 @@ function familyRank(family: string): number {
   return 2;
 }
 
-/** Account, then Gemini before Claude/GPT before other families, then weekly before 5h. */
+/** Gemini before Claude/GPT before other families, then weekly before 5h. */
 export function compareAgyBuckets(left: GoogleAgyQuotaBucket, right: GoogleAgyQuotaBucket): number {
   return (
-    left.accountIndex - right.accountIndex ||
     familyRank(left.family) - familyRank(right.family) ||
     left.family.localeCompare(right.family) ||
     (left.window === "weekly" ? 0 : 1) - (right.window === "weekly" ? 0 : 1) ||
@@ -82,7 +81,6 @@ function toAgyBucket(
   bucket: GoogleAgyQuotaSummaryBucket,
   family: string,
   account: AgyAccount,
-  accountIndex: number,
 ): GoogleAgyQuotaBucket | undefined {
   if (!bucket || typeof bucket !== "object" || bucket.disabled) return undefined;
 
@@ -107,7 +105,6 @@ function toAgyBucket(
     ...(Number.isFinite(resetTimeMs) ? { resetTimeIso: new Date(resetTimeMs).toISOString() } : {}),
     ...(remainingAmount ? { remainingAmount } : {}),
     ...(account.email ? { accountEmail: account.email } : {}),
-    accountIndex,
     sourceKey: account.sourceKey,
   };
 }
@@ -119,13 +116,12 @@ function toAgyBucket(
 function toAgyBuckets(
   response: GoogleAgyQuotaSummaryResponse,
   account: AgyAccount,
-  accountIndex: number,
 ): GoogleAgyQuotaBucket[] {
   const rows: GoogleAgyQuotaBucket[] = [];
   const addRows = (buckets: unknown, family: string | undefined): void => {
     if (!family || !Array.isArray(buckets)) return;
     for (const bucket of buckets) {
-      const row = toAgyBucket(bucket, family, account, accountIndex);
+      const row = toAgyBucket(bucket, family, account);
       if (row) rows.push(row);
     }
   };

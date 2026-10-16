@@ -123,48 +123,6 @@ describe("Gemini CLI quota buckets", () => {
     });
   });
 
-  it("does not merge Gemini CLI tier buckets across accounts", async () => {
-    const auth = {
-      "google-gemini-cli": {
-        type: "oauth",
-        refresh: "refresh-a|project-a|",
-        email: "alice@example.com",
-      },
-      google: {
-        type: "oauth",
-        refresh: "refresh-b|project-b|",
-        email: "bob@example.com",
-      },
-    };
-    mocks.fetchResponse.mockImplementation(async (_url: string, init: { body?: string }) =>
-      quotaResponse([
-        {
-          modelId: "gemini-2.5-pro",
-          remainingFraction: JSON.parse(String(init.body)).project === "project-a" ? 0.9 : 0.1,
-        },
-      ]),
-    );
-
-    const result = await queryGeminiCliQuota(auth);
-    if (!result?.success) throw new Error("expected successful Gemini CLI quota result");
-    expect(result.buckets).toEqual([
-      {
-        modelId: "gemini-2.5-pro",
-        displayName: "Gemini Pro",
-        percentRemaining: 90,
-        accountEmail: "alice@example.com",
-        sourceKey: "google-gemini-cli",
-      },
-      {
-        modelId: "gemini-2.5-pro",
-        displayName: "Gemini Pro",
-        percentRemaining: 10,
-        accountEmail: "bob@example.com",
-        sourceKey: "google",
-      },
-    ]);
-  });
-
   it("reports a bucket object that is not a list as that account's error", async () => {
     const auth = {
       google: { type: "oauth", refresh: "refresh-token|project-1|", email: "alice@example.com" },
@@ -176,13 +134,12 @@ describe("Gemini CLI quota buckets", () => {
     });
 
     await expect(queryGeminiCliQuota(auth)).resolves.toEqual({
-      success: true,
-      buckets: [],
-      errors: [{ email: "alice@example.com", error: "buckets.filter is not a function" }],
+      success: false,
+      error: "buckets.filter is not a function",
     });
   });
 
-  it("reports no data when every account answers without buckets", async () => {
+  it("reports no data when the account answers without buckets", async () => {
     const auth = {
       google: { type: "oauth", refresh: "refresh-token|project-1" },
     };

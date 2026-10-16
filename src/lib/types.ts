@@ -214,12 +214,6 @@ export interface CopilotEnterpriseUsageResult {
   resetTimeIso?: string;
 }
 
-/** Error for a single account */
-export interface GoogleAccountError {
-  email: string;
-  error: string;
-}
-
 export interface GeminiCliQuotaBucket {
   modelId: string;
   displayName: string;
@@ -266,7 +260,6 @@ export interface GoogleAgyQuotaBucket {
   resetTimeIso?: string;
   remainingAmount?: string;
   accountEmail?: string;
-  accountIndex: number;
   sourceKey: GoogleAgyAuthSourceKey;
 }
 

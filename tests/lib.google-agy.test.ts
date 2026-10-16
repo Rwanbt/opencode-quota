@@ -410,11 +410,7 @@ describe.each(FLAVORS)("$name OAuth quota flow", (flavor) => {
     if (outcome instanceof Error) mocks.fetchResponse.mockRejectedValueOnce(outcome);
     else mocks.fetchResponse.mockResolvedValueOnce(outcome);
 
-    await expect(flavor.query(auth)).resolves.toEqual({
-      success: true,
-      buckets: [],
-      errors: [{ email: firstKey, error }],
-    });
+    await expect(flavor.query(auth)).resolves.toEqual({ success: false, error });
   });
 
   it.each([
@@ -438,55 +434,7 @@ describe.each(FLAVORS)("$name OAuth quota flow", (flavor) => {
       else mocks.fetchResponse.mockResolvedValueOnce(outcome);
     }
 
-    await expect(flavor.query(auth)).resolves.toEqual({
-      success: true,
-      buckets: [],
-      errors: [{ email: firstKey, error }],
-    });
-  });
-
-  it("keeps account order and returns sibling account errors", async () => {
-    const auth = {
-      [firstKey]: authAccount("refresh-1", "project-1", "alice@example.com"),
-      [lastKey]: authAccount("refresh-2", "project-2", "bob@example.com"),
-    };
-    mocks.fetchResponse.mockImplementation(async (_url: string, init: { body?: string }) => {
-      if (JSON.parse(init.body ?? "{}").project === "project-1") {
-        await new Promise((resolve) => setTimeout(resolve, 25));
-        return jsonResponse(flavor.quotaResponse);
-      }
-      return jsonResponse(flavor.quotaResponse);
-    });
-    const result = await flavor.query(auth);
-    if (!result?.success) throw new Error("expected success");
-    expect([...new Set(result.buckets.map((bucket) => bucket.accountEmail))]).toEqual([
-      "alice@example.com",
-      "bob@example.com",
-    ]);
-
-    mocks.fetchResponse.mockImplementation(async (_url: string, init: { body?: string }) =>
-      JSON.parse(init.body ?? "{}").project === "project-1"
-        ? jsonResponse(flavor.quotaResponse)
-        : jsonResponse({}, 500),
-    );
-    const partial = await flavor.query(auth);
-    if (!partial?.success) throw new Error("expected success");
-    expect(new Set(partial.buckets.map((bucket) => bucket.accountEmail))).toEqual(
-      new Set(["alice@example.com"]),
-    );
-    expect(partial.errors).toEqual([
-      { email: "bob@example.com", error: `${flavor.name} quota API error: 500` },
-    ]);
-
-    mocks.fetchResponse.mockResolvedValue(jsonResponse({}, 500));
-    await expect(flavor.query(auth)).resolves.toEqual({
-      success: true,
-      buckets: [],
-      errors: [
-        { email: "alice@example.com", error: `${flavor.name} quota API error: 500` },
-        { email: "bob@example.com", error: `${flavor.name} quota API error: 500` },
-      ],
-    });
+    await expect(flavor.query(auth)).resolves.toEqual({ success: false, error });
   });
 });
 
@@ -589,7 +537,6 @@ describe("Google AGY quota summary", () => {
       percentRemaining: 58,
       resetTimeIso: "2026-06-22T00:00:00.000Z",
       accountEmail: "alice@example.com",
-      accountIndex: 0,
       sourceKey: "google-agy",
     });
     expect(
@@ -646,9 +593,8 @@ describe("Google AGY quota summary", () => {
     });
 
     await expect(queryAgy(auth)).resolves.toEqual({
-      success: true,
-      buckets: [],
-      errors: [{ email: "google-agy", error: "Quota summary API unavailable" }],
+      success: false,
+      error: "Quota summary API unavailable",
     });
   });
 
@@ -691,29 +637,5 @@ describe("Google AGY quota summary", () => {
     const zero = result.buckets.find((bucket) => bucket.bucketId === "zero-weekly");
     expect(zero).toMatchObject({ percentRemaining: 0 });
     expect(zero).not.toHaveProperty("resetTimeIso");
-  });
-
-  it("numbers accounts in input order and limits requests to three in flight", async () => {
-    const auth = {
-      "google-agy": authAccount("refresh-1", "project-1"),
-      "opencode-agy-auth": authAccount("refresh-2", "project-2"),
-      "google-agy-auth": authAccount("refresh-3", "project-3"),
-    };
-    let inFlight = 0;
-    let maxInFlight = 0;
-    mocks.fetchResponse.mockImplementation(async () => {
-      inFlight += 1;
-      maxInFlight = Math.max(maxInFlight, inFlight);
-      await new Promise((resolve) => setTimeout(resolve, 15));
-      inFlight -= 1;
-      return jsonResponse(summaryResponse());
-    });
-
-    const result = await queryAgy(auth);
-    if (!result?.success) throw new Error("expected success");
-    expect(maxInFlight).toBe(3);
-    expect(result.buckets.map((bucket) => bucket.accountIndex)).toEqual([
-      0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2,
-    ]);
   });
 });

@@ -10,7 +10,6 @@ import {
 } from "./google-token-cache.js";
 import { fetchWithTimeout } from "./http.js";
 import { nonEmptyString } from "./json-guards.js";
-import { mapWithConcurrency } from "./map-with-concurrency.js";
 import {
   activeCredentialRowsAuthData,
   type CredentialRow,
@@ -26,14 +25,13 @@ import {
 import type {
   AuthData,
   GeminiCliAuthSourceKey,
-  GoogleAccountError,
   GoogleAgyAuthSourceKey,
   QuotaError,
 } from "./types.js";
 
 /**
  * The OAuth quota flow shared by Google AGY (Antigravity) and Gemini CLI:
- * OpenCode logins → accounts → access tokens → one quota request per account.
+ * an OpenCode login → its account → an access token → one quota request.
  * Each flavor brings its auth keys, endpoint, and response parsing.
  */
 
@@ -41,7 +39,6 @@ const TOKEN_REFRESH_URL = "https://oauth2.googleapis.com/token";
 const TOKEN_TIMEOUT_MS = 8_000;
 const TOKEN_EXPIRY_SKEW_MS = 2 * 60_000;
 const QUOTA_TIMEOUT_MS = 6_000;
-const ACCOUNTS_CONCURRENCY = 3;
 
 export type GoogleAuthSourceKey = GoogleAgyAuthSourceKey | GeminiCliAuthSourceKey;
 
@@ -65,10 +62,7 @@ export type GoogleAuthPresence<Key extends GoogleAuthSourceKey> =
       error: string;
     };
 
-export type GoogleQuotaResult<Bucket> =
-  | { success: true; buckets: Bucket[]; errors?: GoogleAccountError[] }
-  | QuotaError
-  | null;
+export type GoogleQuotaResult<Bucket> = { success: true; buckets: Bucket[] } | QuotaError | null;
 
 /** Every OAuth login of one flavor, and the project id its logins fall back to. */
 export type GoogleLogins = { rows: CredentialRow[]; configuredProjectId: string | undefined };
@@ -97,7 +91,7 @@ export type GoogleQuotaFlavor<
   quotaUrl: string;
   quotaHeaders: () => Record<string, string>;
   /** Buckets of one account's quota response; throwing marks the account as failed. */
-  toBuckets: (response: Response, account: GoogleAccount<Key>, accountIndex: number) => Bucket[];
+  toBuckets: (response: Response, account: GoogleAccount<Key>) => Bucket[];
 };
 
 type AccessTokenResult = { accessToken: string } | { error: string };
@@ -392,7 +386,6 @@ async function retrieveQuota<Response>(
 async function fetchAccountBuckets<Key extends GoogleAuthSourceKey, Response, Bucket>(params: {
   flavor: GoogleQuotaFlavor<Key, Response, Bucket>;
   account: GoogleAccount<Key>;
-  accountIndex: number;
   credentials: GoogleCompanionConfiguredCredentials;
   timeoutMs: number | undefined;
 }): Promise<{ buckets: Bucket[] } | { error: string }> {
@@ -421,20 +414,24 @@ async function fetchAccountBuckets<Key extends GoogleAuthSourceKey, Response, Bu
       );
     }
 
-    return { buckets: flavor.toBuckets(response, account, params.accountIndex) };
+    return { buckets: flavor.toBuckets(response, account) };
   } catch (err) {
     if (err instanceof Error && err.message.includes("timeout")) return { error: "API timeout" };
     return { error: err instanceof Error ? err.message : String(err) };
   }
 }
 
+/**
+ * The quota of the account of one login (`authData` holds that one login); null when the login
+ * has no usable account.
+ */
 export async function queryGoogleQuota<Key extends GoogleAuthSourceKey, Response, Bucket>(
   flavor: GoogleQuotaFlavor<Key, Response, Bucket>,
   options: { requestTimeoutMs?: number; authData: AuthData },
 ): Promise<GoogleQuotaResult<Bucket>> {
   const configuredProjectId = await resolveGoogleConfiguredProjectId(flavor);
-  const accounts = resolveGoogleAccounts(flavor, options.authData, configuredProjectId);
-  if (accounts.length === 0) return null;
+  const [account] = resolveGoogleAccounts(flavor, options.authData, configuredProjectId);
+  if (!account) return null;
 
   const credentials = await flavor.companion.resolveCredentials();
   if (credentials.state !== "configured") {
@@ -445,33 +442,14 @@ export async function queryGoogleQuota<Key extends GoogleAuthSourceKey, Response
     return { success: false, error };
   }
 
-  const results = await mapWithConcurrency(
-    accounts,
-    ACCOUNTS_CONCURRENCY,
-    async (account, accountIndex) => ({
-      account,
-      result: await fetchAccountBuckets({
-        flavor,
-        account,
-        accountIndex,
-        credentials,
-        timeoutMs: options.requestTimeoutMs,
-      }),
-    }),
-  );
-
-  const buckets: Bucket[] = [];
-  const errors: GoogleAccountError[] = [];
-  for (const { account, result } of results) {
-    if ("buckets" in result) {
-      buckets.push(...result.buckets);
-    } else if (result.error) {
-      errors.push({ email: account.email || account.sourceKey, error: result.error });
-    }
-  }
-
-  if (buckets.length === 0 && errors.length === 0) {
-    return { success: false, error: `No ${flavor.name} quota data available` };
-  }
-  return { success: true, buckets, errors: errors.length > 0 ? errors : undefined };
+  const result = await fetchAccountBuckets({
+    flavor,
+    account,
+    credentials,
+    timeoutMs: options.requestTimeoutMs,
+  });
+  const noData = `No ${flavor.name} quota data available`;
+  if ("error" in result) return { success: false, error: result.error || noData };
+  if (result.buckets.length === 0) return { success: false, error: noData };
+  return { success: true, buckets: result.buckets };
 }

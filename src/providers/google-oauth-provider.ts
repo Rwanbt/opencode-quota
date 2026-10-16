@@ -102,10 +102,7 @@ export async function fetchGoogleProviderQuota<Key extends GoogleAuthSourceKey, 
       const buckets = flavor.compareBuckets
         ? [...result.buckets].sort(flavor.compareBuckets)
         : result.buckets;
-      return {
-        rows: buckets.flatMap((bucket) => flavor.row(bucket) ?? []),
-        errors: (result.errors ?? []).map((error) => ({ message: error.error })),
-      };
+      return { rows: buckets.flatMap((bucket) => flavor.row(bucket) ?? []), errors: [] };
     },
   });
   return { attempted: logins.rows.length > 0, accounts, debug };
