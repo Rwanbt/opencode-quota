@@ -344,6 +344,20 @@ describe("server quota RPC", () => {
     await expect(call("snapshot", {})).resolves.toEqual({ snapshot: sent });
   });
 
+  it("checks every provider again at once when settings.jsonc changes a check setting", async () => {
+    useSettings({ providers: { checking: { minIntervalMs: 60_000 } } });
+    const fetch = vi.fn().mockResolvedValue(copilotAnswer(40));
+    mocks.getProviders.mockReturnValue([provider("copilot", fetch, ACCOUNT_NEUTRAL)]);
+    const { call } = await setupServer();
+    await call("refresh", { reason: "manual" });
+    expect(fetch).toHaveBeenCalledOnce();
+
+    // Copilot is not due for a minute; another time limit checks it again now.
+    useSettings({ providers: { checking: { minIntervalMs: 60_000, requestTimeoutMs: 30_000 } } });
+
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(2), { timeout: 5_000 });
+  });
+
   it("answers the settings a client may change, and switches a custom provider on", async () => {
     const gateway = {
       id: "my-gateway",

@@ -29,8 +29,9 @@ function writeConfig(name: string, content: unknown): void {
 const writeSettings = (settings: unknown) => writeConfig("opencode-quota/settings.jsonc", settings);
 
 /** Live settings until the test ends; with `follow`, `changes` collects every change. */
-async function start(options: { follow?: boolean } = {}) {
-  const live = await createLiveSettings({ projectDir: configDir, debounceMs: 20 });
+async function start(options: { follow?: boolean; debounceMs?: number } = {}) {
+  const debounceMs = options.debounceMs ?? 20;
+  const live = await createLiveSettings({ projectDir: configDir, debounceMs });
   const changes: unknown[] = [];
   const watch = options.follow
     ? await live.follow(async (change) => {
@@ -85,14 +86,21 @@ describe("createLiveSettings", () => {
     expect(changes).toEqual(change ? [change] : []);
   });
 
-  it("holds a save before it answers; a refused save changes nothing", async () => {
+  it("holds a save before it answers, and the watch's read of it is no second change", async () => {
     writeSettings(BASE);
-    const { live, changes } = await start({ follow: true });
+    // A debounce well past the save's own read, so the watch reads the saved file after it.
+    const { live, changes } = await start({ follow: true, debounceMs: 200 });
 
     const refused = await live.save({ system: { exportPath: "/elsewhere.json" } }, {});
     const saved = await live.save({ words: { percent: "used" } }, {});
+    const heldBySave = live.current();
+    expect([refused.ok, saved.ok, heldBySave.settings.words.percent]).toEqual([
+      false,
+      true,
+      "used",
+    ]);
 
-    expect([refused.ok, saved.ok]).toEqual([false, true]);
+    await vi.waitFor(() => expect(live.current()).not.toBe(heldBySave), { timeout: 5_000 });
     expect(live.current().settings.words.percent).toBe("used");
     expect(changes).toEqual([NEW_SNAPSHOT]);
   });
