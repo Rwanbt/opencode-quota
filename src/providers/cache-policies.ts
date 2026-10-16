@@ -1,13 +1,7 @@
 import { resolveAlibabaCodingPlanAuthCached } from "../lib/alibaba-auth.js";
 import { anthropicLoginsIdentity } from "../lib/anthropic.js";
 import { readAnthropicLogins } from "../lib/anthropic-auth.js";
-import {
-  API_KEY_LOGIN_VENDORS,
-  API_KEY_VENDORS,
-  type ApiKeyLoginSpec,
-  resolveApiKey,
-  resolveApiKeyLogin,
-} from "../lib/api-key-resolver.js";
+import { API_KEY_VENDORS, type ApiKeyLoginSpec, readVendorKeys } from "../lib/api-key-resolver.js";
 import { copilotLoginsIdentity, readCopilotLogins } from "../lib/copilot.js";
 import type { QuotaProviderCachePolicy } from "../lib/entries.js";
 import { AGY_FLAVOR } from "../lib/google-agy.js";
@@ -29,6 +23,7 @@ import { resolveQuotaProviderApiKey } from "../lib/quota-providers-remote.js";
 import {
   composeResolvedAuthIdentities,
   deriveResolvedAuthIdentity,
+  loginListIdentity,
   type ResolvedAuthIdentity,
 } from "../lib/resolved-auth-identity.js";
 import { readXaiLogins, xaiLoginsIdentity } from "../lib/xai.js";
@@ -62,32 +57,37 @@ function resolvedCredentialPolicy(
   };
 }
 
-function apiKeyPolicy(providerId: keyof typeof API_KEY_VENDORS): QuotaProviderCachePolicy {
-  return resolvedCredentialPolicy(providerId, async () => {
-    const resolved = await resolveApiKey(API_KEY_VENDORS[providerId]);
-    return resolved ? { credential: resolved.key } : null;
-  });
-}
-
-function apiKeyLoginPolicy(providerId: "zai" | "zhipu" | "opencode-go"): QuotaProviderCachePolicy {
-  return resolvedCredentialPolicy(providerId, async () => {
-    const resolved = await resolveApiKeyLogin(API_KEY_LOGIN_VENDORS[providerId]);
-    return resolved.state === "configured" ? { credential: resolved.apiKey } : null;
-  });
-}
-
-/** A key bound to one regional endpoint; the endpoint is part of the identity. */
-function regionalKeyPolicy(
-  providerId: CanonicalQuotaProviderId,
-  spec: ApiKeyLoginSpec,
-  endpoint: string,
+/**
+ * Every key the vendor checks: the env or config key, else each stored key login. A key bound to
+ * one regional `endpoint` has the endpoint in its identity.
+ */
+function vendorKeysPolicy(
+  providerId: CanonicalQuotaProviderId & keyof typeof API_KEY_VENDORS,
+  endpoint?: string,
 ): QuotaProviderCachePolicy {
-  return resolvedCredentialPolicy(providerId, async () => {
-    const resolved = await resolveApiKeyLogin(spec);
-    return resolved.state === "configured"
-      ? { credential: resolved.apiKey, qualifiers: [endpoint] }
-      : null;
-  });
+  const spec: ApiKeyLoginSpec = API_KEY_VENDORS[providerId];
+  const keyIdentity = (key: string) =>
+    deriveResolvedAuthIdentity({
+      providerId,
+      principal: { kind: "credential", value: key },
+      qualifiers: endpoint ? [endpoint] : undefined,
+    });
+  return {
+    kind: "resolved-auth",
+    async resolveIdentity() {
+      const keys = await readVendorKeys(spec);
+      if (keys.envOrConfig) return keyIdentity(keys.envOrConfig.key);
+      return loginListIdentity(
+        providerId,
+        await Promise.all(
+          keys.logins.map(async ({ row, auth }) => ({
+            identity: auth.state === "configured" ? await keyIdentity(auth.apiKey) : null,
+            active: row.active,
+          })),
+        ),
+      );
+    },
+  };
 }
 
 async function resolveQuotaProviderDefinitionAuthIdentity(
@@ -166,29 +166,13 @@ export const PROVIDER_CACHE_POLICIES = {
     resolveIdentity: async () =>
       googleLoginsIdentity(AGY_FLAVOR, await readGoogleLogins(AGY_FLAVOR)),
   },
-  zai: apiKeyLoginPolicy("zai"),
-  zhipu: apiKeyLoginPolicy("zhipu"),
-  "minimax-coding-plan": regionalKeyPolicy(
-    "minimax-coding-plan",
-    API_KEY_LOGIN_VENDORS["minimax-coding-plan"],
-    "international",
-  ),
-  "minimax-china-coding-plan": regionalKeyPolicy(
-    "minimax-china-coding-plan",
-    API_KEY_LOGIN_VENDORS["minimax-china-coding-plan"],
-    "china",
-  ),
-  "kimi-code-plan-global": regionalKeyPolicy(
-    "kimi-code-plan-global",
-    API_KEY_LOGIN_VENDORS["kimi-code-plan-global"],
-    "global",
-  ),
-  "kimi-code-plan-cn": regionalKeyPolicy(
-    "kimi-code-plan-cn",
-    API_KEY_LOGIN_VENDORS["kimi-code-plan-cn"],
-    "cn",
-  ),
-  deepseek: apiKeyPolicy("deepseek"),
+  zai: vendorKeysPolicy("zai"),
+  zhipu: vendorKeysPolicy("zhipu"),
+  "minimax-coding-plan": vendorKeysPolicy("minimax-coding-plan", "international"),
+  "minimax-china-coding-plan": vendorKeysPolicy("minimax-china-coding-plan", "china"),
+  "kimi-code-plan-global": vendorKeysPolicy("kimi-code-plan-global", "global"),
+  "kimi-code-plan-cn": vendorKeysPolicy("kimi-code-plan-cn", "cn"),
+  deepseek: vendorKeysPolicy("deepseek"),
   xai: {
     kind: "resolved-auth",
     resolveIdentity: async () => xaiLoginsIdentity(await readXaiLogins()),
@@ -199,7 +183,7 @@ export const PROVIDER_CACHE_POLICIES = {
     });
     return resolved.state === "configured" ? { credential: resolved.config.cookie } : null;
   }),
-  "opencode-go": apiKeyLoginPolicy("opencode-go"),
+  "opencode-go": vendorKeysPolicy("opencode-go"),
   opencode: resolvedCredentialPolicy("opencode", async () => {
     const resolved = await resolveOpenCodeConsoleAuth();
     if (resolved.state !== "configured") return null;
@@ -217,6 +201,6 @@ export const PROVIDER_CACHE_POLICIES = {
       qualifiers: [consoleBaseUrl(credential)],
     };
   }),
-  "ollama-cloud": apiKeyPolicy("ollama-cloud"),
+  "ollama-cloud": vendorKeysPolicy("ollama-cloud"),
   "quota-providers": quotaProvidersCachePolicy,
 } satisfies Record<CanonicalQuotaProviderId, QuotaProviderCachePolicy>;

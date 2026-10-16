@@ -5,7 +5,6 @@
  * plus purchased credits, from the authenticated Ollama Cloud balance endpoint.
  */
 
-import { API_KEY_VENDORS, resolveApiKey } from "./api-key-resolver.js";
 import { sanitizeSingleLineDisplayText } from "./display-sanitize.js";
 import { fetchWithTimeout } from "./http.js";
 import { finiteNumber, isRecord } from "./json-guards.js";
@@ -153,19 +152,18 @@ function parseOllamaCloudBalance(payload: unknown): OllamaCloudResult {
   };
 }
 
-export async function queryOllamaCloudQuota(
-  options: { requestTimeoutMs?: number } = {},
-): Promise<OllamaCloudResult> {
-  const resolved = await resolveApiKey(API_KEY_VENDORS["ollama-cloud"]);
-  if (!resolved) return null;
-
+/** The Ollama Cloud limits and balance of one API key. */
+export async function queryOllamaCloudQuota(options: {
+  apiKey: string;
+  requestTimeoutMs?: number;
+}): Promise<OllamaCloudResult> {
   try {
     return await fetchWithTimeout(OLLAMA_CLOUD_BALANCE_URL, {
       request: {
         method: "GET",
         headers: {
           Accept: "application/json",
-          Authorization: `Bearer ${resolved.key}`,
+          Authorization: `Bearer ${options.apiKey}`,
         },
         redirect: "manual",
       },
@@ -173,7 +171,7 @@ export async function queryOllamaCloudQuota(
       consume: async (response) => {
         const text = await readBoundedText(response, MAX_RESPONSE_BYTES);
         if (!response.ok) {
-          const snippet = sanitizeMessage(text, resolved.key);
+          const snippet = sanitizeMessage(text, options.apiKey);
           return {
             success: false,
             error: `Ollama Cloud balance API error ${response.status}: ${snippet}`,
@@ -186,7 +184,10 @@ export async function queryOllamaCloudQuota(
   } catch (error) {
     return {
       success: false,
-      error: sanitizeMessage(error instanceof Error ? error.message : String(error), resolved.key),
+      error: sanitizeMessage(
+        error instanceof Error ? error.message : String(error),
+        options.apiKey,
+      ),
     };
   }
 }

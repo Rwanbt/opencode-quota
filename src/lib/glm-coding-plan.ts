@@ -1,8 +1,4 @@
-import {
-  API_KEY_LOGIN_VENDORS,
-  type ApiKeyLoginSpec,
-  resolveApiKeyLogin,
-} from "./api-key-resolver.js";
+import { API_KEY_VENDORS, type ApiKeyLoginSpec, resolveApiKeyLogin } from "./api-key-resolver.js";
 import { sanitizeDisplaySnippet, sanitizeDisplayText } from "./display-sanitize.js";
 import { clampPercent } from "./format-utils.js";
 import { fetchWithTimeout } from "./http.js";
@@ -31,14 +27,14 @@ export const GLM_ENDPOINTS: Readonly<Record<"zai" | "zhipu", GlmEndpoint>> = {
     httpErrorPrefix: "Z.ai API error",
     apiErrorPrefix: "Z.ai API error",
     envelope: "zai",
-    auth: API_KEY_LOGIN_VENDORS.zai,
+    auth: API_KEY_VENDORS.zai,
   },
   zhipu: {
     label: "Zhipu",
     endpoint: "https://bigmodel.cn/api/monitor/usage/quota/limit",
     httpErrorPrefix: "Zhipu API error",
     envelope: "zhipu",
-    auth: API_KEY_LOGIN_VENDORS.zhipu,
+    auth: API_KEY_VENDORS.zhipu,
   },
 };
 

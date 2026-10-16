@@ -1,6 +1,9 @@
-/** DeepSeek: the exact balances /user/balance reports, per currency. */
+/**
+ * DeepSeek: the exact balances /user/balance reports, per currency. Each key stored in OpenCode
+ * is queried as its own account; an env or config key is used alone.
+ */
 
-import { API_KEY_VENDORS, hasApiKey } from "../lib/api-key-resolver.js";
+import { API_KEY_VENDORS, hasVendorKey, readVendorKeys } from "../lib/api-key-resolver.js";
 import { queryDeepSeekBalance } from "../lib/deepseek.js";
 import type { QuotaProvider, QuotaProviderContext } from "../lib/entries.js";
 import { isCanonicalProviderAvailable } from "../lib/provider-availability.js";
@@ -8,13 +11,15 @@ import { modelProviderIncludesAny } from "../lib/provider-model-matching.js";
 import {
   type AccountResult,
   failedAccount,
+  fetchKeyLogins,
   keySlug,
   type ProviderFetchResult,
   type ProviderRow,
 } from "./contract.js";
-import { apiKeyVendorDetails } from "./result-helpers.js";
+import { vendorKeyDetails } from "./result-helpers.js";
 
 const LABEL = "DeepSeek";
+const SPEC = API_KEY_VENDORS.deepseek;
 
 const BALANCE_COMPONENTS = [
   ["total_balance", "totalBalance", "Balance", "primary"],
@@ -23,11 +28,11 @@ const BALANCE_COMPONENTS = [
 ] as const;
 
 type DeepSeekBalanceSuccess = Extract<
-  NonNullable<Awaited<ReturnType<typeof queryDeepSeekBalance>>>,
+  Awaited<ReturnType<typeof queryDeepSeekBalance>>,
   { success: true }
 >;
 
-function deepseekAccounts(result: DeepSeekBalanceSuccess): AccountResult[] {
+function deepseekRows(result: DeepSeekBalanceSuccess): ProviderRow[] {
   const rows: ProviderRow[] = [];
   for (const info of result.balanceInfos) {
     for (const [component, field, label, prominence] of BALANCE_COMPONENTS) {
@@ -58,9 +63,13 @@ function deepseekAccounts(result: DeepSeekBalanceSuccess): AccountResult[] {
       flag: result.isAvailable,
     });
   }
+  return rows;
+}
 
+/** An env or config key: a value DeepSeek sent that is not a decimal is an account of its own. */
+function deepseekAccounts(result: DeepSeekBalanceSuccess): AccountResult[] {
   return [
-    { name: LABEL, rows, errors: [] },
+    { name: LABEL, rows: deepseekRows(result), errors: [] },
     ...result.parseIssues.map((issue) =>
       failedAccount(`${LABEL} ${issue.currency}`, `${issue.field} returned an invalid decimal`),
     ),
@@ -78,7 +87,7 @@ export const deepseekProvider: QuotaProvider = {
     });
     if (providerAvailable) return true;
 
-    return await hasApiKey(API_KEY_VENDORS.deepseek);
+    return hasVendorKey(await readVendorKeys(SPEC));
   },
 
   matchesCurrentModel(model: string): boolean {
@@ -86,13 +95,34 @@ export const deepseekProvider: QuotaProvider = {
   },
 
   async fetch(ctx: QuotaProviderContext): Promise<ProviderFetchResult> {
-    const debug = await apiKeyVendorDetails(API_KEY_VENDORS.deepseek);
+    const keys = await readVendorKeys(SPEC);
+    const debug = vendorKeyDetails(SPEC, keys);
+    const query = (apiKey: string) =>
+      queryDeepSeekBalance({ apiKey, requestTimeoutMs: ctx.config?.requestTimeoutMs });
 
-    const result = await queryDeepSeekBalance({ requestTimeoutMs: ctx.config?.requestTimeoutMs });
-    if (!result) return { attempted: false, accounts: [], debug };
-    if (!result.success) {
-      return { attempted: true, accounts: [failedAccount(LABEL, result.error)], debug };
+    if (keys.envOrConfig) {
+      const result = await query(keys.envOrConfig.key);
+      const accounts = result.success
+        ? deepseekAccounts(result)
+        : [failedAccount(LABEL, result.error)];
+      return { attempted: true, accounts, debug };
     }
-    return { attempted: true, accounts: deepseekAccounts(result), debug };
+
+    const accounts = await fetchKeyLogins({
+      providerName: LABEL,
+      logins: keys.logins,
+      brokenFirst: false,
+      async fetchLogin({ auth }) {
+        const result = await query(auth.apiKey);
+        if (!result.success) return { rows: [], errors: [{ message: result.error }] };
+        return {
+          rows: deepseekRows(result),
+          errors: result.parseIssues.map((issue) => ({
+            message: `${issue.currency} ${issue.field} returned an invalid decimal`,
+          })),
+        };
+      },
+    });
+    return { attempted: keys.logins.length > 0, accounts, debug };
   },
 };

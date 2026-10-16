@@ -2,7 +2,7 @@
 
 import type { Amount } from "../core/types.js";
 import {
-  API_KEY_LOGIN_VENDORS,
+  API_KEY_VENDORS,
   type ApiKeyLoginSpec,
   readKeyLogins,
   resolveApiKeyLogin,
@@ -376,12 +376,12 @@ export const minimaxCodingPlanProvider = minimaxProvider({
   id: "minimax-coding-plan",
   label: "MiniMax Token Plan",
   endpoint: "international",
-  auth: API_KEY_LOGIN_VENDORS["minimax-coding-plan"],
+  auth: API_KEY_VENDORS["minimax-coding-plan"],
 });
 
 export const minimaxChinaCodingPlanProvider = minimaxProvider({
   id: "minimax-china-coding-plan",
   label: "MiniMax Token Plan (CN)",
   endpoint: "china",
-  auth: API_KEY_LOGIN_VENDORS["minimax-china-coding-plan"],
+  auth: API_KEY_VENDORS["minimax-china-coding-plan"],
 });

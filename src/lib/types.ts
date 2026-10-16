@@ -376,8 +376,7 @@ export type OllamaCloudResult =
       /** Independent response fields that could not be used */
       rowErrors?: string[];
     }
-  | QuotaError
-  | null;
+  | QuotaError;
 
 export type OpenCodeGoWindowKey = "rolling" | "weekly" | "monthly";
 

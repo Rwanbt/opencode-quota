@@ -6,7 +6,6 @@
  */
 
 import { isCanonicalAccountingDecimal } from "./accounting-format.js";
-import { API_KEY_VENDORS, resolveApiKey } from "./api-key-resolver.js";
 import { sanitizeDisplaySnippet, sanitizeDisplayText } from "./display-sanitize.js";
 import { fetchWithTimeout } from "./http.js";
 import { isRecord, nonEmptyString } from "./json-guards.js";
@@ -32,7 +31,7 @@ interface DeepSeekBalance {
   parseIssues: DeepSeekBalanceParseIssue[];
 }
 
-type DeepSeekResult = ({ success: true } & DeepSeekBalance) | QuotaError | null;
+type DeepSeekResult = ({ success: true } & DeepSeekBalance) | QuotaError;
 
 const DEEPSEEK_BALANCE_URL = "https://api.deepseek.com/user/balance";
 const USER_AGENT = "OpenCode-Quota-Toast/1.0";
@@ -79,19 +78,17 @@ function parseDeepSeekBalance(payload: unknown): DeepSeekBalance {
   return { isAvailable, balanceInfos, parseIssues };
 }
 
-/** The DeepSeek balance, or null when no API key is configured. */
-export async function queryDeepSeekBalance(
-  options: { requestTimeoutMs?: number } = {},
-): Promise<DeepSeekResult> {
-  const resolved = await resolveApiKey(API_KEY_VENDORS.deepseek);
-  if (!resolved) return null;
-
+/** The DeepSeek balance of one API key. */
+export async function queryDeepSeekBalance(options: {
+  apiKey: string;
+  requestTimeoutMs?: number;
+}): Promise<DeepSeekResult> {
   try {
     return await fetchWithTimeout(DEEPSEEK_BALANCE_URL, {
       request: {
         method: "GET",
         headers: {
-          Authorization: `Bearer ${resolved.key}`,
+          Authorization: `Bearer ${options.apiKey}`,
           "User-Agent": USER_AGENT,
         },
       },

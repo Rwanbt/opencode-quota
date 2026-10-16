@@ -6,7 +6,7 @@
 
 import { classifyWindow } from "../core/windows.js";
 import {
-  API_KEY_LOGIN_VENDORS,
+  API_KEY_VENDORS,
   type ApiKeyLoginSpec,
   readKeyLogins,
   resolveApiKeyLogin,
@@ -147,12 +147,12 @@ export const kimiCodePlanGlobalProvider = kimiProvider({
   id: "kimi-code-plan-global",
   label: "Kimi Code",
   endpoint: "global",
-  auth: API_KEY_LOGIN_VENDORS["kimi-code-plan-global"],
+  auth: API_KEY_VENDORS["kimi-code-plan-global"],
 });
 
 export const kimiCodePlanCnProvider = kimiProvider({
   id: "kimi-code-plan-cn",
   label: "Kimi Code (CN)",
   endpoint: "cn",
-  auth: API_KEY_LOGIN_VENDORS["kimi-code-plan-cn"],
+  auth: API_KEY_VENDORS["kimi-code-plan-cn"],
 });

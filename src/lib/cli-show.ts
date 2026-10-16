@@ -7,7 +7,7 @@ import type { ProviderSourceHost } from "../core/provider-source.js";
 import { loadSettings } from "../settings/index.js";
 import { PROVIDER_IDS } from "../settings/schema.js";
 import { hasAnthropicCredentialsConfigured } from "./anthropic.js";
-import { API_KEY_LOGIN_VENDORS, resolveApiKeyLogin } from "./api-key-resolver.js";
+import { API_KEY_VENDORS, resolveApiKeyLogin } from "./api-key-resolver.js";
 import {
   buildCliShowJson,
   buildCliShowText,
@@ -155,8 +155,8 @@ function resolveCliRoots(cwd: string): {
 async function loadCliAuthenticatedProviderIds(anthropicBinaryPath: string): Promise<string[]> {
   const [anthropicConfigured, kimiGlobalAuth, kimiCnAuth] = await Promise.all([
     hasAnthropicCredentialsConfigured({ binaryPath: anthropicBinaryPath }),
-    resolveApiKeyLogin(API_KEY_LOGIN_VENDORS["kimi-code-plan-global"]),
-    resolveApiKeyLogin(API_KEY_LOGIN_VENDORS["kimi-code-plan-cn"]),
+    resolveApiKeyLogin(API_KEY_VENDORS["kimi-code-plan-global"]),
+    resolveApiKeyLogin(API_KEY_VENDORS["kimi-code-plan-cn"]),
   ]);
 
   return [

@@ -33,9 +33,9 @@ vi.mock("../src/lib/api-key-resolver.js", async (importOriginal) => {
     ...actual,
     resolveApiKeyLogin: vi.fn(async (spec: unknown) => ({
       state:
-        spec === actual.API_KEY_LOGIN_VENDORS["kimi-code-plan-global"]
+        spec === actual.API_KEY_VENDORS["kimi-code-plan-global"]
           ? authMocks.kimiGlobalState
-          : spec === actual.API_KEY_LOGIN_VENDORS["kimi-code-plan-cn"]
+          : spec === actual.API_KEY_VENDORS["kimi-code-plan-cn"]
             ? authMocks.kimiCnState
             : "none",
     })),

@@ -13,17 +13,21 @@ import { createQuotaStore } from "../core/store.js";
 import type { DebugDetail, ProviderSnapshot, QuotaSnapshot, SessionModel } from "../core/types.js";
 import { type UsageReport, usageReport } from "../core/usage.js";
 import { getProviders } from "../providers/registry.js";
-import { apiKeyStatusDetails, simpleApiKeyStatusDetails } from "../providers/result-helpers.js";
+import {
+  apiKeyStatusDetails,
+  simpleApiKeyStatusDetails,
+  vendorKeyDetails,
+} from "../providers/result-helpers.js";
 import type { Settings, V5Conversion } from "../settings/index.js";
 import { PROVIDER_IDS } from "../settings/schema.js";
 import { DEFAULT_WORDS } from "../view/format.js";
 import { type RowSettings, type SurfaceRows, visibleGroups } from "../view/select.js";
 import { plainLines } from "../view/text.js";
 import {
-  API_KEY_LOGIN_VENDORS,
   API_KEY_VENDORS,
-  getApiKeyDiagnostics,
+  type ApiKeyLoginSpec,
   getApiKeyLoginDiagnostics,
+  readVendorKeys,
 } from "./api-key-resolver.js";
 import { inspectCursorAuthPresence } from "./cursor-detection.js";
 import { isCursorProviderId } from "./cursor-pricing.js";
@@ -163,12 +167,10 @@ async function isAvailable(provider: QuotaProvider, ctx: QuotaProviderContext): 
  */
 async function apiKeySetupDetails(providerId: string): Promise<DebugDetail[]> {
   if (Object.hasOwn(API_KEY_VENDORS, providerId)) {
-    const vendor = API_KEY_VENDORS[providerId as keyof typeof API_KEY_VENDORS];
-    return simpleApiKeyStatusDetails(await getApiKeyDiagnostics(vendor));
-  }
-  if (Object.hasOwn(API_KEY_LOGIN_VENDORS, providerId)) {
-    const vendor = API_KEY_LOGIN_VENDORS[providerId as keyof typeof API_KEY_LOGIN_VENDORS];
-    return apiKeyStatusDetails(await getApiKeyLoginDiagnostics(vendor));
+    const vendor: ApiKeyLoginSpec = API_KEY_VENDORS[providerId as keyof typeof API_KEY_VENDORS];
+    return vendor.skipBrokenLogins
+      ? vendorKeyDetails(vendor, await readVendorKeys(vendor))
+      : apiKeyStatusDetails(await getApiKeyLoginDiagnostics(vendor));
   }
   if (providerId === "openrouter") {
     const resolved = await resolveOpenRouterApiKey();

@@ -1,21 +1,27 @@
-import type { Amount } from "../core/types.js";
-import { API_KEY_VENDORS, hasApiKey } from "../lib/api-key-resolver.js";
+/**
+ * Ollama Cloud: included credits or session and weekly limits, and purchased credits. Each key
+ * stored in OpenCode is queried as its own account; an env or config key is used alone.
+ */
+
+import type { Amount, DebugDetail } from "../core/types.js";
+import { API_KEY_VENDORS, hasVendorKey, readVendorKeys } from "../lib/api-key-resolver.js";
 import type { QuotaProvider, QuotaProviderContext } from "../lib/entries.js";
 import { queryOllamaCloudQuota } from "../lib/ollama-cloud.js";
 import { modelProviderMatchesRuntimeId } from "../lib/provider-model-matching.js";
-import type { OllamaCloudIncludedCredits } from "../lib/types.js";
+import type { OllamaCloudIncludedCredits, OllamaCloudResult } from "../lib/types.js";
 import { accountingDecimalFromNumber } from "./accounting-decimal.js";
 import {
-  failedAccount,
+  fetchKeyLogins,
   MONTHLY,
   type ProviderFetchResult,
   type ProviderRow,
   quotaRow,
   WEEKLY,
 } from "./contract.js";
-import { apiKeyVendorDetails, statusDetailsFromRecord } from "./result-helpers.js";
+import { statusDetailsFromRecord, vendorKeyDetails } from "./result-helpers.js";
 
 const LABEL = "Ollama Cloud";
+const SPEC = API_KEY_VENDORS["ollama-cloud"];
 const SESSION = { key: "session", label: "Session", window: "session" } as const;
 const NO_DATA = "Ollama Cloud returned no limits or balance";
 
@@ -44,11 +50,78 @@ function includedCreditsRow(
   };
 }
 
+/** One key's rows and errors, and the details its reply gave. */
+function ollamaKeyFetch(result: OllamaCloudResult): {
+  rows: ProviderRow[];
+  errors: Array<{ message: string }>;
+  debug: DebugDetail[];
+} {
+  if (!result.success) return { rows: [], errors: [{ message: result.error }], debug: [] };
+
+  const { session, weekly, includedCredits: included, purchasedUsd } = result;
+  const rows: ProviderRow[] = [];
+  if (session) {
+    rows.push(
+      quotaRow({
+        ...SESSION,
+        percentRemaining: session.percentRemaining,
+        resetsAt: session.resetTimeIso,
+      }),
+    );
+  }
+  if (weekly) {
+    rows.push(
+      quotaRow({
+        ...WEEKLY,
+        percentRemaining: weekly.percentRemaining,
+        resetsAt: weekly.resetTimeIso,
+      }),
+    );
+  }
+  // A plan with no included allowance has no share to show.
+  if (included?.percentRemaining !== undefined) {
+    rows.push(includedCreditsRow(included, included.percentRemaining));
+  }
+  // Purchased credits show when there are some, or when they are all Ollama returned.
+  if (purchasedUsd !== undefined && (purchasedUsd > 0 || rows.length === 0)) {
+    rows.push({
+      key: "purchased",
+      label: "Purchased",
+      type: "balance",
+      method: "remote_api",
+      authority: "provider_reported",
+      prominence: "primary",
+      amount: usd(purchasedUsd),
+    });
+  }
+
+  const rowErrors = result.rowErrors ?? [];
+  const errors = [...rowErrors, ...(rows.length === 0 ? [NO_DATA] : [])];
+  return {
+    rows,
+    errors: errors.map((message) => ({ message })),
+    debug: [
+      ...statusDetailsFromRecord({
+        included_balance_usd: included?.balanceUsd.toString(),
+        included_allowance_usd: included?.allowanceUsd.toString(),
+        included_period_from: included?.periodStartIso,
+        included_period_until: included?.resetTimeIso,
+        session_remaining_percent: session?.percentRemaining.toString(),
+        session_resets_at: session?.resetTimeIso,
+        weekly_remaining_percent: weekly?.percentRemaining.toString(),
+        weekly_resets_at: weekly?.resetTimeIso,
+        purchased_balance_usd: purchasedUsd?.toString(),
+      }),
+      ...rowErrors.map((message, index) => ({ key: `live_error_${index + 1}`, value: message })),
+    ],
+  };
+}
+
 export const ollamaCloudProvider: QuotaProvider = {
   id: "ollama-cloud",
 
   async isAvailable(_ctx: QuotaProviderContext): Promise<boolean> {
-    return await hasApiKey(API_KEY_VENDORS["ollama-cloud"]);
+    return hasVendorKey(await readVendorKeys(SPEC));
   },
 
   matchesCurrentModel(model: string): boolean {
@@ -56,73 +129,37 @@ export const ollamaCloudProvider: QuotaProvider = {
   },
 
   async fetch(ctx: QuotaProviderContext): Promise<ProviderFetchResult> {
-    const keyDetails = await apiKeyVendorDetails(API_KEY_VENDORS["ollama-cloud"]);
+    const keys = await readVendorKeys(SPEC);
+    const keyDetails = vendorKeyDetails(SPEC, keys);
+    const query = async (apiKey: string) =>
+      ollamaKeyFetch(
+        await queryOllamaCloudQuota({ apiKey, requestTimeoutMs: ctx.config?.requestTimeoutMs }),
+      );
 
-    const result = await queryOllamaCloudQuota({
-      requestTimeoutMs: ctx.config?.requestTimeoutMs,
+    if (keys.envOrConfig) {
+      const { rows, errors, debug } = await query(keys.envOrConfig.key);
+      return {
+        attempted: true,
+        accounts: [{ name: LABEL, rows, errors }],
+        debug: [...keyDetails, ...debug],
+      };
+    }
+
+    const debugByLogin = new Map<string, DebugDetail[]>();
+    const accounts = await fetchKeyLogins({
+      providerName: LABEL,
+      logins: keys.logins,
+      brokenFirst: false,
+      async fetchLogin({ row, auth }) {
+        const { rows, errors, debug } = await query(auth.apiKey);
+        debugByLogin.set(row.id, debug);
+        return { rows, errors };
+      },
     });
-    if (!result) return { attempted: false, accounts: [], debug: keyDetails };
-    if (!result.success) {
-      return { attempted: true, accounts: [failedAccount(LABEL, result.error)], debug: keyDetails };
-    }
-
-    const { session, weekly, includedCredits: included, purchasedUsd } = result;
-    const rows: ProviderRow[] = [];
-    if (session) {
-      rows.push(
-        quotaRow({
-          ...SESSION,
-          percentRemaining: session.percentRemaining,
-          resetsAt: session.resetTimeIso,
-        }),
-      );
-    }
-    if (weekly) {
-      rows.push(
-        quotaRow({
-          ...WEEKLY,
-          percentRemaining: weekly.percentRemaining,
-          resetsAt: weekly.resetTimeIso,
-        }),
-      );
-    }
-    // A plan with no included allowance has no share to show.
-    if (included?.percentRemaining !== undefined) {
-      rows.push(includedCreditsRow(included, included.percentRemaining));
-    }
-    // Purchased credits show when there are some, or when they are all Ollama returned.
-    if (purchasedUsd !== undefined && (purchasedUsd > 0 || rows.length === 0)) {
-      rows.push({
-        key: "purchased",
-        label: "Purchased",
-        type: "balance",
-        method: "remote_api",
-        authority: "provider_reported",
-        prominence: "primary",
-        amount: usd(purchasedUsd),
-      });
-    }
-
-    const rowErrors = result.rowErrors ?? [];
-    const errors = [...rowErrors, ...(rows.length === 0 ? [NO_DATA] : [])];
     return {
-      attempted: true,
-      accounts: [{ name: LABEL, rows, errors: errors.map((message) => ({ message })) }],
-      debug: [
-        ...keyDetails,
-        ...statusDetailsFromRecord({
-          included_balance_usd: included?.balanceUsd.toString(),
-          included_allowance_usd: included?.allowanceUsd.toString(),
-          included_period_from: included?.periodStartIso,
-          included_period_until: included?.resetTimeIso,
-          session_remaining_percent: session?.percentRemaining.toString(),
-          session_resets_at: session?.resetTimeIso,
-          weekly_remaining_percent: weekly?.percentRemaining.toString(),
-          weekly_resets_at: weekly?.resetTimeIso,
-          purchased_balance_usd: purchasedUsd?.toString(),
-        }),
-        ...rowErrors.map((message, index) => ({ key: `live_error_${index + 1}`, value: message })),
-      ],
+      attempted: keys.logins.length > 0,
+      accounts,
+      debug: [...keyDetails, ...keys.logins.flatMap(({ row }) => debugByLogin.get(row.id) ?? [])],
     };
   },
 };

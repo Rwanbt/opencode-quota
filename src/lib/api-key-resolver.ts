@@ -4,8 +4,7 @@
  * Order (first wins): environment variables, then the trusted global
  * `opencode.json(c)` (`providers.<id>.settings.apiKey`, or the legacy
  * `provider.<id>.options.apiKey`, with `{env:NAME}` templates), then OpenCode's
- * stored logins. Each vendor is one entry in `API_KEY_VENDORS` or
- * `API_KEY_LOGIN_VENDORS`.
+ * stored logins. Each vendor is one entry in `API_KEY_VENDORS`.
  */
 
 import { existsSync } from "fs";
@@ -14,7 +13,7 @@ import { resolveEnvTemplate } from "./env-template.js";
 import { asRecord } from "./json-guards.js";
 import {
   type CredentialRow,
-  credentialRowAuthEntry,
+  credentialRowAuthData,
   getCredentialDatabasePaths,
   readAuthFile,
   readAuthFileCached,
@@ -25,7 +24,6 @@ import {
   readOpenCodeConfigCandidate,
 } from "./opencode-config-read.js";
 import { getOpencodeRuntimeDirs } from "./opencode-runtime-paths.js";
-import type { AuthData } from "./types.js";
 
 /** Where an API key may live for one vendor. */
 export interface ApiKeySpec {
@@ -39,23 +37,32 @@ export interface ApiKeySpec {
   keyLoginsOnly?: boolean;
 }
 
-/** A vendor whose broken stored login is reported instead of ignored. */
+/** An API-key vendor; a broken stored login (wrong type, empty key, unreadable) is an error. */
 export interface ApiKeyLoginSpec extends ApiKeySpec {
   authKeys: readonly string[];
   /** Used in login errors, e.g. "Z.ai auth entry has invalid shape". */
   displayName: string;
   /** Replaces the "Unsupported <name> auth type" error (it would echo the stored type). */
   unsupportedTypeError?: string;
+  /** A stored login that is not a usable API key is left out instead of shown as an error. */
+  skipBrokenLogins?: boolean;
 }
 
-/** Vendors whose stored login is used only when it is a usable API key. */
 export const API_KEY_VENDORS = {
-  deepseek: { envVars: ["DEEPSEEK_API_KEY"], providerKeys: ["deepseek"] },
-  "ollama-cloud": { envVars: ["OLLAMA_API_KEY"], providerKeys: ["ollama-cloud"] },
-} as const satisfies Record<string, ApiKeySpec>;
-
-/** Vendors that report a broken stored login (wrong type, empty key, unreadable) as an error. */
-export const API_KEY_LOGIN_VENDORS = {
+  deepseek: {
+    displayName: "DeepSeek",
+    envVars: ["DEEPSEEK_API_KEY"],
+    providerKeys: ["deepseek"],
+    authKeys: ["deepseek"],
+    skipBrokenLogins: true,
+  },
+  "ollama-cloud": {
+    displayName: "Ollama Cloud",
+    envVars: ["OLLAMA_API_KEY"],
+    providerKeys: ["ollama-cloud"],
+    authKeys: ["ollama-cloud"],
+    skipBrokenLogins: true,
+  },
   zai: {
     displayName: "Z.ai",
     envVars: ["ZAI_API_KEY", "ZAI_CODING_PLAN_API_KEY"],
@@ -121,16 +128,9 @@ const API_KEY_LOGIN_CACHE_MAX_AGE_MS = 5_000;
 
 export type ApiKeySource = `env:${string}` | "opencode.json" | "opencode.jsonc" | "opencode.db";
 
-interface ApiKeyResult {
+export interface ApiKeyResult {
   key: string;
   source: ApiKeySource;
-}
-
-interface ApiKeyDiagnostics {
-  configured: boolean;
-  source: ApiKeySource | null;
-  checkedPaths: string[];
-  credentialDatabasePaths: string[];
 }
 
 type ApiKeyLoginResult =
@@ -282,21 +282,6 @@ export async function resolveApiKey(spec: ApiKeySpec): Promise<ApiKeyResult | nu
   return key ? { key, source: "opencode.db" } : null;
 }
 
-export async function hasApiKey(spec: ApiKeySpec): Promise<boolean> {
-  return (await resolveApiKey(spec)) !== null;
-}
-
-export async function getApiKeyDiagnostics(spec: ApiKeySpec): Promise<ApiKeyDiagnostics> {
-  const checkedPaths = getApiKeyCheckedPaths(spec);
-  const result = await resolveApiKey(spec);
-  return {
-    configured: result !== null,
-    source: result?.source ?? null,
-    checkedPaths,
-    credentialDatabasePaths: getCredentialDatabasePaths(),
-  };
-}
-
 /** Read the vendor's stored logins (cached for 5 seconds). */
 export async function readApiKeyLoginAuth(spec: ApiKeyLoginSpec): Promise<unknown> {
   return readAuthFileCached({
@@ -383,6 +368,11 @@ export async function getApiKeyLoginDiagnostics(
   return (await resolveApiKeyLoginWithDiagnostics(spec)).diagnostics;
 }
 
+export type KeyLogin = {
+  row: CredentialRow;
+  auth: Exclude<ApiKeyLoginResult, { state: "none" }>;
+};
+
 /**
  * Every key login of the vendor stored in OpenCode, in OpenCode's order, with what each one
  * holds. `selectRows` narrows the logins further, for example to drop alias duplicates.
@@ -390,15 +380,27 @@ export async function getApiKeyLoginDiagnostics(
 export async function readKeyLogins(
   spec: ApiKeyLoginSpec,
   options: { selectRows?: (rows: CredentialRow[]) => CredentialRow[] } = {},
-): Promise<Array<{ row: CredentialRow; auth: Exclude<ApiKeyLoginResult, { state: "none" }> }>> {
+): Promise<KeyLogin[]> {
   const vendorRows = (await readCredentialRows(spec.authKeys, { methods: ["key"] })).filter((row) =>
     spec.authKeys.includes(row.integrationId),
   );
   const rows = options.selectRows ? options.selectRows(vendorRows) : vendorRows;
   return rows.flatMap((row) => {
-    const auth = parseApiKeyLogin(spec, {
-      [row.integrationId]: credentialRowAuthEntry(row),
-    } as AuthData);
-    return auth.state === "none" ? [] : [{ row, auth }];
+    const auth = parseApiKeyLogin(spec, credentialRowAuthData(row));
+    if (auth.state === "none") return [];
+    if (auth.state === "invalid" && spec.skipBrokenLogins) return [];
+    return [{ row, auth }];
   });
+}
+
+/** The keys a vendor checks: the env or config key when one is set, else every stored login. */
+export type VendorKeys = { envOrConfig: ApiKeyResult | null; logins: KeyLogin[] };
+
+export async function readVendorKeys(spec: ApiKeyLoginSpec): Promise<VendorKeys> {
+  const envOrConfig = await resolveApiKeyFromEnvAndConfig(spec);
+  return { envOrConfig, logins: envOrConfig ? [] : await readKeyLogins(spec) };
+}
+
+export function hasVendorKey(keys: VendorKeys): boolean {
+  return keys.envOrConfig !== null || keys.logins.length > 0;
 }

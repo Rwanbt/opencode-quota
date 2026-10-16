@@ -40,14 +40,10 @@ import {
   resolveAlibabaCodingPlanAuthCached,
 } from "../src/lib/alibaba-auth.js";
 import {
-  API_KEY_LOGIN_VENDORS,
   API_KEY_VENDORS,
   type ApiKeyLoginSpec,
-  type ApiKeySpec,
-  getApiKeyDiagnostics,
   getApiKeyLoginDiagnostics,
   getGlobalOpencodeConfigCandidatePaths,
-  hasApiKey,
   parseApiKeyLogin,
   resolveApiKey,
   resolveApiKeyFromEnvAndConfig,
@@ -65,11 +61,21 @@ const DB_PATHS = ["/tmp/opencode.db"];
 // The vendor contract, written out by hand instead of read from the production
 // tables, so a wrong env var, config alias, or login id in a table fails here.
 // Order is precedence: the first env var, config alias, and login id wins.
-const EXPECTED_API_KEY_VENDORS: Record<string, ApiKeySpec> = {
-  deepseek: { envVars: ["DEEPSEEK_API_KEY"], providerKeys: ["deepseek"] },
-  "ollama-cloud": { envVars: ["OLLAMA_API_KEY"], providerKeys: ["ollama-cloud"] },
-};
-const EXPECTED_API_KEY_LOGIN_VENDORS: Record<string, ApiKeyLoginSpec> = {
+const EXPECTED_API_KEY_VENDORS: Record<string, ApiKeyLoginSpec> = {
+  deepseek: {
+    displayName: "DeepSeek",
+    envVars: ["DEEPSEEK_API_KEY"],
+    providerKeys: ["deepseek"],
+    authKeys: ["deepseek"],
+    skipBrokenLogins: true,
+  },
+  "ollama-cloud": {
+    displayName: "Ollama Cloud",
+    envVars: ["OLLAMA_API_KEY"],
+    providerKeys: ["ollama-cloud"],
+    authKeys: ["ollama-cloud"],
+    skipBrokenLogins: true,
+  },
   zai: {
     displayName: "Z.ai",
     envVars: ["ZAI_API_KEY", "ZAI_CODING_PLAN_API_KEY"],
@@ -128,14 +134,12 @@ const EXPECTED_API_KEY_LOGIN_VENDORS: Record<string, ApiKeyLoginSpec> = {
 };
 
 // Each case: [vendor id, expected contract (test inputs), production spec (called)].
-const SIMPLE_VENDORS = Object.entries(EXPECTED_API_KEY_VENDORS).map(
-  ([id, expected]) => [id, expected, (API_KEY_VENDORS as Record<string, ApiKeySpec>)[id]] as const,
-);
-const LOGIN_VENDORS = Object.entries(EXPECTED_API_KEY_LOGIN_VENDORS).map(
+const ALL_VENDORS = Object.entries(EXPECTED_API_KEY_VENDORS).map(
   ([id, expected]) =>
-    [id, expected, (API_KEY_LOGIN_VENDORS as Record<string, ApiKeyLoginSpec>)[id]] as const,
+    [id, expected, (API_KEY_VENDORS as Record<string, ApiKeyLoginSpec>)[id]] as const,
 );
-const ALL_VENDORS = [...SIMPLE_VENDORS, ...LOGIN_VENDORS];
+/** The vendors that show a broken stored login as an error. */
+const LOGIN_VENDORS = ALL_VENDORS.filter(([, expected]) => !expected.skipBrokenLogins);
 const ALL_ENV_VARS = ALL_VENDORS.flatMap(([, expected]) => expected.envVars);
 
 /** One entry per id, each with a value that names its id. */
@@ -191,7 +195,6 @@ afterEach(() => {
 describe("vendor contract", () => {
   it("the production tables match the hand-written contract", () => {
     expect(API_KEY_VENDORS).toEqual(EXPECTED_API_KEY_VENDORS);
-    expect(API_KEY_LOGIN_VENDORS).toEqual(EXPECTED_API_KEY_LOGIN_VENDORS);
   });
 
   it.each(
@@ -213,78 +216,6 @@ describe("vendor contract", () => {
         source: "opencode.json",
       });
     }
-  });
-});
-
-describe("API key vendors (env, then trusted config, then usable stored key)", () => {
-  it.each(
-    SIMPLE_VENDORS,
-  )("%s: an env key wins and skips the stored logins", async (_id, expected, spec) => {
-    const envVar = expected.envVars[0];
-    process.env[envVar] = " env-key ";
-    mockConfigFiles({
-      [TRUSTED.json]: legacyConfig({ [expected.providerKeys[0]]: "config-key" }),
-    });
-
-    await expect(resolveApiKey(spec)).resolves.toEqual({ key: "env-key", source: `env:${envVar}` });
-    await expect(getApiKeyDiagnostics(spec)).resolves.toEqual({
-      configured: true,
-      source: `env:${envVar}`,
-      checkedPaths: [`env:${envVar}`, TRUSTED.json],
-      credentialDatabasePaths: DB_PATHS,
-    });
-    expect(mocks.readAuthFile).not.toHaveBeenCalled();
-  });
-
-  it.each(
-    SIMPLE_VENDORS,
-  )("%s: falls back to a usable stored API key only, in alias order", async (_id, expected, spec) => {
-    for (const [index, authKey] of expected.providerKeys.entries()) {
-      mocks.readAuthFile.mockResolvedValue(
-        entriesFor(expected.providerKeys.slice(index), (id) => ({
-          type: "api",
-          key: ` ${id}-key `,
-        })),
-      );
-      await expect(resolveApiKey(spec)).resolves.toEqual({
-        key: `${authKey}-key`,
-        source: "opencode.db",
-      });
-      expect(mocks.readAuthFile).toHaveBeenLastCalledWith({
-        integrationIds: expected.providerKeys,
-      });
-    }
-
-    const authKey = expected.providerKeys[0];
-    mocks.readAuthFile.mockResolvedValue({ [authKey]: { type: "oauth", key: "oauth-key" } });
-    await expect(hasApiKey(spec)).resolves.toBe(false);
-
-    mocks.readAuthFile.mockResolvedValue({ [authKey]: { type: "api", resolveError: "x" } });
-    await expect(getApiKeyDiagnostics(spec)).resolves.toEqual({
-      configured: false,
-      source: null,
-      checkedPaths: [],
-      credentialDatabasePaths: DB_PATHS,
-    });
-  });
-
-  it.each(
-    SIMPLE_VENDORS,
-  )("%s: ignores unapproved env templates and workspace config", async (_id, expected, spec) => {
-    process.env.NOT_ALLOWED = "secret";
-    mockConfigFiles({
-      [TRUSTED.json]: legacyConfig({ [expected.providerKeys[0]]: "{env:NOT_ALLOWED}" }),
-    });
-    await expect(resolveApiKey(spec)).resolves.toBeNull();
-
-    const workspaceConfig = legacyConfig({ [expected.providerKeys[0]]: "workspace-key" });
-    mockConfigFiles(Object.fromEntries(WORKSPACE.map((path) => [path, workspaceConfig])));
-    await expect(getApiKeyDiagnostics(spec)).resolves.toEqual({
-      configured: false,
-      source: null,
-      checkedPaths: [],
-      credentialDatabasePaths: DB_PATHS,
-    });
   });
 });
 
@@ -359,7 +290,7 @@ describe("trusted config parsing", () => {
     mockConfigFiles({
       [TRUSTED.json]: legacyConfig({ zai: "{env:ZAI_CODING_PLAN_API_KEY}" }),
     });
-    await expect(resolveApiKeyLogin(API_KEY_LOGIN_VENDORS.zai)).resolves.toEqual({
+    await expect(resolveApiKeyLogin(API_KEY_VENDORS.zai)).resolves.toEqual({
       state: "configured",
       apiKey: "templated-key",
     });
@@ -415,7 +346,7 @@ describe("API key login vendors (a broken stored login is reported, not skipped)
   });
 
   it("sanitizes, bounds, and falls back in the unsupported-type error", () => {
-    const spec = API_KEY_LOGIN_VENDORS.zai;
+    const spec = API_KEY_VENDORS.zai;
     const withType = (type: string) => ({ "zai-coding-plan": { type } });
     expect(parseApiKeyLogin(spec, withType("\u001b[31moauth\nretry\u001b[0m"))).toEqual({
       state: "invalid",
@@ -434,7 +365,7 @@ describe("API key login vendors (a broken stored login is reported, not skipped)
   it("uses a fixed OpenCode Go unsupported-type error that never echoes the login", async () => {
     const secret = "distinctive-go-secret";
     mocks.readAuthFileCached.mockResolvedValue({ "opencode-go": { type: secret, key: secret } });
-    const diagnostics = await getApiKeyLoginDiagnostics(API_KEY_LOGIN_VENDORS["opencode-go"]);
+    const diagnostics = await getApiKeyLoginDiagnostics(API_KEY_VENDORS["opencode-go"]);
     expect(diagnostics).toMatchObject({
       state: "invalid",
       error: "OpenCode Go auth entry has unsupported type",
@@ -521,21 +452,21 @@ describe("API key login vendors (a broken stored login is reported, not skipped)
 describe("per-vendor differences", () => {
   it("gives the legacy Kimi aliases to CN and keeps each region's key apart", async () => {
     const legacy = { kimi: { type: "api", key: "legacy-cn" } };
-    expect(parseApiKeyLogin(API_KEY_LOGIN_VENDORS["kimi-code-plan-cn"], legacy)).toEqual({
+    expect(parseApiKeyLogin(API_KEY_VENDORS["kimi-code-plan-cn"], legacy)).toEqual({
       state: "configured",
       apiKey: "legacy-cn",
     });
-    expect(parseApiKeyLogin(API_KEY_LOGIN_VENDORS["kimi-code-plan-global"], legacy)).toEqual({
+    expect(parseApiKeyLogin(API_KEY_VENDORS["kimi-code-plan-global"], legacy)).toEqual({
       state: "none",
     });
 
     process.env.MINIMAX_CHINA_CODING_PLAN_API_KEY = "china-key";
-    await expect(resolveApiKeyLogin(API_KEY_LOGIN_VENDORS["minimax-coding-plan"])).resolves.toEqual(
-      { state: "none" },
+    await expect(resolveApiKeyLogin(API_KEY_VENDORS["minimax-coding-plan"])).resolves.toEqual({
+      state: "none",
+    });
+    await expect(resolveApiKeyLogin(API_KEY_VENDORS["minimax-china-coding-plan"])).resolves.toEqual(
+      { state: "configured", apiKey: "china-key" },
     );
-    await expect(
-      resolveApiKeyLogin(API_KEY_LOGIN_VENDORS["minimax-china-coding-plan"]),
-    ).resolves.toEqual({ state: "configured", apiKey: "china-key" });
   });
 
   it.each([
@@ -632,7 +563,7 @@ describe("per-vendor differences", () => {
       value: { type: "key", key: "workspace-key" },
     };
     mocks.readAuthFileCached.mockImplementation(actual.readAuthFileCached);
-    const spec = API_KEY_LOGIN_VENDORS["opencode-go"];
+    const spec = API_KEY_VENDORS["opencode-go"];
     async function withLogins(
       credentials: Parameters<typeof createFakeIntegration>[0],
       check: (integration: ReturnType<typeof createFakeIntegration>) => Promise<void>,

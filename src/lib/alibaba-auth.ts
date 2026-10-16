@@ -1,5 +1,5 @@
 import {
-  API_KEY_LOGIN_VENDORS,
+  API_KEY_VENDORS,
   type ApiKeySource,
   getApiKeyCheckedPaths,
   getFirstAuthEntryValue,
@@ -13,7 +13,7 @@ import { getCredentialDatabasePaths } from "./opencode-auth.js";
 import type { AlibabaCodingPlanTier, AuthData } from "./types.js";
 
 const DEFAULT_ALIBABA_CODING_PLAN_TIER: AlibabaCodingPlanTier = "lite";
-const ALIBABA = API_KEY_LOGIN_VENDORS["alibaba-coding-plan"];
+const ALIBABA = API_KEY_VENDORS["alibaba-coding-plan"];
 const TIER_KEYS = ["tier", "planTier", "plan_tier", "subscriptionTier"] as const;
 
 type ResolvedAlibabaCodingPlanAuth =

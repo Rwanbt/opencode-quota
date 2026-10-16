@@ -239,7 +239,7 @@ function writeGlobalConfig(config: unknown) {
 }
 
 describe.each(FLAVORS)("$name OAuth quota flow", (flavor) => {
-  const [firstKey, middleKey, lastKey] = flavor.keys;
+  const [firstKey, , lastKey] = flavor.keys;
 
   it("resolves the project id: env override, OpenCode config (native over legacy), GCP env", async () => {
     vi.stubEnv("GOOGLE_CLOUD_PROJECT_ID", "generic-gcp-project-id");

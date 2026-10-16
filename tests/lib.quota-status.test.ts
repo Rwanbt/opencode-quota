@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ProviderSnapshot, QuotaRow } from "../src/core/types.js";
 import type { UsageReport } from "../src/core/usage.js";
 import { WINDOWS } from "../src/core/windows.js";
-import { API_KEY_LOGIN_VENDORS, API_KEY_VENDORS } from "../src/lib/api-key-resolver.js";
+import { API_KEY_VENDORS } from "../src/lib/api-key-resolver.js";
 import { COPILOT_AUTH_KEYS } from "../src/lib/copilot.js";
 import { CURSOR_CANONICAL_PLUGIN_PACKAGE } from "../src/lib/cursor-detection.js";
 import type { QuotaProviderContext } from "../src/lib/entries.js";
@@ -265,9 +265,7 @@ function reportVocabulary(): Set<string> {
     ...Object.values(QUOTA_PROVIDER_CATALOG).map((entry) => entry.label),
     ...Object.values(QUOTA_PROVIDER_RUNTIME_IDS).flat(),
     ...Object.keys(SETTINGS_SCHEMA),
-    ...[...Object.values(API_KEY_VENDORS), ...Object.values(API_KEY_LOGIN_VENDORS)].flatMap(
-      (vendor) => vendor.envVars,
-    ),
+    ...Object.values(API_KEY_VENDORS).flatMap((vendor) => vendor.envVars),
     "OPENROUTER_API_KEY",
     "CURSOR_API_KEY",
     "MIMO_USAGE_COOKIE",
@@ -449,7 +447,6 @@ function vocabularyProblems(
 function envProblems(text: string): string[] {
   const vendors: Record<string, { envVars: readonly string[] }> = {
     ...API_KEY_VENDORS,
-    ...API_KEY_LOGIN_VENDORS,
     openrouter: { envVars: ["OPENROUTER_API_KEY"] },
     cursor: { envVars: ["CURSOR_API_KEY"] },
     xiaomi: { envVars: ["MIMO_USAGE_COOKIE"] },
@@ -2443,18 +2440,13 @@ describe("buildStatusReportData", () => {
   ];
 
   it("lists every provider that reads an API key", () => {
-    expect(
-      [
-        ...Object.keys(API_KEY_VENDORS),
-        ...Object.keys(API_KEY_LOGIN_VENDORS),
-        "openrouter",
-        "cursor",
-      ].sort(),
-    ).toEqual([...KEY_PROVIDERS].sort());
+    expect([...Object.keys(API_KEY_VENDORS), "openrouter", "cursor"].sort()).toEqual(
+      [...KEY_PROVIDERS].sort(),
+    );
   });
 
   it("shows where every API-key provider looked for its key, without asking it for quota", async () => {
-    for (const name of [...Object.values(API_KEY_VENDORS), ...Object.values(API_KEY_LOGIN_VENDORS)]
+    for (const name of Object.values(API_KEY_VENDORS)
       .flatMap((vendor) => vendor.envVars)
       .concat("OPENROUTER_API_KEY")) {
       vi.stubEnv(name, "");

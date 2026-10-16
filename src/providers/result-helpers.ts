@@ -1,8 +1,14 @@
 import { readFile } from "fs/promises";
 import type { DebugDetail } from "../core/types.js";
-import { type ApiKeySpec, getApiKeyDiagnostics } from "../lib/api-key-resolver.js";
+import {
+  type ApiKeySpec,
+  getApiKeyCheckedPaths,
+  hasVendorKey,
+  type VendorKeys,
+} from "../lib/api-key-resolver.js";
 import { sanitizeDisplayText } from "../lib/display-sanitize.js";
 import { asRecord } from "../lib/json-guards.js";
+import { getCredentialDatabasePaths } from "../lib/opencode-auth.js";
 
 export function statusDetailsFromRecord(
   values: Readonly<Record<string, string | undefined>>,
@@ -42,15 +48,14 @@ export function simpleApiKeyStatusDetails(diagnostics: {
   });
 }
 
-/** Where a vendor's API key was looked for and found; "not configured" when that can't be read. */
-export async function apiKeyVendorDetails(vendor: ApiKeySpec): Promise<DebugDetail[]> {
-  const diagnostics = await getApiKeyDiagnostics(vendor).catch(() => ({
-    configured: false,
-    source: null,
-    checkedPaths: [],
-    credentialDatabasePaths: [],
-  }));
-  return simpleApiKeyStatusDetails(diagnostics);
+/** Where a vendor's API key was looked for, and whether one was found. */
+export function vendorKeyDetails(spec: ApiKeySpec, keys: VendorKeys): DebugDetail[] {
+  return simpleApiKeyStatusDetails({
+    configured: hasVendorKey(keys),
+    source: keys.envOrConfig?.source ?? (keys.logins.length > 0 ? "opencode.db" : null),
+    checkedPaths: getApiKeyCheckedPaths(spec),
+    credentialDatabasePaths: getCredentialDatabasePaths(),
+  });
 }
 
 export function apiKeyStatusDetails(diagnostics: {

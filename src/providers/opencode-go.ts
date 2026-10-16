@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { safeErrorText } from "../core/redact.js";
 import type { DebugDetail } from "../core/types.js";
 import {
-  API_KEY_LOGIN_VENDORS,
+  API_KEY_VENDORS,
   type ApiKeyLoginDiagnostics,
   getApiKeyLoginDiagnostics,
   readKeyLogins,
@@ -29,7 +29,7 @@ import {
 import { statusDetailsFromRecord } from "./result-helpers.js";
 
 const LABEL = "OpenCode Go";
-const OPENCODE_GO_AUTH = API_KEY_LOGIN_VENDORS["opencode-go"];
+const OPENCODE_GO_AUTH = API_KEY_VENDORS["opencode-go"];
 const CONSOLE_LOGIN_HINT = "Run `opencode auth login opencode`.";
 const OPENCODE_GO_WINDOW_ORDER: OpenCodeGoWindowKey[] = ["rolling", "weekly", "monthly"];
 const OPENCODE_GO_SLOTS = { rolling: FIVE_HOUR, weekly: WEEKLY, monthly: MONTHLY } as const;
@@ -206,7 +206,7 @@ async function fetchWithApiKey(
 
   if (diagnostics.source === "opencode.db") {
     // `opencode` is a legacy alias of the `opencode-go` integration in the
-    // credential database (see API_KEY_LOGIN_VENDORS). Alias rows must not
+    // credential database (see API_KEY_VENDORS). Alias rows must not
     // become additional connections: prefer native rows and collapse rows
     // holding the same credential (e.g. Zen + Go sharing a workspace key).
     // Console OAuth credentials cannot authorize this API and are skipped.

@@ -15,7 +15,7 @@ import { __resetResolvedAuthIdentityForTests } from "../src/lib/resolved-auth-id
 import { getProviders } from "../src/providers/registry.js";
 import { defaultSettings } from "../src/settings/index.js";
 import type { CredentialDatabaseRow } from "./helpers/credential-database.js";
-import { fakeHttp, requestHeader, useProviderWorld } from "./helpers/provider-fetch.js";
+import { fakeHttp, keyLogin, requestHeader, useProviderWorld } from "./helpers/provider-fetch.js";
 
 const world = useProviderWorld();
 
@@ -36,6 +36,16 @@ type Vendor = {
 
 function bearerToken(init: RequestInit): string | null {
   return requestHeader(init, "Authorization")?.replace(/^Bearer /u, "") ?? null;
+}
+
+/** A vendor whose logins are API keys stored under `integrationId`. */
+function keyVendor(providerId: string, integrationId: string, reply: unknown): Vendor {
+  return {
+    providerId,
+    login: (id, token, updated) => keyLogin(id, integrationId, token, { label: id, updated }),
+    token: bearerToken,
+    reply: () => reply,
+  };
 }
 
 const VENDORS: Vendor[] = [
@@ -127,6 +137,13 @@ const VENDORS: Vendor[] = [
     token: bearerToken,
     reply: () => ({ buckets: [{ modelId: "gemini-2.5-pro", remainingFraction: 0.5 }] }),
   },
+  keyVendor("kimi-code-plan-global", "kimi-code-plan-global", {
+    usage: { limit: 100, used: 50 },
+  }),
+  keyVendor("deepseek", "deepseek", {
+    balance_infos: [{ currency: "USD", total_balance: "1.00" }],
+  }),
+  keyVendor("ollama-cloud", "ollama-cloud", { purchased: { balance_usd: 5 } }),
 ];
 
 /** The accounts the one provider shows, in order. */

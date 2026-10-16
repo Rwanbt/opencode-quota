@@ -8,7 +8,6 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { QuotaProvider } from "../src/lib/entries.js";
 import { isCanonicalProviderAvailable } from "../src/lib/provider-availability.js";
-import type { ProviderFetchResult } from "../src/providers/contract.js";
 import { deepseekProvider } from "../src/providers/deepseek.js";
 import { kimiCodePlanCnProvider, kimiCodePlanGlobalProvider } from "../src/providers/kimi-code.js";
 import {
@@ -20,6 +19,7 @@ import { openRouterProvider } from "../src/providers/openrouter.js";
 import {
   fakeHttp,
   fetchRows,
+  keyLogin,
   requestHeader,
   rowSummary,
   useProviderWorld,
@@ -90,7 +90,7 @@ function describeVendor(id: VendorId, cases: VendorCase[]): void {
   });
 }
 
-useProviderWorld();
+const world = useProviderWorld();
 
 beforeEach(() => {
   vi.useFakeTimers({ now: Date.parse("2026-01-01T12:00:00.000Z"), toFake: ["Date"] });
@@ -417,6 +417,70 @@ describeVendor("openrouter", [
     errorLines: ["OpenRouter: Invalid openrouter-key-v1 response"],
   },
 ]);
+
+describe("DeepSeek and Ollama Cloud stored keys", () => {
+  const STORED_KEY_VENDORS = [
+    {
+      id: "deepseek",
+      reply: { balance_infos: [{ currency: "USD", total_balance: "1.00" }] },
+      rowId: "deepseek.total_balance.usd",
+    },
+    { id: "ollama-cloud", reply: OLLAMA_CREDIT_PLAN, rowId: "ollama-cloud.monthly" },
+  ] as const;
+
+  /** The keys the requests were sent with, and the account of each row with `rowId`. */
+  async function fetchKeysAndAccounts(id: VendorId, reply: unknown, rowId: string) {
+    const http = fakeHttp(() => reply);
+    const fetched = await fetchRows(VENDORS[id].provider);
+    return {
+      keys: http.mock.calls.map(([, init]) => requestHeader(init ?? {}, "Authorization")),
+      accounts: fetched.rows.filter((row) => row.id === rowId).map((row) => row.account),
+      error: fetched.error ?? null,
+    };
+  }
+
+  it.each(STORED_KEY_VENDORS)("$id queries each stored key as its own account", async (vendor) => {
+    world.storeLogins([
+      keyLogin("work", vendor.id, "work-key", { label: "work", updated: 2 }),
+      keyLogin("home", vendor.id, "home-key", { label: "home", updated: 1 }),
+    ]);
+
+    expect(await fetchKeysAndAccounts(vendor.id, vendor.reply, vendor.rowId)).toEqual({
+      keys: ["Bearer work-key", "Bearer home-key"],
+      accounts: ["work", "home"],
+      error: null,
+    });
+  });
+
+  it.each(
+    STORED_KEY_VENDORS,
+  )("$id leaves out a stored login that is not a usable key", async (vendor) => {
+    world.storeLogins([
+      keyLogin("empty", vendor.id, " ", { updated: 3 }),
+      keyLogin("number", vendor.id, 42, { updated: 2 }),
+      keyLogin("work", vendor.id, "work-key", { updated: 1 }),
+    ]);
+
+    expect(await fetchKeysAndAccounts(vendor.id, vendor.reply, vendor.rowId)).toEqual({
+      keys: ["Bearer work-key"],
+      accounts: [undefined],
+      error: null,
+    });
+  });
+
+  it.each(
+    STORED_KEY_VENDORS,
+  )("$id uses an env key alone, before the stored keys", async (vendor) => {
+    setKey(vendor.id);
+    world.storeLogins([keyLogin("work", vendor.id, "work-key", { label: "work" })]);
+
+    expect(await fetchKeysAndAccounts(vendor.id, vendor.reply, vendor.rowId)).toEqual({
+      keys: [`Bearer ${KEY}`],
+      accounts: [undefined],
+      error: null,
+    });
+  });
+});
 
 describe("availability and model matching", () => {
   // DeepSeek also counts a configured OpenCode provider; the rest need a key.

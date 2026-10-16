@@ -39,7 +39,7 @@ import {
 import { formatShare, formatTokens } from "../view/format.js";
 import { COUNT_LABELS } from "./accounting-format.js";
 import { ERROR_MESSAGES as ALIBABA_TOKEN_PLAN_ERRORS } from "./alibaba-token-plan.js";
-import { API_KEY_LOGIN_VENDORS, API_KEY_VENDORS } from "./api-key-resolver.js";
+import { API_KEY_VENDORS } from "./api-key-resolver.js";
 import { COPILOT_AUTH_KEYS } from "./copilot.js";
 import { CURSOR_CANONICAL_PLUGIN_PACKAGE } from "./cursor-detection.js";
 import { sanitizeSingleLineDisplayText } from "./display-sanitize.js";
@@ -166,7 +166,6 @@ const KEY_FILE_SOURCES: ReadonlySet<string> = new Set([
 /** The providers that read a key or a cookie, by id, and the env variables they read it from. */
 const KEY_VENDORS: Readonly<Record<string, { envVars: readonly string[] }>> = {
   ...API_KEY_VENDORS,
-  ...API_KEY_LOGIN_VENDORS,
   openrouter: { envVars: ["OPENROUTER_API_KEY"] },
   cursor: { envVars: ["CURSOR_API_KEY"] },
   xiaomi: { envVars: ["MIMO_USAGE_COOKIE"] },
