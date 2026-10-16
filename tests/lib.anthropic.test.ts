@@ -13,10 +13,11 @@ const identityMocks = vi.hoisted(() => ({
   ),
 }));
 
-import { homedir } from "node:os";
-import { join } from "node:path";
 import { execFile } from "child_process";
 import { readFile } from "fs/promises";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { readAnthropicLogins } from "../src/lib/anthropic-auth.js";
 import {
   anthropicLoginsIdentity,
   buildClaudeCommandInvocation,
@@ -27,7 +28,6 @@ import {
   parseUsageResponse,
   queryAnthropicQuota,
 } from "../src/lib/anthropic.js";
-import { readAnthropicLogins } from "../src/lib/anthropic-auth.js";
 import { fetchWithTimeout } from "../src/lib/http.js";
 import fableWeeklyUsage from "./fixtures/anthropic/fable-weekly.sanitized.json";
 

@@ -36,3 +36,7 @@ AGENTS.md
 /prompt-exports
 /opencode-quota
 /local-live-tests/
+
+# Tracked upstream plugin copies (they contain dist/ folders)
+!/scripts/upstream-plugins/
+!/scripts/upstream-plugins/**

@@ -5,8 +5,8 @@
  * `quotaProviderIdsOfUsage` matches the two.
  */
 import type { QuotaSnapshot, Words } from "../core/types.js";
-import type { UsageProviderRow, UsageReport } from "../core/usage.js";
 import { type UsageRange, usageRangeLabel } from "../core/usage-ranges.js";
+import type { UsageProviderRow, UsageReport } from "../core/usage.js";
 import {
   getQuotaProviderDisplayLabel,
   getQuotaProviderIdsForRuntimeId,

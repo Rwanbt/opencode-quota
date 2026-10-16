@@ -5,17 +5,6 @@ import type {
   QuotaProviderContext,
 } from "../lib/entries.js";
 import { mapWithConcurrency } from "../lib/map-with-concurrency.js";
-import type {
-  LocalEstimateQuotaProviderDefinition,
-  QuotaProviderDefinition,
-  RemoteApiQuotaProviderDefinition,
-} from "../lib/quota-providers.js";
-import {
-  customQuotaProviderDefinitions,
-  QUOTA_PROVIDERS_AGGREGATE_ID,
-  resolveQuotaProviderSessionModelIdentity,
-  selectEligibleQuotaProviderDefinitions,
-} from "../lib/quota-providers.js";
 import {
   collectLocalQuotaProviderEstimate,
   inspectLocalQuotaProviderState,
@@ -27,6 +16,17 @@ import {
   type QuotaProviderAuthSource,
   resolveQuotaProviderApiKey,
 } from "../lib/quota-providers-remote.js";
+import type {
+  LocalEstimateQuotaProviderDefinition,
+  QuotaProviderDefinition,
+  RemoteApiQuotaProviderDefinition,
+} from "../lib/quota-providers.js";
+import {
+  customQuotaProviderDefinitions,
+  QUOTA_PROVIDERS_AGGREGATE_ID,
+  resolveQuotaProviderSessionModelIdentity,
+  selectEligibleQuotaProviderDefinitions,
+} from "../lib/quota-providers.js";
 import {
   composeResolvedAuthIdentities,
   deriveResolvedAuthIdentity,

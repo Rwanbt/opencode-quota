@@ -6,8 +6,8 @@ import { parse } from "jsonc-parser";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { quotaAgentTools } from "../src/agent-tools.js";
 import { bindCredentialSource, type CredentialRow } from "../src/lib/opencode-auth.js";
-import type { RemoteApiQuotaProviderDefinition } from "../src/lib/quota-providers.js";
 import { resolveQuotaProviderApiKey } from "../src/lib/quota-providers-remote.js";
+import type { RemoteApiQuotaProviderDefinition } from "../src/lib/quota-providers.js";
 import { loadSettings, settingsPath } from "../src/settings/index.js";
 
 let root: string;

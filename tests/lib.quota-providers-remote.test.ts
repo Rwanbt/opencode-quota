@@ -8,15 +8,15 @@ import {
   createIntegrationCredentialSource,
   notifyCredentialsChanged,
 } from "../src/lib/opencode-auth.js";
-import type {
-  JsonV1Mapping,
-  RemoteApiQuotaProviderDefinition,
-} from "../src/lib/quota-providers.js";
 import {
   fetchRemoteQuotaProvider,
   QUOTA_PROVIDER_MAX_BODY_BYTES,
   resolveQuotaProviderApiKey,
 } from "../src/lib/quota-providers-remote.js";
+import type {
+  JsonV1Mapping,
+  RemoteApiQuotaProviderDefinition,
+} from "../src/lib/quota-providers.js";
 import {
   NEURALWATT_LIKE_ADAPTER,
   NEURALWATT_LIKE_RESPONSE,

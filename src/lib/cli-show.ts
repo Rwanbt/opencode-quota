@@ -17,8 +17,8 @@ import {
 import { findGitWorktreeRoot } from "./config-file-utils.js";
 import type { QuotaProviderContext } from "./entries.js";
 import { usePricingSettings } from "./modelsdev-pricing.js";
-import { bindCredentialSource } from "./opencode-auth.js";
 import { createSqliteCredentialSource } from "./opencode-auth-sqlite.js";
+import { bindCredentialSource } from "./opencode-auth.js";
 import { loadConfiguredProviderIds } from "./opencode-config-providers.js";
 import { getCanonicalQuotaProviderId } from "./provider-metadata.js";
 

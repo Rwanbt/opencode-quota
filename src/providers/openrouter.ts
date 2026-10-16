@@ -6,12 +6,12 @@
 
 import type { QuotaProvider, QuotaProviderContext } from "../lib/entries.js";
 import { modelProviderMatchesRuntimeId } from "../lib/provider-model-matching.js";
-import type { RemoteApiQuotaProviderDefinition } from "../lib/quota-providers.js";
 import {
   fetchRemoteQuotaProvider,
   type QuotaProviderAuthResolution,
   resolveQuotaProviderApiKey,
 } from "../lib/quota-providers-remote.js";
+import type { RemoteApiQuotaProviderDefinition } from "../lib/quota-providers.js";
 import { deriveResolvedAuthIdentity } from "../lib/resolved-auth-identity.js";
 import { failedAccount, type ProviderFetchResult } from "./contract.js";
 import { simpleApiKeyStatusDetails } from "./result-helpers.js";
