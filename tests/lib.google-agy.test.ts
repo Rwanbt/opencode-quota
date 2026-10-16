@@ -555,6 +555,43 @@ describe("Google AGY quota summary", () => {
     ]);
   });
 
+  it("keeps a model-specific group such as Gemini 4 Argon as its own family", async () => {
+    const auth = mockSummary({
+      groups: [
+        ...summaryResponse().groups,
+        {
+          displayName: "Gemini 4 Argon",
+          description: "For paid Pro plans, Argon quota is separate.",
+          buckets: [
+            {
+              bucketId: "gemini-argon-wtu-weekly",
+              displayName: "Gemini 4 Argon Weekly Limit",
+              window: "weekly",
+              remainingFraction: 0.95,
+              resetTime: "2026-10-23T05:24:42Z",
+            },
+          ],
+        },
+      ],
+    });
+
+    const result = await queryAgy(auth);
+    if (!result?.success) throw new Error("expected success");
+    expect(
+      result.buckets.map(({ family, window, percentRemaining }) => [
+        family,
+        window,
+        percentRemaining,
+      ]),
+    ).toEqual([
+      ["Gemini Models", "weekly", 58],
+      ["Gemini Models", "five_hour", 25],
+      ["Claude and GPT models", "weekly", 100],
+      ["Claude and GPT models", "five_hour", 90],
+      ["Gemini 4 Argon", "weekly", 95],
+    ]);
+  });
+
   it("uses top-level buckets only when grouped buckets are not usable", async () => {
     const auth = mockSummary({
       description: "Fallback family",

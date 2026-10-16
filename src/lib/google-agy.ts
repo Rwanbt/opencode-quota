@@ -54,9 +54,11 @@ function normalizeWindow(
 function normalizeFamily(value: unknown): string | undefined {
   const displayName = nonEmptyString(value);
   if (!displayName) return undefined;
-  const normalized = displayName.toLowerCase();
-  if (normalized.includes("gemini")) return "Gemini Models";
-  if (normalized.includes("claude") || normalized.includes("gpt")) return "Claude and GPT models";
+  // Only the two shared pools get canonical names; a model-specific group such as
+  // "Gemini 4 Argon" has its own limits and keeps its own name.
+  const normalized = displayName.toLowerCase().replace(/\s+/gu, " ");
+  if (normalized === "gemini" || normalized === "gemini models") return "Gemini Models";
+  if (normalized.includes("claude") && normalized.includes("gpt")) return "Claude and GPT models";
   return displayName;
 }
 
