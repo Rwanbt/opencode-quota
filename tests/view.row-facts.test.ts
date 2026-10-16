@@ -44,9 +44,6 @@ describe("row facts", () => {
     { names: "words", rowNames: "short", item: RENAMED, name: "Pro plan" },
     { names: "words", rowNames: "short", item: KEPT_NAME, name: "Daily" },
     { names: "words", rowNames: "full", item: HOURLY, name: "Hourly limit" },
-    { names: "window", rowNames: "short", item: FABLE, name: "7d" },
-    { names: "window", rowNames: "short", item: RENAMED, name: "30d" },
-    { names: "window", rowNames: "short", item: PREMIUM, name: "Premium requests" },
     { names: "label", rowNames: "short", item: RENAMED, name: "Pro plan" },
     { names: "label", rowNames: "short", item: HOURLY, name: "Hourly limit" },
   ] as const)("names $item.label as $name ($names, rowNames $rowNames)", ({

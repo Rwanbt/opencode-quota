@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ProviderSnapshot, QuotaRow, QuotaSnapshot } from "../src/core/types.js";
 import type { UsageProviderRow, UsageReport } from "../src/core/usage.js";
-import { defaultDisplaySettings } from "../src/tui/display.js";
+import { defaultDisplaySettings, setIn } from "../src/tui/display.js";
 import { quickLookText, quotaProviderIdsOfUsage } from "../src/view/quick-look.js";
 import { providerSnapshot, quotaRow as row } from "./helpers/fake-answers.js";
 
@@ -156,6 +156,20 @@ describe("quick look: short text", () => {
       "● Custom providers (T…",
       "  Monthly 64% left  $3.39",
     ]);
+  });
+
+  it("names each limit as the sidebar does: your name, else its window when no other has it", () => {
+    const claude = provider("claude", "Claude", [
+      row("claude.five_hour", { label: "5h", window: "five_hour", percentRemaining: 41 }),
+      row("claude.weekly", { label: "Weekly", window: "week", percentRemaining: 68 }),
+      row("claude.weekly_fable", { label: "Fable", window: "week", percentRemaining: 90 }),
+    ]);
+    const settings = setIn(defaultDisplaySettings(), ["sidebar", "names"], {
+      "claude.five_hour": "Session",
+    });
+    expect(shortText({ snapshot: snapshot([claude]), usage: undefined, settings })).toBe(
+      "Quota\n● Claude  Session 41% left · Weekly 68% left · Fable 90% left",
+    );
   });
 
   it("says when quota found no provider", () => {

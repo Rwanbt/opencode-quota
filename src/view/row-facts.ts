@@ -16,13 +16,12 @@ export type Place = {
   words: Words;
   nowMs: number;
   /**
-   * "words" (sidebar, collapsed sidebar, status line, toasts): your name; else, with
+   * "words" (sidebar, collapsed sidebar, status line, toasts, /quota text): your name; else, with
    * `words.rowNames` "short", its window's short name ("5h", "7d") when no other row of its group
-   * has the same one; else its label. "window" (the quick look): its window's short name, else
-   * your name or its label. "label" (Limits, the Settings tree, Web and terminal text): your
-   * name, else its label.
+   * has the same one; else its label. "label" (Limits, the Settings tree, Web and terminal
+   * text): your name, else its label.
    */
-  names: "words" | "window" | "label";
+  names: "words" | "label";
   /**
    * "number": "58%", the place says the word elsewhere. "words": "58% left", "42% used", or
    * "58%" in the bare style. "usedWord": "58%", but "42% used", which bare would read as left.
@@ -61,7 +60,6 @@ function nameOf(item: VisibleRow, group: Pick<Group, "rows">, place: Place): str
   const { window } = item.row;
   if (place.names === "label" || !window) return item.label;
   const short = WINDOWS[window].short;
-  if (place.names === "window") return short;
   if (place.words.rowNames === "full" || item.named) return item.label;
   const shared = group.rows.some(
     (other) => other !== item && other.row.window && WINDOWS[other.row.window].short === short,

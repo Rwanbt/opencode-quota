@@ -118,11 +118,11 @@ function blocksOf(
 }
 
 /**
- * A group's error and its limits in a few words: "5h 41% left · 7d 68% left", with the pace's
- * words for a limit used faster than it refills.
+ * A group's error and its limits in a few words: "5h 41% left · 7d 68% left", each named as the
+ * sidebar names it, with the pace's words for a limit used faster than it refills.
  */
 function shortLimits(group: Group, words: Words, nowMs: number): string[] {
-  const place: Place = { words, nowMs, names: "window", percent: "words", pace: "fast" };
+  const place: Place = { words, nowMs, names: "words", percent: "words", pace: "fast" };
   const error = errorWords(group, nowMs);
   const limits = group.rows.map((item) => {
     const row = rowFacts(item, group, place);
