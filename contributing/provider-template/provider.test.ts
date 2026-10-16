@@ -1,48 +1,49 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { exampleProviderProvider } from "../src/providers/example-provider.js";
-import { fetchRows, rowSummary, useProviderWorld } from "./helpers/provider-fetch.js";
-
-const query = vi.hoisted(() => vi.fn());
-const metadata = vi.hoisted(() => ({ available: false }));
-
-vi.mock("../src/lib/example-provider.js", () => ({ queryExampleProviderQuota: query }));
-
-vi.mock("../src/lib/provider-availability.js", () => ({
-  isCanonicalProviderAvailable: async () => metadata.available,
-}));
+import {
+  fakeHttp,
+  fetchRows,
+  keyLogin,
+  requestHeader,
+  rowSummary,
+  useProviderWorld,
+} from "./helpers/provider-fetch.js";
+import { createProviderAvailabilityContext } from "./helpers/provider-test-harness.js";
 
 const RESET = "2026-01-02T00:00:00.000Z";
 
 describe("example provider", () => {
   // Temp OpenCode folders and no provider keys in the environment, never this machine's own.
-  useProviderWorld();
+  const world = useProviderWorld();
 
-  beforeEach(() => {
-    metadata.available = false;
-  });
-
-  it("is not set up when it has no key", async () => {
-    query.mockResolvedValueOnce(null);
+  it("is not set up when it has no key, and sends nothing", async () => {
+    const http = fakeHttp(() => {
+      throw new Error("no request expected");
+    });
 
     const fetched = await fetchRows(exampleProviderProvider);
 
     expect(fetched.rows).toEqual([]);
     expect(fetched.error).toEqual({ code: "not_configured" });
+    expect(http).not.toHaveBeenCalled();
   });
 
-  it("shows the daily quota left", async () => {
-    query.mockResolvedValueOnce({ success: true, percentRemaining: 75, resetTimeIso: RESET });
+  it("shows the monthly quota left of the env key", async () => {
+    process.env.EXAMPLE_PROVIDER_API_KEY = "test-key";
+    const http = fakeHttp(() => ({ used_percent: 25, resets_at: RESET }));
 
     const fetched = await fetchRows(exampleProviderProvider);
 
     expect(rowSummary(fetched.rows)).toEqual([
-      ["example-provider.daily", null, "Daily", "day", 75, RESET],
+      ["example-provider.monthly", null, "Monthly", "month", 75, RESET],
     ]);
     expect(fetched.error).toBeUndefined();
+    expect(requestHeader(http.mock.calls[0]?.[1], "Authorization")).toBe("Bearer test-key");
   });
 
   it("shows a failed check as the provider's error and keeps the message for /quota_status", async () => {
-    query.mockResolvedValueOnce({ success: false, error: "HTTP 401 Unauthorized" });
+    process.env.EXAMPLE_PROVIDER_API_KEY = "test-key";
+    fakeHttp(() => new Response("Unauthorized", { status: 401 }));
 
     const fetched = await fetchRows(exampleProviderProvider);
 
@@ -50,21 +51,31 @@ describe("example provider", () => {
     expect(fetched.error).toMatchObject({ code: "login_expired" });
     expect(fetched.debug).toContainEqual({
       key: "error",
-      value: "Example Provider: HTTP 401 Unauthorized",
+      value: "Example Provider: Example Provider API error 401: Unauthorized",
     });
   });
 
-  it("is available when OpenCode lists the provider", async () => {
-    metadata.available = true;
+  it("queries each key stored in OpenCode as its own account", async () => {
+    world.storeLogins([
+      keyLogin("work", "example-provider", "work-key", { label: "work", updated: 2 }),
+      keyLogin("home", "example-provider", "home-key", { label: "home", updated: 1 }),
+    ]);
+    fakeHttp(() => ({ used_percent: 25 }));
 
-    await expect(exampleProviderProvider.isAvailable({} as never)).resolves.toBe(true);
+    const fetched = await fetchRows(exampleProviderProvider);
+
+    expect(fetched.rows.map((row) => row.account)).toEqual(["work", "home"]);
   });
 
-  it("is available with only a key in the environment", async () => {
-    await expect(exampleProviderProvider.isAvailable({} as never)).resolves.toBe(false);
+  it("is available when OpenCode lists the provider, or with only a key", async () => {
+    const listed = createProviderAvailabilityContext({ providerIds: ["example-provider"] });
+    const unlisted = createProviderAvailabilityContext({ providerIds: [] });
+
+    await expect(exampleProviderProvider.isAvailable(listed)).resolves.toBe(true);
+    await expect(exampleProviderProvider.isAvailable(unlisted)).resolves.toBe(false);
 
     process.env.EXAMPLE_PROVIDER_API_KEY = "test-key";
 
-    await expect(exampleProviderProvider.isAvailable({} as never)).resolves.toBe(true);
+    await expect(exampleProviderProvider.isAvailable(unlisted)).resolves.toBe(true);
   });
 });

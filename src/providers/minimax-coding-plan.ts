@@ -16,7 +16,6 @@ import type {
 } from "../lib/entries.js";
 import { fetchWithTimeout } from "../lib/http.js";
 import { asRecord } from "../lib/json-guards.js";
-import { getMiniMaxQuotaEndpoint, type MiniMaxQuotaEndpointId } from "../lib/minimax-endpoints.js";
 import {
   isAnyProviderIdAvailable,
   isCanonicalProviderAvailable,
@@ -37,6 +36,23 @@ import { apiKeyStatusDetails, statusDetailsFromRecord } from "./result-helpers.j
 
 const USER_AGENT = "OpenCode-Quota-Toast/1.0";
 const REQUEST_UNIT = { kind: "count", unit: "request" } as const;
+
+type MiniMaxQuotaEndpointId = "international" | "china";
+
+/** Each region's API server and quota URL. */
+const MINIMAX_ENDPOINTS: Readonly<
+  Record<MiniMaxQuotaEndpointId, { apiBaseUrl: string; quotaUrl: string }>
+> = {
+  international: {
+    apiBaseUrl: "https://api.minimax.io",
+    quotaUrl: "https://api.minimax.io/v1/api/openplatform/coding_plan/remains",
+  },
+  china: {
+    apiBaseUrl: "https://api.minimaxi.com",
+    // CN Token Plan docs use this path on minimaxi.com; api.minimaxi.com returns MiniMax base_resp auth errors for it.
+    quotaUrl: "https://api.minimaxi.com/v1/token_plan/remains",
+  },
+};
 
 interface MiniMaxModelRemain {
   model_name: string;
@@ -206,7 +222,7 @@ async function queryMiniMaxQuota(
   requestTimeoutMs: number | undefined,
 ): Promise<{ rows: ProviderRow[] } | { error: string }> {
   try {
-    return await fetchWithTimeout(getMiniMaxQuotaEndpoint(endpointId).quotaUrl, {
+    return await fetchWithTimeout(MINIMAX_ENDPOINTS[endpointId].quotaUrl, {
       request: {
         method: "GET",
         headers: {
@@ -268,13 +284,12 @@ async function fetchMiniMaxQuota(
   ctx: QuotaProviderContext,
 ): Promise<ProviderFetchResult> {
   const { auth, diagnostics } = await resolveApiKeyLoginWithDiagnostics(spec.auth);
-  const endpoint =
-    diagnostics.state === "configured" ? getMiniMaxQuotaEndpoint(spec.endpoint) : undefined;
+  const configured = diagnostics.state === "configured";
   const debug = [
     ...apiKeyStatusDetails(diagnostics),
     ...statusDetailsFromRecord({
-      api_endpoint: endpoint?.id,
-      api_base_url: endpoint?.apiBaseUrl,
+      api_endpoint: configured ? spec.endpoint : undefined,
+      api_base_url: configured ? MINIMAX_ENDPOINTS[spec.endpoint].apiBaseUrl : undefined,
     }),
   ];
   if (auth.state === "none") return { attempted: false, accounts: [], debug };

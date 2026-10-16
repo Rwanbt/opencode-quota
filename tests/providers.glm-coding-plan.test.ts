@@ -1,34 +1,21 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+/**
+ * Z.ai and Zhipu through their public `fetch`: a key in the environment or stored logins, and
+ * fake HTTP replies.
+ */
 
-import { rowsFromProviderResult } from "../src/core/rows.js";
+import { describe, expect, it } from "vitest";
+
+import { zaiProvider, zhipuProvider } from "../src/providers/glm-coding-plan.js";
+import {
+  fakeHttp,
+  fetchRows,
+  keyLogin,
+  requestHeader,
+  rowSummary,
+  useProviderWorld,
+} from "./helpers/provider-fetch.js";
 import { createProviderAvailabilityContext } from "./helpers/provider-test-harness.js";
 
-const mocks = vi.hoisted(() => ({
-  resolveApiKeyLogin: vi.fn(),
-  getApiKeyLoginDiagnostics: vi.fn(),
-}));
-
-vi.mock("../src/lib/api-key-resolver.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../src/lib/api-key-resolver.js")>()),
-  resolveApiKeyLogin: mocks.resolveApiKeyLogin,
-  getApiKeyLoginDiagnostics: mocks.getApiKeyLoginDiagnostics,
-}));
-
-vi.mock("../src/lib/http.js", async (importOriginal) => {
-  const http = await importOriginal<typeof import("../src/lib/http.js")>();
-  return { ...http, fetchWithTimeout: vi.fn(http.fetchWithTimeout) };
-});
-
-vi.mock("../src/lib/opencode-auth.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../src/lib/opencode-auth.js")>()),
-  readCredentialRows: vi.fn().mockResolvedValue([]),
-}));
-
-import { fetchWithTimeout } from "../src/lib/http.js";
-import { readCredentialRows } from "../src/lib/opencode-auth.js";
-import { zaiProvider, zhipuProvider } from "../src/providers/glm-coding-plan.js";
-
-const NOW_MS = Date.parse("2026-01-01T00:00:00.000Z");
 const FIVE_HOUR_RESET = "2026-01-01T03:00:00.000Z";
 const WEEKLY_RESET = "2026-01-05T00:00:00.000Z";
 
@@ -37,9 +24,9 @@ const VENDORS = [
     id: "zai",
     label: "Z.ai",
     provider: zaiProvider,
-    endpoint: "https://api.z.ai/api/monitor/usage/quota/limit",
+    keyEnv: "ZAI_API_KEY",
     integrationId: "zai-coding-plan",
-    providerIds: ["zai", "glm", "zai-coding-plan"],
+    url: "https://api.z.ai/api/monitor/usage/quota/limit",
     matchingModels: ["zai/glm-4.5", "glm/glm-4.5", "anthropic/glm-4"],
     nonMatchingModels: ["openai/gpt-5"],
   },
@@ -47,224 +34,144 @@ const VENDORS = [
     id: "zhipu",
     label: "Zhipu",
     provider: zhipuProvider,
-    endpoint: "https://bigmodel.cn/api/monitor/usage/quota/limit",
+    keyEnv: "ZHIPU_API_KEY",
     integrationId: "zhipu-coding-plan",
-    providerIds: ["zhipu", "zhipu-coding-plan", "glm-coding-plan"],
+    url: "https://bigmodel.cn/api/monitor/usage/quota/limit",
     matchingModels: ["zhipu/glm-4.5", "zhipu-coding-plan/glm-4.5", "glm-coding-plan/glm-4.5"],
     nonMatchingModels: ["zai/glm-4.5", "glm/glm-4.5", "openai/gpt-5"],
   },
 ] as const;
 
-function diagnostics(source: string | null) {
-  return {
-    state: source ? "configured" : "none",
-    source,
-    checkedPaths: [],
-    credentialDatabasePaths: [],
-  };
+function limitsReply(limits: unknown) {
+  return { code: 0, msg: "ok", success: true, data: { level: "pro", limits } };
 }
 
-function quotaResponse() {
-  return {
-    code: 0,
-    msg: "ok",
-    success: true,
-    data: {
-      limits: [
+function credit(fields: Record<string, number>) {
+  return { type: "CREDIT_LIMIT", unit: 3, ...fields };
+}
+
+const world = useProviderWorld();
+
+describe.each(VENDORS)("$label coding plan", (vendor) => {
+  async function fetchWithKey(reply: unknown) {
+    process.env[vendor.keyEnv] = "secret-key";
+    const http = fakeHttp(() => reply);
+    return { http, fetched: await fetchRows(vendor.provider) };
+  }
+
+  function errorLines(debug: Array<{ key: string; value: string }>) {
+    return debug.filter((item) => item.key === "error").map((item) => item.value);
+  }
+
+  it("reads the 5h, weekly and MCP windows: a later one wins, daily limits are left out", async () => {
+    const { http, fetched } = await fetchWithKey(
+      limitsReply([
+        { type: "TOKENS_LIMIT", unit: 4, percentage: 10, nextResetTime: Date.parse(WEEKLY_RESET) },
+        { type: "TOKENS_LIMIT", unit: 3, percentage: 120 },
+        { type: "TOKENS_LIMIT", unit: 6, percentage: 70, nextResetTime: Date.parse(WEEKLY_RESET) },
+        { type: "TIME_LIMIT", unit: 9, percentage: 10, nextResetTime: -1 },
         {
           type: "TOKENS_LIMIT",
           unit: 3,
           percentage: 20,
-          nextResetTime: Date.parse(FIVE_HOUR_RESET),
+          nextResetTime: Date.parse(FIVE_HOUR_RESET) + 0.4,
         },
-        { type: "TOKENS_LIMIT", unit: 6, percentage: 70, nextResetTime: Date.parse(WEEKLY_RESET) },
-        { type: "TIME_LIMIT", percentage: 10 },
-      ],
-    },
-  };
-}
-
-function stubFetch(...responses: Array<{ status: number; body: unknown }>) {
-  const fetchMock = vi.fn();
-  for (const { status, body } of responses) {
-    fetchMock.mockResolvedValueOnce(
-      new Response(JSON.stringify(body), {
-        status,
-        headers: { "Content-Type": "application/json" },
-      }),
+      ]),
     );
-  }
-  vi.stubGlobal("fetch", fetchMock);
-  return fetchMock;
-}
 
-function summary(rows: Array<{ id: string; account?: string; label: string }>) {
-  return rows.map((row) => [row.id, row.account ?? null, row.label]);
-}
-
-beforeEach(() => {
-  vi.clearAllMocks();
-  mocks.getApiKeyLoginDiagnostics.mockResolvedValue(diagnostics("env"));
-});
-
-afterEach(() => {
-  vi.unstubAllGlobals();
-});
-
-describe.each(VENDORS)("$label coding plan", (vendor) => {
-  async function fetchRows(ctx: unknown = { config: { requestTimeoutMs: 4321 } }) {
-    return rowsFromProviderResult(vendor.id, await vendor.provider.fetch(ctx as never), NOW_MS);
-  }
-
-  it("reads the 5h, weekly and MCP windows of the configured key", async () => {
-    mocks.resolveApiKeyLogin.mockResolvedValue({ state: "configured", apiKey: "secret-key" });
-    stubFetch({ status: 200, body: quotaResponse() });
-
-    const fetched = await fetchRows();
-
-    expect(fetched.rows).toEqual([
-      {
-        id: `${vendor.id}.five_hour`,
-        providerId: vendor.id,
-        label: "5h",
-        type: "quota",
-        method: "remote_api",
-        authority: "provider_reported",
-        window: "five_hour",
-        prominence: "primary",
-        percentRemaining: 80,
-        resetsAt: FIVE_HOUR_RESET,
-      },
-      {
-        id: `${vendor.id}.weekly`,
-        providerId: vendor.id,
-        label: "Weekly",
-        type: "quota",
-        method: "remote_api",
-        authority: "provider_reported",
-        window: "week",
-        prominence: "primary",
-        percentRemaining: 30,
-        resetsAt: WEEKLY_RESET,
-      },
-      {
-        id: `${vendor.id}.mcp`,
-        providerId: vendor.id,
-        label: "MCP",
-        type: "quota",
-        method: "remote_api",
-        authority: "provider_reported",
-        window: "mcp",
-        prominence: "primary",
-        percentRemaining: 90,
-      },
+    expect(rowSummary(fetched.rows)).toEqual([
+      [`${vendor.id}.five_hour`, null, "5h", "five_hour", 80, FIVE_HOUR_RESET],
+      [`${vendor.id}.weekly`, null, "Weekly", "week", 30, WEEKLY_RESET],
+      [`${vendor.id}.mcp`, null, "MCP", "mcp", 90, null],
     ]);
     expect(fetched.error).toBeUndefined();
     expect(fetched.debug).toContainEqual({
       key: "five_hour_remaining",
       value: `80% reset_at=${FIVE_HOUR_RESET}`,
     });
-    expect(fetchWithTimeout).toHaveBeenCalledWith(
-      vendor.endpoint,
-      expect.objectContaining({
-        timeoutMs: 4321,
-        request: {
-          headers: {
-            Authorization: "secret-key",
-            "User-Agent": "OpenCode-Quota-Toast/1.0",
-            "Content-Type": "application/json",
-          },
-        },
-      }),
-    );
+    expect(http.mock.calls.map(([url]) => String(url))).toEqual([vendor.url]);
+    const [, init] = http.mock.calls[0] ?? [];
+    expect(requestHeader(init, "Authorization")).toBe("secret-key");
+    expect(requestHeader(init, "User-Agent")).toBe("OpenCode-Quota-Toast/1.0");
+  });
+
+  it.each([
+    ["exact credit values", credit({ usage: 12_000, currentValue: 569, percentage: 4 }), 95],
+    ["no current value", credit({ usage: 12_000, percentage: 4 }), 96],
+    ["zero usage", credit({ usage: 0, currentValue: 569, percentage: 11 }), 89],
+    ["credit use above the limit", credit({ usage: 100, currentValue: 150, percentage: 25 }), 0],
+    [
+      "a token limit",
+      { ...credit({ usage: 12_000, currentValue: 569, percentage: 4 }), type: "TOKENS_LIMIT" },
+      96,
+    ],
+  ])("gives the 5h percent of %s", async (_name, limit, expected) => {
+    const { fetched } = await fetchWithKey(limitsReply([limit]));
+
+    expect(fetched.rows.map((row) => row.percentRemaining)).toEqual([expected]);
   });
 
   it.each([
     [
-      "no key",
-      { state: "none" },
-      undefined,
-      { rows: [], error: { code: "not_configured" } },
-      undefined,
-    ],
-    [
-      "an invalid key",
-      { state: "invalid", error: "Unsupported auth type" },
-      undefined,
-      { rows: [], error: { code: "not_configured", detail: "Unsupported auth type" } },
-      `${vendor.label}: Unsupported auth type`,
-    ],
-    [
       "an HTTP error",
-      { state: "configured", apiKey: "secret-key" },
-      { status: 500, body: { msg: "down" } },
-      {
-        rows: [],
-        error: {
-          code: "provider_error",
-          status: 500,
-          detail: `${vendor.label} API error 500: {"msg":"down"}`,
-        },
-      },
-      `${vendor.label}: ${vendor.label} API error 500: {"msg":"down"}`,
+      new Response('\u001b[31m{"msg":"down"}', { status: 500 }),
+      `${vendor.label} API error 500: {"msg":"down"}`,
     ],
-  ])("with %s it shows no rows and its error", async (_name, auth, response, expected, line) => {
-    mocks.resolveApiKeyLogin.mockResolvedValue(auth);
-    const fetchMock = stubFetch(...(response ? [response] : []));
+    ["limits that are not a list", limitsReply({}), "Invalid quota data"],
+  ])("with %s shows no rows and its error", async (_name, reply, error) => {
+    const { fetched } = await fetchWithKey(reply);
 
-    const fetched = await fetchRows();
-
-    expect(fetched).toMatchObject(expected);
-    if (line) expect(fetched.debug).toContainEqual({ key: "error", value: line });
-    expect(fetchMock).toHaveBeenCalledTimes(response ? 1 : 0);
+    expect(fetched.rows).toEqual([]);
+    expect(errorLines(fetched.debug)).toEqual([`${vendor.label}: ${error}`]);
   });
 
-  it("queries each stored key and shows a key OpenCode could not read as an error", async () => {
-    mocks.getApiKeyLoginDiagnostics.mockResolvedValue(diagnostics("opencode.db"));
-    vi.mocked(readCredentialRows).mockResolvedValueOnce([
-      {
-        id: "failed-id",
-        integrationId: vendor.integrationId,
-        label: "Work",
-        active: true,
-        value: { type: "api" },
-        resolveError: "refresh_failed: HTTP 401",
-      },
-      {
-        id: "working-id",
-        integrationId: vendor.integrationId,
-        label: "Home",
-        active: false,
-        value: { type: "api", key: "home-key" },
-      },
-    ]);
-    const fetchMock = stubFetch({ status: 200, body: quotaResponse() });
-
-    const fetched = await fetchRows();
-
-    expect(summary(fetched.rows)).toEqual([
-      [`${vendor.id}.five_hour`, "Home", "5h"],
-      [`${vendor.id}.weekly`, "Home", "Weekly"],
-      [`${vendor.id}.mcp`, "Home", "MCP"],
-    ]);
-    expect(fetched.rowLogins).toEqual(["working-id", "working-id", "working-id"]);
-    expect(fetched.debug).toContainEqual({
-      key: "error",
-      value: `[${vendor.label} Work] (active): OpenCode could not read this login: refresh_failed: HTTP 401`,
+  it("without a key is not configured and sends nothing", async () => {
+    const http = fakeHttp(() => {
+      throw new Error("no request expected");
     });
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(fetchWithTimeout).toHaveBeenCalledWith(
-      vendor.endpoint,
-      expect.objectContaining({
-        timeoutMs: 4321,
-        request: expect.objectContaining({
-          headers: expect.objectContaining({ Authorization: "home-key" }),
-        }),
-      }),
-    );
+
+    const fetched = await fetchRows(vendor.provider);
+
+    expect(fetched).toMatchObject({ rows: [], error: { code: "not_configured" } });
+    expect(http).not.toHaveBeenCalled();
   });
 
-  it("keeps provider-specific model matching", () => {
+  it("queries each stored key and shows a key it cannot use as an error", async () => {
+    world.storeLogins([
+      keyLogin("work", vendor.integrationId, " ", { label: "Work", active: 1, updated: 2 }),
+      keyLogin("home", vendor.integrationId, "home-key", { label: "Home", updated: 1 }),
+    ]);
+    const http = fakeHttp(() => limitsReply([{ type: "TOKENS_LIMIT", unit: 6, percentage: 70 }]));
+
+    const fetched = await fetchRows(vendor.provider);
+
+    expect(rowSummary(fetched.rows)).toEqual([
+      [`${vendor.id}.weekly`, "Home", "Weekly", "week", 30, null],
+    ]);
+    expect(errorLines(fetched.debug)).toEqual([
+      `[${vendor.label} Work] (active): ${vendor.label} auth entry present but key is empty`,
+    ]);
+    expect(http.mock.calls.map(([, init]) => requestHeader(init, "Authorization"))).toEqual([
+      "home-key",
+    ]);
+  });
+
+  it.each<[string, readonly string[], "env" | "broken" | null, boolean]>([
+    ["with a key", [vendor.id], "env", true],
+    // A key it cannot use stays available so fetch can show its error.
+    ["with a stored key it cannot use", [vendor.id], "broken", true],
+    ["without a key", [vendor.id], null, false],
+    ["for another OpenCode provider", ["openai"], "env", false],
+  ])("%s is available: %s", async (_name, providerIds, key, expected) => {
+    if (key === "env") process.env[vendor.keyEnv] = "secret-key";
+    if (key === "broken") world.storeLogins([keyLogin("broken", vendor.integrationId, " ")]);
+
+    await expect(
+      vendor.provider.isAvailable(createProviderAvailabilityContext({ providerIds })),
+    ).resolves.toBe(expected);
+  });
+
+  it("matches its own models", () => {
     for (const model of vendor.matchingModels) {
       expect(vendor.provider.matchesCurrentModel?.(model), model).toBe(true);
     }
@@ -272,33 +179,40 @@ describe.each(VENDORS)("$label coding plan", (vendor) => {
       expect(vendor.provider.matchesCurrentModel?.(model), model).toBe(false);
     }
   });
+});
 
+describe("GLM reply envelopes", () => {
   it.each([
-    [{ state: "configured", apiKey: "secret-key" }, true],
-    // An invalid key stays available so fetch can show its error.
-    [{ state: "invalid", error: "Unsupported auth type" }, true],
-    [{ state: "none" }, false],
-  ])("with auth %j is available: %s", async (auth, expected) => {
-    mocks.resolveApiKeyLogin.mockResolvedValue(auth);
-    for (const providerId of vendor.providerIds) {
-      await expect(
-        vendor.provider.isAvailable(
-          createProviderAvailabilityContext({ providerIds: [providerId] }),
-        ),
-      ).resolves.toBe(expected);
-    }
+    [
+      { code: 500, msg: "\u001b[31mcurrent user has no coding plan", success: false },
+      "current user has no coding plan",
+    ],
+    [{ code: 401 }, "Z.ai API error 401"],
+    [{ success: false }, "Z.ai API error"],
+  ])("Z.ai shows the error a 200 reply %j reports", async (reply, error) => {
+    process.env.ZAI_API_KEY = "secret-key";
+    fakeHttp(() => reply);
+
+    const fetched = await fetchRows(zaiProvider);
+
+    expect(fetched.rows).toEqual([]);
+    expect(fetched.debug).toContainEqual({ key: "error", value: `Z.ai: ${error}` });
   });
 
-  it("is not available for other providers or when the provider lookup fails", async () => {
-    mocks.resolveApiKeyLogin.mockResolvedValue({ state: "configured", apiKey: "secret-key" });
-    await expect(
-      vendor.provider.isAvailable(createProviderAvailabilityContext({ providerIds: ["openai"] })),
-    ).resolves.toBe(false);
-    await expect(
-      vendor.provider.isAvailable(
-        createProviderAvailabilityContext({ providersError: new Error("boom") }),
-      ),
-    ).resolves.toBe(false);
-    expect(mocks.resolveApiKeyLogin).not.toHaveBeenCalled();
+  it("allows Z.ai top-level limits but keeps Zhipu to data.limits", async () => {
+    process.env.ZAI_API_KEY = "secret-key";
+    process.env.ZHIPU_API_KEY = "secret-key";
+    fakeHttp(() => ({
+      code: 0,
+      success: true,
+      limits: [{ type: "TOKENS_LIMIT", unit: 6, percentage: 25 }],
+    }));
+
+    const zai = await fetchRows(zaiProvider);
+    const zhipu = await fetchRows(zhipuProvider);
+
+    expect(rowSummary(zai.rows)).toEqual([["zai.weekly", null, "Weekly", "week", 75, null]]);
+    expect(zhipu.rows).toEqual([]);
+    expect(zhipu.debug).toContainEqual({ key: "error", value: "Zhipu: Invalid quota data" });
   });
 });

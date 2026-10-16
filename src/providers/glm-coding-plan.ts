@@ -4,18 +4,18 @@
  */
 
 import {
+  API_KEY_VENDORS,
+  type ApiKeyLoginSpec,
   getApiKeyLoginDiagnostics,
   readKeyLogins,
   resolveApiKeyLogin,
 } from "../lib/api-key-resolver.js";
+import { sanitizeDisplaySnippet, sanitizeDisplayText } from "../lib/display-sanitize.js";
 import type { QuotaProvider, QuotaProviderContext } from "../lib/entries.js";
-import {
-  GLM_ENDPOINTS,
-  type GlmEndpoint,
-  queryGlmCodingPlanQuota,
-} from "../lib/glm-coding-plan.js";
+import { clampPercent } from "../lib/format-utils.js";
+import { fetchWithTimeout } from "../lib/http.js";
 import { isCanonicalProviderAvailable } from "../lib/provider-availability.js";
-import type { ZaiQuotaResult } from "../lib/types.js";
+import type { QuotaError } from "../lib/types.js";
 import { vendorKeysPolicy } from "./cache-policies.js";
 import {
   FIVE_HOUR,
@@ -28,22 +28,155 @@ import {
 } from "./contract.js";
 import { apiKeyStatusDetails, statusDetailsFromRecord } from "./result-helpers.js";
 
-type GlmWindow = ZaiQuotaResult["windows"]["weekly"];
+/** One GLM coding plan endpoint: Z.ai (global) or Zhipu (China). */
+type GlmEndpoint = {
+  label: string;
+  url: string;
+  auth: ApiKeyLoginSpec;
+  /** Z.ai also reports errors in a 200 reply and may put `limits` at the top level. */
+  envelope: "zai" | "zhipu";
+};
+
+const GLM_ENDPOINTS: Readonly<Record<"zai" | "zhipu", GlmEndpoint>> = {
+  zai: {
+    label: "Z.ai",
+    url: "https://api.z.ai/api/monitor/usage/quota/limit",
+    auth: API_KEY_VENDORS.zai,
+    envelope: "zai",
+  },
+  zhipu: {
+    label: "Zhipu",
+    url: "https://bigmodel.cn/api/monitor/usage/quota/limit",
+    auth: API_KEY_VENDORS.zhipu,
+    envelope: "zhipu",
+  },
+};
+
+type GlmEnvelope = {
+  code?: unknown;
+  msg?: unknown;
+  success?: unknown;
+  data?: { limits?: unknown } | null;
+  limits?: unknown;
+};
+
+/** One entry of the reply's `limits`: unit 3 is the 5h window, unit 6 the week. */
+type GlmLimit = {
+  type: string;
+  unit: number;
+  usage: number;
+  currentValue?: number;
+  percentage: number;
+  nextResetTime?: number;
+};
+
+type GlmWindow = { percentRemaining: number; resetTimeIso?: string };
+
+/** One key's rows, or the error to show. */
+type GlmReply = { success: true; rows: ProviderRow[] } | QuotaError;
 
 const MCP = { key: "mcp", label: "MCP", window: "mcp" } as const;
 
-function glmRows(quota: ZaiQuotaResult): ProviderRow[] {
+/** The percent left: from exact credit values when a credit limit has them, else reported. */
+function percentRemaining(limit: GlmLimit): number {
+  if (
+    limit.type === "CREDIT_LIMIT" &&
+    typeof limit.usage === "number" &&
+    Number.isFinite(limit.usage) &&
+    limit.usage > 0 &&
+    typeof limit.currentValue === "number" &&
+    Number.isFinite(limit.currentValue) &&
+    limit.currentValue >= 0
+  ) {
+    return clampPercent(((limit.usage - limit.currentValue) / limit.usage) * 100);
+  }
+  return clampPercent(100 - limit.percentage);
+}
+
+/** The 5h, weekly and MCP rows of the reply's limits; a later limit of a window wins. */
+function glmRows(limits: GlmLimit[]): ProviderRow[] {
+  const windows: { fiveHour?: GlmWindow; weekly?: GlmWindow; mcp?: GlmWindow } = {};
+  for (const limit of limits) {
+    const resetDate = limit.nextResetTime ? new Date(Math.round(limit.nextResetTime)) : null;
+    const resetTimeIso =
+      resetDate && Number.isFinite(resetDate.valueOf()) && resetDate.valueOf() > 0
+        ? resetDate.toISOString()
+        : undefined;
+    const window = { percentRemaining: percentRemaining(limit), resetTimeIso };
+
+    const isQuotaWindow = limit.type === "TOKENS_LIMIT" || limit.type === "CREDIT_LIMIT";
+    if (isQuotaWindow && limit.unit === 3) windows.fiveHour = window;
+    else if (isQuotaWindow && limit.unit === 6) windows.weekly = window;
+    else if (limit.type === "TIME_LIMIT") windows.mcp = window;
+  }
   return windowRows([
-    { slot: FIVE_HOUR, value: quota.windows.fiveHour },
-    { slot: WEEKLY, value: quota.windows.weekly },
-    { slot: MCP, value: quota.windows.mcp },
+    { slot: FIVE_HOUR, value: windows.fiveHour },
+    { slot: WEEKLY, value: windows.weekly },
+    { slot: MCP, value: windows.mcp },
   ]);
 }
 
-function formatWindow(window: GlmWindow | undefined): string | undefined {
-  return window
-    ? `${window.percentRemaining}% reset_at=${window.resetTimeIso ?? "(none)"}`
-    : undefined;
+async function queryGlmRows(
+  endpoint: GlmEndpoint,
+  apiKey: string,
+  requestTimeoutMs?: number,
+): Promise<GlmReply> {
+  try {
+    return await fetchWithTimeout(endpoint.url, {
+      request: {
+        headers: {
+          Authorization: apiKey,
+          "User-Agent": "OpenCode-Quota-Toast/1.0",
+          "Content-Type": "application/json",
+        },
+      },
+      timeoutMs: requestTimeoutMs,
+      consume: async (response): Promise<GlmReply> => {
+        const apiError = `${endpoint.label} API error`;
+        if (!response.ok) {
+          const body = sanitizeDisplaySnippet(await response.text(), 120);
+          return { success: false, error: `${apiError} ${response.status}: ${body}` };
+        }
+
+        const body = (await response.json()) as GlmEnvelope;
+        if (
+          endpoint.envelope === "zai" &&
+          (body.success === false || (typeof body.code === "number" && body.code >= 400))
+        ) {
+          const message = typeof body.msg === "string" ? sanitizeDisplayText(body.msg) : "";
+          const fallback = typeof body.code === "number" ? `${apiError} ${body.code}` : apiError;
+          return { success: false, error: message || fallback };
+        }
+
+        const limits =
+          endpoint.envelope === "zai" ? (body.data?.limits ?? body.limits) : body.data?.limits;
+        if (!Array.isArray(limits)) return { success: false, error: "Invalid quota data" };
+        return { success: true, rows: glmRows(limits as GlmLimit[]) };
+      },
+    });
+  } catch (error) {
+    return {
+      success: false,
+      error: sanitizeDisplayText(error instanceof Error ? error.message : String(error)),
+    };
+  }
+}
+
+/** The reply for the key the resolver finds; null without one. */
+async function queryResolvedKey(
+  endpoint: GlmEndpoint,
+  requestTimeoutMs?: number,
+): Promise<GlmReply | null> {
+  const auth = await resolveApiKeyLogin(endpoint.auth);
+  if (auth.state === "none") return null;
+  if (auth.state === "invalid") return { success: false, error: auth.error };
+  return await queryGlmRows(endpoint, auth.apiKey, requestTimeoutMs);
+}
+
+/** The debug line of a window row: `80% reset_at=…`. */
+function formatWindow(rows: readonly ProviderRow[], key: string): string | undefined {
+  const row = rows.find((candidate) => candidate.key === key);
+  return row ? `${row.percentRemaining}% reset_at=${row.resetsAt ?? "(none)"}` : undefined;
 }
 
 async function fetchGlmQuota(
@@ -61,21 +194,17 @@ async function fetchGlmQuota(
         logins,
         brokenFirst: false,
         async fetchLogin({ auth }) {
-          const result = await queryGlmCodingPlanQuota(endpoint, {
-            requestTimeoutMs,
-            apiKey: auth.apiKey,
-          });
-          if (!result) return null;
+          const result = await queryGlmRows(endpoint, auth.apiKey, requestTimeoutMs);
           if (!result.success) return { rows: [], errors: [{ message: result.error }] };
-          return { rows: glmRows(result), errors: [] };
+          return { rows: result.rows, errors: [] };
         },
       });
       return { attempted: true, accounts, debug: authDetails };
     }
   }
 
-  const result = await queryGlmCodingPlanQuota(endpoint, { requestTimeoutMs });
-  const windows = result?.success ? result.windows : {};
+  const result = await queryResolvedKey(endpoint, requestTimeoutMs);
+  const rows = result?.success ? result.rows : [];
   const debug = [
     ...authDetails,
     ...statusDetailsFromRecord({
@@ -84,11 +213,11 @@ async function fetchGlmQuota(
         : result.success
           ? undefined
           : result.error,
-      five_hour_remaining: formatWindow(windows.fiveHour),
-      weekly_remaining: formatWindow(windows.weekly),
-      mcp_remaining: formatWindow(windows.mcp),
+      five_hour_remaining: formatWindow(rows, FIVE_HOUR.key),
+      weekly_remaining: formatWindow(rows, WEEKLY.key),
+      mcp_remaining: formatWindow(rows, MCP.key),
       live_state:
-        result?.success && !windows.fiveHour && !windows.weekly && !windows.mcp
+        result?.success && rows.length === 0
           ? `no reportable ${endpoint.label} quota windows`
           : undefined,
     }),
@@ -97,11 +226,7 @@ async function fetchGlmQuota(
   if (!result.success) {
     return { attempted: true, accounts: [failedAccount(endpoint.label, result.error)], debug };
   }
-  return {
-    attempted: true,
-    accounts: [{ name: result.label, rows: glmRows(result), errors: [] }],
-    debug,
-  };
+  return { attempted: true, accounts: [{ name: endpoint.label, rows, errors: [] }], debug };
 }
 
 function glmProvider(

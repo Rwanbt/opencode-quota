@@ -12,6 +12,7 @@ import { matchesQuotaProviderCurrentSelection } from "../core/selection.js";
 import { createQuotaStore } from "../core/store.js";
 import type { DebugDetail, ProviderSnapshot, QuotaSnapshot, SessionModel } from "../core/types.js";
 import { type UsageReport, usageReport } from "../core/usage.js";
+import { resolveOpenRouterApiKey } from "../providers/openrouter.js";
 import { getProviders } from "../providers/registry.js";
 import {
   apiKeyStatusDetails,
@@ -40,7 +41,6 @@ import {
   refreshPricesIfDue,
 } from "./modelsdev-pricing.js";
 import { getCredentialSourceDiagnostics } from "./opencode-auth.js";
-import { resolveOpenRouterApiKey } from "./openrouter.js";
 import { getQuotaProviderDisplayLabel, getQuotaProviderRuntimeIds } from "./provider-metadata.js";
 import {
   buildQuotaStatusReportDocument,

@@ -22,15 +22,16 @@ Auth is part of the provider's entry in `src/lib/provider-registration.ts`, not 
 
 ## Copy targets
 
-| Template file      | Copy to                              | Purpose                                               |
-| ------------------ | ------------------------------------ | ----------------------------------------------------- |
-| `provider.ts`      | `src/providers/<provider>.ts`        | Register availability, model matching, and the rows.  |
-| `provider.test.ts` | `tests/providers.<provider>.test.ts` | Prove the rows, the error and availability.           |
+| Template file      | Copy to                              | Purpose                                                          |
+| ------------------ | ------------------------------------ | ---------------------------------------------------------------- |
+| `provider.ts`      | `src/providers/<provider>.ts`        | Ask the API, turn its reply into rows, say when it is available. |
+| `provider.test.ts` | `tests/providers.<provider>.test.ts` | Prove the rows, the error and availability through fake HTTP.    |
 
 Also update:
 
 - `src/lib/provider-registration.ts`: one entry, in display order, with the provider's label, OpenCode ids, row keys (`rowKeys`) and key (`apiKey`)
 - `src/providers/registry.ts`: bind the provider to its id (the compiler checks every id has one)
+- `src/lib/quota-status.ts`: its `DEBUG_DETAILS` entry, `{}` when no debug detail needs redacting (the compiler checks this too)
 - `tests/lib.api-key-resolver.test.ts`: a row in its vendor table
 - `README.md`
 
@@ -43,7 +44,8 @@ Before coding, replace these placeholders everywhere:
 - `EXAMPLE_PROVIDER_API_KEY`
 - `exampleProvider`
 - `exampleProviderProvider`
-- `queryExampleProviderQuota`
+- `queryExampleRows`
+- `https://api.example.com/v1/usage`
 
 ## README wording rule
 
@@ -55,6 +57,6 @@ In provider ledgers, use `Data from` rather than `Source`. These are friendly la
 
 A provider returns the row contract in `src/providers/contract.ts`: per account, its rows and its errors, plus debug details for `/quota_status`. The copied `provider.ts` shows one remote quota row with the percent left (`quotaRow`). Keep that shape when the provider only reports a percentage.
 
-Each row's `key` becomes its id (`example-provider.daily`), which users' hide, rename and order settings use, so a key never changes once released. List every key in the provider's `rowKeys`; `fetchRows` in the provider tests fails on a key that is not listed.
+Each row's `key` becomes its id (`example-provider.monthly`), which users' hide, rename and order settings use, so a key never changes once released. List every key in the provider's `rowKeys`; `fetchRows` in the provider tests fails on a key that is not listed.
 
 If the provider reports more than a percentage, follow `CONTRIBUTING.md`: amounts as typed `used`, `limit`, `remaining` or `amount` values, yes/no as `flag`, never pre-formatted money strings.

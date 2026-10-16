@@ -126,59 +126,6 @@ export interface AuthData {
 }
 
 // =============================================================================
-// Kimi Types
-// =============================================================================
-
-/** Kimi quota window */
-export interface KimiQuotaWindow {
-  label: string;
-  used: number;
-  limit: number;
-  percentRemaining: number;
-  resetTimeIso?: string;
-}
-
-/** Result from fetching Kimi quota */
-interface KimiQuotaResult {
-  success: true;
-  label: string;
-  windows: KimiQuotaWindow[];
-}
-
-export type KimiResult = KimiQuotaResult | QuotaError;
-
-// =============================================================================
-// Z.ai Types
-// =============================================================================
-
-/** Z.ai quota limit entry from API */
-export interface ZaiQuotaLimit {
-  type: string;
-  unit: number;
-  number: number;
-  usage: number;
-  currentValue?: number;
-  remaining?: number;
-  percentage: number;
-  nextResetTime?: number;
-  usageDetails?: Array<{
-    modelCode: string;
-    usage: number;
-  }>;
-}
-
-/** Result from fetching Z.ai quota */
-export interface ZaiQuotaResult {
-  success: true;
-  label: string;
-  windows: {
-    fiveHour?: { percentRemaining: number; resetTimeIso?: string };
-    weekly?: { percentRemaining: number; resetTimeIso?: string };
-    mcp?: { percentRemaining: number; resetTimeIso?: string };
-  };
-}
-
-// =============================================================================
 // Quota Result Types
 // =============================================================================
 
@@ -337,46 +284,6 @@ export type CopilotResult =
   | CopilotEnterpriseUsageResult
   | QuotaError
   | null;
-export type ZaiResult = ZaiQuotaResult | QuotaError | null;
-
-/** Session or weekly limit of a legacy plan from the Ollama Cloud balance API */
-export interface OllamaCloudWindow {
-  /** Provider-reported remaining percentage [0..100] */
-  percentRemaining: number;
-  /** Next reset, when the API returns a valid one */
-  resetTimeIso?: string;
-}
-
-/** Included credits of a credit plan from the Ollama Cloud balance API */
-export interface OllamaCloudIncludedCredits {
-  /** Remaining included credits in USD */
-  balanceUsd: number;
-  /** Included credits for the whole period in USD */
-  allowanceUsd: number;
-  /** Remaining percentage [0..100]; undefined when the allowance is 0 */
-  percentRemaining?: number;
-  /** Start of the included period, when the API returns a valid one */
-  periodStartIso?: string;
-  /** End of the included period (its reset), when the API returns a valid one */
-  resetTimeIso?: string;
-}
-
-/** Result from the Ollama Cloud balance API */
-export type OllamaCloudResult =
-  | {
-      success: true;
-      /** Included credits on credit plans */
-      includedCredits?: OllamaCloudIncludedCredits;
-      /** Session limit on legacy plans */
-      session?: OllamaCloudWindow;
-      /** Weekly limit on legacy plans */
-      weekly?: OllamaCloudWindow;
-      /** Remaining unexpired purchased credits in USD */
-      purchasedUsd?: number;
-      /** Independent response fields that could not be used */
-      rowErrors?: string[];
-    }
-  | QuotaError;
 
 export type OpenCodeGoWindowKey = "rolling" | "weekly" | "monthly";
 

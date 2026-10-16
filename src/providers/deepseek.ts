@@ -1,13 +1,17 @@
 /**
- * DeepSeek: the exact balances /user/balance reports, per currency. Each key stored in OpenCode
- * is queried as its own account; an env or config key is used alone.
+ * DeepSeek: the exact balances GET https://api.deepseek.com/user/balance reports, per currency.
+ * Each key stored in OpenCode is queried as its own account; an env or config key is used alone.
  */
 
+import { isCanonicalAccountingDecimal } from "../lib/accounting-format.js";
 import { API_KEY_VENDORS, hasVendorKey, readVendorKeys } from "../lib/api-key-resolver.js";
-import { queryDeepSeekBalance } from "../lib/deepseek.js";
+import { sanitizeDisplaySnippet, sanitizeDisplayText } from "../lib/display-sanitize.js";
 import type { QuotaProvider, QuotaProviderContext } from "../lib/entries.js";
+import { fetchWithTimeout } from "../lib/http.js";
+import { isRecord, nonEmptyString } from "../lib/json-guards.js";
 import { isCanonicalProviderAvailable } from "../lib/provider-availability.js";
 import { modelProviderIncludesAny } from "../lib/provider-model-matching.js";
+import type { QuotaError } from "../lib/types.js";
 import { vendorKeysPolicy } from "./cache-policies.js";
 import {
   type AccountResult,
@@ -21,39 +25,55 @@ import { vendorKeyDetails } from "./result-helpers.js";
 
 const LABEL = "DeepSeek";
 const SPEC = API_KEY_VENDORS.deepseek;
+const DEEPSEEK_BALANCE_URL = "https://api.deepseek.com/user/balance";
+const USER_AGENT = "OpenCode-Quota-Toast/1.0";
+const MAX_PARSE_ISSUES = 6;
 
 const BALANCE_COMPONENTS = [
-  ["total_balance", "totalBalance", "Balance", "primary"],
-  ["granted_balance", "grantedBalance", "Granted", "supplementary"],
-  ["topped_up_balance", "toppedUpBalance", "Topped up", "supplementary"],
+  ["total_balance", "Balance", "primary"],
+  ["granted_balance", "Granted", "supplementary"],
+  ["topped_up_balance", "Topped up", "supplementary"],
 ] as const;
 
-type DeepSeekBalanceSuccess = Extract<
-  Awaited<ReturnType<typeof queryDeepSeekBalance>>,
-  { success: true }
->;
+/** A balance field DeepSeek sent that is not a decimal. */
+type ParseIssue = { currency: string; field: (typeof BALANCE_COMPONENTS)[number][0] };
 
-function deepseekRows(result: DeepSeekBalanceSuccess): ProviderRow[] {
+type DeepSeekBalance = { success: true; rows: ProviderRow[]; parseIssues: ParseIssue[] };
+
+/** One row per balance of each CNY or USD entry; the availability flag without a total. */
+function parseDeepSeekBalance(payload: unknown): DeepSeekBalance {
+  if (!isRecord(payload)) {
+    throw new Error("DeepSeek balance response returned an unexpected response shape");
+  }
+
   const rows: ProviderRow[] = [];
-  for (const info of result.balanceInfos) {
-    for (const [component, field, label, prominence] of BALANCE_COMPONENTS) {
+  const parseIssues: ParseIssue[] = [];
+  const infos = Array.isArray(payload.balance_infos) ? payload.balance_infos : [];
+  for (const info of infos) {
+    if (!isRecord(info)) continue;
+    const currency = nonEmptyString(info.currency)?.toUpperCase();
+    if (currency !== "CNY" && currency !== "USD") continue;
+    for (const [field, label, prominence] of BALANCE_COMPONENTS) {
       const decimal = info[field];
-      if (decimal === undefined) continue;
-      rows.push({
-        key: `${component}.${keySlug(info.currency)}`,
-        label,
-        type: "balance",
-        method: "remote_api",
-        authority: "provider_reported",
-        prominence,
-        amount: { decimal, unit: { kind: "currency", code: info.currency } },
-      });
+      if (typeof decimal === "string" && isCanonicalAccountingDecimal(decimal)) {
+        rows.push({
+          key: `${field}.${keySlug(currency)}`,
+          label,
+          type: "balance",
+          method: "remote_api",
+          authority: "provider_reported",
+          prominence,
+          amount: { decimal, unit: { kind: "currency", code: currency } },
+        });
+      } else if (decimal !== undefined && parseIssues.length < MAX_PARSE_ISSUES) {
+        parseIssues.push({ currency, field });
+      }
     }
   }
 
   // Without any total balance, the availability flag stands in for it.
-  const hasTotalBalance = result.balanceInfos.some((info) => info.totalBalance !== undefined);
-  if (!hasTotalBalance && result.isAvailable !== undefined) {
+  const hasTotalBalance = rows.some((row) => row.key.startsWith("total_balance."));
+  if (!hasTotalBalance && typeof payload.is_available === "boolean") {
     rows.push({
       key: "available",
       label: "Available",
@@ -61,17 +81,48 @@ function deepseekRows(result: DeepSeekBalanceSuccess): ProviderRow[] {
       method: "remote_api",
       authority: "provider_reported",
       prominence: "primary",
-      flag: result.isAvailable,
+      flag: payload.is_available,
     });
   }
-  return rows;
+  return { success: true, rows, parseIssues };
+}
+
+/** The DeepSeek balance of one API key. */
+async function queryDeepSeekBalance(
+  apiKey: string,
+  requestTimeoutMs?: number,
+): Promise<DeepSeekBalance | QuotaError> {
+  try {
+    return await fetchWithTimeout(DEEPSEEK_BALANCE_URL, {
+      request: {
+        method: "GET",
+        headers: { Authorization: `Bearer ${apiKey}`, "User-Agent": USER_AGENT },
+      },
+      timeoutMs: requestTimeoutMs,
+      consume: async (response): Promise<DeepSeekBalance | QuotaError> => {
+        if (!response.ok) {
+          const text = await response.text();
+          return {
+            success: false,
+            error: `DeepSeek API error ${response.status}: ${sanitizeDisplaySnippet(text, 120)}`,
+          };
+        }
+        return parseDeepSeekBalance(await response.json());
+      },
+    });
+  } catch (err) {
+    return {
+      success: false,
+      error: sanitizeDisplayText(err instanceof Error ? err.message : String(err)),
+    };
+  }
 }
 
 /** An env or config key: a value DeepSeek sent that is not a decimal is an account of its own. */
-function deepseekAccounts(result: DeepSeekBalanceSuccess): AccountResult[] {
+function deepseekAccounts(balance: DeepSeekBalance): AccountResult[] {
   return [
-    { name: LABEL, rows: deepseekRows(result), errors: [] },
-    ...result.parseIssues.map((issue) =>
+    { name: LABEL, rows: balance.rows, errors: [] },
+    ...balance.parseIssues.map((issue) =>
       failedAccount(`${LABEL} ${issue.currency}`, `${issue.field} returned an invalid decimal`),
     ),
   ];
@@ -99,8 +150,7 @@ export const deepseekProvider: QuotaProvider = {
   async fetch(ctx: QuotaProviderContext): Promise<ProviderFetchResult> {
     const keys = await readVendorKeys(SPEC);
     const debug = vendorKeyDetails(SPEC, keys);
-    const query = (apiKey: string) =>
-      queryDeepSeekBalance({ apiKey, requestTimeoutMs: ctx.config?.requestTimeoutMs });
+    const query = (apiKey: string) => queryDeepSeekBalance(apiKey, ctx.config?.requestTimeoutMs);
 
     if (keys.envOrConfig) {
       const result = await query(keys.envOrConfig.key);
@@ -118,7 +168,7 @@ export const deepseekProvider: QuotaProvider = {
         const result = await query(auth.apiKey);
         if (!result.success) return { rows: [], errors: [{ message: result.error }] };
         return {
-          rows: deepseekRows(result),
+          rows: result.rows,
           errors: result.parseIssues.map((issue) => ({
             message: `${issue.currency} ${issue.field} returned an invalid decimal`,
           })),
