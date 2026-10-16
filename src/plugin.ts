@@ -28,7 +28,7 @@ import { OLD_USAGE_COMMANDS } from "./core/usage-ranges.js";
 import { resolveOpenCodeLocationRoots } from "./lib/config-file-utils.js";
 import { sanitizeDisplayText } from "./lib/display-sanitize.js";
 import { homeNoticeLine, listNotices } from "./lib/maintainer-home-notice.js";
-import { downloadPrices, refreshPricesIfDue, usePricingSettings } from "./lib/modelsdev-pricing.js";
+import { downloadPrices, refreshPricesIfDue } from "./lib/modelsdev-pricing.js";
 import {
   bindCredentialSource,
   createIntegrationCredentialSource,
@@ -49,15 +49,7 @@ import { resolveQuotaResetRetryDelayMs } from "./lib/quota-retry-wait.js";
 import type { StatusOrigin } from "./lib/quota-status.js";
 import { fetchSessionTokensForDisplay } from "./lib/session-tokens.js";
 import { QuotaRpc } from "./rpc.js";
-import {
-  clientSettings,
-  convertV5,
-  type LoadedSettings,
-  loadSettings,
-  saveSettings,
-  type V5Conversion,
-  watchSettings,
-} from "./settings/index.js";
+import { clientSettings, createLiveSettings, loadSettings } from "./settings/index.js";
 import { DEFAULT_QUICK_LOOK_RANGE } from "./view/quick-look.js";
 import { usageText } from "./view/usage.js";
 
@@ -103,31 +95,6 @@ async function logRpcFailure<T>(method: string, handler: () => Promise<T>): Prom
   }
 }
 
-/**
- * The settings (or one part of them) with the keys of that part the file sets, so a value set
- * to its default in the file still differs from no value. The keys are sorted: their order in
- * the file changes nothing.
- */
-function settingsWithSources(loaded: LoadedSettings, part?: "checking" | "pricing"): string {
-  const fromFile = loaded.fromFile
-    .filter((key) => part === undefined || key.startsWith(`providers.${part}.`))
-    .sort();
-  return JSON.stringify([
-    part === undefined ? loaded.settings : loaded.settings.providers[part],
-    fromFile,
-  ]);
-}
-
-/** Writes the v5 settings into settings.jsonc once; a failure leaves them converted in memory. */
-async function convertV5Settings(): Promise<V5Conversion | undefined> {
-  try {
-    return await convertV5();
-  } catch (error) {
-    console.warn(`[opencode-quota] settings conversion failed: ${safeErrorText(error)}`);
-    return undefined;
-  }
-}
-
 export const QuotaToastPlugin = Plugin.define({
   id: "@slkiser/opencode-quota.server",
   async setup(ctx) {
@@ -144,13 +111,8 @@ export const QuotaToastPlugin = Plugin.define({
       },
     };
 
-    // The v5 settings move into settings.jsonc before anything reads the settings. The server
-    // holds the settings it read last; every reader takes them from here.
-    const conversion = await convertV5Settings();
-    let settingsConverted = conversion?.written ?? false;
-    let loaded: LoadedSettings = await loadSettings({ projectDir });
-    // Local estimates and usage reports use the price list of the settings held now.
-    const unbindPricingSettings = usePricingSettings(() => loaded.settings.providers.pricing);
+    // The server holds the settings it read last; every reader takes them from here.
+    const liveSettings = await createLiveSettings({ projectDir });
     // /quota_status reports the providers it detected. The slash commands and
     // the tool add them to the global OpenCode config; the TUI palette (via RPC) never writes it.
     const buildStatusOutput = (
@@ -163,7 +125,7 @@ export const QuotaToastPlugin = Plugin.define({
         opencode: ctx.app ? { version: ctx.app.version, channel: ctx.app.channel } : undefined,
         sessionID,
         resolveSessionModel: sessionModel,
-        conversion,
+        conversion: liveSettings.conversion,
         onDetectedProviderIds: options.reconcileDetectedProviders
           ? async (providerIds) => {
               if (providerIds.length === 0) return;
@@ -184,7 +146,7 @@ export const QuotaToastPlugin = Plugin.define({
     const sourceHost: ProviderSourceHost = {
       client,
       workspaceRoot: roots.workspaceRoot,
-      settings: () => loaded,
+      settings: liveSettings.current,
     };
     const store = createQuotaStore({
       source: () => loadProviderSource(sourceHost),
@@ -210,7 +172,7 @@ export const QuotaToastPlugin = Plugin.define({
       if (!sessionID) return snapshot;
       const { sessionTokens } = await fetchSessionTokensForDisplay({
         sessionID,
-        scope: loaded.settings.words.sessionTokens,
+        scope: liveSettings.current().settings.words.sessionTokens,
       });
       if (!sessionTokens) return snapshot;
       return {
@@ -227,11 +189,12 @@ export const QuotaToastPlugin = Plugin.define({
     // custom definition, and the settings, and none of the export parts the
     // server keeps for the export file.
     const forClients = (snapshot: QuotaSnapshot): QuotaSnapshot => {
-      const custom = loaded.settings.providers.custom;
+      const { settings } = liveSettings.current();
+      const custom = settings.providers.custom;
       return {
         ...snapshot,
         providers: snapshot.providers.map(({ exportPart: _serverOnly, ...provider }) => provider),
-        words: loaded.settings.words,
+        words: settings.words,
         ...(custom.length > 0
           ? {
               customRowProviders: Object.fromEntries(
@@ -242,8 +205,8 @@ export const QuotaToastPlugin = Plugin.define({
               ),
             }
           : {}),
-        settings: clientSettings(loaded.settings),
-        ...(settingsConverted ? { settingsConverted: true } : {}),
+        settings: clientSettings(settings),
+        ...(liveSettings.converted() ? { settingsConverted: true } : {}),
       };
     };
 
@@ -300,19 +263,14 @@ export const QuotaToastPlugin = Plugin.define({
         logRpcFailure("settings", async () =>
           clientSettings((await loadSettings({ projectDir })).settings),
         ),
-      // The watch sees the save too; reading the file now answers with the new settings in use.
-      // `customEnabled` is the user's switch in the quota window; no agent tool calls this.
+      // Answers once the new settings are in use. `customEnabled` is the user's switch in the
+      // quota window; no agent tool calls this.
       saveSettings: (input) =>
         logRpcFailure("saveSettings", async () => {
-          const converting = !loaded.exists && Boolean(loaded.conversion);
-          const result = await saveSettings(input.patch, {
+          const result = await liveSettings.save(input.patch, {
             allowFileOnly: false,
             customEnabled: input.customEnabled,
           });
-          if (result.ok) {
-            if (converting) settingsConverted = true;
-            await applySettings(await loadSettings({ projectDir }));
-          }
           return { ok: result.ok, issues: result.issues };
         }),
     });
@@ -333,20 +291,14 @@ export const QuotaToastPlugin = Plugin.define({
     };
     const unsubscribeStore = store.subscribe(announce);
 
-    // New settings can change the providers, who each one is signed in as, the words and the
-    // prices. They supersede the store's running work: every client gets a snapshot built from
-    // them at once, then the new rows as more `changed` events. A check made with another time
-    // limit, interval or price list is out of date, so every provider is checked again.
-    async function applySettings(next: LoadedSettings): Promise<void> {
-      const previous = loaded;
-      loaded = next;
-      if (settingsWithSources(next) !== settingsWithSources(previous)) {
-        const recheck =
-          settingsWithSources(next, "checking") !== settingsWithSources(previous, "checking") ||
-          settingsWithSources(next, "pricing") !== settingsWithSources(previous, "pricing");
-        store.settingsChanged({ recheck });
-      }
-      if (next.settings.system.oldCommands !== previous.settings.system.oldCommands) {
+    // New settings (saved here, or settings.jsonc edited by hand, by an agent or by another
+    // OpenCode process) can change the providers, who each one is signed in as, the words and
+    // the prices. They supersede the store's running work: every client gets a snapshot built
+    // from them at once, then the new rows as more `changed` events. A check made with another
+    // time limit, interval or price list is out of date, so every provider is checked again.
+    const settingsWatch = await liveSettings.follow(async (change) => {
+      store.settingsChanged({ recheck: change.recheck });
+      if (change.oldCommands) {
         // The command list is built again from the settings now in use. An open TUI keeps its
         // "/" list until OpenCode restarts: OpenCode 2 sends this reload without the folder
         // (location) that the TUI refreshes its list for.
@@ -354,11 +306,7 @@ export const QuotaToastPlugin = Plugin.define({
           console.warn(`[opencode-quota] command reload failed: ${safeErrorText(error)}`);
         });
       }
-    }
-    // settings.jsonc edited by hand, by an agent or by another OpenCode process. A change made
-    // while this setup ran is read once more right after the watch starts.
-    const settingsWatch = await watchSettings((next) => void applySettings(next), { projectDir });
-    await applySettings(await loadSettings({ projectDir }));
+    });
 
     await ctx.tool.transform((editor) => {
       // Agent tools: read and change the settings file, add, test and remove custom providers.
@@ -461,7 +409,7 @@ export const QuotaToastPlugin = Plugin.define({
           postUsage(invocation.sessionID, "quota_usage", invocation.prompt.text),
       });
       // Read each time OpenCode builds the list, so `system.oldCommands` adds or removes them.
-      if (!loaded.settings.system.oldCommands) return;
+      if (!liveSettings.current().settings.system.oldCommands) return;
       for (const [name, range] of Object.entries(OLD_USAGE_COMMANDS)) {
         editor.add({
           name,
@@ -540,7 +488,7 @@ export const QuotaToastPlugin = Plugin.define({
       publisher.dispose();
       await store.dispose();
       unbindCredentialSource();
-      unbindPricingSettings();
+      liveSettings.dispose();
     };
   },
 });

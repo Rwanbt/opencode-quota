@@ -1,7 +1,7 @@
 /**
  * The server settings, one module: `loadSettings`, `saveSettings(patch)`, `editSettings`,
- * `editSettingsFile`, `watchSettings`, `convertV5` and the schema the agent tools describe and
- * check values with.
+ * `editSettingsFile`, `watchSettings`, `convertV5`, the settings a running server holds
+ * (`createLiveSettings`) and the schema the agent tools describe and check values with.
  * Every client reads these settings from settings.jsonc through the quota RPC.
  */
 export type { ConvertedKey, SkippedKey, V5Conversion } from "./convert.js";
@@ -20,6 +20,7 @@ export {
   settingsPath,
   watchSettings,
 } from "./file.js";
+export { createLiveSettings } from "./live.js";
 export {
   type ClientSettings,
   type CustomProviderSwitch,

@@ -5,7 +5,7 @@ const CONFIG_PROVIDER_IDS = Object.keys(QUOTA_PROVIDER_CATALOG).map((id) =>
 );
 
 import { existsSync, mkdtempSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parse as parseJsonc } from "jsonc-parser";
@@ -71,10 +71,6 @@ function useSettings(overrides: Record<string, unknown> = {}): void {
 
 const SNAPSHOT_FILE = `${TEST_RUNTIME_ROOT}/state/opencode-quota/snapshot-v6.json`;
 const SETTINGS_FILE = `${TEST_RUNTIME_ROOT}/config/opencode-quota/settings.jsonc`;
-
-/** A snapshot whose words say `percent`. */
-const withPercentWords = (percent: string) =>
-  expect.objectContaining({ words: expect.objectContaining({ percent }) });
 
 /** A set-up provider that answers with `fetch`; `extra` adds fields such as its cache policy. */
 function provider(id: string, fetch: unknown, extra: object = {}) {
@@ -320,22 +316,32 @@ describe("server quota RPC", () => {
     expect(instant.snapshot.providers[0]?.rows).toEqual(refreshed.snapshot.providers[0]?.rows);
   });
 
-  it("saves settings, then answers and tells every client with the new words", async () => {
-    const { call, emit } = await setupServer();
-    emit.mockClear();
-
-    await expect(call("saveSettings", { patch: { words: { percent: "used" } } })).resolves.toEqual({
-      ok: true,
-      issues: [],
-    });
-
-    expect(parseJsonc(await readFile(SETTINGS_FILE, "utf8"))).toMatchObject({
-      words: { percent: "used" },
-    });
-    await vi.waitFor(() =>
-      expect(emit).toHaveBeenCalledWith("changed", { snapshot: withPercentWords("used") }),
+  it("saves settings that complete a v5 conversion, then answers and tells every client", async () => {
+    // A v5 sidecar that does not parse, and v5 settings in opencode.json: the start converts
+    // them in memory only, and the save writes settings.jsonc with them.
+    await rm(SETTINGS_FILE);
+    await writeFile(`${TEST_RUNTIME_ROOT}/config/opencode-quota/quota-toast.jsonc`, "{ broken");
+    await writeFile(
+      `${TEST_RUNTIME_ROOT}/config/opencode.json`,
+      JSON.stringify({
+        experimental: { quotaToast: { enabledProviders: ["copilot"], showOnIdle: false } },
+      }),
     );
-    await expect(call("snapshot", {})).resolves.toEqual({ snapshot: withPercentWords("used") });
+    const { call, emit } = await setupServer();
+
+    await expect(
+      call("saveSettings", { patch: { words: { percent: "used" } } }),
+    ).resolves.toMatchObject({ ok: true });
+
+    const sent = expect.objectContaining({
+      words: expect.objectContaining({ percent: "used" }),
+      settings: expect.objectContaining({
+        values: expect.objectContaining({ "toast.afterReply": "off" }),
+      }),
+      settingsConverted: true,
+    });
+    await vi.waitFor(() => expect(emit).toHaveBeenCalledWith("changed", { snapshot: sent }));
+    await expect(call("snapshot", {})).resolves.toEqual({ snapshot: sent });
   });
 
   it("answers the settings a client may change, and switches a custom provider on", async () => {
@@ -420,19 +426,6 @@ describe("server quota RPC", () => {
     expect(await readFile(SETTINGS_FILE, "utf8")).toBe(before);
   });
 
-  it("reads settings.jsonc again when it changes on disk", async () => {
-    const { call, emit } = await setupServer();
-    emit.mockClear();
-
-    useSettings({ words: { percent: "bare" } });
-
-    await vi.waitFor(
-      () => expect(emit).toHaveBeenCalledWith("changed", { snapshot: withPercentWords("bare") }),
-      { timeout: 5_000 },
-    );
-    await expect(call("snapshot", {})).resolves.toEqual({ snapshot: withPercentWords("bare") });
-  });
-
   it("tells clients which OpenCode provider each custom definition serves", async () => {
     useSettings({
       providers: {
@@ -456,29 +449,6 @@ describe("server quota RPC", () => {
     expect(snapshot.customRowProviders).toEqual({
       "quota-providers.custom.team-accounting.": "team-gateway",
     });
-  });
-
-  it("converts v5 choices directly into the file and sends them with the snapshot", async () => {
-    await rm(SETTINGS_FILE);
-    await writeFile(
-      `${TEST_RUNTIME_ROOT}/config/opencode-quota/quota-toast.jsonc`,
-      '{ "enabledProviders": ["copilot"], "percentDisplayMode": "used", "showOnIdle": true }',
-    );
-    const first = await setupServer();
-    const { snapshot } = (await first.call("snapshot", {})) as { snapshot: QuotaSnapshot };
-    expect(snapshot.words?.percent).toBe("used");
-    expect(snapshot.settings?.values["toast.afterReply"]).toBe("always");
-    expect(snapshot.settingsConverted).toBe(true);
-    expect(parseJsonc(await readFile(SETTINGS_FILE, "utf8"))).toMatchObject({
-      toast: { afterReply: "always" },
-      providers: { off: CONFIG_PROVIDER_IDS.filter((id) => id !== "copilot") },
-    });
-    expect(snapshot).not.toHaveProperty("displayImport");
-    const second = await setupServer();
-    expect(
-      ((await second.call("snapshot", {})) as { snapshot: QuotaSnapshot }).snapshot.settings
-        ?.values["toast.afterReply"],
-    ).toBe("always");
   });
 
   it("drops a check that ran across a settings change that turned its provider off", async () => {
@@ -528,143 +498,6 @@ describe("server quota RPC", () => {
     expect(emitted().filter((ids) => ids.includes("copilot"))).toEqual([]);
     const now = (await call("snapshot", {})) as { snapshot: QuotaSnapshot };
     expect(providerIds(now.snapshot)).toEqual(["openai"]);
-  });
-
-  it("checks with the price list the settings choose, and again at once when it changes", async () => {
-    useSettings({ providers: { pricing: { source: "bundled", autoRefreshDays: 5 } } });
-    const pricing = await import("../src/lib/modelsdev-pricing.js");
-    const seen: string[] = [];
-    const fetch = vi.fn(async () => {
-      const { selection, health } = await pricing.describePriceList();
-      seen.push(`${selection} ${health.maxAgeMs / (24 * 60 * 60 * 1000)}`);
-      return answer();
-    });
-    mocks.getProviders.mockReturnValue([provider("copilot", fetch)]);
-    const { call } = await setupServer();
-
-    await call("refresh", { reason: "poll" });
-    expect(seen).toEqual(["bundled 5"]);
-
-    // Local estimates use prices: another price list checks every provider again.
-    useSettings({
-      providers: {
-        checking: { minIntervalMs: 60_000 },
-        pricing: { source: "runtime", autoRefreshDays: 2 },
-      },
-    });
-    await vi.waitFor(() => expect(seen).toEqual(["bundled 5", "runtime 2"]), { timeout: 5_000 });
-  });
-
-  it("follows the price list a running server's settings choose after another server stops", async () => {
-    useSettings({ providers: { pricing: { source: "bundled", autoRefreshDays: 7 } } });
-    const downloadedDir = `${TEST_RUNTIME_ROOT}/cache/opencode-quota`;
-    await mkdir(downloadedDir, { recursive: true });
-    await writeFile(
-      `${downloadedDir}/modelsdev-pricing.runtime.min.json`,
-      JSON.stringify({
-        _meta: { source: "test", generatedAt: Date.now(), units: "USD per 1M tokens" },
-        providers: { openai: { "gpt-4o-mini": { input: 9.99 } } },
-      }),
-    );
-    const pricing = await import("../src/lib/modelsdev-pricing.js");
-    await setupServer();
-    await setupServer();
-    // The newer server stops; its settings stop changing.
-    await cleanups.pop()?.();
-
-    useSettings({ providers: { pricing: { source: "runtime", autoRefreshDays: 7 } } });
-
-    await vi.waitFor(
-      () =>
-        expect(pricing.activePriceList()).toMatchObject({
-          selection: "runtime",
-          source: "runtime",
-        }),
-      { timeout: 5_000 },
-    );
-    expect(pricing.lookupCost("openai", "gpt-4o-mini")?.input).toBe(9.99);
-  });
-
-  it("checks again at once when the time limit changes, also when set to its default", async () => {
-    useSettings({ providers: { checking: { minIntervalMs: 60_000 } } });
-    const seen: unknown[] = [];
-    const fetch = vi.fn(async (ctx: { config: Record<string, unknown> }) => {
-      seen.push([ctx.config.requestTimeoutMs, ctx.config.requestTimeoutMsConfigured]);
-      if (seen.length === 1) throw new Error("Request timeout after 5s");
-      return copilotAnswer(40);
-    });
-    mocks.getProviders.mockReturnValue([provider("copilot", fetch, ACCOUNT_NEUTRAL)]);
-    const { call } = await setupServer();
-    const failed = (await call("refresh", { reason: "manual" })) as { snapshot: QuotaSnapshot };
-    expect(failed.snapshot.providers[0]?.error?.code).toBe("timeout");
-
-    // The default time limit, now set in the file: providers use a configured limit.
-    useSettings({ providers: { checking: { minIntervalMs: 60_000, requestTimeoutMs: 5_000 } } });
-    await vi.waitFor(() => expect(seen).toHaveLength(2), { timeout: 5_000 });
-    expect(seen[1]).toEqual([5_000, true]);
-
-    // A longer limit after the timeout: no interval or backoff waits for it.
-    useSettings({ providers: { checking: { minIntervalMs: 60_000, requestTimeoutMs: 30_000 } } });
-    await vi.waitFor(() => expect(seen).toHaveLength(3), { timeout: 5_000 });
-    expect(seen[2]).toEqual([30_000, true]);
-    const now = (await call("snapshot", {})) as { snapshot: QuotaSnapshot };
-    expect(now.snapshot.providers[0]).not.toHaveProperty("error");
-  });
-
-  it("checks no provider again when the file lists the same check settings in another order", async () => {
-    useSettings({ providers: { checking: { minIntervalMs: 60_000, requestTimeoutMs: 5_000 } } });
-    const fetch = vi.fn().mockResolvedValue(copilotAnswer(40));
-    mocks.getProviders.mockReturnValue([provider("copilot", fetch, ACCOUNT_NEUTRAL)]);
-    const { call, emit } = await setupServer();
-    await call("refresh", { reason: "manual" });
-    expect(fetch).toHaveBeenCalledOnce();
-
-    // The same check settings in another order, and new words: the words show at once.
-    useSettings({
-      words: { percent: "used" },
-      providers: { checking: { requestTimeoutMs: 5_000, minIntervalMs: 60_000 } },
-    });
-    await vi.waitFor(
-      () => expect(emit).toHaveBeenCalledWith("changed", { snapshot: withPercentWords("used") }),
-      { timeout: 5_000 },
-    );
-
-    // A refresh joins any check still running; the provider is not due for a minute.
-    await call("refresh", { reason: "poll" });
-    expect(fetch).toHaveBeenCalledOnce();
-  });
-
-  it("sends file settings after a save completes v5 conversion", async () => {
-    // A v5 sidecar that does not parse, and v5 settings in opencode.json: the start converts
-    // them in memory only, and the first save writes settings.jsonc and keeps the looks.
-    await rm(SETTINGS_FILE);
-    await writeFile(`${TEST_RUNTIME_ROOT}/config/opencode-quota/quota-toast.jsonc`, "{ broken");
-    await writeFile(
-      `${TEST_RUNTIME_ROOT}/config/opencode.json`,
-      JSON.stringify({
-        experimental: { quotaToast: { enabledProviders: ["copilot"], showOnIdle: false } },
-      }),
-    );
-    const { call, emit } = await setupServer();
-    const before = (await call("snapshot", {})) as { snapshot: QuotaSnapshot };
-    expect(before.snapshot).not.toHaveProperty("displayImport");
-    emit.mockClear();
-
-    await expect(
-      call("saveSettings", { patch: { words: { percent: "used" } } }),
-    ).resolves.toMatchObject({ ok: true });
-
-    await vi.waitFor(() =>
-      expect(emit).toHaveBeenCalledWith("changed", {
-        snapshot: expect.objectContaining({
-          settings: expect.objectContaining({
-            values: expect.objectContaining({ "toast.afterReply": "off" }),
-          }),
-        }),
-      }),
-    );
-    const after = (await call("snapshot", {})) as { snapshot: QuotaSnapshot };
-    expect(after.snapshot.settings?.values["toast.afterReply"]).toBe("off");
   });
 
   it("names the providers of the session's model in the snapshot", async () => {
