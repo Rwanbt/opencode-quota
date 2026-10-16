@@ -1,9 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import {
-  listModelsForProvider,
-  listProviders,
-  listProvidersForModelId,
-} from "../src/lib/modelsdev-pricing.js";
+import { listProvidersForModelId } from "../src/lib/modelsdev-pricing.js";
 import {
   cloneQuotaProviders,
   customQuotaProviderDefinitions,
@@ -20,6 +16,7 @@ import {
   VALID_QUOTA_PROVIDER_INPUTS,
   VALID_QUOTA_PROVIDERS,
 } from "./fixtures/quota-providers.js";
+import { SHIPPED_PRICE_LIST } from "./helpers/shipped-price-list.js";
 
 const M0 = "quotaProviders[0].adapter.mappings[0]";
 
@@ -379,13 +376,13 @@ describe("quotaProviders schema", () => {
   });
 
   it("allows a manual priced fallback when automatic matching is missing or ambiguous", () => {
-    const providers = listProviders();
-    const pricedTargetProvider = providers.find(
-      (provider) => listModelsForProvider(provider).length > 0,
+    const shipped = Object.entries(SHIPPED_PRICE_LIST.providers);
+    const [pricedTargetProvider, models] = shipped.find(
+      ([, models]) => Object.keys(models).length > 0,
     )!;
-    const pricedTargetModel = listModelsForProvider(pricedTargetProvider)[0]!;
-    const ambiguousModel = providers
-      .flatMap((provider) => listModelsForProvider(provider))
+    const pricedTargetModel = Object.keys(models)[0]!;
+    const ambiguousModel = shipped
+      .flatMap(([, models]) => Object.keys(models))
       .find((model) => listProvidersForModelId(model).length > 1);
     const sourceModel = ambiguousModel ?? "private-model-without-modelsdev-match";
 

@@ -16,11 +16,11 @@ import {
 } from "./cli-reports.js";
 import { findGitWorktreeRoot } from "./config-file-utils.js";
 import type { QuotaProviderContext } from "./entries.js";
+import { usePricingSettings } from "./modelsdev-pricing.js";
 import { bindCredentialSource } from "./opencode-auth.js";
 import { createSqliteCredentialSource } from "./opencode-auth-sqlite.js";
 import { loadConfiguredProviderIds } from "./opencode-config-providers.js";
 import { getCanonicalQuotaProviderId } from "./provider-metadata.js";
-import { applyPricingSettings } from "./quota-dialog-commands.js";
 
 interface RunCliCommandOptions {
   argv?: string[];
@@ -230,7 +230,7 @@ async function runCliReport(params: {
     const roots = resolveCliRoots(params.cwd);
     // The terminal reads the settings as they are; only OpenCode writes the v5 conversion.
     const loaded = await loadSettings({ projectDir: roots.workspaceRoot });
-    applyPricingSettings(loaded.settings.providers.pricing);
+    usePricingSettings(() => loaded.settings.providers.pricing);
     const host: ProviderSourceHost = {
       client: createCliQuotaClient({
         configRootDir: roots.configRoot,

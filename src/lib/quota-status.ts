@@ -48,17 +48,9 @@ import { GEMINI_CLI_AUTH_KEYS } from "./google-gemini-cli.js";
 import { replaceHomeDirWithTildeInDocument } from "./home-dir-display.js";
 import type { MaintainerAnnouncementsSummary } from "./maintainer-announcements.js";
 import {
-  getPricingRefreshPolicy,
-  getPricingSnapshotHealth,
-  getPricingSnapshotMeta,
-  getPricingSnapshotSource,
-  getRuntimePricingRefreshStatePath,
-  getRuntimePricingSnapshotPath,
-  isBundledPricingModelId,
-  isBundledPricingProviderId,
-  listProviders,
+  describePriceList,
+  type PriceListDescription,
   type PricingSnapshotSource,
-  readPricingRefreshState,
 } from "./modelsdev-pricing.js";
 import { OPENAI_AUTH_SOURCE_KEYS } from "./openai.js";
 import type { CredentialSourceDiagnostics, CredentialSourceKind } from "./opencode-auth.js";
@@ -347,17 +339,20 @@ function sourceFileText(source: string, homeDir: string): string {
  * The session's model as "openai/gpt-5": ids OpenCode or the shipped price list knows, else a
  * placeholder. A downloaded price list is a file on this machine, so its ids are not trusted.
  */
-function currentModelText(params: QuotaStatusReportParams): string {
+function currentModelText(
+  params: QuotaStatusReportParams,
+  priceList: PriceListDescription,
+): string {
   const { currentModel, currentProviderID } = params;
   if (currentModel) {
     const provider =
       currentProviderID === undefined
         ? "(unknown provider)"
         : OPENCODE_PROVIDER_IDS.has(currentProviderID) ||
-            isBundledPricingProviderId(currentProviderID)
+            priceList.bundledProviderIds.has(currentProviderID)
           ? currentProviderID
           : "(other provider)";
-    const model = isBundledPricingModelId(currentModel)
+    const model = priceList.bundledModelIds.has(currentModel)
       ? currentModel
       : "(model not in the shipped price list)";
     return `${provider}/${model}`;
@@ -607,7 +602,11 @@ function environmentSection(params: QuotaStatusReportParams, nowMs: number): Rep
 }
 
 /** The settings file, what is wrong in it, the v5 conversion, and what quota is set to do. */
-function settingsSection(params: QuotaStatusReportParams, homeDir: string): ReportSection {
+function settingsSection(
+  params: QuotaStatusReportParams,
+  priceList: PriceListDescription,
+  homeDir: string,
+): ReportSection {
   const rows: ReportKvRow[] = [
     { key: "settings_file", value: settingsFileText(params, homeDir) },
     ...settingsIssueRows(params.settings.issues),
@@ -620,7 +619,7 @@ function settingsSection(params: QuotaStatusReportParams, homeDir: string): Repo
   rows.push(
     { key: "providers.off", value: providerIdsText(params.offProviders) },
     ...changedSettingRows(params.settings.settings, homeDir),
-    { key: "current_model", value: currentModelText(params) },
+    { key: "current_model", value: currentModelText(params, priceList) },
     { key: "workspace_root", value: pathText(params.workspaceRoot, homeDir) },
   );
   (params.quotaProviders ?? []).forEach((definition, index) => {
@@ -1297,17 +1296,26 @@ function providerSection(
 }
 
 /** "openai/gpt-5" when OpenCode or the shipped price list knows both ids, else undefined. */
-function knownModelText(providerId: string, modelId: string): string | undefined {
+function knownModelText(
+  providerId: string,
+  modelId: string,
+  priceList: PriceListDescription,
+): string | undefined {
   const knownProvider =
-    OPENCODE_PROVIDER_IDS.has(providerId) || isBundledPricingProviderId(providerId);
-  return knownProvider && isBundledPricingModelId(modelId) ? `${providerId}/${modelId}` : undefined;
+    OPENCODE_PROVIDER_IDS.has(providerId) || priceList.bundledProviderIds.has(providerId);
+  return knownProvider && priceList.bundledModelIds.has(modelId)
+    ? `${providerId}/${modelId}`
+    : undefined;
 }
 
 /**
  * The models of the last 30 days without a price: their tokens add no cost. A model shows when
  * the shipped price list has its id; the others are counted.
  */
-function unpricedRows(usage: UsageReport | null | undefined): ReportKvRow[] {
+function unpricedRows(
+  usage: UsageReport | null | undefined,
+  priceList: PriceListDescription,
+): ReportKvRow[] {
   if (!usage) return [{ key: "unpriced_30d", value: "(the usage history could not be read)" }];
   const { totals } = usage;
   if (totals.tokens.processed === 0) return [{ key: "unpriced_30d", value: "(no usage)" }];
@@ -1315,7 +1323,7 @@ function unpricedRows(usage: UsageReport | null | undefined): ReportKvRow[] {
   const unpriced = usage.models.filter((model) => !model.priced);
   const rows: ReportKvRow[] = [{ key: "unpriced_30d", value: summary }];
   const listed = unpriced
-    .map((model) => ({ model, name: knownModelText(model.providerID, model.modelID) }))
+    .map((model) => ({ model, name: knownModelText(model.providerID, model.modelID, priceList) }))
     .filter((item) => item.name !== undefined)
     .slice(0, UNPRICED_LIST_LIMIT);
   for (const { model, name } of listed) {
@@ -1341,24 +1349,26 @@ const PRICING_SOURCE_NAMES: Readonly<Record<string, string>> = {
 const PRICING_SELECTIONS = new Set(["auto", "bundled", "runtime"]);
 
 /** The active price list as fixed words: where it came from, its date and its units. */
-export function publicPricingMeta(): { source: string; generatedAt: string; units: string } {
-  const meta = getPricingSnapshotMeta();
+export function publicPricingMeta(priceList: Pick<PriceListDescription, "source" | "meta">): {
+  source: string;
+  generatedAt: string;
+  units: string;
+} {
+  const { meta } = priceList;
   return {
-    source: PRICING_SOURCE_NAMES[getPricingSnapshotSource()] ?? "unknown",
+    source: PRICING_SOURCE_NAMES[priceList.source] ?? "unknown",
     generatedAt: isoText(meta.generatedAt),
     units: meta.units === PRICING_UNITS ? PRICING_UNITS : "(other units)",
   };
 }
 
-async function pricingSection(
+function pricingSection(
   params: QuotaStatusReportParams,
+  priceList: PriceListDescription,
   homeDir: string,
-): Promise<ReportSection> {
-  const meta = publicPricingMeta();
-  const activeSource = getPricingSnapshotSource();
-  const { maxAgeMs } = getPricingRefreshPolicy();
-  const health = getPricingSnapshotHealth({ maxAgeMs });
-  const refreshState = await readPricingRefreshState();
+): ReportSection {
+  const meta = publicPricingMeta(priceList);
+  const { health, paths, refreshState } = priceList;
   const configured = PRICING_SELECTIONS.has(params.pricingSnapshotSource)
     ? params.pricingSnapshotSource
     : "(other)";
@@ -1375,7 +1385,7 @@ async function pricingSection(
       key: "selection_note",
       value: "bundled: the built-in price list is used and downloaded prices are ignored",
     });
-  } else if (configured === "runtime" && activeSource !== "runtime") {
+  } else if (configured === "runtime" && priceList.source !== "runtime") {
     rows.push({
       key: "selection_note",
       value: "runtime: no valid downloaded price list, so the built-in one is used",
@@ -1384,7 +1394,7 @@ async function pricingSection(
   rows.push(
     {
       key: "runtime_paths",
-      value: `snapshot=${pathText(getRuntimePricingSnapshotPath(), homeDir)} refresh_state=${pathText(getRuntimePricingRefreshStatePath(), homeDir)}`,
+      value: `snapshot=${pathText(paths.snapshot, homeDir)} refresh_state=${pathText(paths.refreshState, homeDir)}`,
     },
     {
       key: "staleness",
@@ -1392,7 +1402,7 @@ async function pricingSection(
     },
     {
       key: "providers.pricing.autoRefreshDays",
-      value: inRange(Math.round(maxAgeMs / DAY_MS), 1, MAX_REFRESH_DAYS),
+      value: inRange(Math.round(health.maxAgeMs / DAY_MS), 1, MAX_REFRESH_DAYS),
     },
   );
   if (refreshState) {
@@ -1409,8 +1419,8 @@ async function pricingSection(
     rows.push({ key: "refresh", value: "(no runtime refresh state yet)" });
   }
   rows.push(
-    { key: "price_list_providers", value: fmtInt(listProviders().length) },
-    ...unpricedRows(params.usage),
+    { key: "price_list_providers", value: fmtInt(priceList.meta.providers.length) },
+    ...unpricedRows(params.usage, priceList),
   );
   return kvSection("pricing_snapshot", rows);
 }
@@ -1435,9 +1445,10 @@ export async function buildQuotaStatusReportDocument(
   const homeDir = params.homeDir ?? homedir();
   const pluginVersion = (await getPackageVersion()) ?? "unknown";
   const snapshots = new Map(params.providers.map((provider) => [provider.providerId, provider]));
+  const priceList = await describePriceList();
   const sections: ReportSection[] = [
     environmentSection(params, params.generatedAtMs ?? Date.now()),
-    settingsSection(params, homeDir),
+    settingsSection(params, priceList, homeDir),
     providerListSection(params.providerAvailability),
     ...(params.maintainerAnnouncements ? [noticesSection(params.maintainerAnnouncements)] : []),
     await pathsSection(homeDir),
@@ -1445,7 +1456,7 @@ export async function buildQuotaStatusReportDocument(
     ...params.providerAvailability.map((availability) =>
       providerSection(availability, snapshots.get(availability.id), params, homeDir),
     ),
-    await pricingSection(params, homeDir),
+    pricingSection(params, priceList, homeDir),
   ];
 
   return replaceHomeDirWithTildeInDocument(

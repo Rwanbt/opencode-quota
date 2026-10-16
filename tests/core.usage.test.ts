@@ -6,7 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { type UsageQuery, type UsageRow, usageReport } from "../src/core/usage.js";
-import { setPricingSnapshotSelection } from "../src/lib/modelsdev-pricing.js";
+import { usePricingSettings } from "../src/lib/modelsdev-pricing.js";
 import {
   type SessionDatabaseMessage,
   type SessionDatabaseSession,
@@ -669,9 +669,10 @@ describe("usage report price list", () => {
     writeHistory([message({ created: at(0, 8), tokens: { input: M } })]);
 
     // claude-test has a price only in the downloaded test list, not in the bundled one.
-    setPricingSnapshotSelection("bundled");
+    const pricing = { source: "bundled" as "bundled" | "runtime", autoRefreshDays: 7 };
+    usePricingSettings(() => pricing);
     const bundled = await usageReport({ range: "today" }, NOW);
-    setPricingSnapshotSelection("runtime");
+    pricing.source = "runtime";
     const runtime = await usageReport({ range: "today" }, NOW);
 
     expect(bundled.totals).toMatchObject({ costUsd: 0, unpricedTokens: M });

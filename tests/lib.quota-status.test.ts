@@ -11,10 +11,7 @@ import { CURSOR_CANONICAL_PLUGIN_PACKAGE } from "../src/lib/cursor-detection.js"
 import type { QuotaProviderContext } from "../src/lib/entries.js";
 import { AGY_AUTH_KEYS } from "../src/lib/google-agy.js";
 import { GEMINI_CLI_AUTH_KEYS } from "../src/lib/google-gemini-cli.js";
-import {
-  __resetPricingSnapshotForTests,
-  setPricingSnapshotAutoRefresh,
-} from "../src/lib/modelsdev-pricing.js";
+import { usePricingSettings } from "../src/lib/modelsdev-pricing.js";
 import { OPENAI_AUTH_SOURCE_KEYS } from "../src/lib/openai.js";
 import {
   QUOTA_PROVIDER_CATALOG,
@@ -1247,7 +1244,6 @@ describe("buildQuotaStatusReport", () => {
         providers: { [SK_CANARY]: { [SK_CANARY]: { input: 1, output: 2 } } },
       }),
     );
-    __resetPricingSnapshotForTests();
 
     const text = section(await report(), "pricing_snapshot");
 
@@ -1273,7 +1269,6 @@ describe("buildQuotaStatusReport", () => {
         providers: { lowercasecanary: { "lowercasecanary-model": { input: 1, output: 2 } } },
       }),
     );
-    __resetPricingSnapshotForTests();
 
     const output = await report({
       currentModel: "lowercasecanary-model",
@@ -2169,16 +2164,13 @@ describe("buildQuotaStatusReport", () => {
   });
 
   it("shows a price refresh wait past 9999 days as out of range", async () => {
-    setPricingSnapshotAutoRefresh(987_654_321_098_765);
-    try {
-      const text = section(await report(), "pricing_snapshot");
+    usePricingSettings(() => ({ source: "auto", autoRefreshDays: 987_654_321_098_765 }));
 
-      expect(text).toContain("- providers.pricing.autoRefreshDays: (out of range)");
-      expect(text).toMatch(/- staleness: age_ms=[\d,]+ max_age_ms=\(out of range\) stale=false/u);
-      expect(text).not.toContain("987,654");
-    } finally {
-      setPricingSnapshotAutoRefresh(0);
-    }
+    const text = section(await report(), "pricing_snapshot");
+
+    expect(text).toContain("- providers.pricing.autoRefreshDays: (out of range)");
+    expect(text).toMatch(/- staleness: age_ms=[\d,]+ max_age_ms=\(out of range\) stale=false/u);
+    expect(text).not.toContain("987,654");
   });
 
   it.each([
@@ -2326,7 +2318,6 @@ describe("buildStatusReportData", () => {
         providers: { [garbage()]: { [garbage()]: { input: 1, output: 2 } } },
       }),
     );
-    __resetPricingSnapshotForTests();
     registry.providers = [
       fakeProvider("zai", true, {
         ...answer({

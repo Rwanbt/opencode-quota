@@ -16,7 +16,6 @@ import { answer, NOT_SET_UP, percentRow } from "./helpers/fake-answers.js";
 import {
   createAlibabaAuthModuleMock,
   createPluginRuntimePathsMockModule,
-  createPricingModuleMock,
   createProvidersRegistryModuleMock,
   createServerContext,
   createSessionTokensModuleMock,
@@ -30,13 +29,6 @@ const TEST_RUNTIME_ROOT = mkdtempSync(join(tmpdir(), "opencode-quota-plugin-rpc-
 
 const mocks = vi.hoisted(() => ({
   getProviders: vi.fn(),
-  maybeRefreshPricingSnapshot: vi.fn(),
-  getPricingSnapshotMeta: vi.fn(),
-  getPricingSnapshotSource: vi.fn(),
-  getRuntimePricingRefreshStatePath: vi.fn(),
-  getRuntimePricingSnapshotPath: vi.fn(),
-  setPricingSnapshotAutoRefresh: vi.fn(),
-  setPricingSnapshotSelection: vi.fn(),
   resolveAlibabaCodingPlanAuthCached: vi.fn(),
   fetchSessionTokensForDisplay: vi.fn(),
   reconcileDetectedProvidersInGlobalConfig: vi.fn(),
@@ -45,16 +37,6 @@ const mocks = vi.hoisted(() => ({
 vi.mock("../src/providers/registry.js", () =>
   createProvidersRegistryModuleMock(mocks.getProviders),
 );
-// Price lookups and the price list choice stay real for the usage report; refreshes are faked.
-vi.mock("../src/lib/modelsdev-pricing.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../src/lib/modelsdev-pricing.js")>();
-  return {
-    ...actual,
-    ...createPricingModuleMock(mocks),
-    setPricingSnapshotAutoRefresh: actual.setPricingSnapshotAutoRefresh,
-    setPricingSnapshotSelection: actual.setPricingSnapshotSelection,
-  };
-});
 vi.mock("../src/lib/session-tokens.js", () =>
   createSessionTokensModuleMock(mocks.fetchSessionTokensForDisplay),
 );
@@ -252,8 +234,10 @@ describe("server quota RPC", () => {
     const day = (await call("usage", { range: "24h" })) as { report: UsageReport };
     // The report used the configured price list.
     const pricing = await import("../src/lib/modelsdev-pricing.js");
-    expect(pricing.getPricingSnapshotSelection()).toBe("bundled");
-    expect(pricing.getPricingRefreshPolicy().maxAgeMs).toBe(3 * 24 * 60 * 60 * 1000);
+    expect(await pricing.describePriceList()).toMatchObject({
+      selection: "bundled",
+      health: { maxAgeMs: 3 * 24 * 60 * 60 * 1000 },
+    });
     expect(today.report.sinceMs).toBe(new Date(2026, 9, clock.now.getDate()).getTime());
     expect(today.report.models.map((model) => [model.modelID, model.priced])).toEqual(clock.today);
     expect(day.report.totals).toMatchObject({ sessions: 1, unpricedTokens: 500 });
@@ -551,8 +535,8 @@ describe("server quota RPC", () => {
     const pricing = await import("../src/lib/modelsdev-pricing.js");
     const seen: string[] = [];
     const fetch = vi.fn(async () => {
-      const days = pricing.getPricingRefreshPolicy().maxAgeMs / (24 * 60 * 60 * 1000);
-      seen.push(`${pricing.getPricingSnapshotSelection()} ${days}`);
+      const { selection, health } = await pricing.describePriceList();
+      seen.push(`${selection} ${health.maxAgeMs / (24 * 60 * 60 * 1000)}`);
       return answer();
     });
     mocks.getProviders.mockReturnValue([provider("copilot", fetch)]);
@@ -845,40 +829,21 @@ describe("server quota RPC", () => {
     expect(JSON.stringify(enabled.emit.mock.calls)).not.toContain("exportPart");
   });
 
-  it.each([
-    {
-      name: "downloads new prices whatever their age, and says when the settings keep the built-in ones",
-      source: "bundled" as const,
-      refresh: { attempted: true, updated: true, state: { version: 1, updatedAt: 1 } },
-      answer: {
-        ok: true,
-        message:
-          "Downloaded new prices. Usage keeps the built-in prices: the pricing source setting is bundled.",
-      },
-    },
-    {
-      name: "reports a failed price download with its error",
-      source: "auto" as const,
-      refresh: {
-        attempted: true,
-        updated: false,
-        reason: "fetch_failed",
-        error: "network down",
-        state: { version: 1, updatedAt: 1 },
-      },
-      answer: { ok: false, message: "Couldn't download new prices: network down." },
-    },
-  ])("$name", async ({ source, refresh, answer }) => {
-    useSettings({ providers: { pricing: { source, autoRefreshDays: 3 } } });
-    mocks.maybeRefreshPricingSnapshot.mockResolvedValue(refresh);
+  it("downloads new prices whatever their age, and says when the settings keep the built-in ones", async () => {
+    useSettings({ providers: { pricing: { source: "bundled", autoRefreshDays: 3 } } });
+    // models.dev's reply, saved in the plugin's cache folder: gone after this test.
+    const models = { "gpt-4o-mini": { cost: { input: 0.2, output: 0.8 } } };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify({ openai: { models } }))),
+    );
+    onTestFinished(() => rm(`${TEST_RUNTIME_ROOT}/cache`, { recursive: true, force: true }));
     const { call } = await setupServer();
 
-    await expect(call("downloadPrices", {})).resolves.toEqual(answer);
-    expect(mocks.maybeRefreshPricingSnapshot).toHaveBeenCalledWith({
-      reason: "manual",
-      force: true,
-      snapshotSelection: source,
-      allowRefreshWhenSelectionBundled: true,
+    await expect(call("downloadPrices", {})).resolves.toEqual({
+      ok: true,
+      message:
+        "Downloaded new prices. Usage keeps the built-in prices: the pricing source setting is bundled.",
     });
   });
 
@@ -908,11 +873,6 @@ describe("server quota RPC", () => {
 
     await runCommand("quota");
 
-    // /quota prices its usage with the price list the settings choose, as the token reports do.
-    expect(mocks.maybeRefreshPricingSnapshot).toHaveBeenCalledWith({
-      reason: "tokens",
-      snapshotSelection: "bundled",
-    });
     expect(ctx.session.wait).toHaveBeenCalledWith({ sessionID: "session-1" });
     const [message] = ctx.session.prompt.mock.calls[0] as [
       { text: string; metadata: Record<string, { command: string }> },

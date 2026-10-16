@@ -10,7 +10,6 @@ import {
 } from "./cursor-pricing.js";
 import {
   type CostBuckets,
-  hasCost,
   hasModel,
   hasProvider,
   listProvidersForModelId,
@@ -77,9 +76,6 @@ function pickBestModelForProvider(
   providerID: string,
   candidates: readonly string[],
 ): string | null {
-  for (const candidate of candidates) {
-    if (hasCost(providerID, candidate)) return candidate;
-  }
   for (const candidate of candidates) {
     if (hasModel(providerID, candidate)) return candidate;
   }

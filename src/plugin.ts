@@ -19,7 +19,6 @@ import { createSnapshotPublisher } from "./core/snapshot-publisher.js";
 import { createQuotaStore } from "./core/store.js";
 import type { QuotaSnapshot, SessionModel } from "./core/types.js";
 import {
-  downloadPrices,
   parseUsageArguments,
   type UsageQuery,
   type UsageReport,
@@ -29,17 +28,14 @@ import { OLD_USAGE_COMMANDS } from "./core/usage-ranges.js";
 import { resolveOpenCodeLocationRoots } from "./lib/config-file-utils.js";
 import { sanitizeDisplayText } from "./lib/display-sanitize.js";
 import { homeNoticeLine, listNotices } from "./lib/maintainer-home-notice.js";
+import { downloadPrices, refreshPricesIfDue, usePricingSettings } from "./lib/modelsdev-pricing.js";
 import {
   bindCredentialSource,
   createIntegrationCredentialSource,
   notifyCredentialsChanged,
 } from "./lib/opencode-auth.js";
 import { reconcileDetectedProvidersInGlobalConfig } from "./lib/opencode-config-providers.js";
-import {
-  applyPricingSettings,
-  buildQuotaDialogCommandOutput,
-  kickPricingRefresh,
-} from "./lib/quota-dialog-commands.js";
+import { buildQuotaDialogCommandOutput } from "./lib/quota-dialog-commands.js";
 import { QUOTA_PROVIDERS_AGGREGATE_ID } from "./lib/quota-providers.js";
 import {
   containsQuotaReport,
@@ -153,8 +149,8 @@ export const QuotaToastPlugin = Plugin.define({
     const conversion = await convertV5Settings();
     let settingsConverted = conversion?.written ?? false;
     let loaded: LoadedSettings = await loadSettings({ projectDir });
-    // Local estimates use prices, so the price list is chosen before any check.
-    applyPricingSettings(loaded.settings.providers.pricing);
+    // Local estimates and usage reports use the price list of the settings held now.
+    usePricingSettings(() => loaded.settings.providers.pricing);
     // /quota_status reports the providers it detected. The slash commands and
     // the tool add them to the global OpenCode config; the TUI palette (via RPC) never writes it.
     const buildStatusOutput = (
@@ -251,12 +247,9 @@ export const QuotaToastPlugin = Plugin.define({
       };
     };
 
-    // The usage report with the configured price list. A due price download gets up to
-    // 0.75 s to finish first.
+    // The usage report with the configured price list, after a due price download had its chance.
     const loadUsageReport = async (query: UsageQuery): Promise<UsageReport> => {
-      const { pricing } = loaded.settings.providers;
-      applyPricingSettings(pricing);
-      await kickPricingRefresh({ reason: "tokens", snapshotSelection: pricing.source });
+      await refreshPricesIfDue();
       return usageReport(query);
     };
 
@@ -301,10 +294,7 @@ export const QuotaToastPlugin = Plugin.define({
           const { range, sessionID, from, to } = input;
           return { report: await loadUsageReport({ range, sessionID, from, to }) };
         }),
-      downloadPrices: () =>
-        logRpcFailure("downloadPrices", async () =>
-          downloadPrices(loaded.settings.providers.pricing.source),
-        ),
+      downloadPrices: () => logRpcFailure("downloadPrices", downloadPrices),
       // Read now, so a custom provider changed a moment ago shows as it is before a switch-on.
       settings: () =>
         logRpcFailure("settings", async () =>
@@ -350,7 +340,6 @@ export const QuotaToastPlugin = Plugin.define({
     async function applySettings(next: LoadedSettings): Promise<void> {
       const previous = loaded;
       loaded = next;
-      applyPricingSettings(next.settings.providers.pricing);
       if (settingsWithSources(next) !== settingsWithSources(previous)) {
         const recheck =
           settingsWithSources(next, "checking") !== settingsWithSources(previous, "checking") ||

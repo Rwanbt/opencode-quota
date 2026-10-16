@@ -18,7 +18,7 @@ import {
   simpleApiKeyStatusDetails,
   vendorKeyDetails,
 } from "../providers/result-helpers.js";
-import type { Settings, V5Conversion } from "../settings/index.js";
+import type { V5Conversion } from "../settings/index.js";
 import { PROVIDER_IDS } from "../settings/schema.js";
 import { DEFAULT_WORDS } from "../view/format.js";
 import { type RowSettings, type SurfaceRows, visibleGroups } from "../view/select.js";
@@ -35,13 +35,9 @@ import { sanitizeDisplayText } from "./display-sanitize.js";
 import type { QuotaProvider, QuotaProviderContext } from "./entries.js";
 import { getMaintainerAnnouncementsSummary } from "./maintainer-announcements.js";
 import {
-  getPricingSnapshotSource,
-  getRuntimePricingRefreshStatePath,
-  getRuntimePricingSnapshotPath,
-  maybeRefreshPricingSnapshot,
+  describePriceList,
   type PricingSnapshotSource,
-  setPricingSnapshotAutoRefresh,
-  setPricingSnapshotSelection,
+  refreshPricesIfDue,
 } from "./modelsdev-pricing.js";
 import { getCredentialSourceDiagnostics } from "./opencode-auth.js";
 import { resolveOpenRouterApiKey } from "./openrouter.js";
@@ -75,28 +71,6 @@ export function quotaReportLines(snapshot: QuotaSnapshot, nowMs: number): string
   return plainLines({ groups, words, nowMs, runsOut: true, ...sessionTokens }).map(
     sanitizeDisplayText,
   );
-}
-
-/**
- * Uses the pricing settings from now on: the price list (`source`) and how many days old it
- * may get before a refresh. Applied before any provider check, as local estimates use prices.
- */
-export function applyPricingSettings(pricing: Settings["providers"]["pricing"]): void {
-  setPricingSnapshotAutoRefresh(pricing.autoRefreshDays);
-  setPricingSnapshotSelection(pricing.source);
-}
-
-/** Starts a models.dev price refresh when due and waits for it at most 0.75 s. */
-export async function kickPricingRefresh(params: {
-  reason: "tokens" | "status";
-  snapshotSelection: PricingSnapshotSource;
-}): Promise<void> {
-  try {
-    const refresh = maybeRefreshPricingSnapshot(params).catch(() => undefined);
-    await Promise.race([refresh, new Promise<void>((resolve) => setTimeout(resolve, 750))]);
-  } catch {
-    // A refresh that fails to start keeps the current price list.
-  }
 }
 
 /** `opencode-quota status --json`: the format version, then what the report says, as data. */
@@ -302,10 +276,7 @@ export async function buildStatusReportData(params: {
   const { host } = params;
   const loaded = host.settings();
   const { settings } = loaded;
-  await kickPricingRefresh({
-    reason: "status",
-    snapshotSelection: settings.providers.pricing.source,
-  });
+  await refreshPricesIfDue();
 
   const currentModel = params.sessionModel?.id;
   const currentProviderID = params.sessionModel?.providerID;
@@ -382,7 +353,8 @@ export async function buildStatusReportData(params: {
   });
 
   // The payload follows the report's closed vocabulary: known ids, fixed words, known paths.
-  const pricingMeta = publicPricingMeta();
+  const priceList = await describePriceList();
+  const pricingMeta = publicPricingMeta(priceList);
   const payload: QuotaStatusReportPayload = {
     version: "6",
     generatedAt: new Date(params.generatedAtMs).toISOString(),
@@ -400,15 +372,15 @@ export async function buildStatusReportData(params: {
     providers: availability,
     pricing: {
       selection: settings.providers.pricing.source,
-      activeSource: getPricingSnapshotSource(),
+      activeSource: priceList.source,
       snapshot: {
         source: pricingMeta.source,
         // "(none)" and "(invalid date)" are no time.
         generatedAt: /^\d/u.test(pricingMeta.generatedAt) ? pricingMeta.generatedAt : null,
         units: pricingMeta.units,
       },
-      snapshotPath: statusPathText(getRuntimePricingSnapshotPath()),
-      refreshStatePath: statusPathText(getRuntimePricingRefreshStatePath()),
+      snapshotPath: statusPathText(priceList.paths.snapshot),
+      refreshStatePath: statusPathText(priceList.paths.refreshState),
     },
     liveProbes: checked.map((provider) => ({
       id: provider.providerId,
@@ -437,7 +409,6 @@ export async function buildQuotaDialogCommandOutput(params: {
   onDetectedProviderIds?: (providerIds: string[]) => Promise<void>;
 }): Promise<{ output: string }> {
   const generatedAtMs = params.generatedAtMs ?? Date.now();
-  applyPricingSettings(params.host.settings().settings.providers.pricing);
   const sessionModel =
     params.sessionID && params.resolveSessionModel
       ? await params.resolveSessionModel(params.sessionID)

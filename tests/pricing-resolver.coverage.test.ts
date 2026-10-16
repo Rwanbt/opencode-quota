@@ -5,13 +5,9 @@ import {
   lookupCursorLocalCost,
   resolveCursorModel,
 } from "../src/lib/cursor-pricing.js";
-import {
-  listModelsForProvider,
-  listProviders,
-  lookupCost,
-  setPricingSnapshotSelection,
-} from "../src/lib/modelsdev-pricing.js";
+import { lookupCost, usePricingSettings } from "../src/lib/modelsdev-pricing.js";
 import { resolvePricingKey } from "../src/lib/pricing-key.js";
+import { SHIPPED_PRICE_LIST } from "./helpers/shipped-price-list.js";
 
 // Price not confirmed, so these stay unknown: models.dev rates differ from Cursor's for the
 // Gemini Flash and GLM 5.3 Flash ids, and muse-spark (meta) is not a pricing snapshot provider.
@@ -31,13 +27,14 @@ function pricedKey(providerID: string, modelID: string): string | null {
 
 describe("resolvePricingKey snapshot coverage", () => {
   beforeEach(() => {
-    setPricingSnapshotSelection("bundled");
+    usePricingSettings(() => ({ source: "bundled", autoRefreshDays: 7 }));
   });
 
   it("resolves every models.dev provider/model pair when source ids are official", () => {
-    expect(listProviders().length).toBeGreaterThan(0);
-    const failures = listProviders().flatMap((providerID) =>
-      listModelsForProvider(providerID)
+    const shipped = Object.entries(SHIPPED_PRICE_LIST.providers);
+    expect(shipped.length).toBeGreaterThan(0);
+    const failures = shipped.flatMap(([providerID, models]) =>
+      Object.keys(models)
         .map((modelID) => [`${providerID}/${modelID}`, pricedKey(providerID, modelID)])
         .filter(([expected, actual]) => actual !== expected)
         .map(([expected, actual]) => `${expected} -> ${actual}`),

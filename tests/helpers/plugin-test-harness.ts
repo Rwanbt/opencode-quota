@@ -5,17 +5,7 @@ import { createFakeIntegration } from "./fake-integration.js";
 
 type MockFunction = ReturnType<typeof vi.fn>;
 
-interface PricingMocks {
-  getPricingSnapshotMeta: MockFunction;
-  getPricingSnapshotSource: MockFunction;
-  getRuntimePricingRefreshStatePath: MockFunction;
-  getRuntimePricingSnapshotPath: MockFunction;
-  maybeRefreshPricingSnapshot: MockFunction;
-  setPricingSnapshotAutoRefresh: MockFunction;
-  setPricingSnapshotSelection: MockFunction;
-}
-
-interface PluginBootstrapMocks extends PricingMocks {
+interface PluginBootstrapMocks {
   getProviders?: MockFunction;
   fetchSessionTokensForDisplay?: MockFunction;
   resolveAlibabaCodingPlanAuthCached?: MockFunction;
@@ -23,18 +13,6 @@ interface PluginBootstrapMocks extends PricingMocks {
 
 export function createProvidersRegistryModuleMock(getProviders: MockFunction) {
   return { getProviders };
-}
-
-export function createPricingModuleMock(mocks: PricingMocks) {
-  return {
-    getPricingSnapshotMeta: mocks.getPricingSnapshotMeta,
-    getPricingSnapshotSource: mocks.getPricingSnapshotSource,
-    getRuntimePricingRefreshStatePath: mocks.getRuntimePricingRefreshStatePath,
-    getRuntimePricingSnapshotPath: mocks.getRuntimePricingSnapshotPath,
-    maybeRefreshPricingSnapshot: mocks.maybeRefreshPricingSnapshot,
-    setPricingSnapshotAutoRefresh: mocks.setPricingSnapshotAutoRefresh,
-    setPricingSnapshotSelection: mocks.setPricingSnapshotSelection,
-  };
 }
 
 export function createSessionTokensModuleMock(fetchSessionTokensForDisplay: MockFunction) {
@@ -85,21 +63,6 @@ export function seedDefaultPluginBootstrapMocks(
   mocks.getProviders?.mockReturnValue([]);
   mocks.fetchSessionTokensForDisplay?.mockResolvedValue({});
   mocks.resolveAlibabaCodingPlanAuthCached?.mockResolvedValue({ state: "none" });
-  mocks.getPricingSnapshotMeta.mockReturnValue({
-    source: "https://models.dev/api.json",
-    generatedAt: Date.UTC(2026, 0, 1),
-    units: "USD per 1M tokens",
-  });
-  mocks.getPricingSnapshotSource.mockReturnValue("runtime");
-  mocks.getRuntimePricingSnapshotPath.mockReturnValue("/tmp/modelsdev-pricing.runtime.min.json");
-  mocks.getRuntimePricingRefreshStatePath.mockReturnValue(
-    "/tmp/modelsdev-pricing.refresh-state.json",
-  );
-  mocks.maybeRefreshPricingSnapshot.mockResolvedValue({
-    attempted: false,
-    updated: false,
-    state: { version: 1, updatedAt: Date.now() },
-  });
 }
 
 export type ServerTool = {

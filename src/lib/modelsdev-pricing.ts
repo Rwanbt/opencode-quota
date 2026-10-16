@@ -1,13 +1,21 @@
-import { readFileSync } from "fs";
-import { readFile } from "fs/promises";
-import { join } from "path";
+/**
+ * The models.dev price list, one per process: which list is in use (the one shipped in this
+ * package or the one downloaded into OpenCode's cache folder), price lookups, downloads, and a
+ * description for the status report. It follows the pricing settings `usePricingSettings` gives.
+ */
+import { readFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 
+import type { Settings } from "../settings/schema.js";
 import { writeJsonAtomic } from "./atomic-json.js";
 import { fetchWithTimeout } from "./http.js";
-import { getOpencodeRuntimeDirs, type OpencodeRuntimeDirs } from "./opencode-runtime-paths.js";
+import { getOpencodeRuntimeDirs } from "./opencode-runtime-paths.js";
+
+type PricingSettings = Settings["providers"]["pricing"];
 
 /** Which price list reports use: "auto" (runtime when valid, else bundled), or one of them. */
-export type PricingSnapshotSource = "auto" | "bundled" | "runtime";
+export type PricingSnapshotSource = PricingSettings["source"];
 
 const SOURCE_URL = "https://models.dev/api.json";
 const UNITS = "USD per 1M tokens";
@@ -15,9 +23,13 @@ const DEFAULT_MODELSDEV_PROVIDERS = ["anthropic", "google", "moonshotai", "opena
 /** The prices read from models.dev; a saved snapshot may also carry `reasoning`. */
 const API_COST_KEYS = ["input", "output", "cache_read", "cache_write"] as const;
 const SNAPSHOT_COST_KEYS = [...API_COST_KEYS, "reasoning"] as const;
-const DEFAULT_REFRESH_MIN_ATTEMPT_INTERVAL_MS = 6 * 60 * 60 * 1000;
-const DEFAULT_REFRESH_TIMEOUT_MS = 6_000;
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
+/** Without pricing settings: the "auto" list, due for a download after 3 days. */
+const DEFAULT_SETTINGS: PricingSettings = { source: "auto", autoRefreshDays: 3 };
+const REFRESH_MIN_ATTEMPT_INTERVAL_MS = 6 * 60 * 60 * 1000;
+const REFRESH_TIMEOUT_MS = 6_000;
+/** How long a check waits for a due download before it goes on with the list in use. */
+const REFRESH_WAIT_MS = 750;
 
 export type CostBuckets = {
   input?: number;
@@ -37,15 +49,6 @@ type PricingSnapshot = {
   providers: Record<string, Record<string, CostBuckets>>;
 };
 
-export const DEFAULT_PRICING_SNAPSHOT_MAX_AGE_MS = 3 * 24 * 60 * 60 * 1000;
-
-type PricingSnapshotHealth = {
-  generatedAt: number;
-  ageMs: number;
-  maxAgeMs: number;
-  stale: boolean;
-};
-
 interface PricingRefreshStateV1 {
   version: 1;
   updatedAt: number;
@@ -58,38 +61,32 @@ interface PricingRefreshStateV1 {
   lastModified?: string;
 }
 
-interface PricingRefreshPolicy {
-  enabled: boolean;
-  maxAgeMs: number;
-  minAttemptIntervalMs: number;
-  timeoutMs: number;
-}
+/** `reason` says why a refresh did not download; `error` why a download failed. */
+type RefreshResult = { updated: boolean; reason?: string; error?: string };
 
-export interface PricingRefreshOptions {
-  reason?: "init" | "tokens" | "status" | "manual";
-  force?: boolean;
-  nowMs?: number;
-  maxAgeMs?: number;
-  minAttemptIntervalMs?: number;
-  timeoutMs?: number;
-  runtimeDirs?: OpencodeRuntimeDirs;
-  fetchFn?: typeof fetch;
-  bootstrapSnapshotOverride?: PricingSnapshot;
-  providerAllowlist?: string[];
-  snapshotSelection?: PricingSnapshotSource;
-  allowRefreshWhenSelectionBundled?: boolean;
-}
+type ListSource = "runtime" | "bundled" | "empty";
+type LoadedList = {
+  selection: PricingSnapshotSource;
+  snapshot: PricingSnapshot;
+  source: ListSource;
+};
 
-interface PricingRefreshResult {
-  attempted: boolean;
-  updated: boolean;
-  state: PricingRefreshStateV1;
-  error?: string;
-  reason?: string;
+/** Everything the status report and `status --json` say about the price list. */
+export interface PriceListDescription {
+  /** The settings' choice. */
+  selection: PricingSnapshotSource;
+  /** The list in use: downloaded, shipped, or none readable. */
+  source: ListSource;
+  meta: PricingSnapshot["_meta"];
+  /** The list's age against the days the settings allow. */
+  health: { ageMs: number; maxAgeMs: number; stale: boolean };
+  paths: { snapshot: string; refreshState: string };
+  refreshState: PricingRefreshStateV1 | null;
+  /** The ids of the list shipped in this package, never a downloaded one. */
+  bundledProviderIds: ReadonlySet<string>;
+  /** The model ids of the shipped list, under any provider. */
+  bundledModelIds: ReadonlySet<string>;
 }
-
-type SnapshotSource = "runtime" | "bundled" | "empty";
-type LoadedSnapshot = { snapshot: PricingSnapshot; source: SnapshotSource };
 
 const EMPTY_SNAPSHOT: PricingSnapshot = {
   _meta: { source: "none", generatedAt: 0, providers: [], units: UNITS },
@@ -103,11 +100,19 @@ const REFRESH_RESULTS = new Set([
   "failed",
 ]);
 
-let LOADED: LoadedSnapshot | null = null;
-let SNAPSHOT_SELECTION: PricingSnapshotSource = "auto";
-let REFRESH_IN_FLIGHT: Promise<PricingRefreshResult> | null = null;
+let SETTINGS: () => PricingSettings = () => DEFAULT_SETTINGS;
+let LOADED: LoadedList | null = null;
+let REFRESH_IN_FLIGHT: Promise<RefreshResult> | null = null;
 let PROCESS_REFRESH_CHECKED = false;
-let CONFIGURED_MAX_AGE_MS = DEFAULT_PRICING_SNAPSHOT_MAX_AGE_MS;
+let BUNDLED_IDS: Pick<PriceListDescription, "bundledProviderIds" | "bundledModelIds"> | null = null;
+
+/**
+ * The pricing settings to follow from now on, read each time they matter: which list (`source`)
+ * and how many days old it may get before a download.
+ */
+export function usePricingSettings(current: () => PricingSettings): void {
+  SETTINGS = current;
+}
 
 /** An object or an array (an array's entries are keyed by position). */
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -173,15 +178,14 @@ function normalizeSnapshot(raw: unknown): PricingSnapshot | null {
   );
 }
 
-function buildSnapshotFromApi(
-  apiRaw: unknown,
-  providerIDs: string[],
-  generatedAt: number,
-): PricingSnapshot {
+function buildSnapshotFromApi(apiRaw: unknown, generatedAt: number): PricingSnapshot {
   const api = asRecord(apiRaw) ?? {};
   return makeSnapshot(
     { source: SOURCE_URL, generatedAt, units: UNITS },
-    providerIDs.map((providerID) => [providerID, asRecord(api[providerID])?.models]),
+    DEFAULT_MODELSDEV_PROVIDERS.map((providerID) => [
+      providerID,
+      asRecord(api[providerID])?.models,
+    ]),
     (model) => pickCosts(asRecord(model)?.cost, API_COST_KEYS),
   );
 }
@@ -196,10 +200,9 @@ function buildSnapshotFromApi(
 function keepRetiredModels(
   current: PricingSnapshot,
   previous: Array<PricingSnapshot | null>,
-  providerIDs: string[],
 ): PricingSnapshot {
   const providers = { ...current.providers };
-  for (const providerID of providerIDs) {
+  for (const providerID of DEFAULT_MODELSDEV_PROVIDERS) {
     const models = { ...providers[providerID] };
     for (const snapshot of previous) {
       for (const [modelID, cost] of Object.entries(snapshot?.providers[providerID] ?? {})) {
@@ -219,79 +222,55 @@ function readSnapshotFile(path: string | URL): PricingSnapshot | null {
   }
 }
 
-function loadBundledSnapshot(override?: PricingSnapshot): PricingSnapshot {
-  const bundled = override
-    ? normalizeSnapshot(override)
-    : readSnapshotFile(new URL("../data/modelsdev-pricing.min.json", import.meta.url));
+function loadBundledSnapshot(): PricingSnapshot {
+  const bundled = readSnapshotFile(new URL("../data/modelsdev-pricing.min.json", import.meta.url));
   return bundled ?? EMPTY_SNAPSHOT;
 }
 
-function loadRuntimeSnapshot(runtimeDirs?: OpencodeRuntimeDirs): PricingSnapshot | null {
-  return readSnapshotFile(getRuntimePricingSnapshotPath(runtimeDirs));
+/** Where downloads go: OpenCode's cache folder. */
+function runtimePaths(): PriceListDescription["paths"] {
+  const dir = join(getOpencodeRuntimeDirs().cacheDir, "opencode-quota");
+  return {
+    snapshot: join(dir, "modelsdev-pricing.runtime.min.json"),
+    refreshState: join(dir, "modelsdev-pricing.refresh-state.json"),
+  };
 }
 
 /** "bundled" pins the shipped file, "runtime" prefers the downloaded one, "auto" takes the newer. */
-function chooseSnapshot(
-  selection: PricingSnapshotSource,
-  runtimeDirs?: OpencodeRuntimeDirs,
-  bundledOverride?: PricingSnapshot,
-): LoadedSnapshot {
-  const bundled = loadBundledSnapshot(bundledOverride);
-  const runtime = selection === "bundled" ? null : loadRuntimeSnapshot(runtimeDirs);
+function chooseList(selection: PricingSnapshotSource): LoadedList {
+  const bundled = loadBundledSnapshot();
+  const runtime = selection === "bundled" ? null : readSnapshotFile(runtimePaths().snapshot);
   if (
     runtime &&
     (selection === "runtime" || runtime._meta.generatedAt >= bundled._meta.generatedAt)
   ) {
     // A runtime snapshot saved by an older version may lack models that models.dev stopped
     // listing; the bundled file fills them until its next refresh.
-    const snapshot = keepRetiredModels(runtime, [bundled], DEFAULT_MODELSDEV_PROVIDERS);
-    return { snapshot, source: "runtime" };
+    return { selection, snapshot: keepRetiredModels(runtime, [bundled]), source: "runtime" };
   }
-  return { snapshot: bundled, source: bundled === EMPTY_SNAPSHOT ? "empty" : "bundled" };
+  const source = bundled === EMPTY_SNAPSHOT ? "empty" : "bundled";
+  return { selection, snapshot: bundled, source };
 }
 
-function reloadSnapshot(
-  selection = SNAPSHOT_SELECTION,
-  runtimeDirs?: OpencodeRuntimeDirs,
-  bundledOverride?: PricingSnapshot,
-): LoadedSnapshot {
-  LOADED = chooseSnapshot(selection, runtimeDirs, bundledOverride);
+/** The list the settings choose, read again when the choice changes. */
+function activeList(): LoadedList {
+  const { source } = SETTINGS();
+  if (LOADED?.selection !== source) LOADED = chooseList(source);
   return LOADED;
 }
 
-function loaded(): LoadedSnapshot {
-  return LOADED ?? reloadSnapshot();
+/** Days after which the list counts as stale; not a positive number means 3 days. */
+function maxAgeMs(): number {
+  const days = SETTINGS().autoRefreshDays;
+  return Number.isFinite(days) && days > 0
+    ? Math.floor(days * MS_PER_DAY)
+    : DEFAULT_SETTINGS.autoRefreshDays * MS_PER_DAY;
 }
 
-function pricedProviders(): PricingSnapshot["providers"] {
-  return loaded().snapshot.providers;
-}
-
-export function getRuntimePricingSnapshotPath(runtimeDirs?: OpencodeRuntimeDirs): string {
-  const { cacheDir } = runtimeDirs ?? getOpencodeRuntimeDirs();
-  return join(cacheDir, "opencode-quota", "modelsdev-pricing.runtime.min.json");
-}
-
-export function getRuntimePricingRefreshStatePath(runtimeDirs?: OpencodeRuntimeDirs): string {
-  const { cacheDir } = runtimeDirs ?? getOpencodeRuntimeDirs();
-  return join(cacheDir, "opencode-quota", "modelsdev-pricing.refresh-state.json");
-}
-
-export function getPricingRefreshPolicy(): PricingRefreshPolicy {
-  return {
-    enabled: true,
-    maxAgeMs: CONFIGURED_MAX_AGE_MS,
-    minAttemptIntervalMs: DEFAULT_REFRESH_MIN_ATTEMPT_INTERVAL_MS,
-    timeoutMs: DEFAULT_REFRESH_TIMEOUT_MS,
-  };
-}
-
-/** Days after which the snapshot counts as stale; not a positive number means the default. */
-export function setPricingSnapshotAutoRefresh(days: number): void {
-  CONFIGURED_MAX_AGE_MS =
-    Number.isFinite(days) && days > 0
-      ? Math.floor(days * MS_PER_DAY)
-      : DEFAULT_PRICING_SNAPSHOT_MAX_AGE_MS;
+function listHealth(generatedAt: number, nowMs: number): PriceListDescription["health"] {
+  const ageMs = Math.max(0, nowMs - generatedAt);
+  const maxAge = maxAgeMs();
+  return { ageMs, maxAgeMs: maxAge, stale: ageMs > maxAge };
 }
 
 function normalizeRefreshState(raw: unknown): PricingRefreshStateV1 | null {
@@ -315,12 +294,9 @@ function normalizeRefreshState(raw: unknown): PricingRefreshStateV1 | null {
   return state;
 }
 
-export async function readPricingRefreshState(
-  runtimeDirs?: OpencodeRuntimeDirs,
-): Promise<PricingRefreshStateV1 | null> {
+async function readRefreshState(path: string): Promise<PricingRefreshStateV1 | null> {
   try {
-    const raw = await readFile(getRuntimePricingRefreshStatePath(runtimeDirs), "utf-8");
-    return normalizeRefreshState(JSON.parse(raw));
+    return normalizeRefreshState(JSON.parse(await readFile(path, "utf-8")));
   } catch {
     return null;
   }
@@ -333,19 +309,14 @@ type ModelsDevFetchResult = {
   lastModified?: string;
 };
 
-async function fetchModelsDev(params: {
-  timeoutMs: number;
-  state: PricingRefreshStateV1;
-  fetchFn?: typeof fetch;
-}): Promise<ModelsDevFetchResult> {
+async function fetchModelsDev(state: PricingRefreshStateV1): Promise<ModelsDevFetchResult> {
   const headers = new Headers();
-  if (params.state.etag) headers.set("If-None-Match", params.state.etag);
-  if (params.state.lastModified) headers.set("If-Modified-Since", params.state.lastModified);
+  if (state.etag) headers.set("If-None-Match", state.etag);
+  if (state.lastModified) headers.set("If-Modified-Since", state.lastModified);
 
   return await fetchWithTimeout(SOURCE_URL, {
     request: { headers },
-    timeoutMs: params.timeoutMs,
-    fetchFn: params.fetchFn,
+    timeoutMs: REFRESH_TIMEOUT_MS,
     consume: async (response): Promise<ModelsDevFetchResult> => {
       const etag = response.headers.get("etag") ?? undefined;
       const lastModified = response.headers.get("last-modified") ?? undefined;
@@ -358,57 +329,45 @@ async function fetchModelsDev(params: {
   });
 }
 
-function skipped(reason: string, state: PricingRefreshStateV1): PricingRefreshResult {
-  return { attempted: false, updated: false, reason, state };
-}
-
-/**
- * Downloads new models.dev prices when the snapshot is stale: once per process (unless
- * forced), at most every few hours across processes (the refresh state file remembers the
- * last attempt), one download at a time. A failure keeps the snapshot in use.
- */
-export async function maybeRefreshPricingSnapshot(
-  opts: PricingRefreshOptions = {},
-): Promise<PricingRefreshResult> {
-  REFRESH_IN_FLIGHT ??= refreshPricingSnapshot(opts).finally(() => {
+/** One refresh at a time: a call while one runs gets that one's result. */
+function refreshOnce(force: boolean): Promise<RefreshResult> {
+  REFRESH_IN_FLIGHT ??= refresh(force).finally(() => {
     REFRESH_IN_FLIGHT = null;
   });
   return REFRESH_IN_FLIGHT;
 }
 
-async function refreshPricingSnapshot(opts: PricingRefreshOptions): Promise<PricingRefreshResult> {
-  const nowMs = opts.nowMs ?? Date.now();
-  const policy = getPricingRefreshPolicy();
-  const force = opts.force === true;
-  const { runtimeDirs, bootstrapSnapshotOverride: bundledOverride } = opts;
-  const selection = opts.snapshotSelection ?? SNAPSHOT_SELECTION;
-  const previousState = (await readPricingRefreshState(runtimeDirs)) ?? {
+/**
+ * Reads the lists again (a download by another process counts), then downloads new models.dev
+ * prices when the list in use is stale: once per process, at most every 6 hours across processes
+ * (the refresh state file remembers the last attempt), never with the settings on the bundled
+ * list. `force` downloads whatever the age, also for the bundled list. A failure keeps the list
+ * in use.
+ */
+async function refresh(force: boolean): Promise<RefreshResult> {
+  const nowMs = Date.now();
+  const selection = SETTINGS().source;
+  const paths = runtimePaths();
+  const previousState = (await readRefreshState(paths.refreshState)) ?? {
     version: 1,
     updatedAt: nowMs,
   };
-  const runtimeBefore = loadRuntimeSnapshot(runtimeDirs);
-  const bundled = loadBundledSnapshot(bundledOverride);
-  reloadSnapshot(selection, runtimeDirs, bundledOverride);
+  const runtimeBefore = readSnapshotFile(paths.snapshot);
+  const bundled = loadBundledSnapshot();
+  const list = chooseList(selection);
+  LOADED = list;
 
-  if (selection === "bundled" && opts.allowRefreshWhenSelectionBundled !== true) {
-    return skipped("selection_bundled", { ...previousState, updatedAt: nowMs });
-  }
+  if (selection === "bundled" && !force) return { updated: false, reason: "selection_bundled" };
   if (!force && PROCESS_REFRESH_CHECKED) {
-    return skipped("already_checked_this_process", previousState);
+    return { updated: false, reason: "already_checked_this_process" };
   }
   PROCESS_REFRESH_CHECKED = true;
-  const maxAgeMs = opts.maxAgeMs ?? policy.maxAgeMs;
-  if (!force && !getPricingSnapshotHealth({ nowMs, maxAgeMs }).stale) {
-    return skipped("fresh", { ...previousState, updatedAt: nowMs, lastResult: "skipped_fresh" });
+  if (!force && !listHealth(list.snapshot._meta.generatedAt, nowMs).stale) {
+    return { updated: false, reason: "fresh" };
   }
-  const minAttemptIntervalMs = opts.minAttemptIntervalMs ?? policy.minAttemptIntervalMs;
   const lastAttemptAt = previousState.lastAttemptAt;
-  if (!force && lastAttemptAt && nowMs - lastAttemptAt < minAttemptIntervalMs) {
-    return skipped("throttled", {
-      ...previousState,
-      updatedAt: nowMs,
-      lastResult: "skipped_throttled",
-    });
+  if (!force && lastAttemptAt && nowMs - lastAttemptAt < REFRESH_MIN_ATTEMPT_INTERVAL_MS) {
+    return { updated: false, reason: "throttled" };
   }
 
   const attempting: PricingRefreshStateV1 = {
@@ -417,28 +376,24 @@ async function refreshPricingSnapshot(opts: PricingRefreshOptions): Promise<Pric
     updatedAt: nowMs,
     lastAttemptAt: nowMs,
   };
-  const providerIDs = opts.providerAllowlist ?? DEFAULT_MODELSDEV_PROVIDERS;
   let next: PricingRefreshStateV1;
   try {
-    const timeoutMs = opts.timeoutMs ?? policy.timeoutMs;
-    const fetched = await fetchModelsDev({ timeoutMs, state: attempting, fetchFn: opts.fetchFn });
+    const fetched = await fetchModelsDev(attempting);
     let snapshot: PricingSnapshot;
     if (fetched.kind === "not_modified") {
       // The same prices, confirmed now; also heals snapshots saved before retired models were kept.
-      const base = runtimeBefore ?? loaded().snapshot;
+      const base = runtimeBefore ?? list.snapshot;
       const confirmed = { _meta: { ...base._meta, generatedAt: nowMs }, providers: base.providers };
-      snapshot = keepRetiredModels(confirmed, [bundled], providerIDs);
+      snapshot = keepRetiredModels(confirmed, [bundled]);
     } else {
-      const fresh = buildSnapshotFromApi(fetched.api, providerIDs, nowMs);
+      const fresh = buildSnapshotFromApi(fetched.api, nowMs);
       if (Object.keys(fresh.providers).length === 0) {
         throw new Error("Refusing to persist empty pricing snapshot from models.dev");
       }
-      snapshot = keepRetiredModels(fresh, [runtimeBefore, bundled], providerIDs);
+      snapshot = keepRetiredModels(fresh, [runtimeBefore, bundled]);
     }
-    await writeJsonAtomic(getRuntimePricingSnapshotPath(runtimeDirs), snapshot, {
-      trailingNewline: true,
-    });
-    reloadSnapshot(selection, runtimeDirs, bundledOverride);
+    await writeJsonAtomic(paths.snapshot, snapshot, { trailingNewline: true });
+    LOADED = chooseList(selection);
     next = {
       ...attempting,
       lastSuccessAt: nowMs,
@@ -452,102 +407,98 @@ async function refreshPricingSnapshot(opts: PricingRefreshOptions): Promise<Pric
     next = { ...attempting, lastFailureAt: nowMs, lastResult: "failed", lastError };
   }
 
-  // Best effort: the snapshot in use and the result stay right without the state file.
-  await writeJsonAtomic(getRuntimePricingRefreshStatePath(runtimeDirs), next, {
-    trailingNewline: true,
-  }).catch(() => {});
+  // Best effort: the list in use and the result stay right without the state file.
+  await writeJsonAtomic(paths.refreshState, next, { trailingNewline: true }).catch(() => {});
   return next.lastResult === "failed"
-    ? { attempted: true, updated: false, error: next.lastError, state: next }
-    : { attempted: true, updated: true, state: next };
+    ? { updated: false, error: next.lastError }
+    : { updated: true };
 }
 
-export function setPricingSnapshotSelection(selection: PricingSnapshotSource): void {
-  if (SNAPSHOT_SELECTION === selection) return;
-  SNAPSHOT_SELECTION = selection;
-  LOADED = null;
+/**
+ * Starts a models.dev download when the list is due for one (see `refresh`) and waits for it at
+ * most 0.75 s; a slower download goes on in the background.
+ */
+export async function refreshPricesIfDue(): Promise<void> {
+  const refreshed = refreshOnce(false).catch(() => undefined);
+  await Promise.race([
+    refreshed,
+    new Promise<void>((resolve) => setTimeout(resolve, REFRESH_WAIT_MS)),
+  ]);
 }
 
-export function getPricingSnapshotSelection(): PricingSnapshotSource {
-  return SNAPSHOT_SELECTION;
+/**
+ * Downloads the price list from models.dev now, whatever its age. With the settings on the
+ * bundled list, the download is kept but lookups keep using the bundled one.
+ */
+export async function downloadPrices(): Promise<{ ok: boolean; message: string }> {
+  const { source } = SETTINGS();
+  const result = await refreshOnce(true);
+  if (!result.updated) {
+    const reason = result.error ?? result.reason ?? "unknown reason";
+    return { ok: false, message: `Couldn't download new prices: ${reason}.` };
+  }
+  if (source === "bundled") {
+    return {
+      ok: true,
+      message:
+        "Downloaded new prices. Usage keeps the built-in prices: the pricing source setting is bundled.",
+    };
+  }
+  return { ok: true, message: "Downloaded new prices from models.dev." };
 }
 
-export function getPricingSnapshotMeta(): PricingSnapshot["_meta"] {
-  return loaded().snapshot._meta;
+/** The list lookups use now: the settings' choice, the list it gave and its header. */
+export function activePriceList(): Pick<PriceListDescription, "selection" | "source" | "meta"> {
+  const { selection, source, snapshot } = activeList();
+  return { selection, source, meta: snapshot._meta };
 }
 
-export function getPricingSnapshotSource(): SnapshotSource {
-  return loaded().source;
-}
-
-export function getPricingSnapshotHealth(opts?: {
-  nowMs?: number;
-  maxAgeMs?: number;
-}): PricingSnapshotHealth {
-  const generatedAt = getPricingSnapshotMeta().generatedAt;
-  const maxAgeMs = opts?.maxAgeMs ?? DEFAULT_PRICING_SNAPSHOT_MAX_AGE_MS;
-  const ageMs = Math.max(0, (opts?.nowMs ?? Date.now()) - generatedAt);
-  return { generatedAt, ageMs, maxAgeMs, stale: ageMs > maxAgeMs };
-}
-
-export function hasProvider(providerId: string): boolean {
-  return !!pricedProviders()[providerId];
-}
-
-export function hasModel(providerId: string, modelId: string): boolean {
-  return !!pricedProviders()[providerId]?.[modelId];
-}
-
-export function listProviders(): string[] {
-  return Object.keys(pricedProviders());
-}
-
-export function listModelsForProvider(providerId: string): string[] {
-  return Object.keys(pricedProviders()[providerId] ?? {});
-}
-
-export function listProvidersForModelId(modelId: string): string[] {
-  const providers = pricedProviders();
-  return Object.keys(providers)
-    .filter((providerId) => Object.hasOwn(providers[providerId] ?? {}, modelId))
-    .sort((a, b) => a.localeCompare(b));
-}
-
-let BUNDLED_IDS: { providers: ReadonlySet<string>; models: ReadonlySet<string> } | null = null;
-
-/** The provider and model ids of the price list shipped in this package, never a downloaded one. */
-function bundledIds(): { providers: ReadonlySet<string>; models: ReadonlySet<string> } {
+/** The ids of the list shipped in this package (read once). */
+function bundledIds(): Pick<PriceListDescription, "bundledProviderIds" | "bundledModelIds"> {
   if (!BUNDLED_IDS) {
     const { providers } = loadBundledSnapshot();
     BUNDLED_IDS = {
-      providers: new Set(Object.keys(providers)),
-      models: new Set(Object.values(providers).flatMap((models) => Object.keys(models))),
+      bundledProviderIds: new Set(Object.keys(providers)),
+      bundledModelIds: new Set(Object.values(providers).flatMap((models) => Object.keys(models))),
     };
   }
   return BUNDLED_IDS;
 }
 
-/** True when the shipped price list has this provider id. */
-export function isBundledPricingProviderId(providerId: string): boolean {
-  return bundledIds().providers.has(providerId);
-}
-
-/** True when the shipped price list has this model id under any provider. */
-export function isBundledPricingModelId(modelId: string): boolean {
-  return bundledIds().models.has(modelId);
+export async function describePriceList(): Promise<PriceListDescription> {
+  const active = activePriceList();
+  const paths = runtimePaths();
+  return {
+    ...active,
+    health: listHealth(active.meta.generatedAt, Date.now()),
+    paths,
+    refreshState: await readRefreshState(paths.refreshState),
+    ...bundledIds(),
+  };
 }
 
 export function lookupCost(providerId: string, modelId: string): CostBuckets | null {
-  return pricedProviders()[providerId]?.[modelId] ?? null;
+  return activeList().snapshot.providers[providerId]?.[modelId] ?? null;
 }
 
-export function hasCost(providerId: string, modelId: string): boolean {
-  return lookupCost(providerId, modelId) != null;
+export function hasProvider(providerId: string): boolean {
+  return !!activeList().snapshot.providers[providerId];
+}
+
+export function hasModel(providerId: string, modelId: string): boolean {
+  return lookupCost(providerId, modelId) !== null;
+}
+
+export function listProvidersForModelId(modelId: string): string[] {
+  const { providers } = activeList().snapshot;
+  return Object.keys(providers)
+    .filter((providerId) => Object.hasOwn(providers[providerId] ?? {}, modelId))
+    .sort((a, b) => a.localeCompare(b));
 }
 
 export function __resetPricingSnapshotForTests(): void {
+  SETTINGS = () => DEFAULT_SETTINGS;
   LOADED = null;
-  SNAPSHOT_SELECTION = "auto";
-  CONFIGURED_MAX_AGE_MS = DEFAULT_PRICING_SNAPSHOT_MAX_AGE_MS;
   REFRESH_IN_FLIGHT = null;
   PROCESS_REFRESH_CHECKED = false;
 }

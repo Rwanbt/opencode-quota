@@ -50,12 +50,6 @@ vi.mock("../src/lib/opencode-runtime-paths.js", () => ({
   getOpencodeRuntimeDirs: () => runtimeDirs.value,
 }));
 
-// The real price list choice; no price download.
-vi.mock("../src/lib/modelsdev-pricing.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../src/lib/modelsdev-pricing.js")>()),
-  maybeRefreshPricingSnapshot: vi.fn(async () => ({ attempted: false, updated: false })),
-}));
-
 // The real status report, watched so a test can see its arguments or make it fail.
 vi.mock("../src/lib/quota-dialog-commands.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../src/lib/quota-dialog-commands.js")>();
@@ -70,11 +64,7 @@ import {
   runCliShowCommand,
   runCliStatusCommand,
 } from "../src/lib/cli-show.js";
-import {
-  __resetPricingSnapshotForTests,
-  getPricingRefreshPolicy,
-  getPricingSnapshotSelection,
-} from "../src/lib/modelsdev-pricing.js";
+import { describePriceList } from "../src/lib/modelsdev-pricing.js";
 import {
   clearReadAuthFileCacheForTests,
   getCredentialSourceDiagnostics,
@@ -146,7 +136,6 @@ beforeEach(() => {
   vi.stubEnv("OPENCODE_DB", join(tempDir, "opencode.db"));
   mockProviders.length = 0;
   vi.mocked(buildStatusReportData).mockClear();
-  __resetPricingSnapshotForTests();
   writeSettings({
     providers: { off: CONFIG_PROVIDER_IDS.filter((id) => !["zai"].includes(id)) },
   });
@@ -253,10 +242,8 @@ describe.each(["show", "status"] as const)("%s report frame", (command) => {
     const seen: Array<{ source: string; maxAgeMs: number }> = [];
     const provider = zai();
     provider.fetch.mockImplementation(async () => {
-      seen.push({
-        source: getPricingSnapshotSelection(),
-        maxAgeMs: getPricingRefreshPolicy().maxAgeMs,
-      });
+      const { selection, health } = await describePriceList();
+      seen.push({ source: selection, maxAgeMs: health.maxAgeMs });
       return answer();
     });
     mockProviders.push(provider);

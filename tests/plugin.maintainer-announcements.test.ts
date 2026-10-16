@@ -14,7 +14,6 @@ import { answer, percentRow } from "./helpers/fake-answers.js";
 import {
   createAlibabaAuthModuleMock,
   createPluginRuntimePathsMockModule,
-  createPricingModuleMock,
   createProvidersRegistryModuleMock,
   createServerContext,
   seedDefaultPluginBootstrapMocks,
@@ -36,13 +35,6 @@ const TEST_ANNOUNCEMENT = vi.hoisted(() => ({
 
 const mocks = vi.hoisted(() => ({
   getProviders: vi.fn(),
-  maybeRefreshPricingSnapshot: vi.fn(),
-  getPricingSnapshotMeta: vi.fn(),
-  getPricingSnapshotSource: vi.fn(),
-  getRuntimePricingRefreshStatePath: vi.fn(),
-  getRuntimePricingSnapshotPath: vi.fn(),
-  setPricingSnapshotAutoRefresh: vi.fn(),
-  setPricingSnapshotSelection: vi.fn(),
   resolveAlibabaCodingPlanAuthCached: vi.fn(),
 }));
 
@@ -53,7 +45,6 @@ const announcementMocks = vi.hoisted(() => ({
 vi.mock("../src/providers/registry.js", () =>
   createProvidersRegistryModuleMock(mocks.getProviders),
 );
-vi.mock("../src/lib/modelsdev-pricing.js", () => createPricingModuleMock(mocks));
 vi.mock("../src/lib/alibaba-auth.js", () =>
   createAlibabaAuthModuleMock(mocks.resolveAlibabaCodingPlanAuthCached),
 );

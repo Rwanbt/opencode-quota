@@ -25,12 +25,6 @@ vi.mock("../src/lib/opencode-runtime-paths.js", () => ({
   getOpencodeRuntimeDirs: () => runtimeDirs.value,
 }));
 
-// The real price list choice; no price download.
-vi.mock("../src/lib/modelsdev-pricing.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../src/lib/modelsdev-pricing.js")>()),
-  maybeRefreshPricingSnapshot: vi.fn(async () => ({ attempted: false, updated: false })),
-}));
-
 // The real report, watched so a test can see its arguments.
 vi.mock("../src/lib/quota-dialog-commands.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../src/lib/quota-dialog-commands.js")>();

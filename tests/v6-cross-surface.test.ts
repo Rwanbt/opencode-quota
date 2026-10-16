@@ -32,7 +32,6 @@ import { createFakeIntegration } from "./helpers/fake-integration.js";
 import { findAll, type Node, THEME, textLines } from "./helpers/jsx-tree.js";
 import {
   createAlibabaAuthModuleMock,
-  createPricingModuleMock,
   createProvidersRegistryModuleMock,
   createSessionTokensModuleMock,
   seedDefaultPluginBootstrapMocks,
@@ -51,13 +50,6 @@ const mocks = vi.hoisted(() => ({
   root: "",
   terminal: { width: 120, height: 40 },
   getProviders: vi.fn(),
-  getPricingSnapshotMeta: vi.fn(),
-  getPricingSnapshotSource: vi.fn(),
-  getRuntimePricingRefreshStatePath: vi.fn(),
-  getRuntimePricingSnapshotPath: vi.fn(),
-  maybeRefreshPricingSnapshot: vi.fn(),
-  setPricingSnapshotAutoRefresh: vi.fn(),
-  setPricingSnapshotSelection: vi.fn(),
   resolveAlibabaCodingPlanAuthCached: vi.fn(),
   fetchSessionTokensForDisplay: vi.fn(),
 }));
@@ -68,10 +60,6 @@ vi.mock("@opentui/solid", () => ({
 vi.mock("../src/providers/registry.js", () =>
   createProvidersRegistryModuleMock(mocks.getProviders),
 );
-vi.mock("../src/lib/modelsdev-pricing.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../src/lib/modelsdev-pricing.js")>()),
-  ...createPricingModuleMock(mocks),
-}));
 vi.mock("../src/lib/session-tokens.js", () =>
   createSessionTokensModuleMock(mocks.fetchSessionTokensForDisplay),
 );
@@ -143,6 +131,7 @@ function httpFetch(url: string, init?: RequestInit): Response {
     expect(authorization).toBe(`Bearer ${CANARIES.failingKey}`);
     return new Response(CANARIES.failureBody, { status: 503 });
   }
+  if (url === "https://models.dev/api.json") throw new Error("network down");
   throw new Error(`unexpected URL: ${url}`);
 }
 
@@ -1723,13 +1712,6 @@ describe("v6 surfaces on the quota snapshot", () => {
     const usageTab = () => tui.render("session.composer.top", { sessionID: "ses_1" });
     await tui.command("usage").run();
     await vi.waitFor(() => expect(words(usageTab())).toContain("Breakdown"));
-    mocks.maybeRefreshPricingSnapshot.mockResolvedValue({
-      attempted: true,
-      updated: false,
-      reason: "fetch_failed",
-      error: "network down",
-      state: { version: 1, updatedAt: 1 },
-    });
 
     tui.press(11, "p");
 

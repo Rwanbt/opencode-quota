@@ -1,430 +1,345 @@
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-
-import type { PricingRefreshOptions } from "../src/lib/modelsdev-pricing.js";
+import { SHIPPED_PRICE_LIST as SHIPPED } from "./helpers/shipped-price-list.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
-const NOW = 1_800_000_000_000;
-const STALE_AT = NOW - 4 * DAY_MS;
+const HOUR_MS = 60 * 60 * 1000;
+const SHIPPED_AT = SHIPPED._meta.generatedAt;
+/** Four days after the shipped list was made: stale after 3 days, fresh with 7. */
+const NOW = SHIPPED_AT + 4 * DAY_MS;
+const SHIPPED_MINI = SHIPPED.providers.openai["gpt-4o-mini"];
+/** A model the fake models.dev reply leaves out, as models.dev does with retired ones. */
+const SHIPPED_GPT_4O = SHIPPED.providers.openai["gpt-4o"];
 
-type Prices = Record<string, { input: number; output: number }>;
+type Settings = { source: "auto" | "bundled" | "runtime"; autoRefreshDays: number };
+const STALE: Settings = { source: "auto", autoRefreshDays: 3 };
 
-/** A snapshot pricing openai/gpt-4o-mini at `input` (bundled: 0.15), plus `extraModels`. */
-function snapshot(generatedAt: number, input = 0.15, extraModels: Prices = {}) {
-  const gpt = { input, output: input * 4, cache_read: input / 5, cache_write: input / 3 };
+/** A downloaded list made at `generatedAt`: openai/gpt-4o-mini at `input`, plus `models`. */
+function downloadedList(generatedAt: number, input: number, models: object = {}) {
   return {
     _meta: { source: "test", generatedAt, providers: ["openai"], units: "USD per 1M tokens" },
-    providers: { openai: { "gpt-4o-mini": gpt, ...extraModels } } as Record<string, Prices>,
+    providers: { openai: { "gpt-4o-mini": { input, output: input * 4 }, ...models } },
   };
 }
 
 /** A models.dev reply listing only openai/gpt-4o-mini. */
-function modelsDevResponse(cost: Record<string, number>, init: ResponseInit = {}): Response {
+function modelsDevReply(cost: Record<string, number>, headers: Record<string, string> = {}) {
   return new Response(JSON.stringify({ openai: { models: { "gpt-4o-mini": { cost } } } }), {
-    status: 200,
-    ...init,
+    headers,
   });
 }
 
-const notModified = (headers: Record<string, string> = {}) =>
-  new Response(null, { status: 304, headers });
-
-const exists = (path: string) =>
-  stat(path).then(
-    () => true,
-    () => false,
-  );
+/** A models.dev that answers only when told; `called` resolves with the request's signal. */
+function pendingFetch() {
+  let started!: (signal: AbortSignal | undefined) => void;
+  let reply!: (response: Response) => void;
+  const called = new Promise<AbortSignal | undefined>((resolve) => {
+    started = resolve;
+  });
+  const fetch = (_url: string | URL | Request, init?: RequestInit) => {
+    started(init?.signal ?? undefined);
+    return new Promise<Response>((resolve) => {
+      reply = resolve;
+    });
+  };
+  return { fetch, called, answer: (response: Response) => reply(response) };
+}
 
 const tempRoots: string[] = [];
 
 afterEach(async () => {
-  vi.useRealTimers();
   for (const root of tempRoots.splice(0)) await rm(root, { recursive: true, force: true });
 });
 
 /**
- * Loads a fresh pricing module (its in-process state resets) against new temp runtime
- * folders. `refresh` defaults to a stale bundled snapshot and the default 3-day max age.
+ * A new process: a fresh price list module following `settings`, with OpenCode's cache folder
+ * in `root` (a new temp folder by default) and models.dev answering through `fetch` (down by
+ * default). The clock stands still at `nowMs`, so a check waits for its whole download.
  */
-async function setup() {
+async function start(settings: Settings, options: { root?: string; nowMs?: number } = {}) {
+  const root = options.root ?? (await mkdtemp(join(tmpdir(), "opencode-quota-pricing-")));
+  if (!options.root) tempRoots.push(root);
+  vi.stubEnv("XDG_CACHE_HOME", root);
+  vi.useRealTimers();
+  vi.useFakeTimers({ now: options.nowMs ?? NOW, toFake: ["Date", "setTimeout", "clearTimeout"] });
+  const fetch = vi.fn<typeof globalThis.fetch>(async () => {
+    throw new Error("network down");
+  });
+  vi.stubGlobal("fetch", fetch);
   vi.resetModules();
   const pricing = await import("../src/lib/modelsdev-pricing.js");
-  const root = await mkdtemp(join(tmpdir(), "opencode-quota-pricing-"));
-  tempRoots.push(root);
-  const runtimeDirs = {
-    dataDir: join(root, "data"),
-    configDir: join(root, "config"),
-    cacheDir: join(root, "cache"),
-    stateDir: join(root, "state"),
+  pricing.usePricingSettings(() => settings);
+  const dir = join(root, "opencode", "opencode-quota");
+  const paths = {
+    snapshot: join(dir, "modelsdev-pricing.runtime.min.json"),
+    refreshState: join(dir, "modelsdev-pricing.refresh-state.json"),
   };
-  const snapshotPath = pricing.getRuntimePricingSnapshotPath(runtimeDirs);
+  const write = async (path: string, value: unknown) => {
+    await mkdir(dir, { recursive: true });
+    await writeFile(path, JSON.stringify(value), "utf-8");
+  };
   return {
+    root,
     pricing,
-    runtimeDirs,
-    snapshotPath,
-    refresh: (options: PricingRefreshOptions = {}) =>
-      pricing.maybeRefreshPricingSnapshot({
-        nowMs: NOW,
-        runtimeDirs,
-        fetchFn: vi.fn(),
-        maxAgeMs: 3 * DAY_MS,
-        bootstrapSnapshotOverride: snapshot(STALE_AT),
-        ...options,
-      }),
-    writeRuntimeSnapshot: async (value: unknown) => {
-      await mkdir(dirname(snapshotPath), { recursive: true });
-      await writeFile(snapshotPath, JSON.stringify(value), "utf-8");
-    },
-    readRuntimeSnapshot: async () => JSON.parse(await readFile(snapshotPath, "utf-8")),
+    fetch,
+    paths,
+    writeDownloaded: (value: unknown) => write(paths.snapshot, value),
+    writeRefreshState: (value: unknown) => write(paths.refreshState, value),
+    readDownloaded: async () => JSON.parse(await readFile(paths.snapshot, "utf-8")),
+    refreshState: async () => (await pricing.describePriceList()).refreshState,
   };
 }
 
-describe("pricing snapshot health", () => {
+describe("the price list lookups use", () => {
   it.each([
-    [-1, false],
-    [1, true],
-  ])("is stale only past the max age (max age %+d ms)", async (offset, stale) => {
-    const { pricing } = await setup();
-    pricing.setPricingSnapshotSelection("bundled");
-    const maxAgeMs = pricing.DEFAULT_PRICING_SNAPSHOT_MAX_AGE_MS;
-    const nowMs = pricing.getPricingSnapshotMeta().generatedAt + maxAgeMs + offset;
+    {
+      name: "auto: a download newer than the shipped list",
+      source: "auto",
+      at: NOW,
+      uses: "runtime",
+    },
+    {
+      name: "auto: the shipped list over an older download",
+      source: "auto",
+      at: SHIPPED_AT - DAY_MS,
+      uses: "bundled",
+    },
+    {
+      name: "runtime: an older download",
+      source: "runtime",
+      at: SHIPPED_AT - DAY_MS,
+      uses: "runtime",
+    },
+    {
+      name: "runtime: the shipped list without a download",
+      source: "runtime",
+      at: null,
+      uses: "bundled",
+    },
+    {
+      name: "bundled: the shipped list over a newer download",
+      source: "bundled",
+      at: NOW,
+      uses: "bundled",
+    },
+  ] as const)("$name", async ({ source, at, uses }) => {
+    const { pricing, writeDownloaded } = await start({ source, autoRefreshDays: 7 });
+    if (at !== null) await writeDownloaded(downloadedList(at, 9.99));
 
-    expect(pricing.getPricingSnapshotHealth({ nowMs, maxAgeMs })).toMatchObject({
-      stale,
-      ageMs: maxAgeMs + offset,
-    });
+    expect(pricing.activePriceList()).toMatchObject({ selection: source, source: uses });
+    const input = uses === "runtime" ? 9.99 : SHIPPED_MINI.input;
+    expect(pricing.lookupCost("openai", "gpt-4o-mini")?.input).toBe(input);
+    // A download saved before retired models were kept gets them from the shipped list.
+    expect(pricing.lookupCost("openai", "gpt-4o")).toEqual(SHIPPED_GPT_4O);
+  });
+
+  it("follows a settings change at the next lookup, with nothing to call in between", async () => {
+    const settings: Settings = { source: "bundled", autoRefreshDays: 7 };
+    const { pricing, writeDownloaded } = await start(settings);
+    await writeDownloaded(downloadedList(NOW, 9.99));
+    expect(pricing.lookupCost("openai", "gpt-4o-mini")?.input).toBe(SHIPPED_MINI.input);
+
+    settings.source = "runtime";
+
+    expect(pricing.lookupCost("openai", "gpt-4o-mini")?.input).toBe(9.99);
+    expect(pricing.activePriceList().selection).toBe("runtime");
   });
 });
 
-describe("pricing runtime refresh policy", () => {
-  it("uses the fresh bundled snapshot without fetching or writing a runtime snapshot", async () => {
-    const { pricing, snapshotPath, refresh } = await setup();
-    const fetchFn = vi.fn();
+describe("refreshPricesIfDue", () => {
+  it.each([
+    { days: 7, maxAgeDays: 7, due: false },
+    { days: 1, maxAgeDays: 1, due: true },
+    { days: 0, maxAgeDays: 3, due: true }, // not a positive number: 3 days
+  ])("downloads a 4-day-old list after $days configured days: $due", async ({
+    days,
+    maxAgeDays,
+    due,
+  }) => {
+    const { pricing, fetch, paths } = await start({ source: "auto", autoRefreshDays: days });
+    const before = await pricing.describePriceList();
 
-    const result = await refresh({ fetchFn, bootstrapSnapshotOverride: snapshot(NOW) });
+    await pricing.refreshPricesIfDue();
 
-    expect(result).toMatchObject({ attempted: false, reason: "fresh" });
-    expect(fetchFn).not.toHaveBeenCalled();
-    expect(pricing.getPricingSnapshotSource()).toBe("bundled");
-    expect(pricing.lookupCost("openai", "gpt-4o-mini")?.output).toBe(0.6);
-    expect(await exists(snapshotPath)).toBe(false);
+    expect(before).toMatchObject({
+      health: { ageMs: 4 * DAY_MS, maxAgeMs: maxAgeDays * DAY_MS, stale: due },
+      paths,
+      refreshState: null,
+    });
+    expect(fetch).toHaveBeenCalledTimes(due ? 1 : 0);
   });
 
-  it("fetches and persists a runtime snapshot when stale, keeping only known prices", async () => {
-    const { pricing, refresh, readRuntimeSnapshot } = await setup();
-    const fetchFn = vi.fn().mockResolvedValue(
-      modelsDevResponse(
-        {
-          input: 0.123,
-          output: 0.456,
-          cache_read: 0.01,
-          cache_write: 0.02,
-          reasoning: 999,
-          x: 1,
-        },
-        { headers: { etag: "etag-1", "last-modified": "Tue, 02 Mar 2026 00:00:00 GMT" } },
-      ),
-    );
+  it("never downloads with the settings on the shipped list", async () => {
+    const { pricing, fetch } = await start({ source: "bundled", autoRefreshDays: 1 });
 
-    const result = await refresh({ fetchFn });
+    await pricing.refreshPricesIfDue();
 
-    expect(result).toMatchObject({ attempted: true, updated: true, state: { etag: "etag-1" } });
-    expect(fetchFn).toHaveBeenCalledTimes(1);
-    expect(fetchFn.mock.calls[0]?.[1]?.signal).toBeInstanceOf(AbortSignal);
-    expect(pricing.getPricingSnapshotSource()).toBe("runtime");
-    const persisted = await readRuntimeSnapshot();
-    expect(persisted._meta.generatedAt).toBe(NOW);
-    expect(persisted.providers.openai["gpt-4o-mini"]).toEqual({
+    expect(fetch).not.toHaveBeenCalled();
+    expect(await pricing.describePriceList()).toMatchObject({
+      source: "bundled",
+      health: { stale: true },
+      refreshState: null,
+    });
+  });
+
+  it("saves new prices of the known kinds and keeps dropped models, the last download's price first", async () => {
+    const { pricing, fetch, writeDownloaded, readDownloaded, refreshState } = await start(STALE);
+    const lastPrice = { input: 5, output: 6 };
+    await writeDownloaded(downloadedList(SHIPPED_AT - DAY_MS, 9.99, { "gpt-4o": lastPrice }));
+    const cost = { input: 0.123, output: 0.456, cache_read: 0.01, reasoning: 999, x: 1 };
+    fetch.mockResolvedValue(modelsDevReply(cost, { etag: "etag-1" }));
+
+    await pricing.refreshPricesIfDue();
+
+    const saved = await readDownloaded();
+    expect(saved._meta.generatedAt).toBe(NOW);
+    expect(saved.providers.openai["gpt-4o-mini"]).toEqual({
       input: 0.123,
       output: 0.456,
       cache_read: 0.01,
-      cache_write: 0.02,
+    });
+    expect(saved.providers.openai["gpt-4o"]).toEqual(lastPrice);
+    expect(saved.providers.openai["gpt-4.1"]).toEqual(SHIPPED.providers.openai["gpt-4.1"]);
+    expect(pricing.activePriceList().source).toBe("runtime");
+    expect(pricing.lookupCost("openai", "gpt-4o-mini")?.input).toBe(0.123);
+    expect(await refreshState()).toMatchObject({
+      lastResult: "success",
+      lastSuccessAt: NOW,
+      etag: "etag-1",
     });
   });
 
-  it("reads a models list models.dev sent as an array, keyed by position", async () => {
-    const { pricing, refresh } = await setup();
-    const fetchFn = vi
-      .fn()
-      .mockResolvedValue(
-        new Response(
-          JSON.stringify({ openai: { models: [{ cost: { input: 0.2, output: 0.8 } }] } }),
-        ),
-      );
+  it("asks with the saved etag and, on 304, dates the prices in use now", async () => {
+    const { pricing, fetch, writeRefreshState, readDownloaded, refreshState } = await start(STALE);
+    const lastAttemptAt = NOW - 7 * HOUR_MS;
+    await writeRefreshState({
+      version: 1,
+      updatedAt: lastAttemptAt,
+      lastAttemptAt,
+      etag: "etag-0",
+    });
+    fetch.mockResolvedValue(new Response(null, { status: 304 }));
 
-    const result = await refresh({ fetchFn });
+    await pricing.refreshPricesIfDue();
 
-    expect(result.updated).toBe(true);
-    expect(pricing.lookupCost("openai", "0")).toEqual({ input: 0.2, output: 0.8 });
+    expect(new Headers(fetch.mock.calls[0]?.[1]?.headers).get("if-none-match")).toBe("etag-0");
+    const saved = await readDownloaded();
+    expect(saved._meta.generatedAt).toBe(NOW);
+    expect(saved.providers.openai["gpt-4o-mini"]).toEqual(SHIPPED_MINI);
+    expect(pricing.activePriceList()).toMatchObject({
+      source: "runtime",
+      meta: { generatedAt: NOW },
+    });
+    expect(await refreshState()).toMatchObject({ lastResult: "not_modified", etag: "etag-0" });
   });
 
-  it.each([
-    [7, false],
-    [1, true],
-    [0, true], // not a positive number: the 3-day default
-  ])("refreshes a 4-day-old snapshot after %d configured days: %s", async (days, fetches) => {
-    const { pricing, refresh } = await setup();
-    pricing.setPricingSnapshotAutoRefresh(days);
-    const fetchFn = vi.fn().mockResolvedValue(modelsDevResponse({ input: 0.2 }));
+  it("keeps the list in use when a download fails, and no process tries again within 6 hours", async () => {
+    const first = await start(STALE);
 
-    const result = await refresh({ fetchFn, maxAgeMs: undefined });
+    await first.pricing.refreshPricesIfDue();
 
-    expect(result.attempted).toBe(fetches);
-    expect(fetchFn).toHaveBeenCalledTimes(fetches ? 1 : 0);
-  });
-
-  it("falls back to last local snapshot when fetch fails", async () => {
-    const { pricing, runtimeDirs, refresh } = await setup();
-
-    const result = await refresh({ fetchFn: vi.fn().mockRejectedValue(new Error("network down")) });
-
-    expect(result).toMatchObject({ attempted: true, updated: false, error: "network down" });
-    expect(pricing.lookupCost("openai", "gpt-4o-mini")?.input).toBe(0.15);
-    expect(await pricing.readPricingRefreshState(runtimeDirs)).toMatchObject({
+    expect(first.pricing.lookupCost("openai", "gpt-4o-mini")).toEqual(SHIPPED_MINI);
+    expect(await first.refreshState()).toMatchObject({
       lastResult: "failed",
+      lastFailureAt: NOW,
       lastError: "network down",
     });
+    for (const [laterMs, tries] of [
+      [6 * HOUR_MS - 1, 0],
+      [6 * HOUR_MS, 1],
+    ]) {
+      const next = await start(STALE, { root: first.root, nowMs: NOW + laterMs });
+      await next.pricing.refreshPricesIfDue();
+      expect(next.fetch).toHaveBeenCalledTimes(tries);
+    }
   });
 
-  it("refreshes local snapshot freshness when models.dev responds 304", async () => {
-    const { pricing, refresh, readRuntimeSnapshot } = await setup();
-    const fetchFn = vi.fn().mockResolvedValue(notModified({ etag: "etag-304" }));
+  it("downloads once at a time, and once per process", async () => {
+    const { pricing, fetch } = await start(STALE);
+    const pending = pendingFetch();
+    fetch.mockImplementation(pending.fetch);
 
-    const result = await refresh({ fetchFn });
+    const downloads = [pricing.downloadPrices(), pricing.downloadPrices()];
+    await pending.called;
+    pending.answer(new Response("", { status: 503 }));
+    await Promise.all(downloads);
+    // Still stale and past the 6-hour wait, but this process has had its download.
+    vi.setSystemTime(NOW + 7 * HOUR_MS);
+    await pricing.refreshPricesIfDue();
 
-    expect(result).toMatchObject({ attempted: true, updated: true, state: { etag: "etag-304" } });
-    expect(result.state.lastResult).toBe("not_modified");
-    expect(pricing.getPricingSnapshotSource()).toBe("runtime");
-    expect(pricing.getPricingSnapshotMeta().generatedAt).toBe(NOW);
-    const persisted = await readRuntimeSnapshot();
-    expect(persisted._meta.generatedAt).toBe(NOW);
-    expect(persisted.providers.openai["gpt-4o-mini"].input).toBe(0.15);
+    expect(fetch).toHaveBeenCalledOnce();
   });
 
-  it("keeps models models.dev no longer lists, the runtime price over a newer bundled file", async () => {
-    const { pricing, refresh, writeRuntimeSnapshot, readRuntimeSnapshot } = await setup();
-    // The bundled file was rewritten later, but its kept price is an older observation.
-    await writeRuntimeSnapshot(
-      snapshot(NOW - 20 * DAY_MS, 0.5, { "retired-in-both": { input: 5, output: 6 } }),
-    );
+  it("waits at most 0.75 s for a download, which gives up after 6 s and keeps the list", async () => {
+    const { pricing, fetch, refreshState } = await start(STALE);
+    const pending = pendingFetch();
+    fetch.mockImplementation(pending.fetch);
+    let waited = false;
 
-    const result = await refresh({
-      fetchFn: vi.fn().mockResolvedValue(modelsDevResponse({ input: 0.123, output: 0.456 })),
-      bootstrapSnapshotOverride: snapshot(STALE_AT, 0.15, {
-        "retired-in-both": { input: 1, output: 2 },
-        "retired-bundled-only": { input: 3, output: 4 },
+    const check = pricing.refreshPricesIfDue().then(() => {
+      waited = true;
+    });
+    const signal = await pending.called;
+    await vi.advanceTimersByTimeAsync(749);
+    expect(waited).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    await check;
+
+    expect(await refreshState()).toBeNull();
+    await vi.advanceTimersByTimeAsync(6_000 - 750);
+    await vi.waitFor(async () =>
+      expect(await refreshState()).toMatchObject({
+        lastResult: "failed",
+        lastError: "Request timeout after 6s",
       }),
-    });
-
-    expect(result.updated).toBe(true);
-    expect(pricing.getPricingSnapshotSource()).toBe("runtime");
-    expect(pricing.lookupCost("openai", "gpt-4o-mini")).toEqual({ input: 0.123, output: 0.456 });
-    expect(pricing.lookupCost("openai", "retired-in-both")).toEqual({ input: 5, output: 6 });
-    expect(pricing.lookupCost("openai", "retired-bundled-only")).toEqual({ input: 3, output: 4 });
-    expect(Object.keys((await readRuntimeSnapshot()).providers.openai)).toEqual([
-      "gpt-4o-mini",
-      "retired-bundled-only",
-      "retired-in-both",
-    ]);
-  });
-
-  it.each([
-    ["a fresh runtime snapshot without refreshing", NOW - DAY_MS, 7 * DAY_MS, "fresh"],
-    ["an older runtime snapshot on 304", STALE_AT, 3 * DAY_MS, undefined],
-  ])("fills retired bundled models into %s", async (_name, runtimeAt, maxAgeMs, reason) => {
-    const { pricing, refresh, writeRuntimeSnapshot } = await setup();
-    // Saved by an older version after models.dev dropped the model.
-    await writeRuntimeSnapshot(snapshot(runtimeAt, 0.5));
-
-    const result = await refresh({
-      fetchFn: vi.fn().mockResolvedValue(notModified()),
-      maxAgeMs,
-      bootstrapSnapshotOverride: snapshot(NOW - 10 * DAY_MS, 0.15, {
-        "retired-model": { input: 3, output: 4 },
-      }),
-    });
-
-    expect(result.reason).toBe(reason);
-    expect(result.state.lastResult).toBe(reason ? "skipped_fresh" : "not_modified");
-    expect(pricing.getPricingSnapshotSource()).toBe("runtime");
-    expect(pricing.lookupCost("openai", "gpt-4o-mini")?.input).toBe(0.5);
-    expect(pricing.lookupCost("openai", "retired-model")).toEqual({ input: 3, output: 4 });
-  });
-
-  it("does not save kept models from providers outside the refresh allowlist", async () => {
-    const { refresh, readRuntimeSnapshot } = await setup();
-    const bundled = snapshot(STALE_AT);
-    bundled.providers.xai = { "grok-old": { input: 1, output: 2 } };
-
-    await refresh({
-      fetchFn: vi.fn().mockResolvedValue(modelsDevResponse({ input: 0.123, output: 0.456 })),
-      providerAllowlist: ["openai"],
-      bootstrapSnapshotOverride: bundled,
-    });
-
-    const persisted = await readRuntimeSnapshot();
-    expect(persisted._meta.providers).toEqual(["openai"]);
-    expect(persisted.providers.xai).toBeUndefined();
-  });
-
-  it("pins the bundled snapshot and skips runtime refresh attempts", async () => {
-    const { pricing, runtimeDirs, refresh, writeRuntimeSnapshot } = await setup();
-    await writeRuntimeSnapshot(snapshot(NOW + 60_000, 9.99));
-    const fetchFn = vi.fn();
-
-    const result = await refresh({
-      fetchFn,
-      snapshotSelection: "bundled",
-      bootstrapSnapshotOverride: snapshot(NOW),
-    });
-
-    expect(result).toMatchObject({ attempted: false, reason: "selection_bundled" });
-    expect(fetchFn).not.toHaveBeenCalled();
-    expect(pricing.getPricingSnapshotSource()).toBe("bundled");
-    expect(pricing.lookupCost("openai", "gpt-4o-mini")?.input).toBe(0.15);
-    expect(await exists(pricing.getRuntimePricingRefreshStatePath(runtimeDirs))).toBe(false);
-  });
-
-  it.each([
-    ["new prices on 200", null, STALE_AT, modelsDevResponse({ input: 0.222 }), "success", 0.222],
-    [
-      "prior prices on 304",
-      snapshot(STALE_AT - 60_000, 9.99),
-      NOW,
-      notModified(),
-      "not_modified",
-      9.99,
-    ],
-  ])("lets a manual refresh save %s while bundled selection stays active", async (_name, existing, bundledAt, response, lastResult, savedInput) => {
-    const { pricing, refresh, writeRuntimeSnapshot, readRuntimeSnapshot } = await setup();
-    if (existing) await writeRuntimeSnapshot(existing);
-    const fetchFn = vi.fn().mockResolvedValue(response);
-
-    const result = await refresh({
-      fetchFn,
-      force: true,
-      snapshotSelection: "bundled",
-      allowRefreshWhenSelectionBundled: true,
-      bootstrapSnapshotOverride: snapshot(bundledAt),
-    });
-
-    expect(result).toMatchObject({ attempted: true, updated: true, state: { lastResult } });
-    expect(fetchFn).toHaveBeenCalledTimes(1);
-    expect(pricing.getPricingSnapshotSource()).toBe("bundled");
-    expect(pricing.lookupCost("openai", "gpt-4o-mini")?.input).toBe(0.15);
-    const persisted = await readRuntimeSnapshot();
-    expect(persisted._meta.generatedAt).toBe(NOW);
-    expect(persisted.providers.openai["gpt-4o-mini"].input).toBe(savedInput);
-  });
-
-  it.each([
-    ["the runtime snapshot even when the bundled one is newer", true, "runtime", 9.99],
-    ["the bundled snapshot when no runtime snapshot exists", false, "bundled", 0.15],
-  ])("pins runtime selection to %s", async (_name, hasRuntime, source, input) => {
-    const { pricing, refresh, writeRuntimeSnapshot } = await setup();
-    if (hasRuntime) await writeRuntimeSnapshot(snapshot(NOW - 60_000, 9.99));
-    const fetchFn = vi.fn();
-
-    const result = await refresh({
-      fetchFn,
-      snapshotSelection: "runtime",
-      bootstrapSnapshotOverride: snapshot(NOW),
-    });
-
-    expect(result).toMatchObject({ attempted: false, reason: "fresh" });
-    expect(fetchFn).not.toHaveBeenCalled();
-    expect(pricing.getPricingSnapshotSource()).toBe(source);
-    expect(pricing.lookupCost("openai", "gpt-4o-mini")?.input).toBe(input);
-  });
-
-  it("throttles refresh attempts using persisted lastAttemptAt state", async () => {
-    const first = await setup();
-    const fetchFn = vi.fn().mockRejectedValue(new Error("network down"));
-    expect(await first.refresh({ fetchFn })).toMatchObject({ attempted: true, updated: false });
-
-    // A new process: only the persisted refresh state remembers the attempt.
-    vi.resetModules();
-    const secondLoad = await import("../src/lib/modelsdev-pricing.js");
-    const throttledFetch = vi.fn();
-    const second = await secondLoad.maybeRefreshPricingSnapshot({
-      nowMs: NOW + 60_000,
-      runtimeDirs: first.runtimeDirs,
-      fetchFn: throttledFetch,
-      maxAgeMs: 3 * DAY_MS,
-      bootstrapSnapshotOverride: snapshot(STALE_AT),
-    });
-
-    expect(second).toMatchObject({ attempted: false, reason: "throttled" });
-    expect(throttledFetch).not.toHaveBeenCalled();
-  });
-
-  it.each([
-    [
-      "a pre-header stall",
-      (_signal?: AbortSignal | null) => new Promise<Response>(() => undefined),
-    ],
-    [
-      "a stalled JSON body",
-      async (signal?: AbortSignal | null) =>
-        new Response(
-          new ReadableStream<Uint8Array>({
-            start(controller) {
-              signal?.addEventListener("abort", () => {
-                controller.error(new Error("private body abort"));
-              });
-            },
-          }),
-        ),
-    ],
-  ])("times out %s with the shared timeout, without retrying or losing the snapshot", async (_name, respond) => {
-    vi.useFakeTimers();
-    const { pricing, runtimeDirs, refresh } = await setup();
-    let receivedSignal: AbortSignal | undefined;
-    const fetchFn = vi.fn((_url: string | URL | Request, init?: RequestInit) => {
-      receivedSignal = init?.signal ?? undefined;
-      return respond(init?.signal);
-    });
-
-    const pending = refresh({ fetchFn, timeoutMs: 1_000 });
-    await vi.waitFor(() => expect(fetchFn).toHaveBeenCalledTimes(1));
-    await vi.advanceTimersByTimeAsync(1_000);
-    const result = await pending;
-
-    const error = "Request timeout after 1s";
-    expect(result).toMatchObject({ attempted: true, updated: false, error });
-    expect(receivedSignal?.aborted).toBe(true);
-    expect(fetchFn).toHaveBeenCalledTimes(1);
-    expect(pricing.lookupCost("openai", "gpt-4o-mini")?.input).toBe(0.15);
-    expect(await pricing.readPricingRefreshState(runtimeDirs)).toMatchObject({
-      lastResult: "failed",
-      lastError: error,
-    });
-  });
-
-  it("dedupes concurrent attempts and only checks once per process window", async () => {
-    const { refresh } = await setup();
-    let resolveFetch: ((response: Response) => void) | null = null;
-    const fetchFn = vi.fn(
-      () =>
-        new Promise<Response>((resolve) => {
-          resolveFetch = resolve;
-        }),
     );
+    expect(signal?.aborted).toBe(true);
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(pricing.lookupCost("openai", "gpt-4o-mini")).toEqual(SHIPPED_MINI);
+  });
+});
 
-    const first = refresh({ fetchFn });
-    const second = refresh({ fetchFn });
-    await vi.waitFor(() => expect(fetchFn).toHaveBeenCalledTimes(1));
-    resolveFetch?.(modelsDevResponse({ input: 0.2, output: 0.8 }));
+describe("downloadPrices", () => {
+  it.each([
+    {
+      name: "takes new prices whatever the list's age",
+      source: "auto",
+      reply: async () => modelsDevReply({ input: 0.222 }),
+      answer: { ok: true, message: "Downloaded new prices from models.dev." },
+      uses: 0.222,
+    },
+    {
+      name: "saves new prices but keeps the shipped list the settings choose",
+      source: "bundled",
+      reply: async () => modelsDevReply({ input: 0.222 }),
+      answer: {
+        ok: true,
+        message:
+          "Downloaded new prices. Usage keeps the built-in prices: the pricing source setting is bundled.",
+      },
+      uses: SHIPPED_MINI.input,
+    },
+    {
+      name: "says why a download failed",
+      source: "auto",
+      reply: async (): Promise<Response> => {
+        throw new Error("network down");
+      },
+      answer: { ok: false, message: "Couldn't download new prices: network down." },
+      uses: SHIPPED_MINI.input,
+    },
+  ] as const)("$name", async ({ source, reply, answer, uses }) => {
+    const { pricing, fetch, readDownloaded } = await start({ source, autoRefreshDays: 7 });
+    fetch.mockImplementation(reply);
 
-    expect((await Promise.all([first, second])).map((result) => result.updated)).toEqual([
-      true,
-      true,
-    ]);
-    const third = await refresh({ nowMs: NOW + 30_000, fetchFn });
-    expect(third).toMatchObject({ attempted: false, reason: "already_checked_this_process" });
-    expect(fetchFn).toHaveBeenCalledTimes(1);
+    await expect(pricing.downloadPrices()).resolves.toEqual(answer);
+
+    expect(pricing.lookupCost("openai", "gpt-4o-mini")?.input).toBe(uses);
+    if (answer.ok) {
+      expect((await readDownloaded()).providers.openai["gpt-4o-mini"].input).toBe(0.222);
+    }
   });
 });

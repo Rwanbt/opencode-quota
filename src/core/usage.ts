@@ -22,13 +22,7 @@
  *   questions share one read: see `usageReport`.
  */
 import { parseCalendarDate } from "../lib/calendar-date.js";
-import {
-  type CostBuckets,
-  getPricingSnapshotMeta,
-  getPricingSnapshotSelection,
-  maybeRefreshPricingSnapshot,
-  type PricingSnapshotSource,
-} from "../lib/modelsdev-pricing.js";
+import { activePriceList, type CostBuckets } from "../lib/modelsdev-pricing.js";
 import { getOpenCodeDbPath } from "../lib/opencode-db-path.js";
 import {
   type OpenCodeSessionInfo,
@@ -362,7 +356,8 @@ export async function usageReport(
   }
   const { range, sessionID, from, to } = query;
   // A new price list (another choice or a fresh download) makes a new report.
-  const priceList = [getPricingSnapshotSelection(), getPricingSnapshotMeta().generatedAt];
+  const { selection, meta } = activePriceList();
+  const priceList = [selection, meta.generatedAt];
   // The local day decides where the rolling ranges start: after midnight, a new report.
   const today = localDate(nowMs);
   const key = JSON.stringify([getOpenCodeDbPath(), priceList, today, range, sessionID, from, to]);
@@ -514,31 +509,4 @@ async function buildUsageReport(query: UsageQuery, nowMs: number): Promise<Usage
       ),
     days: dayList.map((date) => ({ date, ...toRow(days.get(date) ?? emptyTally(), rowTotal) })),
   };
-}
-
-/**
- * Downloads the price list from models.dev now, whatever its age. With the settings on the
- * built-in price list, the download is kept but reports keep using the built-in one.
- */
-export async function downloadPrices(
-  source: PricingSnapshotSource,
-): Promise<{ ok: boolean; message: string }> {
-  const result = await maybeRefreshPricingSnapshot({
-    reason: "manual",
-    force: true,
-    snapshotSelection: source,
-    allowRefreshWhenSelectionBundled: true,
-  });
-  if (!result.updated) {
-    const reason = result.error ?? result.reason ?? "unknown reason";
-    return { ok: false, message: `Couldn't download new prices: ${reason}.` };
-  }
-  if (source === "bundled") {
-    return {
-      ok: true,
-      message:
-        "Downloaded new prices. Usage keeps the built-in prices: the pricing source setting is bundled.",
-    };
-  }
-  return { ok: true, message: "Downloaded new prices from models.dev." };
 }
