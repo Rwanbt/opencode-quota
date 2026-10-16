@@ -100,18 +100,29 @@ const REFRESH_RESULTS = new Set([
   "failed",
 ]);
 
-let SETTINGS: () => PricingSettings = () => DEFAULT_SETTINGS;
+/** The bound settings, oldest first; the last one still bound is followed. */
+const SETTINGS_BINDINGS: Array<{ current: () => PricingSettings }> = [];
 let LOADED: LoadedList | null = null;
 let REFRESH_IN_FLIGHT: Promise<RefreshResult> | null = null;
 let PROCESS_REFRESH_CHECKED = false;
 let BUNDLED_IDS: Pick<PriceListDescription, "bundledProviderIds" | "bundledModelIds"> | null = null;
 
 /**
- * The pricing settings to follow from now on, read each time they matter: which list (`source`)
- * and how many days old it may get before a download.
+ * Follows the pricing settings `current` gives, read each time they matter (which list and how
+ * many days old it may get before a download), until the returned function unbinds them.
+ * Unbinding removes only this binding; the last binding still bound wins, else "auto", 3 days.
  */
-export function usePricingSettings(current: () => PricingSettings): void {
-  SETTINGS = current;
+export function usePricingSettings(current: () => PricingSettings): () => void {
+  const binding = { current };
+  SETTINGS_BINDINGS.push(binding);
+  return () => {
+    const index = SETTINGS_BINDINGS.indexOf(binding);
+    if (index !== -1) SETTINGS_BINDINGS.splice(index, 1);
+  };
+}
+
+function pricingSettings(): PricingSettings {
+  return SETTINGS_BINDINGS.at(-1)?.current() ?? DEFAULT_SETTINGS;
 }
 
 /** An object or an array (an array's entries are keyed by position). */
@@ -254,14 +265,14 @@ function chooseList(selection: PricingSnapshotSource): LoadedList {
 
 /** The list the settings choose, read again when the choice changes. */
 function activeList(): LoadedList {
-  const { source } = SETTINGS();
+  const { source } = pricingSettings();
   if (LOADED?.selection !== source) LOADED = chooseList(source);
   return LOADED;
 }
 
 /** Days after which the list counts as stale; not a positive number means 3 days. */
 function maxAgeMs(): number {
-  const days = SETTINGS().autoRefreshDays;
+  const days = pricingSettings().autoRefreshDays;
   return Number.isFinite(days) && days > 0
     ? Math.floor(days * MS_PER_DAY)
     : DEFAULT_SETTINGS.autoRefreshDays * MS_PER_DAY;
@@ -346,7 +357,7 @@ function refreshOnce(force: boolean): Promise<RefreshResult> {
  */
 async function refresh(force: boolean): Promise<RefreshResult> {
   const nowMs = Date.now();
-  const selection = SETTINGS().source;
+  const selection = pricingSettings().source;
   const paths = runtimePaths();
   const previousState = (await readRefreshState(paths.refreshState)) ?? {
     version: 1,
@@ -431,7 +442,7 @@ export async function refreshPricesIfDue(): Promise<void> {
  * bundled list, the download is kept but lookups keep using the bundled one.
  */
 export async function downloadPrices(): Promise<{ ok: boolean; message: string }> {
-  const { source } = SETTINGS();
+  const { source } = pricingSettings();
   const result = await refreshOnce(true);
   if (!result.updated) {
     const reason = result.error ?? result.reason ?? "unknown reason";
@@ -497,7 +508,7 @@ export function listProvidersForModelId(modelId: string): string[] {
 }
 
 export function __resetPricingSnapshotForTests(): void {
-  SETTINGS = () => DEFAULT_SETTINGS;
+  SETTINGS_BINDINGS.length = 0;
   LOADED = null;
   REFRESH_IN_FLIGHT = null;
   PROCESS_REFRESH_CHECKED = false;

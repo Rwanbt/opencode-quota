@@ -5,7 +5,7 @@ const CONFIG_PROVIDER_IDS = Object.keys(QUOTA_PROVIDER_CATALOG).map((id) =>
 );
 
 import { existsSync, mkdtempSync } from "node:fs";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parse as parseJsonc } from "jsonc-parser";
@@ -553,6 +553,36 @@ describe("server quota RPC", () => {
       },
     });
     await vi.waitFor(() => expect(seen).toEqual(["bundled 5", "runtime 2"]), { timeout: 5_000 });
+  });
+
+  it("follows the price list a running server's settings choose after another server stops", async () => {
+    useSettings({ providers: { pricing: { source: "bundled", autoRefreshDays: 7 } } });
+    const downloadedDir = `${TEST_RUNTIME_ROOT}/cache/opencode-quota`;
+    await mkdir(downloadedDir, { recursive: true });
+    await writeFile(
+      `${downloadedDir}/modelsdev-pricing.runtime.min.json`,
+      JSON.stringify({
+        _meta: { source: "test", generatedAt: Date.now(), units: "USD per 1M tokens" },
+        providers: { openai: { "gpt-4o-mini": { input: 9.99 } } },
+      }),
+    );
+    const pricing = await import("../src/lib/modelsdev-pricing.js");
+    await setupServer();
+    await setupServer();
+    // The newer server stops; its settings stop changing.
+    await cleanups.pop()?.();
+
+    useSettings({ providers: { pricing: { source: "runtime", autoRefreshDays: 7 } } });
+
+    await vi.waitFor(
+      () =>
+        expect(pricing.activePriceList()).toMatchObject({
+          selection: "runtime",
+          source: "runtime",
+        }),
+      { timeout: 5_000 },
+    );
+    expect(pricing.lookupCost("openai", "gpt-4o-mini")?.input).toBe(9.99);
   });
 
   it("checks again at once when the time limit changes, also when set to its default", async () => {

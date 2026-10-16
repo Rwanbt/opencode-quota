@@ -150,7 +150,7 @@ export const QuotaToastPlugin = Plugin.define({
     let settingsConverted = conversion?.written ?? false;
     let loaded: LoadedSettings = await loadSettings({ projectDir });
     // Local estimates and usage reports use the price list of the settings held now.
-    usePricingSettings(() => loaded.settings.providers.pricing);
+    const unbindPricingSettings = usePricingSettings(() => loaded.settings.providers.pricing);
     // /quota_status reports the providers it detected. The slash commands and
     // the tool add them to the global OpenCode config; the TUI palette (via RPC) never writes it.
     const buildStatusOutput = (
@@ -531,7 +531,8 @@ export const QuotaToastPlugin = Plugin.define({
       );
     });
 
-    // Running fetches still read logins, so the store is drained before the binding goes.
+    // Running fetches still read logins and prices, so the store is drained before the
+    // bindings go.
     return async () => {
       credentialEvents.abort();
       settingsWatch.close();
@@ -539,6 +540,7 @@ export const QuotaToastPlugin = Plugin.define({
       publisher.dispose();
       await store.dispose();
       unbindCredentialSource();
+      unbindPricingSettings();
     };
   },
 });

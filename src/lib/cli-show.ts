@@ -226,11 +226,12 @@ async function runCliReport(params: {
   stderr: Pick<NodeJS.WriteStream, "write">;
 }): Promise<number> {
   const unbind = bindCredentialSource(createSqliteCredentialSource());
+  let unbindPricingSettings = () => {};
   try {
     const roots = resolveCliRoots(params.cwd);
     // The terminal reads the settings as they are; only OpenCode writes the v5 conversion.
     const loaded = await loadSettings({ projectDir: roots.workspaceRoot });
-    usePricingSettings(() => loaded.settings.providers.pricing);
+    unbindPricingSettings = usePricingSettings(() => loaded.settings.providers.pricing);
     const host: ProviderSourceHost = {
       client: createCliQuotaClient({
         configRootDir: roots.configRoot,
@@ -249,6 +250,7 @@ async function runCliReport(params: {
     return 1;
   } finally {
     unbind();
+    unbindPricingSettings();
   }
 }
 
