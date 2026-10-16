@@ -30,6 +30,8 @@ vi.mock("../src/lib/provider-availability.js", async (importOriginal) => ({
   isCanonicalProviderAvailable: vi.fn(),
 }));
 
+const POSIX_IDENTITY_STORAGE = process.platform !== "win32" && typeof process.getuid === "function";
+
 const VENDORS = {
   "ollama-cloud": { provider: ollamaCloudProvider, keyEnv: "OLLAMA_API_KEY" },
   deepseek: { provider: deepseekProvider, keyEnv: "DEEPSEEK_API_KEY" },
@@ -418,21 +420,24 @@ describeVendor("openrouter", [
   },
 ]);
 
-it("tells OpenRouter keys apart for the cache without holding the key", async () => {
-  const policy = openRouterProvider.cachePolicy;
-  if (policy.kind !== "resolved-auth") throw new Error("expected a resolved-auth policy");
-  const identity = () => policy.resolveIdentity({} as never, {});
-  await expect(identity()).resolves.toBeNull();
+it.runIf(POSIX_IDENTITY_STORAGE)(
+  "tells OpenRouter keys apart for the cache without holding the key",
+  async () => {
+    const policy = openRouterProvider.cachePolicy;
+    if (policy.kind !== "resolved-auth") throw new Error("expected a resolved-auth policy");
+    const identity = () => policy.resolveIdentity({} as never, {});
+    await expect(identity()).resolves.toBeNull();
 
-  setKey("openrouter");
-  const first = await identity();
-  process.env.OPENROUTER_API_KEY = "other-key";
-  const second = await identity();
+    setKey("openrouter");
+    const first = await identity();
+    process.env.OPENROUTER_API_KEY = "other-key";
+    const second = await identity();
 
-  expect(first).not.toBeNull();
-  expect(second).not.toBe(first);
-  expect(`${first} ${second}`).not.toContain(KEY);
-});
+    expect(first).not.toBeNull();
+    expect(second).not.toBe(first);
+    expect(`${first} ${second}`).not.toContain(KEY);
+  },
+);
 
 describe("DeepSeek and Ollama Cloud stored keys", () => {
   const STORED_KEY_VENDORS = [

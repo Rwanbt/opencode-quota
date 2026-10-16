@@ -25,6 +25,7 @@ import {
   resolveOpenAIOAuth,
 } from "../src/lib/openai.js";
 
+const POSIX_IDENTITY_STORAGE = process.platform !== "win32" && typeof process.getuid === "function";
 const LOGIN: OpenAIOAuthLogin = { state: "configured", sourceKey: "openai", accessToken: "a.b.c" };
 
 /** A JWT-shaped token with this payload. */
@@ -158,20 +159,23 @@ describe("OpenAI login identity", () => {
     return openaiLoginsIdentity(await readOpenAILogins());
   }
 
-  it("prefers the resolved stable account id for opaque cache identity", async () => {
-    const identity = await identityOf({
-      type: "oauth",
-      access: "access-secret",
-      refresh: "refresh-secret",
-      accountId: "account-stable-id",
-    });
+  it.runIf(POSIX_IDENTITY_STORAGE)(
+    "prefers the resolved stable account id for opaque cache identity",
+    async () => {
+      const identity = await identityOf({
+        type: "oauth",
+        access: "access-secret",
+        refresh: "refresh-secret",
+        accountId: "account-stable-id",
+      });
 
-    expect(identity).toMatch(/^rai1_/u);
-    expect(mocks.deriveResolvedAuthIdentity).toHaveBeenCalledWith({
-      providerId: "openai",
-      principal: { kind: "stable-id", value: "account-stable-id" },
-    });
-  });
+      expect(identity).toMatch(/^rai1_/u);
+      expect(mocks.deriveResolvedAuthIdentity).toHaveBeenCalledWith({
+        providerId: "openai",
+        principal: { kind: "stable-id", value: "account-stable-id" },
+      });
+    },
+  );
 
   it("uses the login's credential rather than advisory email when no account id exists", async () => {
     const access = jwt({ email: "shared@example.com" });

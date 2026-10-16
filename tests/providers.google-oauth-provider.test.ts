@@ -16,6 +16,7 @@ import { createFakeIntegration } from "./helpers/fake-integration.js";
 import { fakeHttp, fetchRows, requestHeader, useProviderWorld } from "./helpers/provider-fetch.js";
 
 const world = useProviderWorld();
+const POSIX_IDENTITY_STORAGE = process.platform !== "win32" && typeof process.getuid === "function";
 
 const PROVIDERS = [
   {
@@ -201,24 +202,27 @@ describe.each(PROVIDERS)("$name provider", (flavor) => {
     ]);
   });
 
-  it("keeps the remembered rows apart per companion client and login list", async () => {
-    const policy = provider.cachePolicy;
-    if (policy.kind !== "resolved-auth") throw new Error("expected a resolved-auth policy");
-    const identity = () => policy.resolveIdentity({ config: {} } as never, {} as never);
-    world.storeLogins([googleLogin(flavor, "work")]);
+  it.runIf(POSIX_IDENTITY_STORAGE)(
+    "keeps the remembered rows apart per companion client and login list",
+    async () => {
+      const policy = provider.cachePolicy;
+      if (policy.kind !== "resolved-auth") throw new Error("expected a resolved-auth policy");
+      const identity = () => policy.resolveIdentity({ config: {} } as never, {} as never);
+      world.storeLogins([googleLogin(flavor, "work")]);
 
-    // Without the companion's OAuth client the rows are not remembered.
-    await expect(identity()).resolves.toBeNull();
+      // Without the companion's OAuth client the rows are not remembered.
+      await expect(identity()).resolves.toBeNull();
 
-    installCompanion(flavor);
-    flavor.companion.resolver.clearCacheForTests();
-    const one = await identity();
-    expect(one).toEqual(expect.any(String));
-    await expect(identity()).resolves.toBe(one);
+      installCompanion(flavor);
+      flavor.companion.resolver.clearCacheForTests();
+      const one = await identity();
+      expect(one).toEqual(expect.any(String));
+      await expect(identity()).resolves.toBe(one);
 
-    world.storeLogins([googleLogin(flavor, "work"), googleLogin(flavor, "home")]);
-    await expect(identity()).resolves.not.toBe(one);
-  });
+      world.storeLogins([googleLogin(flavor, "work"), googleLogin(flavor, "home")]);
+      await expect(identity()).resolves.not.toBe(one);
+    },
+  );
 });
 
 describe("Google AGY rows", () => {
