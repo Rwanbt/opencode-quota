@@ -187,14 +187,15 @@ export function surfaceEditor(surface: Surface, snapshot?: QuotaSnapshot) {
 
     /**
      * ‹ or ›: the provider's window steps `delta` through its choices. The window it would show
-     * without a pick of its own is no pick, so it follows "For all providers" again.
+     * without a pick of its own is no pick, so it follows "For all providers" again. Nothing on a
+     * line without ‹ ›: a page that shows rows, or a provider with fewer than two windows.
      */
     cycleWindow(providerId: string, delta: number): SettingsEdit {
       return (settings) => {
         const provider = snapshot?.providers.find((item) => item.providerId === providerId);
         const group = provider && shownGroup(provider, settings[surface].hidden);
         const choices = group ? windowChoices(group) : [];
-        if (!group || choices.length === 0) return settings;
+        if (withRows || !group || choices.length === 0) return settings;
         const windows = settings[windowsKey].window;
         const { [providerId]: _ownPick, ...withoutOwnPick } = windows;
         const inherited = windowFor(withoutOwnPick, group);

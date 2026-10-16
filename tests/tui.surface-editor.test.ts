@@ -168,6 +168,10 @@ describe("the Settings tree's lines and edits", () => {
     ]);
   });
 
+  it.each<Surface>(["sidebar", "toast"])("steps no window on %s, which shows no ‹ ›", (page) => {
+    expect(surfaceEditor(page, QUOTA).cycleWindow("claude", 1)(SETTINGS)).toBe(SETTINGS);
+  });
+
   it("ticks, switches and renames on its own page's settings", () => {
     const toast = surfaceEditor("toast", QUOTA);
     const hidden = toast.toggleHidden("copilot")(SETTINGS);
