@@ -424,7 +424,7 @@ async function startHosts() {
       focused = "message box";
     },
     /** The open dialog, drawn again. */
-    renderDialog: () => (dialog.show.mock.calls.at(-1)?.[0] as () => unknown)(),
+    renderDialog: () => (dialog.show.mock.calls.at(-1)![0] as () => unknown)(),
     /** Presses a key of the open dialog (its newest modal layer). */
     pressDialog: (bind: string) =>
       layers

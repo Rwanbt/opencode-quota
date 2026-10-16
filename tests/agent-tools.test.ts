@@ -9,7 +9,6 @@ import { bindCredentialSource, type CredentialRow } from "../src/lib/opencode-au
 import type { RemoteApiQuotaProviderDefinition } from "../src/lib/quota-providers.js";
 import { resolveQuotaProviderApiKey } from "../src/lib/quota-providers-remote.js";
 import { loadSettings, settingsPath } from "../src/settings/index.js";
-import { PROVIDER_IDS as CONFIG_PROVIDER_IDS } from "../src/settings/schema.js";
 
 let root: string;
 let openCodeProviderIds: string[];

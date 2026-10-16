@@ -204,7 +204,7 @@ function fakeHost(snapshot?: QuotaSnapshot) {
   const quotaWindow = createQuotaWindow(api as never, surface as never, settings);
   /** The terminal changes size: OpenTUI calls every resize listener, in the order they came. */
   const resize = () => {
-    for (const listener of [...resizeListeners]) listener();
+    for (const listener of resizeListeners.slice()) listener();
   };
   return {
     quotaWindow,

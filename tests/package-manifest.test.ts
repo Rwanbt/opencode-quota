@@ -34,7 +34,7 @@ const text = (path: string) => readFile(new URL(path, import.meta.url), "utf8");
 const pkg = JSON.parse(await text("../package.json"));
 const pnpmWorkspace = await text("../pnpm-workspace.yaml");
 const tsconfig = JSON.parse(await text("../tsconfig.json"));
-const biomeConfig = JSON.parse(await text("../biome.json"));
+const viteConfig = await text("../vite.config.ts");
 const lefthookConfig = parse(await text("../lefthook.yml"));
 const ciWorkflow = parse(await text("../.github/workflows/ci.yml")) as Workflow;
 const publishWorkflow = parse(await text("../.github/workflows/publish-npm.yml")) as Workflow;
@@ -105,14 +105,16 @@ describe("package manifest compatibility", () => {
       ["dependencies", "@opentui/core", "^0.5.10"],
       ["dependencies", "@opentui/solid", "^0.5.10"],
       ["pnpm", "peerDependencyRules", undefined],
-      // Biome is the only formatter and linter; Lefthook the only hook runner.
-      ["devDependencies", "@biomejs/biome", "2.3.11"],
+      // Vite+ is the only formatter and linter; Lefthook the only hook runner.
+      ["devDependencies", "vite-plus", "1.2.0"],
+      ["devDependencies", "@biomejs/biome", undefined],
       ["devDependencies", "prettier", undefined],
       ["devDependencies", "eslint", undefined],
-      ["scripts", "format", "biome format --write ."],
+      ["devDependencies", "oxlint", undefined],
+      ["scripts", "format", "vp fmt"],
       ["scripts", "format:check", undefined],
-      ["scripts", "lint", "biome lint ."],
-      ["scripts", "check", "biome check ."],
+      ["scripts", "lint", "vp lint"],
+      ["scripts", "check", "vp check --no-fmt"],
       ["scripts", "verify:v4-formatting", undefined],
       ["devDependencies", "lefthook", "2.0.15"],
       ["devDependencies", "husky", undefined],
@@ -153,20 +155,14 @@ describe("package manifest compatibility", () => {
 
   it("keeps the tool configs the gates rely on, and none of the removed tools", async () => {
     expect(tsconfig.compilerOptions?.types).toEqual(["node"]);
-    expect(biomeConfig.$schema).toBe("https://biomejs.dev/schemas/2.3.11/schema.json");
-    expect(biomeConfig.linter?.rules?.recommended).toBe(true);
-    expect(biomeConfig.linter?.domains?.solid).toBe("recommended");
-    expect(
-      biomeConfig.overrides?.some(
-        (override: { includes?: string[]; linter?: { domains?: Record<string, string> } }) =>
-          override.includes?.includes("tests/**/*.test.ts") &&
-          override.linter?.domains?.test === "recommended",
-      ),
-    ).toBe(true);
+    expect(viteConfig).toContain('import { defineConfig } from "vite-plus";');
+    expect(viteConfig).toContain('categories: { correctness: "error" }');
+    // The build's tsc, on the pinned TypeScript, is the only type check.
+    expect(viteConfig).not.toMatch(/typeAware|typeCheck/);
     expect(lefthookConfig["pre-commit"]?.commands).toEqual({
-      biome: {
+      check: {
         glob: "**/*.{js,cjs,mjs,jsx,ts,tsx,json,jsonc,css}",
-        run: "pnpm exec biome check --write --no-errors-on-unmatched {staged_files}",
+        run: "pnpm exec vp check --fix --no-fmt --no-error-on-unmatched-pattern {staged_files}",
         stage_fixed: true,
       },
     });
@@ -183,8 +179,12 @@ describe("package manifest compatibility", () => {
       [".d.ts", ".d.ts.map", ".js", ".js.map"].map((ext) => `../dist/${base}${ext}`),
     );
     const removed = [
-      ...["../.prettierignore", "../.prettierrc.json", "../scripts/verify-v4-formatting.mjs"],
-      ...["../.husky", "../.lintstagedrc"],
+      "../.prettierignore",
+      "../.prettierrc.json",
+      "../scripts/verify-v4-formatting.mjs",
+      "../.husky",
+      "../.lintstagedrc",
+      "../biome.json",
       ...staleCrof,
     ];
     for (const path of removed) {

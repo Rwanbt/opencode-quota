@@ -30,9 +30,9 @@
   ],
   "scripts": {
     "build": "node scripts/clean-dist.mjs && tsc && node scripts/copy-data.mjs && node scripts/prepare-tui-dist.mjs",
-    "check": "biome check .",
-    "format": "biome format --write .",
-    "lint": "biome lint .",
+    "check": "vp check --no-fmt",
+    "format": "vp fmt",
+    "lint": "vp lint",
     "pack:release-package": "node scripts/pack-release-package.mjs",
     "pricing:refresh": "node scripts/refresh-modelsdev-pricing.mjs",
     "pricing:refresh:if-stale": "node scripts/refresh-modelsdev-pricing-if-stale.mjs",
@@ -77,13 +77,13 @@
   "devDependencies": {
     "@babel/core": "^7.28.0",
     "@babel/preset-typescript": "^7.27.1",
-    "@biomejs/biome": "2.3.11",
     "@opencode/plugin": "2.0.28",
     "@opentelemetry/sdk-metrics": "2.10.0",
     "@types/node": "^22.0.0",
     "babel-preset-solid": "^1.9.12",
     "lefthook": "2.0.15",
     "typescript": "7.0.2",
+    "vite-plus": "1.2.0",
     "vitest": "^4.0.17",
     "yaml": "^2.8.3"
   },

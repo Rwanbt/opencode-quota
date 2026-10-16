@@ -19,7 +19,7 @@ corepack prepare pnpm@11.7.0 --activate
 pnpm install
 ```
 
-`pnpm install` also installs the Git hooks: pre-commit formats staged files with Biome; pre-push runs `pnpm verify`.
+`pnpm install` also installs the Git hooks: pre-commit lints staged files and fixes what it can with Vite+ (`vp check --fix --no-fmt`); pre-push runs `pnpm verify`.
 
 ## Checks
 

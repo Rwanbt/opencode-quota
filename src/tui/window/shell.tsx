@@ -190,7 +190,7 @@ export type WindowKey = {
   bind: string;
   title: string;
   group: string;
-  // biome-ignore lint/suspicious/noConfusingVoidType: OpenCode's keymap API types `run` this way.
+  // OpenCode's keymap API types `run` this way.
   run: () => void | false;
 };
 

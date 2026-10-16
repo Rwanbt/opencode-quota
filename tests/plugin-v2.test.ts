@@ -407,7 +407,7 @@ describe("V2 server plugin", () => {
     const { ctx } = createContext();
     const token = `eyJ${"a".repeat(24)}.${"b".repeat(24)}.${"c".repeat(24)}`;
     const subscribe = vi.fn(() => ({
-      // biome-ignore lint/correctness/useYield: the stream fails before its first event
+      // oxlint-disable-next-line require-yield -- the stream fails before its first event
       async *[Symbol.asyncIterator]() {
         throw new Error(`event stream closed ${token}`);
       },
@@ -427,6 +427,7 @@ describe("V2 server plugin", () => {
   it("stops the credential event subscription silently on cleanup", async () => {
     const { ctx } = createContext();
     const subscribe = vi.fn(({ signal }: { signal: AbortSignal }) => ({
+      // oxlint-disable-next-line require-yield -- the stream is aborted before its first event
       async *[Symbol.asyncIterator]() {
         await new Promise((resolve) => signal.addEventListener("abort", resolve));
         throw new DOMException("This operation was aborted", "AbortError");
