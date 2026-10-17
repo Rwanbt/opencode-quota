@@ -1,0 +1,505 @@
+From b0ac10b6ab9a04bb4593c426723e9254eb49908d Mon Sep 17 00:00:00 2001
+From: Rwanbt <barat.erwan@gmail.com>
+Date: Sat, 17 Oct 2026 13:23:33 +0200
+Subject: [PATCH] feat(context): prototype quota hover from cached plugin RPC
+
+---
+ .../gui-extensions/src/context/i18n/en.ts     |  13 ++
+ .../gui-extensions/src/context/i18n/fr.ts     |  13 ++
+ .../gui-extensions/src/context/indicator.tsx  |  59 ++++++++-
+ .../src/context/quota-hover.tsx               |  99 +++++++++++++++
+ .../src/context/quota-snapshot.test.ts        | 112 +++++++++++++++++
+ .../src/context/quota-snapshot.ts             | 114 ++++++++++++++++++
+ 6 files changed, 407 insertions(+), 3 deletions(-)
+ create mode 100644 packages/gui-extensions/src/context/quota-hover.tsx
+ create mode 100644 packages/gui-extensions/src/context/quota-snapshot.test.ts
+ create mode 100644 packages/gui-extensions/src/context/quota-snapshot.ts
+
+diff --git a/packages/gui-extensions/src/context/i18n/en.ts b/packages/gui-extensions/src/context/i18n/en.ts
+index 5ad0d90..2693ca4 100644
+--- a/packages/gui-extensions/src/context/i18n/en.ts
++++ b/packages/gui-extensions/src/context/i18n/en.ts
+@@ -6,6 +6,19 @@ export default {
+   "usage.cost": "Cost",
+   "usage.view": "View context usage",
+   "usage.toggle": "Toggle session context",
++  "quota.heading": "Context and usage limits",
++  "quota.contextUsed": "Session context used",
++  "quota.subscriptions": "Subscription limits",
++  "quota.limit": "Limit",
++  "quota.remaining": "remaining",
++  "quota.resetsIn": "Resets in",
++  "quota.cached": "Cached data",
++  "quota.loading": "Reading cached quotas…",
++  "quota.unavailable": "No quota data available",
++  "quota.stale": "Stale data",
++  "quota.partial": "Partial",
++  "quota.providerReported": "Provider reported",
++  "quota.locallyDerived": "Locally derived",
+   "systemPrompt.title": "System Prompt",
+   "rawMessages.title": "Raw messages",
+   "export.session": "Export session",
+diff --git a/packages/gui-extensions/src/context/i18n/fr.ts b/packages/gui-extensions/src/context/i18n/fr.ts
+index ea063c2..53c19a9 100644
+--- a/packages/gui-extensions/src/context/i18n/fr.ts
++++ b/packages/gui-extensions/src/context/i18n/fr.ts
+@@ -5,6 +5,19 @@ export default {
+   "usage.usage": "Utilisation",
+   "usage.cost": "Coût",
+   "usage.view": "Voir l'utilisation du contexte",
++  "quota.heading": "Contexte et limites d'utilisation",
++  "quota.contextUsed": "Contexte de session utilisé",
++  "quota.subscriptions": "Limites des abonnements",
++  "quota.limit": "Limite",
++  "quota.remaining": "restant",
++  "quota.resetsIn": "Réinitialisation dans",
++  "quota.cached": "Données en cache",
++  "quota.loading": "Lecture des quotas en cache…",
++  "quota.unavailable": "Aucune donnée de quota disponible",
++  "quota.stale": "Données anciennes",
++  "quota.partial": "Partiel",
++  "quota.providerReported": "Indiqué par le fournisseur",
++  "quota.locallyDerived": "Calculé localement",
+   "systemPrompt.title": "Invite système",
+   "rawMessages.title": "Messages bruts",
+   "export.session": "Exporter la session",
+diff --git a/packages/gui-extensions/src/context/indicator.tsx b/packages/gui-extensions/src/context/indicator.tsx
+index 6118a7f..b0cc82a 100644
+--- a/packages/gui-extensions/src/context/indicator.tsx
++++ b/packages/gui-extensions/src/context/indicator.tsx
+@@ -1,11 +1,13 @@
+-import { Show, createMemo, type ComponentProps, type JSX } from "solid-js"
++import { Show, createEffect, createMemo, createSignal, onCleanup, type ComponentProps, type JSX } from "solid-js"
+ import { ProgressCircle } from "@opencode/ui/progress-circle"
+ import { Button } from "@opencode/ui/button"
+ import { Tooltip } from "@opencode/ui/tooltip"
+ import { useI18n } from "@opencode/ui/context/i18n"
+ import { lastAssistantWithUsage } from "@opencode/client/solid"
+-import { useExtension, type MountedSession } from "../sdk"
++import { createLatest, useExtension, type MountedSession, type ServerRef } from "../sdk"
+ import { catalogModel, syncCatalog } from "./catalog"
++import { QuotaHover } from "./quota-hover"
++import { readQuotaSnapshot } from "./quota-snapshot"
+ 
+ function ContextTooltipRow(props: { name: JSX.Element; value: JSX.Element }) {
+   return (
+@@ -27,6 +29,44 @@ export function SessionContextUsage(props: {
+   syncCatalog(() => props.session)
+ 
+   const variant = createMemo(() => props.variant ?? "button")
++  const [request, setRequest] = createSignal<{ target: { client: ServerRef["client"]; directory: string }; key: string }>()
++  const [lastRequest, setLastRequest] = createSignal<{ key: string; time: number }>()
++  const [now, setNow] = createSignal(Math.floor(Date.now() / 1000))
++  const clients = new WeakMap<object, number>()
++  let nextClientID = 0
++  const key = () => {
++    const client = props.session.server.client
++    let id = clients.get(client)
++    if (id === undefined) {
++      id = ++nextClientID
++      clients.set(client, id)
++    }
++    return `${props.session.key}\n${props.session.directory}\n${id}`
++  }
++  const quota = createLatest(request, async (current, signal) => ({
++    key: current.key,
++    snapshot: await readQuotaSnapshot(current.target, signal),
++  }))
++  const snapshot = () => (quota.latest?.key === key() ? quota.latest.snapshot : undefined)
++  const loading = () => request()?.key === key() && quota.loading
++
++  createEffect(() => {
++    if (request()?.key !== key()) setRequest(undefined)
++  })
++  createEffect(() => {
++    if (!request()) return
++    const interval = setInterval(() => setNow(Math.floor(Date.now() / 1000)), 60_000)
++    onCleanup(() => clearInterval(interval))
++  })
++
++  const loadQuota = () => {
++    if (variant() !== "button") return
++    const current = key()
++    if (lastRequest()?.key === current && Date.now() - (lastRequest()?.time ?? 0) < 60_000) return
++    setLastRequest({ key: current, time: Date.now() })
++    setNow(Math.floor(Date.now() / 1000))
++    setRequest({ target: { client: props.session.server.client, directory: props.session.directory }, key: current })
++  }
+ 
+   const messages = createMemo(() =>
+     props.session.id ? props.session.server.data.session.message.list(props.session.id) : [],
+@@ -126,7 +166,18 @@ export function SessionContextUsage(props: {
+   return (
+     <Show when={props.session.id}>
+       <Tooltip
+-        value={variant() === "indicator" ? tooltipValue() : ctx.t("usage.toggle")}
++        value={variant() === "indicator" ? tooltipValue() : (
++          <QuotaHover
++            contextPercent={context()?.usage ?? undefined}
++            contextTokens={context()?.total ?? 0}
++            cost={showCost() ? cost() : undefined}
++            snapshot={snapshot()}
++            loading={Boolean(loading())}
++            now={now()}
++            t={ctx.t}
++          />
++        )}
++        appearance={variant() === "button" ? "large" : "compact"}
+         placement={props.placement ?? "top"}
+       >
+         <Show
+@@ -138,6 +189,8 @@ export function SessionContextUsage(props: {
+               class="group shrink-0"
+               style={{ padding: "0 6px", color: "var(--v2-text-text-faint)" }}
+               onClick={openContext}
++              onPointerEnter={loadQuota}
++              onFocus={loadQuota}
+               aria-expanded={layout.state(`${ctx.id}:main`, props.session) === "visible"}
+               aria-label={ctx.t("usage.toggle")}
+             >
+diff --git a/packages/gui-extensions/src/context/quota-hover.tsx b/packages/gui-extensions/src/context/quota-hover.tsx
+new file mode 100644
+index 0000000..d95670e
+--- /dev/null
++++ b/packages/gui-extensions/src/context/quota-hover.tsx
+@@ -0,0 +1,99 @@
++import { For, Show, type JSX } from "solid-js"
++import { resetCountdown, isQuotaStale, type QuotaSnapshotView } from "./quota-snapshot"
++
++function Bar(props: { value: number; label: string }) {
++  const percent = () => Math.max(0, Math.min(100, props.value))
++  return (
++    <div
++      role="progressbar"
++      aria-label={props.label}
++      aria-valuemin={0}
++      aria-valuemax={100}
++      aria-valuenow={percent()}
++      class="h-1.5 w-full overflow-hidden rounded-full bg-v2-background-bg-layer-04"
++    >
++      <div
++        class="h-full rounded-full bg-v2-icon-icon-base"
++        style={{ width: `${percent()}%` }}
++      />
++    </div>
++  )
++}
++
++export function QuotaHover(props: {
++  contextPercent: number | undefined
++  contextTokens: number
++  cost?: string
++  snapshot: QuotaSnapshotView | undefined
++  loading: boolean
++  now: number
++  t: (key: string) => string
++}) {
++  const ready = () => props.snapshot?.providers.some((provider) => provider.windows.length > 0) ?? false
++  const section = (children: JSX.Element) => <div class="flex flex-col gap-2 border-t border-v2-border-border-subtle pt-3">{children}</div>
++
++  return (
++    <div class="flex w-[min(360px,calc(100vw-32px))] max-h-[min(65vh,560px)] flex-col gap-3 overflow-y-auto p-1 text-sm">
++      <div class="flex items-center justify-between gap-3 font-medium">
++        <span>{props.t("quota.heading")}</span>
++        <Show when={props.snapshot && isQuotaStale(props.snapshot, props.now)}>
++          <span class="text-xs text-v2-text-text-muted">{props.t("quota.stale")}</span>
++        </Show>
++      </div>
++      <div class="flex flex-col gap-1.5">
++        <div class="flex justify-between gap-4">
++          <span>{props.t("usage.usage")}</span>
++          <span class="tabular-nums">{props.contextPercent === undefined ? "—" : `${props.contextPercent}%`}</span>
++        </div>
++        <Show when={props.contextPercent !== undefined}>
++          <Bar value={props.contextPercent ?? 0} label={props.t("quota.contextUsed")} />
++        </Show>
++        <div class="flex justify-between gap-4 text-xs text-v2-text-text-muted">
++          <span>{props.t("usage.tokens")}: {props.contextTokens.toLocaleString()}</span>
++          <Show when={props.cost}><span>{props.cost}</span></Show>
++        </div>
++      </div>
++      {section(
++        <>
++          <div class="font-medium">{props.t("quota.subscriptions")}</div>
++          <Show when={ready()} fallback={<div class="text-v2-text-text-muted">{props.loading ? props.t("quota.loading") : props.t("quota.unavailable")}</div>}>
++            <For each={props.snapshot?.providers.filter((provider) => provider.windows.length > 0)}>
++              {(provider) => (
++                <div class="flex flex-col gap-2 py-1">
++                  <div class="flex items-center justify-between gap-3 font-medium">
++                    <span class="truncate">{provider.id}</span>
++                    <Show when={provider.status === "partial"}>
++                      <span class="text-xs text-v2-text-text-muted">{props.t("quota.partial")}</span>
++                    </Show>
++                  </div>
++                  <For each={provider.windows}>
++                    {(window) => (
++                      <div class="flex flex-col gap-1.5">
++                        <div class="flex justify-between gap-3 text-xs">
++                          <span class="text-v2-text-text-muted">{window.window ?? props.t("quota.limit")}</span>
++                          <span class="tabular-nums">{window.percentRemaining}% {props.t("quota.remaining")}</span>
++                        </div>
++                        <Bar value={window.percentRemaining} label={`${provider.id}: ${window.window ?? props.t("quota.limit")}`} />
++                        <div class="flex justify-between gap-3 text-xs text-v2-text-text-muted">
++                          <span>{window.authority === "provider_reported" ? props.t("quota.providerReported") : props.t("quota.locallyDerived")}</span>
++                          <Show when={resetCountdown(window.resetAt, props.now)}>
++                            {(countdown) => <span class="tabular-nums">{props.t("quota.resetsIn")} {countdown()}</span>}
++                          </Show>
++                        </div>
++                      </div>
++                    )}
++                  </For>
++                </div>
++              )}
++            </For>
++          </Show>
++        </>,
++      )}
++      <Show when={props.snapshot}>
++        <div class="text-xs text-v2-text-text-muted">
++          {props.t("quota.cached")} · {props.snapshot?.cacheAgeSeconds ?? 0}s
++        </div>
++      </Show>
++    </div>
++  )
++}
+diff --git a/packages/gui-extensions/src/context/quota-snapshot.test.ts b/packages/gui-extensions/src/context/quota-snapshot.test.ts
+new file mode 100644
+index 0000000..e0ae53f
+--- /dev/null
++++ b/packages/gui-extensions/src/context/quota-snapshot.test.ts
+@@ -0,0 +1,112 @@
++import { describe, expect, test } from "bun:test"
++import { isQuotaStale, parseQuotaSnapshot, readQuotaSnapshot, resetCountdown } from "./quota-snapshot"
++import type { ServerRef } from "../sdk"
++
++describe("quota snapshot safe GUI projection", () => {
++  test("accepts valid percentage, provenance and reset but never provider-controlled free text", () => {
++    const data = parseQuotaSnapshot({
++      version: 1,
++      generatedAt: 1_760_000_000,
++      cacheAgeSeconds: 9,
++      providers: {
++        codex: {
++          status: "partial",
++          fetchedAt: 1_760_000_000,
++          error: "token-secret",
++          windows: [
++            {
++              window: "5h",
++              percentRemaining: 69,
++              resetAt: 1_760_000_900,
++              authority: "provider_reported",
++              name: "private@example.com",
++            },
++          ],
++        },
++      },
++    })
++    expect(data).toEqual({
++      generatedAt: 1_760_000_000,
++      cacheAgeSeconds: 9,
++      providers: [{
++        id: "codex",
++        status: "partial",
++        fetchedAt: 1_760_000_000,
++        windows: [{ window: "5h", percentRemaining: 69, resetAt: 1_760_000_900, authority: "provider_reported" }],
++      }],
++    })
++    expect(JSON.stringify(data)).not.toMatch(/token-secret|private@example.com/)
++  })
++
++  test("rejects bad payloads, malicious keys, overflow and fabricated quota", () => {
++    expect(parseQuotaSnapshot({ version: 2, providers: {}, generatedAt: 1_760_000_000, cacheAgeSeconds: 0 })).toBeUndefined()
++    expect(parseQuotaSnapshot({ version: 1, providers: [], generatedAt: 1_760_000_000, cacheAgeSeconds: 0 })).toBeUndefined()
++    const hostile = parseQuotaSnapshot({
++      version: 1,
++      generatedAt: 1_760_000_000,
++      cacheAgeSeconds: 400,
++      providers: Object.fromEntries([
++        ["__proto__", { status: "ok", windows: [{ percentRemaining: 50, authority: "provider_reported" }] }],
++        ["codex", { status: "ok", windows: [
++          { percentRemaining: Number.NaN, authority: "provider_reported" },
++          { percentRemaining: 101, authority: "provider_reported" },
++          { percentRemaining: 28, authority: "provider_reported", window: "<script>" },
++        ] }],
++      ]),
++    })
++    expect(hostile?.providers).toEqual([{
++      id: "codex",
++      status: "ok",
++      windows: [{ percentRemaining: 28, authority: "provider_reported" }],
++    }])
++  })
++
++  test("countdowns are derived from timestamps, not invented when unknown", () => {
++    expect(resetCountdown(undefined, 100)).toBeUndefined()
++    expect(resetCountdown(100, 100)).toBe("0m")
++    expect(resetCountdown(100 + 125 * 60, 100)).toBe("2h 5m")
++    expect(resetCountdown(100 + 90_000, 100)).toBe("1d 1h")
++    expect(resetCountdown(100 + 3599, 100)).toBe("1h 0m")
++    expect(isQuotaStale({ generatedAt: 100, cacheAgeSeconds: 5, providers: [] }, 401)).toBe(true)
++    expect(isQuotaStale({ generatedAt: 100, cacheAgeSeconds: 5, providers: [] }, 105)).toBe(false)
++  })
++
++  test("never displays percentage bars from unavailable or error states", () => {
++    const result = parseQuotaSnapshot({
++      version: 1,
++      generatedAt: 1_760_000_000,
++      cacheAgeSeconds: 0,
++      providers: {
++        a: { status: "unavailable", windows: [{ percentRemaining: 22, authority: "provider_reported" }] },
++        b: { status: "error", windows: [{ percentRemaining: 30, authority: "provider_reported" }] },
++      },
++    })
++    expect(result?.providers.map((provider) => provider.windows)).toEqual([[], []])
++  })
++
++  test("only calls cache-only snapshot RPC for the selected directory with an abort signal", async () => {
++    const controller = new AbortController()
++    const calls: unknown[][] = []
++    const client = {
++      rpc: {
++        call: async (...args: unknown[]) => {
++          calls.push(args)
++          return {
++            output: {
++              version: 1,
++              generatedAt: 1_760_000_000,
++              cacheAgeSeconds: 0,
++              providers: { codex: { status: "unavailable", windows: [] } },
++            },
++          }
++        },
++      },
++    }
++    const result = await readQuotaSnapshot({ client: client as unknown as ServerRef["client"], directory: "C:/safe-project" }, controller.signal)
++    expect(result?.providers[0]?.status).toBe("unavailable")
++    expect(calls).toEqual([[
++      { rpcID: "slkiser.opencode-quota", method: "snapshot", input: {}, location: { directory: "C:/safe-project" } },
++      { signal: controller.signal },
++    ]])
++  })
++})
+diff --git a/packages/gui-extensions/src/context/quota-snapshot.ts b/packages/gui-extensions/src/context/quota-snapshot.ts
+new file mode 100644
+index 0000000..79eb1b8
+--- /dev/null
++++ b/packages/gui-extensions/src/context/quota-snapshot.ts
+@@ -0,0 +1,114 @@
++import type { ServerRef } from "../sdk"
++
++// Experimental host adapter for Rwanbt/opencode-quota PR #1. This reads the
++// plugin's cached RPC output; it does not refresh any provider or request a model.
++const RPC_ID = "slkiser.opencode-quota"
++const MAX_PROVIDERS = 24
++const MAX_WINDOWS = 12
++const WINDOW_LABELS = new Set(["RPM", "Hourly", "5h", "Daily", "Weekly", "Monthly", "Yearly", "MCP", "Code Review"])
++const STATUS = new Set(["ok", "partial", "error", "unavailable"])
++const AUTHORITY = new Set(["provider_reported", "locally_derived"])
++const PROVIDER_ID = /^[a-z0-9][a-z0-9._-]{0,63}$/
++
++export interface QuotaWindow {
++  percentRemaining: number
++  authority: "provider_reported" | "locally_derived"
++  window?: string
++  resetAt?: number
++}
++
++export interface QuotaProviderView {
++  id: string
++  status: "ok" | "partial" | "error" | "unavailable"
++  fetchedAt?: number
++  windows: QuotaWindow[]
++}
++
++export interface QuotaSnapshotView {
++  generatedAt: number
++  cacheAgeSeconds: number
++  providers: QuotaProviderView[]
++}
++
++function record(value: unknown): Record<string, unknown> | undefined {
++  return value && typeof value === "object" && !Array.isArray(value)
++    ? (value as Record<string, unknown>)
++    : undefined
++}
++
++function unix(value: unknown): number | undefined {
++  return typeof value === "number" && Number.isSafeInteger(value) && value > 0 && value < 4_102_444_800
++    ? value
++    : undefined
++}
++
++/** Parse a strict allowlist: untrusted provider labels/errors never reach JSX. */
++export function parseQuotaSnapshot(input: unknown): QuotaSnapshotView | undefined {
++  const source = record(input)
++  if (!source || source.version !== 1) return
++  const generatedAt = unix(source.generatedAt)
++  const age = source.cacheAgeSeconds
++  const providers = record(source.providers)
++  if (generatedAt === undefined || typeof age !== "number" || !Number.isSafeInteger(age) || age < 0 || !providers) {
++    return
++  }
++
++  const output: QuotaProviderView[] = []
++  for (const [id, value] of Object.entries(providers).slice(0, MAX_PROVIDERS)) {
++    const provider = record(value)
++    if (!PROVIDER_ID.test(id) || !provider || typeof provider.status !== "string" || !STATUS.has(provider.status)) {
++      continue
++    }
++    const windows = (provider.status === "ok" || provider.status === "partial") && Array.isArray(provider.windows)
++      ? provider.windows
++      : []
++    const safe: QuotaWindow[] = []
++    for (const value of windows.slice(0, MAX_WINDOWS)) {
++      const window = record(value)
++      if (!window || typeof window.percentRemaining !== "number" || !Number.isFinite(window.percentRemaining)) continue
++      if (window.percentRemaining < 0 || window.percentRemaining > 100) continue
++      if (typeof window.authority !== "string" || !AUTHORITY.has(window.authority)) continue
++      safe.push({
++        percentRemaining: window.percentRemaining,
++        authority: window.authority as QuotaWindow["authority"],
++        ...(typeof window.window === "string" && WINDOW_LABELS.has(window.window) ? { window: window.window } : {}),
++        ...(unix(window.resetAt) !== undefined ? { resetAt: unix(window.resetAt) } : {}),
++      })
++    }
++    output.push({
++      id,
++      status: provider.status as QuotaProviderView["status"],
++      ...(unix(provider.fetchedAt) !== undefined ? { fetchedAt: unix(provider.fetchedAt) } : {}),
++      windows: safe,
++    })
++  }
++  return { generatedAt, cacheAgeSeconds: age, providers: output }
++}
++
++export function resetCountdown(resetAt: number | undefined, now: number): string | undefined {
++  if (resetAt === undefined) return
++  const minutesLeft = Math.ceil(Math.max(0, resetAt - now) / 60)
++  if (!minutesLeft) return "0m"
++  const days = Math.floor(minutesLeft / 1440)
++  const hours = Math.floor((minutesLeft % 1440) / 60)
++  const minutes = minutesLeft % 60
++  if (days) return `${days}d ${hours}h`
++  if (hours) return `${hours}h ${minutes}m`
++  return `${minutes}m`
++}
++
++export function isQuotaStale(snapshot: QuotaSnapshotView, now: number): boolean {
++  return snapshot.cacheAgeSeconds > 300 || now - snapshot.generatedAt > 300
++}
++
++/** A 404/unavailable RPC is expected when the quota plugin is not installed. */
++export async function readQuotaSnapshot(target: {
++  client: ServerRef["client"]
++  directory: string
++}, signal: AbortSignal): Promise<QuotaSnapshotView | undefined> {
++  const response = await target.client.rpc.call(
++    { rpcID: RPC_ID, method: "snapshot", input: {}, location: { directory: target.directory } },
++    { signal },
++  )
++  return parseQuotaSnapshot(response.output)
++}
+-- 
+2.51.1.windows.1
+

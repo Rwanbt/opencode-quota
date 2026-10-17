@@ -1,2 +1,4 @@
 # Auto detect text files and perform LF normalization
 * text=auto eol=lf
+# Embedded git-format-patch files contain literal diff syntax (+ <space>, -- <space>).
+integration/patches/*.patch whitespace=-blank-at-eol,-blank-at-eof
