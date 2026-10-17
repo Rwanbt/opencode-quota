@@ -4,6 +4,7 @@
  * Imports from `@opencode/*` stay type-only, so loading this file loads no OpenCode package.
  */
 import type { Rpc } from "@opencode/plugin";
+import type { GuiQuotaSnapshot } from "./lib/gui-snapshot.js";
 import {
   isQuotaDialogCommand,
   type QuotaDialogCommandId,
@@ -28,6 +29,8 @@ export type QuotaRpcFooterInput = { surface: "prompt" | "home"; sessionID?: stri
 export type QuotaRpcFooterOutput = { lines: string[] };
 export type QuotaRpcWriteExportInput = Record<string, never>;
 export type QuotaRpcWriteExportOutput = { written: boolean };
+export type QuotaRpcSnapshotInput = Record<string, never>;
+export type QuotaRpcSnapshotOutput = GuiQuotaSnapshot;
 export type QuotaRpcCommandInput = {
   command: QuotaDialogCommandId;
   arguments?: string;
@@ -112,6 +115,12 @@ export const QuotaRpc = {
         return checkOptionalString(value, "arguments") ?? checkOptionalString(value, "sessionID");
       }),
       output: schema<QuotaRpcCommandOutput>(checkOutput),
+    },
+    snapshot: {
+      input: schema<QuotaRpcSnapshotInput>((value) =>
+        isObject(value) && Object.keys(value).length === 0 ? null : "input must be an empty object",
+      ),
+      output: schema<QuotaRpcSnapshotOutput>(checkOutput),
     },
   },
 } satisfies Rpc.PortableDefinition;

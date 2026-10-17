@@ -146,7 +146,7 @@ describe("server quota RPC", () => {
     await rm(TEST_RUNTIME_ROOT, { recursive: true, force: true });
   });
 
-  it("registers the quota RPC with its four methods during setup", async () => {
+  it("registers the quota RPC with its five methods during setup", async () => {
     const { QuotaRpc } = await import("../src/rpc.js");
     const { definition, handlers } = await setupServer();
 
@@ -157,8 +157,58 @@ describe("server quota RPC", () => {
       "footer",
       "writeExport",
       "command",
+      "snapshot",
     ]);
     expect(Object.keys(handlers)).toEqual(Object.keys(definition.methods));
+  });
+
+  it("returns cached GUI quota bars without fetching providers or exposing raw details", async () => {
+    useConfig({ enableToast: true, showOnIdle: true });
+    const secret = "DO-NOT-EXPOSE-PROVIDER-SECRET";
+    const fetch = vi.fn().mockResolvedValue({
+      attempted: true,
+      entries: [
+        {
+          accounting: TEST_ACCOUNTING,
+          name: "Copilot",
+          label: "5h:",
+          percentRemaining: 81,
+          resetTimeIso: "2026-10-17T16:00:00Z",
+        },
+      ],
+      errors: [],
+      rawDetails: [{ key: "account", value: secret }],
+    });
+    mocks.getProviders.mockReturnValue([
+      { id: "copilot", isAvailable: vi.fn().mockResolvedValue(true), fetch },
+    ]);
+    const { call } = await setupServer();
+    await call("surface", { surface: "idle", sessionID: "session-1" });
+    expect(fetch).toHaveBeenCalledOnce();
+
+    const snapshot = await call("snapshot", {});
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(snapshot).toEqual({
+      version: 1,
+      generatedAt: expect.any(Number),
+      cacheAgeSeconds: expect.any(Number),
+      providers: {
+        copilot: {
+          status: "ok",
+          fetchedAt: expect.any(Number),
+          windows: [
+            expect.objectContaining({
+              window: "5h",
+              percentRemaining: 81,
+              resetAt: Date.parse("2026-10-17T16:00:00Z") / 1000,
+              authority: "provider_reported",
+            }),
+          ],
+        },
+      },
+    });
+    expect(JSON.stringify(snapshot)).not.toContain(secret);
+    expect(JSON.stringify(snapshot)).not.toContain("rawDetails");
   });
 
   it("serves the sidebar panel and the idle toast", async () => {
