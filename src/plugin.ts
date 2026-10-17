@@ -28,6 +28,7 @@ import {
 import { resolveQuotaResetRetryDelayMs } from "./lib/quota-retry-wait.js";
 import type { QuotaSessionModelContext } from "./lib/quota-runtime-context.js";
 import {
+  getGuiQuotaSnapshot,
   getQuotaFooter,
   getQuotaMessage,
   type QuotaSurfaceHost,
@@ -182,6 +183,7 @@ export const QuotaToastPlugin = Plugin.define({
           };
         }
       },
+      snapshot: () => logRpcFailure("snapshot", () => getGuiQuotaSnapshot(surfaceHost)),
     });
 
     await ctx.tool.transform((editor) => {

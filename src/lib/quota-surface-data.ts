@@ -9,6 +9,7 @@ import { writeJsonAtomic } from "./atomic-json.js";
 import type { RuntimeContextRootHints } from "./config-file-utils.js";
 import { sanitizeDisplayText } from "./display-sanitize.js";
 import { formatQuotaRows } from "./format.js";
+import { type GuiQuotaSnapshot, toGuiQuotaSnapshot } from "./gui-snapshot.js";
 import {
   BUNDLED_MAINTAINER_ANNOUNCEMENTS,
   formatMaintainerAnnouncementHomeCountLine,
@@ -452,4 +453,32 @@ export async function writeQuotaExportIfEnabled(host: QuotaSurfaceHost): Promise
   });
   await writeQuotaExport(exportData, resolveExportPath(runtime.config.export.path));
   return true;
+}
+
+/** Read-only snapshot for GUI clients: cached data only, never a provider refresh. */
+export async function getGuiQuotaSnapshot(host: QuotaSurfaceHost): Promise<GuiQuotaSnapshot> {
+  const runtime = await resolveQuotaRuntimeContext({
+    client: host.client,
+    roots: host.roots,
+  });
+  if (!runtime.config.enabled) {
+    return {
+      version: 1,
+      generatedAt: Math.floor(Date.now() / 1000),
+      cacheAgeSeconds: 0,
+      providers: {},
+    };
+  }
+  const enabled = runtime.config.enabledProviders;
+  const providers =
+    enabled === "auto"
+      ? runtime.providers
+      : runtime.providers.filter((provider) => enabled.includes(provider.id));
+  const cached = await buildQuotaExport({
+    providers,
+    ctx: createExportProviderContext(runtime),
+    ttlMs: runtime.config.minIntervalMs,
+    fromCache: true,
+  });
+  return toGuiQuotaSnapshot(cached);
 }

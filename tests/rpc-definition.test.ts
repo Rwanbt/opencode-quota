@@ -33,11 +33,27 @@ async function expectRejected(schema: StandardSchema, value: unknown, message: s
 const methods = QuotaRpc.methods;
 
 describe("quota RPC definition", () => {
-  it("defines the plain RPC id, no events and four methods", () => {
+  it("defines the plain RPC id, no events and five methods", () => {
     expect(QUOTA_RPC_ID).toBe("slkiser.opencode-quota");
     expect(QuotaRpc.id).toBe(QUOTA_RPC_ID);
     expect(QuotaRpc.events).toEqual({});
-    expect(Object.keys(methods)).toEqual(["surface", "footer", "writeExport", "command"]);
+    expect(Object.keys(methods)).toEqual([
+      "surface",
+      "footer",
+      "writeExport",
+      "command",
+      "snapshot",
+    ]);
+  });
+
+  it("only accepts an empty input for the read-only snapshot", async () => {
+    await expectAccepted(methods.snapshot.input, {});
+    await expectRejected(methods.snapshot.input, null, "input must be an empty object");
+    await expectRejected(
+      methods.snapshot.input,
+      { refresh: true },
+      "input must be an empty object",
+    );
   });
 
   it("uses Standard Schema v1 validators that carry no runtime types", () => {
