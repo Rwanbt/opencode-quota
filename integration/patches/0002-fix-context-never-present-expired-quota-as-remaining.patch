@@ -1,0 +1,135 @@
+From 81cefc09c92b2ae993790e16cb984244555a608c Mon Sep 17 00:00:00 2001
+From: Rwanbt <barat.erwan@gmail.com>
+Date: Sat, 17 Oct 2026 13:27:47 +0200
+Subject: [PATCH] fix(context): never present expired quota as remaining
+
+---
+ packages/gui-extensions/src/context/i18n/en.ts  |  1 +
+ packages/gui-extensions/src/context/i18n/fr.ts  |  1 +
+ .../gui-extensions/src/context/quota-hover.tsx  | 16 +++++++++++-----
+ .../src/context/quota-snapshot.test.ts          | 17 ++++++++++++++++-
+ .../src/context/quota-snapshot.ts               |  8 +++++++-
+ 5 files changed, 36 insertions(+), 7 deletions(-)
+
+diff --git a/packages/gui-extensions/src/context/i18n/en.ts b/packages/gui-extensions/src/context/i18n/en.ts
+index 2693ca4..dece644 100644
+--- a/packages/gui-extensions/src/context/i18n/en.ts
++++ b/packages/gui-extensions/src/context/i18n/en.ts
+@@ -12,6 +12,7 @@ export default {
+   "quota.limit": "Limit",
+   "quota.remaining": "remaining",
+   "quota.resetsIn": "Resets in",
++  "quota.resetPassed": "Reset time passed; refresh pending",
+   "quota.cached": "Cached data",
+   "quota.loading": "Reading cached quotas…",
+   "quota.unavailable": "No quota data available",
+diff --git a/packages/gui-extensions/src/context/i18n/fr.ts b/packages/gui-extensions/src/context/i18n/fr.ts
+index 53c19a9..7ed914e 100644
+--- a/packages/gui-extensions/src/context/i18n/fr.ts
++++ b/packages/gui-extensions/src/context/i18n/fr.ts
+@@ -11,6 +11,7 @@ export default {
+   "quota.limit": "Limite",
+   "quota.remaining": "restant",
+   "quota.resetsIn": "Réinitialisation dans",
++  "quota.resetPassed": "Réinitialisation dépassée ; actualisation attendue",
+   "quota.cached": "Données en cache",
+   "quota.loading": "Lecture des quotas en cache…",
+   "quota.unavailable": "Aucune donnée de quota disponible",
+diff --git a/packages/gui-extensions/src/context/quota-hover.tsx b/packages/gui-extensions/src/context/quota-hover.tsx
+index d95670e..7593527 100644
+--- a/packages/gui-extensions/src/context/quota-hover.tsx
++++ b/packages/gui-extensions/src/context/quota-hover.tsx
+@@ -1,5 +1,5 @@
+ import { For, Show, type JSX } from "solid-js"
+-import { resetCountdown, isQuotaStale, type QuotaSnapshotView } from "./quota-snapshot"
++import { resetCountdown, quotaCacheAge, isQuotaStale, type QuotaSnapshotView } from "./quota-snapshot"
+ 
+ function Bar(props: { value: number; label: string }) {
+   const percent = () => Math.max(0, Math.min(100, props.value))
+@@ -71,12 +71,18 @@ export function QuotaHover(props: {
+                       <div class="flex flex-col gap-1.5">
+                         <div class="flex justify-between gap-3 text-xs">
+                           <span class="text-v2-text-text-muted">{window.window ?? props.t("quota.limit")}</span>
+-                          <span class="tabular-nums">{window.percentRemaining}% {props.t("quota.remaining")}</span>
++                          <span class="tabular-nums">
++                            {window.resetAt !== undefined && window.resetAt <= props.now
++                              ? props.t("quota.resetPassed")
++                              : `${window.percentRemaining}% ${props.t("quota.remaining")}`}
++                          </span>
+                         </div>
+-                        <Bar value={window.percentRemaining} label={`${provider.id}: ${window.window ?? props.t("quota.limit")}`} />
++                        <Show when={window.resetAt === undefined || window.resetAt > props.now}>
++                          <Bar value={window.percentRemaining} label={`${provider.id}: ${window.window ?? props.t("quota.limit")}`} />
++                        </Show>
+                         <div class="flex justify-between gap-3 text-xs text-v2-text-text-muted">
+                           <span>{window.authority === "provider_reported" ? props.t("quota.providerReported") : props.t("quota.locallyDerived")}</span>
+-                          <Show when={resetCountdown(window.resetAt, props.now)}>
++                          <Show when={window.resetAt !== undefined && window.resetAt > props.now && resetCountdown(window.resetAt, props.now)}>
+                             {(countdown) => <span class="tabular-nums">{props.t("quota.resetsIn")} {countdown()}</span>}
+                           </Show>
+                         </div>
+@@ -91,7 +97,7 @@ export function QuotaHover(props: {
+       )}
+       <Show when={props.snapshot}>
+         <div class="text-xs text-v2-text-text-muted">
+-          {props.t("quota.cached")} · {props.snapshot?.cacheAgeSeconds ?? 0}s
++          {props.t("quota.cached")} · {props.snapshot ? quotaCacheAge(props.snapshot, props.now) : 0}s
+         </div>
+       </Show>
+     </div>
+diff --git a/packages/gui-extensions/src/context/quota-snapshot.test.ts b/packages/gui-extensions/src/context/quota-snapshot.test.ts
+index e0ae53f..505a0c1 100644
+--- a/packages/gui-extensions/src/context/quota-snapshot.test.ts
++++ b/packages/gui-extensions/src/context/quota-snapshot.test.ts
+@@ -1,5 +1,5 @@
+ import { describe, expect, test } from "bun:test"
+-import { isQuotaStale, parseQuotaSnapshot, readQuotaSnapshot, resetCountdown } from "./quota-snapshot"
++import { isQuotaStale, parseQuotaSnapshot, quotaCacheAge, readQuotaSnapshot, resetCountdown } from "./quota-snapshot"
+ import type { ServerRef } from "../sdk"
+ 
+ describe("quota snapshot safe GUI projection", () => {
+@@ -69,6 +69,21 @@ describe("quota snapshot safe GUI projection", () => {
+     expect(resetCountdown(100 + 3599, 100)).toBe("1h 0m")
+     expect(isQuotaStale({ generatedAt: 100, cacheAgeSeconds: 5, providers: [] }, 401)).toBe(true)
+     expect(isQuotaStale({ generatedAt: 100, cacheAgeSeconds: 5, providers: [] }, 105)).toBe(false)
++    expect(quotaCacheAge({ generatedAt: 100, cacheAgeSeconds: 15, providers: [] }, 500)).toBe(400)
++  })
++
++  test("treats a reset that has passed as stale even while cache timestamp is recent", () => {
++    const snapshot = {
++      generatedAt: 1_760_000_000,
++      cacheAgeSeconds: 2,
++      providers: [{
++        id: "codex",
++        status: "ok" as const,
++        windows: [{ percentRemaining: 75, authority: "provider_reported" as const, resetAt: 1_760_000_010 }],
++      }],
++    }
++    expect(isQuotaStale(snapshot, 1_760_000_009)).toBe(false)
++    expect(isQuotaStale(snapshot, 1_760_000_010)).toBe(true)
+   })
+ 
+   test("never displays percentage bars from unavailable or error states", () => {
+diff --git a/packages/gui-extensions/src/context/quota-snapshot.ts b/packages/gui-extensions/src/context/quota-snapshot.ts
+index 79eb1b8..a3538e2 100644
+--- a/packages/gui-extensions/src/context/quota-snapshot.ts
++++ b/packages/gui-extensions/src/context/quota-snapshot.ts
+@@ -97,8 +97,14 @@ export function resetCountdown(resetAt: number | undefined, now: number): string
+   return `${minutes}m`
+ }
+ 
++export function quotaCacheAge(snapshot: QuotaSnapshotView, now: number): number {
++  return Math.max(snapshot.cacheAgeSeconds, Math.max(0, now - snapshot.generatedAt))
++}
++
+ export function isQuotaStale(snapshot: QuotaSnapshotView, now: number): boolean {
+-  return snapshot.cacheAgeSeconds > 300 || now - snapshot.generatedAt > 300
++  return quotaCacheAge(snapshot, now) > 300 || snapshot.providers.some((provider) =>
++    provider.windows.some((window) => window.resetAt !== undefined && window.resetAt <= now)
++  )
+ }
+ 
+ /** A 404/unavailable RPC is expected when the quota plugin is not installed. */
+-- 
+2.51.1.windows.1
+
