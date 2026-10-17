@@ -211,6 +211,24 @@ describe("server quota RPC", () => {
     expect(JSON.stringify(snapshot)).not.toContain("rawDetails");
   });
 
+  it("keeps a cold GUI cache unavailable without secretly fetching provider quotas", async () => {
+    useConfig({});
+    const fetch = vi.fn().mockRejectedValue(new Error("network fetch must not happen"));
+    mocks.getProviders.mockReturnValue([
+      { id: "copilot", isAvailable: vi.fn().mockResolvedValue(true), fetch },
+    ]);
+    const { call } = await setupServer();
+
+    const output = await call("snapshot", {});
+    expect(output).toEqual({
+      version: 1,
+      generatedAt: expect.any(Number),
+      cacheAgeSeconds: 0,
+      providers: { copilot: { status: "unavailable", windows: [] } },
+    });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it("serves the sidebar panel and the idle toast", async () => {
     useConfig({ enableToast: true, showOnIdle: true, toastDurationMs: 7000 });
     const { call } = await setupServer();
