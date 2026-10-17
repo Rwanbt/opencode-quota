@@ -234,7 +234,11 @@ describe("resolved-auth identity", () => {
       principal: { kind: "credential", value: "must-not-be-hashed-with-fallback" },
     });
 
-    expect(resolved).toBeNull();
+    if (process.platform === "win32") {
+      expect(resolved).toMatch(/^raie_[A-Za-z0-9_-]{43}$/u);
+    } else {
+      expect(resolved).toBeNull();
+    }
     expect(await readFile(keyPath, "utf8")).toBe("not-a-valid-key\n");
     if (POSIX_IDENTITY_STORAGE) {
       expect((await stat(keyPath)).mode & 0o777).toBe(0o600);

@@ -621,11 +621,9 @@ describe("v4 Phase 5 cross-surface release evidence", () => {
     const callsAfterFirstToast = vi.mocked(globalThis.fetch).mock.calls.length;
     v2.emit("session.execution.succeeded", "phase5-session");
     await vi.waitFor(() => expect(v2.toast).toHaveBeenCalledTimes(2));
-    // POSIX caches the successful sources and retries only the failed 503 source.
-    // Windows has no protected identity key, so every remote source is fetched again.
-    expect(vi.mocked(globalThis.fetch)).toHaveBeenCalledTimes(
-      callsAfterFirstToast + (POSIX_IDENTITY_STORAGE ? 1 : PHASE5_QUOTA_PROVIDERS.length),
-    );
+    // Both POSIX and Windows cache successful sources. Windows uses a
+    // process-only keyed auth identity rather than persistent identity storage.
+    expect(vi.mocked(globalThis.fetch)).toHaveBeenCalledTimes(callsAfterFirstToast + 1);
     assertFixtureContent(getV2ToastMessage(v2.toast, 1));
 
     const statusOutput = (await v2.tool.execute({}, { sessionID: "phase5-session" })).content;
@@ -793,10 +791,7 @@ describe("v4 Phase 5 cross-surface release evidence", () => {
     expect(client.config.providers).toHaveBeenCalledTimes(providerDiscoveryCallsBeforeMetrics);
     expect(otel.getMeter).toHaveBeenCalledOnce();
     expect(new Set(observations.map(({ metric }) => metric))).toEqual(
-      new Set([
-        "opencode.quota.consumed",
-        ...(POSIX_IDENTITY_STORAGE ? ["opencode.quota.cache.age"] : []),
-      ]),
+      new Set(["opencode.quota.consumed", "opencode.quota.cache.age"]),
     );
     const actualConsumed = new Map(
       observations
@@ -823,8 +818,8 @@ describe("v4 Phase 5 cross-surface release evidence", () => {
           JSON.stringify(attributes) === JSON.stringify({ "quota.provider": "custom" }),
       ),
     ).toBe(true);
-    expect(cacheAgeObservations).toHaveLength(POSIX_IDENTITY_STORAGE ? 1 : 0);
-    if (POSIX_IDENTITY_STORAGE) {
+    expect(cacheAgeObservations).toHaveLength(1);
+    {
       const oldestFetchedAt = Math.min(
         ...Object.values(exportData.providers)
           .filter((provider) => "fetchedAt" in provider)

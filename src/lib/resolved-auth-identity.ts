@@ -10,6 +10,10 @@ const RESOLVED_AUTH_KEY_FILENAME = "resolved-auth-key-v1";
 const RESOLVED_AUTH_KEY_PREFIX = "v1:";
 const RESOLVED_AUTH_KEY_BYTES = 32;
 const RESOLVED_AUTH_IDENTITY_PREFIX = "rai1_";
+const EPHEMERAL_AUTH_IDENTITY_PREFIX = "raie_";
+// On Windows we cannot prove POSIX-style owner-only file permissions. Keep a
+// random key only in this process and NEVER persist results keyed by it.
+const ephemeralIdentityKey = randomBytes(RESOLVED_AUTH_KEY_BYTES);
 const WINNER_READ_ATTEMPTS = 20;
 const WINNER_READ_DELAY_MS = 5;
 
@@ -179,10 +183,12 @@ function identityPayload(parts: readonly unknown[]): string {
 }
 
 async function keyedIdentity(parts: readonly unknown[]): Promise<ResolvedAuthIdentity | null> {
-  const key = await getIdentityKey();
-  if (!key) return null;
+  const protectedKey = await getIdentityKey();
+  if (!protectedKey && process.platform !== "win32") return null;
+  const key = protectedKey ?? ephemeralIdentityKey;
+  const prefix = protectedKey ? RESOLVED_AUTH_IDENTITY_PREFIX : EPHEMERAL_AUTH_IDENTITY_PREFIX;
 
-  return `${RESOLVED_AUTH_IDENTITY_PREFIX}${createHmac("sha256", key)
+  return `${prefix}${createHmac("sha256", key)
     .update(identityPayload(parts))
     .digest("base64url")}` as ResolvedAuthIdentity;
 }
@@ -220,10 +226,11 @@ export async function composeResolvedAuthIdentities(params: {
 }
 
 export function isResolvedAuthIdentity(value: unknown): value is ResolvedAuthIdentity {
-  return (
-    typeof value === "string" &&
-    new RegExp(`^${RESOLVED_AUTH_IDENTITY_PREFIX}[A-Za-z0-9_-]{43}$`, "u").test(value)
-  );
+  return typeof value === "string" && /^(?:rai1_|raie_)[A-Za-z0-9_-]{43}$/u.test(value);
+}
+
+export function isEphemeralResolvedAuthIdentity(value: ResolvedAuthIdentity | undefined): boolean {
+  return value?.startsWith(EPHEMERAL_AUTH_IDENTITY_PREFIX) === true;
 }
 
 export function __resetResolvedAuthIdentityForTests(): void {

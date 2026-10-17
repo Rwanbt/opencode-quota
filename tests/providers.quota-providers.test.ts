@@ -41,6 +41,8 @@ vi.mock("../src/lib/quota-providers-local.js", () => ({
 }));
 
 vi.mock("../src/lib/resolved-auth-identity.js", () => ({
+  // These test credentials use deterministic opaque (non-ephemeral) identities.
+  isEphemeralResolvedAuthIdentity: vi.fn(() => false),
   deriveResolvedAuthIdentity: vi.fn(
     async (params: { providerId: string; principal: { value: string } }) =>
       `opaque:${params.providerId}:${params.principal.value}`,

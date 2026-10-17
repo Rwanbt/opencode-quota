@@ -359,7 +359,7 @@ describe("quota-state shared cache", () => {
     expect(first.entries[0]?.percentRemaining).toBe(75);
     expect(firstCached.entries[0]?.percentRemaining).toBe(75);
     expect(second.entries[0]?.percentRemaining).toBe(25);
-    expect(provider.fetch).toHaveBeenCalledTimes(POSIX_IDENTITY_STORAGE ? 2 : 3);
+    expect(provider.fetch).toHaveBeenCalledTimes(2);
     if (!POSIX_IDENTITY_STORAGE) return;
 
     const cacheFiles = await readdir(`${TEST_RUNTIME_ROOT}/cache/quota-provider-state`);
@@ -375,6 +375,76 @@ describe("quota-state shared cache", () => {
       expect(persisted).not.toContain("account-two-credential");
       expect(persisted).not.toContain("rai1_");
     }
+  });
+
+  it("never exposes a process-local result when a resolved-auth identity is unavailable", async () => {
+    const { fetchQuotaProviderResult, readCachedProviderResult } = await import(
+      "../src/lib/quota-state.js"
+    );
+    const provider = {
+      id: "openai",
+      cachePolicy: { kind: "resolved-auth", resolveIdentity: vi.fn().mockResolvedValue(null) },
+      fetch: vi.fn().mockResolvedValue({
+        attempted: true,
+        entries: [{ accounting: TEST_ACCOUNTING, name: "Old account", percentRemaining: 67 }],
+        errors: [],
+      }),
+    } as any;
+    const ctx = createTestContext();
+    await fetchQuotaProviderResult({ provider, ctx, ttlMs: 300_000 });
+    expect(await readCachedProviderResult({ provider, ctx, ttlMs: 300_000 })).toEqual({
+      hit: false,
+    });
+  });
+
+  it("never caches a result for a credential revoked during an awaited provider fetch", async () => {
+    const { deriveResolvedAuthIdentity } = await import("../src/lib/resolved-auth-identity.js");
+    const { fetchQuotaProviderResult, readCachedProviderResult } = await import(
+      "../src/lib/quota-state.js"
+    );
+    let credential = "old-account-token";
+    let complete!: (value: unknown) => void;
+    const provider = {
+      id: "zai",
+      cachePolicy: {
+        kind: "resolved-auth",
+        resolveIdentity: () =>
+          deriveResolvedAuthIdentity({
+            providerId: "zai",
+            principal: { kind: "credential", value: credential },
+          }),
+      },
+      fetch: vi
+        .fn()
+        .mockImplementationOnce(
+          () =>
+            new Promise((resolve) => {
+              complete = resolve;
+            }),
+        )
+        .mockResolvedValue({
+          attempted: true,
+          entries: [{ accounting: TEST_ACCOUNTING, name: "new account", percentRemaining: 30 }],
+          errors: [],
+        }),
+    } as any;
+    const ctx = createTestContext();
+    const stale = fetchQuotaProviderResult({ provider, ctx, ttlMs: 300_000 });
+    await vi.waitFor(() => expect(provider.fetch).toHaveBeenCalledOnce());
+    credential = "new-account-token";
+    complete({
+      attempted: true,
+      entries: [{ accounting: TEST_ACCOUNTING, name: "old account", percentRemaining: 90 }],
+      errors: [],
+    });
+    expect((await stale).entries[0]?.name).toBe("old account");
+    expect(await readCachedProviderResult({ provider, ctx, ttlMs: 300_000 })).toEqual({
+      hit: false,
+    });
+    expect(
+      (await fetchQuotaProviderResult({ provider, ctx, ttlMs: 300_000 })).entries[0]?.name,
+    ).toBe("new account");
+    expect(provider.fetch).toHaveBeenCalledTimes(2);
   });
 
   it("keeps unrelated-provider credential changes out of a provider cache scope", async () => {
@@ -407,7 +477,7 @@ describe("quota-state shared cache", () => {
 
     expect(providerACredential).toBe("provider-a-account");
     expect(providerBCredential).toBe("provider-b-account-two");
-    expect(provider.fetch).toHaveBeenCalledTimes(POSIX_IDENTITY_STORAGE ? 1 : 2);
+    expect(provider.fetch).toHaveBeenCalledTimes(1);
   });
 
   it("uses only the winning custom-provider credential in aggregate cache identity", async () => {
@@ -468,7 +538,7 @@ describe("quota-state shared cache", () => {
       expect(first.entries[0]?.percentRemaining).toBe(70);
       expect(cached.entries[0]?.percentRemaining).toBe(70);
       expect(second.entries[0]?.percentRemaining).toBe(30);
-      expect(provider.fetch).toHaveBeenCalledTimes(POSIX_IDENTITY_STORAGE ? 2 : 3);
+      expect(provider.fetch).toHaveBeenCalledTimes(2);
     } finally {
       delete process.env.CUSTOM_QUOTA_KEY;
       delete process.env.ZAI_API_KEY;
@@ -556,7 +626,7 @@ describe("quota-state shared cache", () => {
     expect(projectA.entries[0]?.name).toBe("project-a");
     expect(projectB.entries[0]?.name).toBe("project-b");
     expect(projectAAgain.entries[0]?.name).toBe("project-a");
-    expect(provider.fetch).toHaveBeenCalledTimes(POSIX_IDENTITY_STORAGE ? 2 : 3);
+    expect(provider.fetch).toHaveBeenCalledTimes(2);
   });
 
   it("does not persist an aggregate when runtime eligibility changes during fetch", async () => {
@@ -616,11 +686,11 @@ describe("quota-state shared cache", () => {
     expect(changedDuringFetch.entries[0]?.name).toBe("project-a");
     expect(stable.entries[0]?.name).toBe("project-b");
     expect(cached.entries[0]?.name).toBe("project-b");
-    expect(provider.fetch).toHaveBeenCalledTimes(POSIX_IDENTITY_STORAGE ? 2 : 3);
+    expect(provider.fetch).toHaveBeenCalledTimes(2);
   });
 
   it.runIf(process.platform === "win32")(
-    "does not cache resolved-auth results without protected identity storage",
+    "uses a process-only scoped cache without persisting resolved-auth results",
     async () => {
       const { deriveResolvedAuthIdentity } = await import("../src/lib/resolved-auth-identity.js");
       const { fetchQuotaProviderResult } = await import("../src/lib/quota-state.js");
@@ -650,13 +720,16 @@ describe("quota-state shared cache", () => {
       } as any;
       const ctx = createTestContext();
 
-      expect(await provider.cachePolicy.resolveIdentity()).toBeNull();
+      expect(await provider.cachePolicy.resolveIdentity()).toMatch(/^raie_[A-Za-z0-9_-]{43}$/u);
       const first = await fetchQuotaProviderResult({ provider, ctx, ttlMs: 60_000 });
       const second = await fetchQuotaProviderResult({ provider, ctx, ttlMs: 60_000 });
 
       expect(first.entries[0]?.name).toBe("fresh-1");
-      expect(second.entries[0]?.name).toBe("fresh-2");
-      expect(provider.fetch).toHaveBeenCalledTimes(2);
+      expect(second.entries[0]?.name).toBe("fresh-1");
+      expect(provider.fetch).toHaveBeenCalledOnce();
+      const cachePath = `${TEST_RUNTIME_ROOT}/cache/quota-provider-state`;
+      const files = await readdir(cachePath).catch(() => []);
+      expect(files).toHaveLength(0);
     },
   );
 

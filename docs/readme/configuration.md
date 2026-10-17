@@ -39,6 +39,7 @@ Strict `.json` files also work. Not sure which file is active? Run `/quota_statu
 | Include subagent session tokens             | `sessionTokenScope: "tree"`                 |
 | Allow more time for provider requests       | `requestTimeoutMs: 12000`                   |
 | Write quota JSON for another tool           | `export.enabled: true`                      |
+| Populate Desktop/Web quota cache in background | `guiBackgroundRefresh.enabled: true`       |
 | Keep OpenCode's normal retry after a limit  | `waitForQuotaReset: false`                  |
 
 The installer picks `allWindows`. If the setting is missing, the default is `singleWindow`.
