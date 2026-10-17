@@ -23,7 +23,10 @@ import {
   normalizeQuotaProviderResult,
 } from "./quota-state-codec.js";
 import { updateQuotaTelemetrySnapshot } from "./quota-telemetry.js";
-import type { ResolvedAuthIdentity } from "./resolved-auth-identity.js";
+import {
+  isEphemeralResolvedAuthIdentity,
+  type ResolvedAuthIdentity,
+} from "./resolved-auth-identity.js";
 import { getPackageVersion } from "./version.js";
 
 const QUOTA_PROVIDER_CACHE_PACKAGE_VERSION_FALLBACK = "unknown";
@@ -377,6 +380,7 @@ export async function fetchQuotaProviderResult(params: {
   const cacheContext: QuotaProviderCacheContext = { runtimeEligibleQuotaProviders };
   const scope = await resolveProviderCacheScope(provider, ctx, cacheContext);
   if (!scope) return fetchUncached(cacheContext);
+  const ephemeral = isEphemeralResolvedAuthIdentity(scope.resolvedAuthIdentity);
 
   const key = buildQuotaProviderStateCacheKey(provider.id, ctx, {
     runtimeEligibleQuotaProviders,
@@ -415,7 +419,7 @@ export async function fetchQuotaProviderResult(params: {
       true;
   const now = Date.now();
   const packageVersion = await getQuotaProviderCachePackageVersion();
-  await maybePrunePersistedQuotaProviderCache(now);
+  if (!ephemeral) await maybePrunePersistedQuotaProviderCache(now);
 
   const inMemory = forceAggregateRefresh ? undefined : inMemoryCache.get(key);
   if (
@@ -447,15 +451,16 @@ export async function fetchQuotaProviderResult(params: {
     return cloneQuotaProviderResult(snapshot);
   }
 
-  const persisted = forceAggregateRefresh
-    ? null
-    : await readPersistedQuotaProviderCacheEntry({
-        key,
-        providerId: provider.id,
-        packageVersion,
-        ttlMs,
-        now,
-      });
+  const persisted =
+    forceAggregateRefresh || ephemeral
+      ? null
+      : await readPersistedQuotaProviderCacheEntry({
+          key,
+          providerId: provider.id,
+          packageVersion,
+          ttlMs,
+          now,
+        });
   if (persisted) {
     inMemoryCache.set(key, {
       ...persisted,
@@ -493,7 +498,7 @@ export async function fetchQuotaProviderResult(params: {
       !(await isProviderCacheScopeCurrent(provider, ctx, scope))
     ) {
       inMemoryCache.delete(key);
-      await safeRm(getQuotaProviderStateCacheFilePath(provider.id, key));
+      if (!ephemeral) await safeRm(getQuotaProviderStateCacheFilePath(provider.id, key));
       return snapshot;
     }
 
@@ -509,7 +514,7 @@ export async function fetchQuotaProviderResult(params: {
       ...entry,
       result: cloneQuotaProviderResult(entry.result),
     });
-    await writePersistedQuotaProviderCacheEntry(entry, key);
+    if (!ephemeral) await writePersistedQuotaProviderCacheEntry(entry, key);
     return snapshot;
   })().finally(() => {
     inFlightByKey.delete(key);
@@ -545,6 +550,7 @@ export async function readCachedProviderResult(params: {
   const cacheContext: QuotaProviderCacheContext = { runtimeEligibleQuotaProviders };
   const scope = await resolveProviderCacheScope(params.provider, params.ctx, cacheContext);
   if (!scope) {
+    if (params.provider.cachePolicy?.kind === "resolved-auth") return { hit: false };
     return readProcessLocalLatest({
       provider: params.provider,
       ctx: params.ctx,
@@ -573,6 +579,7 @@ export async function readCachedProviderResult(params: {
     };
   }
 
+  if (isEphemeralResolvedAuthIdentity(scope.resolvedAuthIdentity)) return { hit: false };
   const packageVersion = await getQuotaProviderCachePackageVersion();
   const persisted = await readPersistedQuotaProviderCacheEntry({
     key,

@@ -50,6 +50,7 @@ export const QUOTA_TOAST_SETTING_SOURCE_KEYS = [
   "resetTimeDecimals",
   "resetTimeSpaced",
   "minIntervalMs",
+  "guiBackgroundRefresh.enabled",
   "requestTimeoutMs",
   "debug",
   "enabledProviders",
@@ -131,6 +132,7 @@ export function createLoadConfigMeta(): LoadConfigMeta {
 const NETWORK_SETTING_SOURCE_KEYS = [
   "enabled",
   "enabledProviders",
+  "guiBackgroundRefresh.enabled",
   "quotaProviders",
   "minIntervalMs",
   "requestTimeoutMs",
@@ -165,6 +167,7 @@ type ValidatedQuotaToastPatch = {
   resetTimeDecimals?: number;
   resetTimeSpaced?: boolean;
   minIntervalMs?: number;
+  guiBackgroundRefresh?: { enabled?: boolean };
   requestTimeoutMs?: number;
   debug?: boolean;
   enabledProviders?: string[] | "auto";
@@ -347,6 +350,7 @@ function cloneConfig(config: QuotaToastConfig): QuotaToastConfig {
     opencodeGoWindows: [...config.opencodeGoWindows],
     opencodeMonthlyLimit: config.opencodeMonthlyLimit,
     pricingSnapshot: { ...config.pricingSnapshot },
+    guiBackgroundRefresh: { ...config.guiBackgroundRefresh },
     tuiSidebarPanel: { ...config.tuiSidebarPanel },
     tuiCompactStatus: { ...config.tuiCompactStatus },
     tuiPromptBar: { ...config.tuiPromptBar },
@@ -713,6 +717,15 @@ function extractValidatedQuotaToastPatch(
     patch.minIntervalMs = quotaToastConfig.minIntervalMs;
   }
 
+  if (hasOwnKey(quotaToastConfig, "guiBackgroundRefresh")) {
+    const raw = quotaToastConfig.guiBackgroundRefresh;
+    if (isPlainObject(raw) && typeof raw.enabled === "boolean") {
+      patch.guiBackgroundRefresh = { enabled: raw.enabled };
+    } else {
+      reportIssue?.("guiBackgroundRefresh.enabled", "expected boolean");
+    }
+  }
+
   if (
     hasOwnKey(quotaToastConfig, "requestTimeoutMs") &&
     isPositiveNumber(quotaToastConfig.requestTimeoutMs)
@@ -989,6 +1002,11 @@ function applyValidatedQuotaToastPatch(
   if (hasOwnKey(patch, "minIntervalMs")) {
     config.minIntervalMs = patch.minIntervalMs!;
     applySettingSource(settingSources, "minIntervalMs", sourcePath);
+  }
+
+  if (patch.guiBackgroundRefresh?.enabled !== undefined) {
+    config.guiBackgroundRefresh.enabled = patch.guiBackgroundRefresh.enabled;
+    applySettingSource(settingSources, "guiBackgroundRefresh.enabled", sourcePath);
   }
 
   if (hasOwnKey(patch, "requestTimeoutMs")) {

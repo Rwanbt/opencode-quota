@@ -103,7 +103,7 @@ async function setupServer(sessionGet = vi.fn().mockResolvedValue({}), directory
     integration: createFakeIntegration([]),
     event: { subscribe: () => ({ async *[Symbol.asyncIterator]() {} }) },
   };
-  await server.setup(ctx as never);
+  const cleanup = await server.setup(ctx as never);
   expect(register).toHaveBeenCalledOnce();
   const [definition, handlers] = register.mock.calls[0] as unknown as [
     { id: string; methods: Record<string, unknown> },
@@ -118,7 +118,7 @@ async function setupServer(sessionGet = vi.fn().mockResolvedValue({}), directory
     expect(output).toStrictEqual(JSON.parse(JSON.stringify(output)));
     return output;
   };
-  return { ctx, definition, handlers, commands, call };
+  return { ctx, definition, handlers, commands, call, cleanup };
 }
 
 describe("server quota RPC", () => {
@@ -227,6 +227,46 @@ describe("server quota RPC", () => {
       providers: { copilot: { status: "unavailable", windows: [] } },
     });
     expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("warms the GUI cache at startup without requiring a slash command or hover", async () => {
+    vi.useFakeTimers();
+    try {
+      useConfig({ guiBackgroundRefresh: { enabled: true }, enabledProviders: ["copilot"] });
+      const fetch = vi.fn().mockResolvedValue({
+        attempted: true,
+        entries: [
+          {
+            accounting: TEST_ACCOUNTING,
+            name: "Copilot",
+            label: "5h:",
+            percentRemaining: 70,
+            resetTimeIso: "2026-10-17T16:00:00Z",
+          },
+        ],
+        errors: [],
+      });
+      const available = vi.fn().mockResolvedValue(true);
+      mocks.getProviders.mockReturnValue([
+        { id: "copilot", isAvailable: available, fetch, cachePolicy: { kind: "account-neutral" } },
+      ]);
+      const { call, cleanup } = await setupServer();
+      try {
+        await vi.advanceTimersByTimeAsync(10);
+        expect(available).toHaveBeenCalledOnce();
+        await vi.waitFor(() => expect(fetch).toHaveBeenCalledOnce(), { timeout: 3_000 });
+        expect(await call("snapshot", {})).toMatchObject({
+          providers: { copilot: { status: "ok", windows: [{ percentRemaining: 70 }] } },
+        });
+        expect(fetch).toHaveBeenCalledOnce();
+      } finally {
+        cleanup();
+      }
+      await vi.advanceTimersByTimeAsync(600_000);
+      expect(fetch).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("serves the sidebar panel and the idle toast", async () => {

@@ -293,6 +293,25 @@ describe("loadConfig", () => {
     expect(invalid.meta.settingSources).toEqual({});
   });
 
+  it("defaults GUI cache warming off, explicitly enables it, and rejects malformed input", async () => {
+    const defaults = await loadSdkConfig({});
+    expect(defaults.config.guiBackgroundRefresh).toEqual({ enabled: false });
+    expect(defaults.config.guiBackgroundRefresh).not.toBe(DEFAULT_CONFIG.guiBackgroundRefresh);
+
+    const enabled = await loadSdkConfig({ guiBackgroundRefresh: { enabled: true } });
+    expect(enabled.config.guiBackgroundRefresh).toEqual({ enabled: true });
+    expect(enabled.meta.settingSources["guiBackgroundRefresh.enabled"]).toBe("client.config.get");
+    expect(enabled.meta.networkSettingSources["guiBackgroundRefresh.enabled"]).toBe(
+      "client.config.get",
+    );
+
+    const invalid = await loadSdkConfig({ guiBackgroundRefresh: { enabled: "yes" } });
+    expect(invalid.config.guiBackgroundRefresh).toEqual({ enabled: false });
+    expect(invalid.meta.configIssues).toEqual(
+      expect.arrayContaining([expect.objectContaining({ key: "guiBackgroundRefresh.enabled" })]),
+    );
+  });
+
   it("defaults TUI sidebar panel config and accepts validated nested overrides", async () => {
     const defaults = await loadSdkConfig({});
     expect(defaults.config.tuiSidebarPanel).toEqual(DEFAULT_CONFIG.tuiSidebarPanel);

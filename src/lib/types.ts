@@ -132,6 +132,9 @@ export interface QuotaToastConfig {
   resetTimeSpaced?: boolean;
   minIntervalMs: number;
 
+  /** Opt-in server-side GUI cache warming; never triggered by a hover or snapshot RPC. */
+  guiBackgroundRefresh: { enabled: boolean };
+
   /** Request timeout in milliseconds for remote provider API calls. */
   requestTimeoutMs: number;
 
@@ -246,6 +249,7 @@ export const DEFAULT_CONFIG: QuotaToastConfig = {
   accountingDetail: "summary",
   resetTimeSpaced: true,
   minIntervalMs: 300000, // 5 minutes
+  guiBackgroundRefresh: { enabled: false },
   requestTimeoutMs: REQUEST_TIMEOUT_MS,
 
   debug: false,

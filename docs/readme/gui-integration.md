@@ -4,6 +4,40 @@ This fork's first GUI increment adds a **read-only** `snapshot` method to
 `slkiser.opencode-quota`'s existing OpenCode v2 server RPC. This is a data
 contract only; it does **not** inject a widget into OpenCode Desktop/Web yet.
 
+## P1: opt-in background warming for Desktop/Web
+
+Add the following to your global or project
+`opencode-quota/quota-toast.jsonc`:
+
+```jsonc
+{
+  "enabledProviders": "auto",
+  "guiBackgroundRefresh": { "enabled": true },
+  "minIntervalMs": 300000
+}
+```
+
+Restart OpenCode. The **server plugin** starts one sequential cache-warming
+pass after activation and repeats no faster than every five minutes, or fifteen
+minutes after a failed pass. It uses the existing provider availability checks,
+identity-scoped quota cache and request timeouts. No request is made by
+`snapshot({})` itself, by pointer hover or by model inference. Disabling the
+setting stops network activity on the next configuration read; restart to
+cancel a running plugin instance. Defaults remain network-opt-out for this
+new background behavior.
+
+On Windows, account-specific cache identities use an **ephemeral in-process
+HMAC key**: quota responses can be reused during the active process, but are
+not written to the durable quota cache. A change of authenticated account
+produces a different cache identity. A missing identity fails closed and never
+reads another account's process-local snapshot. This keeps the GUI usable on
+Windows without saving credential-derived identifiers or responses under
+unprotected persistent storage.
+
+**Important:** enabling P1 makes cached data available. It does not install
+GUI code into stock Desktop. See the separate prototype patch PR #4 and the
+still-open extension API discussion.
+
 ## Current contract
 
 - Request: `QuotaRpc.methods.snapshot` with `{}` (no refresh options).

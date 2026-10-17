@@ -6,6 +6,7 @@
 import { Plugin } from "@opencode/plugin";
 import { resolveOpenCodeLocationRoots } from "./lib/config-file-utils.js";
 import { sanitizeDisplayText } from "./lib/display-sanitize.js";
+import { startGuiBackgroundRefresh, warmGuiQuotaCache } from "./lib/gui-background-refresh.js";
 import {
   bindCredentialSource,
   createIntegrationCredentialSource,
@@ -296,7 +297,12 @@ export const QuotaToastPlugin = Plugin.define({
       console.warn(`[opencode-quota] credential event subscription stopped: ${logReason(error)}`);
     });
 
+    // Opt-in, bounded server-side cache warming for Desktop/Web. Hover and
+    // snapshot RPC always read the cache and never trigger a provider request.
+    const stopGuiRefresh = startGuiBackgroundRefresh(() => warmGuiQuotaCache(surfaceHost));
+
     return () => {
+      stopGuiRefresh();
       credentialEvents.abort();
       unbindCredentialSource();
     };
